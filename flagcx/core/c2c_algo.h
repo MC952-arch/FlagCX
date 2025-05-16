@@ -132,7 +132,9 @@ public:
 
   flagcxResult_t run(const void *sendbuff, void *recvbuff,
                      flagcxDataType_t datatype, flagcxRedOp_t redOp, int root,
-                     flagcxComm_t comm, flagcxStream_t stream);
+                     flagcxComm_t comm, flagcxStream_t stream,
+                     size_t *sendCounts = nullptr, size_t *sDispls = nullptr,
+                     size_t *recvCounts = nullptr, size_t *rDispls = nullptr);
 
   int rootRank_;
   int sendOffset_;
@@ -191,7 +193,10 @@ public:
   flagcxResult_t findStrategyBroadcast(int root);
   flagcxResult_t execute(const void *sendbuff, void *recvbuff,
                          flagcxDataType_t datatype, int root,
-                         flagcxStream_t stream);
+                         flagcxStream_t stream, size_t *sendCounts = nullptr,
+                         size_t *sDispls = nullptr,
+                         size_t *recvCounts = nullptr,
+                         size_t *rDispls = nullptr);
 
 private:
   int sendCount_;
@@ -226,6 +231,10 @@ private:
   std::vector<flagcxC2cHomoFunc> homoInterFuncList_;
   std::vector<flagcxC2cHomoFunc> postHomoFuncList_;
   void *scratchBuffer_; // used for intermediate processing
+  size_t *sendCounts_;  // used for alltoallv
+  size_t *sDispls_;
+  size_t *recvCounts_;
+  size_t *rDispls_;
 };
 
 #endif // end include guard
