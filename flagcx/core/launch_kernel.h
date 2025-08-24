@@ -32,7 +32,8 @@ flagcxResult_t loadKernelSymbol(const char *path, const char *name,
 
 struct flagcxFuncArgs {
   flagcxStream_t stream;
-  bool void *dValue; // hPtr or dPtr
+  flagcxEvent_t event;
+  void *value;
 };
 
 extern flagcxLaunchFunc_t deviceAsyncStore;

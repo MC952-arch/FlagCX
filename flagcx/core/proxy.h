@@ -160,6 +160,7 @@ struct flagcxProxyOp {
   flagcxHeteroComm_t comm;
   flagcxProxyArgs args;
   flagcxStream_t stream;
+  flagcxEvent_t event; // used to record host/device func
 };
 
 #define FLAGCX_MAX_NETDEVS 128
