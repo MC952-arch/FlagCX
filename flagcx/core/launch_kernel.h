@@ -1,10 +1,10 @@
 #ifndef FLAGCX_LAUNCH_KERNEL_H_
-typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
 #define FLAGCX_LAUNCH_KERNEL_H_
 #pragma once
+#include "flagcx.h"
+typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
 #include "adaptor.h"
 #include "debug.h"
-#include "flagcx.h"
 #include "param.h"
 #include "topo.h"
 #include "utils.h"
