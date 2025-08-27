@@ -59,22 +59,31 @@ flagcxResult_t wrapper_deviceMemcpy(void *dst, void *src, size_t size,
   return deviceAdaptor->deviceMemcpy(dst, src, size, type, stream, NULL);
 }
 
-static struct flagcxDeviceHandle globalDeviceHandle {
-  // Basic functions
-  deviceAdaptor->deviceSynchronize, wrapper_deviceMemcpy,
-      deviceAdaptor->deviceMemset, deviceAdaptor->deviceMalloc,
-      deviceAdaptor->deviceFree, deviceAdaptor->setDevice,
-      deviceAdaptor->getDevice, deviceAdaptor->getDeviceCount,
-      deviceAdaptor->getVendor,
-      // Stream functions
-      deviceAdaptor->streamCreate, deviceAdaptor->streamDestroy,
-      deviceAdaptor->streamCopy, deviceAdaptor->streamFree,
-      deviceAdaptor->streamSynchronize, deviceAdaptor->streamQuery,
-      deviceAdaptor->streamWaitEvent,
-      // Event functions
-      deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
-      deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
-      deviceAdaptor->eventQuery,
+static struct flagcxDeviceHandle globalDeviceHandle{
+    // Basic functions
+    deviceAdaptor->deviceSynchronize,
+    wrapper_deviceMemcpy,
+    deviceAdaptor->deviceMemset,
+    deviceAdaptor->deviceMalloc,
+    deviceAdaptor->deviceFree,
+    deviceAdaptor->setDevice,
+    deviceAdaptor->getDevice,
+    deviceAdaptor->getDeviceCount,
+    deviceAdaptor->getVendor,
+    // Stream functions
+    deviceAdaptor->streamCreate,
+    deviceAdaptor->streamDestroy,
+    deviceAdaptor->streamCopy,
+    deviceAdaptor->streamFree,
+    deviceAdaptor->streamSynchronize,
+    deviceAdaptor->streamQuery,
+    deviceAdaptor->streamWaitEvent,
+    // Event functions
+    deviceAdaptor->eventCreate,
+    deviceAdaptor->eventDestroy,
+    deviceAdaptor->eventRecord,
+    deviceAdaptor->eventSynchronize,
+    deviceAdaptor->eventQuery,
 };
 
 flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
@@ -195,7 +204,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homo_root_rank = -1;
   (*comm)->homo_ranks = -1;
   (*comm)->has_single_rank_homo_comm = -1;
-  (*comm)->support_multi_nic = -1;
   (*comm)->magic = 0;
   (*comm)->abortFlag = 0;
   (*comm)->bootstrap = NULL;
@@ -360,23 +368,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
   }
 
-  INFO(
-      FLAGCX_INIT,
-      "rank = %d, nranks = %d, nclusters = %d, cluster_id = %d, cluster_size "
-      "= %d, cluster_inter_rank = %d, homo_rank = %d, homo_root_rank = %d, "
-      "homo_inter_rank = %d, homo_ranks = %d, has_single_rank_homo_comm = %d, ",
-      rank, nranks, (*comm)->nclusters, (*comm)->cluster_ids[rank],
-      (*comm)->cluster_sizes[(*comm)->cluster_ids[rank]],
-      (*comm)->cluster_inter_ranks[(*comm)->cluster_ids[rank]],
-      (*comm)->homo_rank, (*comm)->homo_root_rank, (*comm)->homo_inter_rank,
-      (*comm)->homo_ranks, (*comm)->has_single_rank_homo_comm);
-
   if (!is_homo_comm(*comm)) {
-    char *enableMultiNicSupport = getenv("FLAGCX_ENABLE_MULTI_NIC_SUPPORT");
-    if (enableMultiNicSupport) {
-      (*comm)->support_multi_nic = std::stoi(enableMultiNicSupport);
-    }
-
     // Experimental for multi-nic support
     // Collect nic distance to ranks
     (*comm)->clusterInterRankList.resize((*comm)->nclusters);
@@ -434,15 +426,15 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
         "= %d, "
         "cluster_inter_rank = %d, homo_rank = %d, homo_root_rank = %d, "
         "homo_inter_rank = %d, homo_ranks = %d, "
-        "has_single_rank_homo_comm = %d, support_multi_nic = %d, "
+        "has_single_rank_homo_comm = %d, "
         "homoInterRootRank = %d, homoInterMyRank = %d, homoInterRanks = %d",
         rank, nranks, (*comm)->nclusters, (*comm)->cluster_ids[rank],
         (*comm)->cluster_sizes[(*comm)->cluster_ids[rank]],
         (*comm)->cluster_inter_ranks[(*comm)->cluster_ids[rank]],
         (*comm)->homo_rank, (*comm)->homo_root_rank, (*comm)->homo_inter_rank,
         (*comm)->homo_ranks, (*comm)->has_single_rank_homo_comm,
-        (*comm)->homo_ranks, (*comm)->homoInterRootRank,
-        (*comm)->homoInterMyRank, (*comm)->homoInterRanks);
+        (*comm)->homoInterRootRank, (*comm)->homoInterMyRank,
+        (*comm)->homoInterRanks);
 
     // Experimental for multi-nic support
     // Reset commId and homo inter root rank calls underlying GetUniqueId
