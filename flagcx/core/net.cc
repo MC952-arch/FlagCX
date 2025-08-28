@@ -752,18 +752,16 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       }
     }
   } else {
-    if (!args->done) {
+    if (args->done != 1) {
       __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
       if (deviceAsyncLoad && deviceAsyncStore) {
         if (args->deviceFuncRelaxedOrdering == 1) {
           FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
               args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
               flagcxMemcpyHostToDevice, resources->cpStream, NULL));
-          FLAGCXCHECK(deviceAdaptor->eventRecord(
-              resources->cpEvents[MAXSTEPS - 1], resources->cpStream));
         }
       }
-      args->done = true;
+      args->done = 1;
     }
   }
   return flagcxSuccess;
@@ -861,28 +859,23 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     }
 
   } else {
-    if (!args->done) {
+    if (args->done != 1) {
       __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
       if (deviceAsyncLoad && deviceAsyncStore) {
         if (args->deviceFuncRelaxedOrdering == 1) {
           FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
               args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
               flagcxMemcpyHostToDevice, resources->cpStream, NULL));
-          FLAGCXCHECK(deviceAdaptor->eventRecord(
-              resources->cpEvents[MAXSTEPS - 1], resources->cpStream));
         }
       }
-      args->done = true;
+      args->done = 1;
     }
   }
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
-  // Make sure all sends are done
   for (int s = 0; s < MAXSTEPS; s++) {
-    while (deviceAdaptor->eventQuery(resources->cpEvents[s]) != flagcxSuccess) {
-    }
     FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
   }
   FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
@@ -893,10 +886,7 @@ flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
 }
 
 flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
-  // Make sure all recvs are done
   for (int s = 0; s < MAXSTEPS; s++) {
-    while (deviceAdaptor->eventQuery(resources->cpEvents[s]) != flagcxSuccess) {
-    }
     FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
   }
   FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));

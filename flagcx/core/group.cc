@@ -272,7 +272,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     // record func op
     FLAGCXCHECK(deviceAdaptor->eventRecord(args.event, args.stream));
     bool *volatile recorded = (bool *)args.argList[0];
-    __atomic_store_n(recorded, 1, __ATOMIC_RELAXED);
+    *recorded = true;
 
     funcQueue.pop();
     argsQueue.pop();

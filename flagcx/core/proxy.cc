@@ -185,8 +185,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             struct sendNetResources *resources =
                 (sendNetResources *)op->connection->transportResources;
             flagcxProxySend(resources, op->recvbuff, op->nbytes, &op->args);
-            if (op->args.done &&
-                __atomic_load_n(&op->args.eventRecorded, __ATOMIC_RELAXED)) {
+            if (op->args.done == 1 && op->args.eventRecorded) {
               // The P2P object should not be destroyed until the associated
               // event has completed
               if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
@@ -203,8 +202,9 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             struct recvNetResources *resources =
                 (recvNetResources *)op->connection->transportResources;
             flagcxProxyRecv(resources, op->recvbuff, op->nbytes, &op->args);
-            if (op->args.done &&
-                __atomic_load_n(&op->args.eventRecorded, __ATOMIC_RELAXED)) {
+            if (op->args.done == 1 && op->args.eventRecorded) {
+              // The P2P object should not be destroyed until the associated
+              // event has completed
               if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
                 flagcxIntruQueueDelete(queue, op);
                 FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
