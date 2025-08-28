@@ -696,14 +696,6 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
 
 flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
-  if (args->done) {
-    return flagcxSuccess;
-  }
-  if (deviceAsyncLoad && deviceAsyncStore) {
-    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-        (void *)&args->hEventReady, args->dEventReady, sizeof(bool),
-        flagcxMemcpyDeviceToHost, resources->cpStream, NULL));
-  }
   if (!__atomic_load_n(&args->hEventReady, __ATOMIC_RELAXED))
     return flagcxSuccess;
   if (args->transmitted < args->chunkSteps) {
@@ -760,27 +752,22 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       }
     }
   } else {
-    __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
-    if (deviceAsyncLoad && deviceAsyncStore) {
-      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-          args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-          flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+    if (!args->done) {
+      __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
+      if ((deviceAsyncLoad && deviceAsyncStore) &&
+          args->deviceFuncRelaxedOrdering == 1) {
+        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+            args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+            flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      }
+      args->done = true;
     }
-    args->done = true;
   }
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
-  if (args->done) {
-    return flagcxSuccess;
-  }
-  if (deviceAsyncLoad && deviceAsyncStore) {
-    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-        (void *)&args->hEventReady, args->dEventReady, sizeof(bool),
-        flagcxMemcpyDeviceToHost, resources->cpStream, NULL));
-  }
   if (!__atomic_load_n(&args->hEventReady, __ATOMIC_RELAXED))
     return flagcxSuccess;
   if (args->copied < args->chunkSteps) {
@@ -871,13 +858,16 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     }
 
   } else {
-    __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
-    if (deviceAsyncLoad && deviceAsyncStore) {
-      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-          args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-          flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+    if (!args->done) {
+      __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
+      if ((deviceAsyncLoad && deviceAsyncStore) &&
+          args->deviceFuncRelaxedOrdering == 1) {
+        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+            args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+            flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      }
+      args->done = true;
     }
-    args->done = true;
   }
   return flagcxSuccess;
 }

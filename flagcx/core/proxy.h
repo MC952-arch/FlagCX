@@ -115,7 +115,8 @@ struct flagcxProxyArgs {
   struct flagcxProxyArgs **proxyAppendPtr;
 
   /*for launch*/
-  bool eventRecorded = false;
+  int deviceFuncRelaxedOrdering = 0;
+  volatile bool eventRecorded = false;
   volatile bool hlArgs = false;
   volatile bool hEventReady = false;
   bool *volatile dlArgs;

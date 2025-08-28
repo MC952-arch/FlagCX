@@ -29,17 +29,10 @@ flagcxResult_t loadKernelSymbol(const char *path, const char *name,
 }
 #endif
 
-struct flagcxFuncArgs {
-  flagcxStream_t stream;
-  flagcxEvent_t event;
-  bool *recorded; // Indicates if the op has been recorded by the event
-  void *value;    // May point to either hlArgs or dlArgs
-};
-
 extern flagcxLaunchFunc_t deviceAsyncStore;
 extern flagcxLaunchFunc_t deviceAsyncLoad;
 
-void cpuAsyncStore(void *_args);
-void cpuAsyncLoad(void *_args);
+void cpuAsyncStore(void *args);
+void cpuAsyncLoad(void *args);
 
 #endif

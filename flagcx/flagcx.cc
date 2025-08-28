@@ -1507,14 +1507,8 @@ flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
            timers[TIMER_COLL_TOTAL] / 1e6, timers[TIMER_COLL_ALLOC] / 1e6,
            timers[TIMER_COLL_MEM_D2H] / 1e6, timers[TIMER_COLL_COMM] / 1e6);
     } else {
-      if (comm->cluster_ids[comm->rank] == comm->cluster_ids[peer]) {
-        FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->send(
-            sendbuff, count, datatype, comm->globalrank2homorank[peer],
-            comm->homo_comm, stream));
-      } else {
-        FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, peer,
-                                     comm->hetero_comm, stream));
-      }
+      FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, peer,
+                                   comm->hetero_comm, stream));
     }
   }
   return flagcxSuccess;
@@ -1566,41 +1560,35 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
            timers[TIMER_COLL_FREE] / 1e6, timers[TIMER_COLL_MEM_H2D] / 1e6,
            timers[TIMER_COLL_COMM] / 1e6);
     } else {
-      if (comm->cluster_ids[comm->rank] == comm->cluster_ids[peer]) {
-        FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-            recvbuff, count, datatype, comm->globalrank2homorank[peer],
-            comm->homo_comm, stream));
-      } else {
-        FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, peer,
-                                     comm->hetero_comm, stream));
-      }
+      FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, peer,
+                                   comm->hetero_comm, stream));
     }
   }
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (!is_homo_comm(comm)) {
     FLAGCXCHECK(flagcxHeteroGroupStart());
-  }
-  if (use_host_comm()) {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupStart());
   } else {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupStart());
+    if (use_host_comm()) {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupStart());
+    } else {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupStart());
+    }
   }
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (use_host_comm()) {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
-  } else {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-  }
   if (!is_homo_comm(comm)) {
     FLAGCXCHECK(flagcxHeteroGroupEnd());
+  } else {
+    if (use_host_comm()) {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
+    } else {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
+    }
   }
   return flagcxSuccess;
 }

@@ -25,13 +25,13 @@ flagcxResult_t loadKernelSymbol(const char *path, const char *name,
   return flagcxSuccess;
 }
 
-void cpuAsyncStore(void *_args) {
-  bool *volatile args = (bool *)_args;
-  __atomic_store_n(args, 1, __ATOMIC_RELAXED);
+void cpuAsyncStore(void *args) {
+  bool *volatile value = (bool *)args;
+  __atomic_store_n(value, 1, __ATOMIC_RELAXED);
 }
 
-void cpuAsyncLoad(void *_args) {
-  bool *volatile args = (bool *)_args;
-  while (!__atomic_load_n(args, __ATOMIC_RELAXED))
-    ;
+void cpuAsyncLoad(void *args) {
+  bool *volatile value = (bool *)args;
+  while (!__atomic_load_n(value, __ATOMIC_RELAXED)) {
+  }
 }
