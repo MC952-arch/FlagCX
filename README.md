@@ -25,18 +25,18 @@ FlagCX leverages native collective communications libraries to provide the full 
 | Backend       | NCCL        | IXCCL       | CNCL        | MCCL        | XCCL        | DUCCL       | HCCL        | MUSACCL     |
 |:--------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|
 | Mode          | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero |
-| send          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| recv          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| broadcast     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| send          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| recv          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| broadcast     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
 | gather        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ☓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
 | scatter       | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| reduce        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| allreduce     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| allgather     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| reducescatter | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| alltoall      | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| reduce        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| allreduce     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| allgather     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| reducescatter | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| alltoall      | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
 | alltoallv     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
-| group ops     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/☓         | ✓/✓         |
+| group ops     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/☓         | ✓/✓         |
 
 Note that `Homo` and `Hetero` modes refer to communications among homogeneous and heterogeneous clusters. All native collective communications libraries can be referenced through the links below:
 
