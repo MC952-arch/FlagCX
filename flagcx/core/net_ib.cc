@@ -4,6 +4,7 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+#include "adaptor.h"
 #include "core.h"
 #include "flagcx_common.h"
 #include "flagcx_net.h"

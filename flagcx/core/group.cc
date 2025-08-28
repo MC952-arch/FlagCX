@@ -182,7 +182,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 (void *)&op->args.hEventReady, (void *)op->args.dEventReady,
                 sizeof(bool), flagcxMemcpyDeviceToHost, op->stream, NULL));
             argList = {(void *)&op->args.eventRecorded,
-                       (void *)&op->args.hlArgs, op->args.dlArgs};
+                       (void *)&op->args.hlArgs, (void *)op->args.dlArgs};
             funcQueue.push({op->stream, op->event, argList.data()});
           } else {
             FLAGCXCHECK(deviceAdaptor->launchHostFunc(
@@ -229,7 +229,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 (void *)&op->args.hEventReady, (void *)op->args.dEventReady,
                 sizeof(bool), flagcxMemcpyDeviceToHost, op->stream, NULL));
             argList = {(void *)&op->args.eventRecorded,
-                       (void *)&op->args.hlArgs, op->args.dlArgs};
+                       (void *)&op->args.hlArgs, (void *)op->args.dlArgs};
             funcQueue.push({op->stream, op->event, argList.data()});
           } else {
             FLAGCXCHECK(deviceAdaptor->launchHostFunc(
@@ -250,7 +250,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
   while (!funcQueue.empty()) {
     // get corresponding func args
-    struct flagcxFuncArgs args = funcQueue.front();
+    flagcxFuncArgs args = funcQueue.front();
 
     // launch host or device func
     if (deviceAsyncLoad && deviceAsyncStore) {

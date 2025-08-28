@@ -754,11 +754,14 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
   } else {
     if (!args->done) {
       __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
-      if ((deviceAsyncLoad && deviceAsyncStore) &&
-          args->deviceFuncRelaxedOrdering == 1) {
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-            args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-            flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      if (deviceAsyncLoad && deviceAsyncStore) {
+        if (args->deviceFuncRelaxedOrdering == 1) {
+          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+              args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+              flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+          FLAGCXCHECK(deviceAdaptor->eventRecord(
+              resources->cpEvents[MAXSTEPS - 1], resources->cpStream));
+        }
       }
       args->done = true;
     }
@@ -860,11 +863,14 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
   } else {
     if (!args->done) {
       __atomic_store_n(&args->hlArgs, 1, __ATOMIC_RELAXED);
-      if ((deviceAsyncLoad && deviceAsyncStore) &&
-          args->deviceFuncRelaxedOrdering == 1) {
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-            args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-            flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      if (deviceAsyncLoad && deviceAsyncStore) {
+        if (args->deviceFuncRelaxedOrdering == 1) {
+          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+              args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+              flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+          FLAGCXCHECK(deviceAdaptor->eventRecord(
+              resources->cpEvents[MAXSTEPS - 1], resources->cpStream));
+        }
       }
       args->done = true;
     }
@@ -873,24 +879,30 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
 }
 
 flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
-  resources->flagcxNet->deregMr(resources->netSendComm, resources->mhandles[0]);
-  resources->flagcxNet->closeSend(resources->netSendComm);
-  FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  // Make sure all sends are done
   for (int s = 0; s < MAXSTEPS; s++) {
+    while (deviceAdaptor->eventQuery(resources->cpEvents[s]) != flagcxSuccess) {
+    }
     FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
   }
   FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
+  resources->flagcxNet->deregMr(resources->netSendComm, resources->mhandles[0]);
+  resources->flagcxNet->closeSend(resources->netSendComm);
+  FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
+  // Make sure all recvs are done
+  for (int s = 0; s < MAXSTEPS; s++) {
+    while (deviceAdaptor->eventQuery(resources->cpEvents[s]) != flagcxSuccess) {
+    }
+    FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
+  }
+  FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
   resources->flagcxNet->deregMr(resources->netRecvComm, resources->mhandles[0]);
   resources->flagcxNet->closeRecv(resources->netRecvComm);
   resources->flagcxNet->closeListen(resources->netListenComm);
   FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
-  for (int s = 0; s < MAXSTEPS; s++) {
-    FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
-  }
-  FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
   return flagcxSuccess;
 }

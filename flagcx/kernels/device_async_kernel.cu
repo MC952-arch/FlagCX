@@ -2,7 +2,7 @@
 #include "flagcx.h"
 
 __global__ void asyncStore(bool* __restrict__ value) {
-  *value = 1; // set value to true
+  *value = true; // set value to true
   // __threadfence_system();  // Ensure that the write is visible to the CPU.
 }
 

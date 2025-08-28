@@ -2,7 +2,8 @@
 #include "flagcx.h"
 
 __global__ void asyncStore(bool* __restrict__ value) {
-  *value = 1; // set value to true
+  *value = true; // set value to true
+  // mfence(); // Ensure that the write is visible to the CPU.
 }
 
 __global__ void asyncLoad(const volatile bool* __restrict__ value) {
