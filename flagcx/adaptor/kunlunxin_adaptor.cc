@@ -331,7 +331,7 @@ struct flagcxDeviceAdaptor kunlunAdaptor{
     NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
     kunlunAdaptorGdrPtrMmap,   // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr,
                                // void *devptr, size_t sz);
-    kunlunAdaptorGdrPtrMunmap, // flagcxResult_t (*gdrPtrMummap)(void *cpuptr,
+    kunlunAdaptorGdrPtrMunmap, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr,
                                // size_t sz);
     // Stream functions
     kunlunAdaptorStreamCreate,

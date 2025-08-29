@@ -1625,7 +1625,7 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                         res, returning);
       } else {
         void *cpuptr = NULL;
-        if (deviceAdaptor->gdrPtrMmap && deviceAdaptor->gdrPtrMummap) {
+        if (deviceAdaptor->gdrPtrMmap && deviceAdaptor->gdrPtrMunmap) {
           deviceAdaptor->gdrPtrMmap(&cpuptr, (void *)addr, pages * pageSize);
         }
         if (flagcxIbRelaxedOrderingEnabled) {
@@ -1643,8 +1643,8 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                               pages * pageSize, flags),
               res, returning);
         }
-        if (deviceAdaptor->gdrPtrMmap && deviceAdaptor->gdrPtrMummap) {
-          deviceAdaptor->gdrPtrMummap(cpuptr, pages * pageSize);
+        if (deviceAdaptor->gdrPtrMmap && deviceAdaptor->gdrPtrMunmap) {
+          deviceAdaptor->gdrPtrMunmap(cpuptr, pages * pageSize);
         }
       }
       TRACE(FLAGCX_INIT | FLAGCX_NET,
