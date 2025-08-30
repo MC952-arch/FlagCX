@@ -223,65 +223,52 @@ flagcxResult_t cannAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-struct flagcxDeviceAdaptor cannAdaptor{
-    "CANN",
-    // Basic functions
-    cannAdaptorDeviceSynchronize,
-    cannAdaptorDeviceMemcpy,
-    cannAdaptorDeviceMemset,
-    cannAdaptorDeviceMalloc,
-    cannAdaptorDeviceFree,
-    cannAdaptorSetDevice,
-    cannAdaptorGetDevice,
-    cannAdaptorGetDeviceCount,
-    cannAdaptorGetVendor,
-    // GDR functions
-    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-    cannAdaptorGdrMemAlloc,
-    cannAdaptorGdrMemFree,
-    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-          // *memHandle);
-    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-          // sz);
-    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-    // Stream functions
-    cannAdaptorStreamCreate,
-    cannAdaptorStreamDestroy,
-    cannAdaptorStreamCopy,
-    cannAdaptorStreamFree,
-    cannAdaptorStreamSynchronize,
-    cannAdaptorStreamQuery,
-    cannAdaptorStreamWaitEvent,
-    // Event functions
-    cannAdaptorEventCreate,
-    cannAdaptorEventDestroy,
-    cannAdaptorEventRecord,
-    cannAdaptorEventSynchronize,
-    cannAdaptorEventQuery,
-    // Kernel launch
-    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-          // share_mem, void *stream, void *memHandle);
-    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-    NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream, void
-          // *args);
-    // Others
-    NULL, // flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps
-          // *props, int dev);
-    NULL, // flagcxResult_t (*getDevicePciBusId)(char
-          // *pciBusId, int len, int dev);
-    NULL, // flagcxResult_t
-          // (*getDeviceByPciBusId)(int
-          // *dev, const char *pciBusId);
-    cannAdaptorLaunchHostFunc,
-    // DMA buffer
-    NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-    NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-          // void *buffer, size_t size, unsigned long long flags);
+struct flagcxDeviceAdaptor cannAdaptor {
+  "CANN",
+      // Basic functions
+      cannAdaptorDeviceSynchronize, cannAdaptorDeviceMemcpy,
+      cannAdaptorDeviceMemset, cannAdaptorDeviceMalloc, cannAdaptorDeviceFree,
+      cannAdaptorSetDevice, cannAdaptorGetDevice, cannAdaptorGetDeviceCount,
+      cannAdaptorGetVendor,
+      // GDR functions
+      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      cannAdaptorGdrMemAlloc, cannAdaptorGdrMemFree,
+      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+            // *memHandle);
+      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+            // sz);
+      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+      // Stream functions
+      cannAdaptorStreamCreate, cannAdaptorStreamDestroy, cannAdaptorStreamCopy,
+      cannAdaptorStreamFree, cannAdaptorStreamSynchronize,
+      cannAdaptorStreamQuery, cannAdaptorStreamWaitEvent,
+      // Event functions
+      cannAdaptorEventCreate, cannAdaptorEventDestroy, cannAdaptorEventRecord,
+      cannAdaptorEventSynchronize, cannAdaptorEventQuery,
+      // Kernel launch
+      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+            // share_mem, void *stream, void *memHandle);
+      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream, void
+            // *args);
+      // Others
+      NULL, // flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps
+            // *props, int dev);
+      NULL, // flagcxResult_t (*getDevicePciBusId)(char
+            // *pciBusId, int len, int dev);
+      NULL, // flagcxResult_t
+            // (*getDeviceByPciBusId)(int
+            // *dev, const char *pciBusId);
+      cannAdaptorLaunchHostFunc,
+      // DMA buffer
+      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
+      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
+            // void *buffer, size_t size, unsigned long long flags);
 };
 
 #endif // USE_ASCEND_ADAPTOR

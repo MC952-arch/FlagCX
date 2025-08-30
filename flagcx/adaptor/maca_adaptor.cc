@@ -278,66 +278,53 @@ flagcxResult_t macaAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
   return flagcxSuccess;
 }
 
-struct flagcxDeviceAdaptor macaAdaptor{
-    "MACA",
-    // Basic functions
-    macaAdaptorDeviceSynchronize,
-    macaAdaptorDeviceMemcpy,
-    macaAdaptorDeviceMemset,
-    macaAdaptorDeviceMalloc,
-    macaAdaptorDeviceFree,
-    macaAdaptorSetDevice,
-    macaAdaptorGetDevice,
-    macaAdaptorGetDeviceCount,
-    macaAdaptorGetVendor,
-    // GDR functions
-    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-    macaAdaptorGdrMemAlloc,
-    macaAdaptorGdrMemFree,
-    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-          // *memHandle);
-    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-          // sz);
-    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-    // Stream functions
-    macaAdaptorStreamCreate,
-    macaAdaptorStreamDestroy,
-    macaAdaptorStreamCopy,
-    macaAdaptorStreamFree,
-    macaAdaptorStreamSynchronize,
-    macaAdaptorStreamQuery,
-    macaAdaptorStreamWaitEvent,
-    // Event functions
-    macaAdaptorEventCreate,
-    macaAdaptorEventDestroy,
-    macaAdaptorEventRecord,
-    macaAdaptorEventSynchronize,
-    macaAdaptorEventQuery,
-    // Kernel launch
-    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-          // share_mem, void *stream, void *memHandle);
-    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-    NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream,
-          // void *args);
-    // Others
-    macaAdaptorGetDeviceProperties, // flagcxResult_t
-                                    // (*getDeviceProperties)(struct
-                                    // flagcxDevProps *props, int dev);
-    macaAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
+struct flagcxDeviceAdaptor macaAdaptor {
+  "MACA",
+      // Basic functions
+      macaAdaptorDeviceSynchronize, macaAdaptorDeviceMemcpy,
+      macaAdaptorDeviceMemset, macaAdaptorDeviceMalloc, macaAdaptorDeviceFree,
+      macaAdaptorSetDevice, macaAdaptorGetDevice, macaAdaptorGetDeviceCount,
+      macaAdaptorGetVendor,
+      // GDR functions
+      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      macaAdaptorGdrMemAlloc, macaAdaptorGdrMemFree,
+      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+            // *memHandle);
+      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+            // sz);
+      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+      // Stream functions
+      macaAdaptorStreamCreate, macaAdaptorStreamDestroy, macaAdaptorStreamCopy,
+      macaAdaptorStreamFree, macaAdaptorStreamSynchronize,
+      macaAdaptorStreamQuery, macaAdaptorStreamWaitEvent,
+      // Event functions
+      macaAdaptorEventCreate, macaAdaptorEventDestroy, macaAdaptorEventRecord,
+      macaAdaptorEventSynchronize, macaAdaptorEventQuery,
+      // Kernel launch
+      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+            // share_mem, void *stream, void *memHandle);
+      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream,
+            // void *args);
+      // Others
+      macaAdaptorGetDeviceProperties, // flagcxResult_t
+                                      // (*getDeviceProperties)(struct
+                                      // flagcxDevProps *props, int dev);
+      macaAdaptorGetDevicePciBusId, // flagcxResult_t (*getDevicePciBusId)(char
                                     // *pciBusId, int len, int dev);
-    macaAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                    // (*getDeviceByPciBusId)(int
-                                    // *dev, const char *pciBusId);
-    macaAdaptorLaunchHostFunc,
-    // DMA buffer
-    NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-    NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-          // void *buffer, size_t size, unsigned long long flags);
+      macaAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                      // (*getDeviceByPciBusId)(int
+                                      // *dev, const char *pciBusId);
+      macaAdaptorLaunchHostFunc,
+      // DMA buffer
+      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
+      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
+            // void *buffer, size_t size, unsigned long long flags);
 };
 
 #endif // USE_METAX_ADAPTOR

@@ -39,7 +39,7 @@ union ibv_gid {
  *
  */
 #define container_of(ptr, type, member)                                        \
-  ((type *)((uint8_t *)(ptr) - offsetof(type, member)))
+  ((type *)((uint8_t *)(ptr)-offsetof(type, member)))
 #endif
 
 #define vext_field_avail(type, fld, sz) (offsetof(type, fld) < (sz))
