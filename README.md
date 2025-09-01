@@ -1,6 +1,12 @@
-[<img src="flagopen.png">](https://flagopen.baai.ac.cn/)
+[<img src="docs/images/flagopen.png">](https://flagopen.baai.ac.cn/)
 
 ## Latest News
+- **[2025/08]** Released [v0.4](https://github.com/FlagOpen/FlagCX/tree/release/v0.4):
+  - Supports heterogeneous training of ERNIE4.5 on Nvidia and Iluvatar GPUs with Paddle + FlagCX.
+  - Enables more robust and flexible deployments with full support of heterogeneous communication across arbitrary NIC configurations (bug fixes). 
+  - Introduces an early experimental net plugin interface extending its support for both IBRC and SOCKET, along with the ability to register device buffers via DMA-BUF.
+  - Adds an InterOp-level DSL to allow users designing customized C2C algorithms.
+  - Provides usage documentation under docs/.
 - **[2025/07]** Released [v0.3](https://github.com/FlagOpen/FlagCX/tree/release/v0.3):
   - Integrates three additional native communication libraries: HCCL, MUSACCL and MPI.
   - Enhances heterogeneous collective communication operations with pipeline optimizations. 
@@ -16,7 +22,6 @@
   - Natively integrated into PaddlePaddle [v3.0.0](https://github.com/PaddlePaddle/Paddle/tree/v3.0.0), with support for both dynamic and static graphs.
 
 ## About
-
 [FlagCX](https://github.com/FlagOpen/FlagCX.git) is a scalable and adaptive cross-chip communication library developed with the backing of the Beijing Academy of Artificial Intelligence (BAAI).
 
 FlagCX is also a part of [FlagAI-Open](https://flagopen.baai.ac.cn/), an open-source initiative by BAAI that aims to foster an open-source ecosystem for AI technologies. It serves as a platform where developers, researchers, and AI enthusiasts can collaborate on various AI projects, contribute to the development of cutting-edge AI solutions, and share their work with the global community.
@@ -87,14 +92,10 @@ FlagCX also integrates with upper-layer applications such as PyTorch and PaddleP
     ```sh
     cd FlagCX
     make [USE_NVIDIA/USE_ILUVATAR_COREX/USE_CAMBRICON/USE_GLOO/USE_MPI/USE_METAX/USE_MUSA/USE_KUNLUNXIN/USE_DU/USE_ASCEND]=1
-
-    # If the compilation variable "make USE_KUNLUNXIN=1" is used, the following environment variables need to be enabled:
-    export XPU_FORCE_SHARED_DEVICE_CONTEXT=1
     ```
     The default install path is set to `build/`, you can manually set `BUILDDIR` to specify the build path. You may also define `DEVICE_HOME` and `CCL_HOME` to indicate the install paths of device runtime and communication libraries.
 
 ### Tests
-
 Tests for FlagCX are maintained in `test/perf`.
 ```sh
 cd test/perf
@@ -121,7 +122,8 @@ All tests support the same set of arguments:
 
 ### Training Models
 After building and testing FlagCX, you can start training models using upper-layer deep learning frameworks such as PyTorch or PaddlePaddle with FlagCX as communication backend. We provide detailed user guides for both **homogeneous** and **heterogeneous** training across different hardware platforms. Please refer to the docs below:  
-📖 [Training Models with Paddle and FlagCX](docs/paddle/README.md)
-## License
+- [Training Models with PyTorch and FlagCX](docs/user_guide.md).
+- [Training Models with Paddle and FlagCX](docs/paddle/README.md).
 
+## License
 This project is licensed under the [Apache License (Version 2.0)](https://github.com/FlagOpen/FlagCX/blob/main/LICENSE).
