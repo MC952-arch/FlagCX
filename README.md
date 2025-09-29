@@ -92,7 +92,7 @@ FlagCX also integrates with upper-layer applications such as PyTorch and PaddleP
 2. Build the library with different flags targeting to different platforms:
     ```sh
     cd FlagCX
-    make [USE_NVIDIA/USE_ILUVATAR_COREX/USE_CAMBRICON/USE_GLOO/USE_MPI/USE_METAX/USE_MUSA/USE_KUNLUNXIN/USE_DU/USE_ASCEND]=1
+    make [USE_NVIDIA/USE_ILUVATAR_COREX/USE_CAMBRICON/USE_GLOO/USE_MPI/USE_METAX/USE_MUSA/USE_KUNLUNXIN/USE_DU/USE_ASCEND/USE_AMD]=1
     ```
     The default install path is set to `build/`, you can manually set `BUILDDIR` to specify the build path. You may also define `DEVICE_HOME` and `CCL_HOME` to indicate the install paths of device runtime and communication libraries.
 
@@ -117,6 +117,9 @@ All tests support the same set of arguments:
 * Performance
   * `-w, <warmup iteration count>` number of warmup iterations (not timed). Default: 5.
   * `-n, <iteration count>` number of iterations. Default: 20.
+* Test Operation
+  * `-R, <0/1>` enable local buffer registration on send/recv buffers. Default: 0.
+  * `-s, <OCT/DEC/HEX>` specify MPI communication split mode. Default: 0
 * Utils
   * `-p, <0/1>` print buffer info. Default: 0.
   * `-h` print help message. Default: disabled.
