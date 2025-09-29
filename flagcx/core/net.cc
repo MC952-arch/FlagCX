@@ -344,10 +344,14 @@ flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
     FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
   }
   FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
-  FLAGCXCHECK(resources->netAdaptor->deregMr(resources->netSendComm,
-                                             resources->mhandles[0]));
-  FLAGCXCHECK(resources->netAdaptor->closeSend(resources->netSendComm));
-  FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  resources->netAdaptor->deregMr(resources->netSendComm,
+                                 resources->mhandles[0]);
+  resources->netAdaptor->closeSend(resources->netSendComm);
+  if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+    free(resources->buffers[0]);
+  } else if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  }
   return flagcxSuccess;
 }
 
@@ -356,11 +360,15 @@ flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
     FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
   }
   FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
-  FLAGCXCHECK(resources->netAdaptor->deregMr(resources->netRecvComm,
-                                             resources->mhandles[0]));
-  FLAGCXCHECK(resources->netAdaptor->closeRecv(resources->netRecvComm));
-  FLAGCXCHECK(resources->netAdaptor->closeListen(resources->netListenComm));
-  FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  resources->netAdaptor->deregMr(resources->netRecvComm,
+                                 resources->mhandles[0]);
+  resources->netAdaptor->closeRecv(resources->netRecvComm);
+  resources->netAdaptor->closeListen(resources->netListenComm);
+  if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+    free(resources->buffers[0]);
+  } else if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  }
   return flagcxSuccess;
 }
 
