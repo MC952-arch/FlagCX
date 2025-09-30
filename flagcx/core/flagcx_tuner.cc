@@ -114,20 +114,13 @@ struct flagcxTunerContext {
 };
 
 static struct flagcxEnvConfig config1 = {
-    .commTag = "defaultConfig1",
-    .envCount = 1,
-    .envs = {{.type = FLAGCX_ENV_TYPE_CREATION,
-              .name = "NCCL_P2P_NVL_CHUNKSIZE",
-              .value = "1024",
-              .defaultValue = "524288"}}};
-
+    "defaultConfig1",
+    1,
+    {FLAGCX_ENV_TYPE_COLL, "NCCL_P2P_NVL_CHUNKSIZE", "1024", "524288"}};
 static struct flagcxEnvConfig config2 = {
-    .commTag = "defaultConfig2",
-    .envCount = 1,
-    .envs = {{.type = FLAGCX_ENV_TYPE_CREATION,
-              .name = "NCCL_P2P_NVL_CHUNKSIZE",
-              .value = "524288",
-              .defaultValue = "524288"}}};
+    "defaultConfig2",
+    1,
+    {FLAGCX_ENV_TYPE_COLL, "NCCL_P2P_NVL_CHUNKSIZE", "524288", "524288"}};
 
 bool operator<(const struct flagcxCommTag &lhs,
                const struct flagcxCommTag &rhs) {

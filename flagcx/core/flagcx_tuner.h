@@ -100,7 +100,7 @@ extern flagcxTuner_t internalTuner;
   do {                                                                         \
     comm->tunerInnerComm = nullptr;                                            \
     size_t nBytes = count * getFlagcxDataTypeSize(datatype);                   \
-    struct flagcxCommTag tag = {.tag = ""};                                    \
+    struct flagcxCommTag tag = {""};                                           \
     FLAGCXCHECK(comm->tuner->getCollInfo(comm->tunerContext, commOp, nBytes,   \
                                          0, NULL, 0, &tag));                   \
     const auto it = comm->homoCommMap.find(tag);                               \
