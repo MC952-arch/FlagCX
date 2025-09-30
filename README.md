@@ -1,6 +1,12 @@
 [<img src="docs/images/flagopen.png">](https://flagopen.baai.ac.cn/)
 
 ## Latest News
+- **[2025/09]** Released [v0.5](https://github.com/FlagOpen/FlagCX/tree/release/v0.5):
+  - Adds AMD support (hipAdaptor and rcclAdaptor).
+  - Introduces flagcxNetAdaptor to unify network backends, currently supporting SOCKET, IBRC, UCX and IBUC (experimently).
+  - Enables zero-copy device-buffer RDMA (user-buffer RDMA) to boost small-message performance.
+  - Supports automatic tuning in homogeneous scenarios via flagcxTuner.
+  - Integrates automated PyTorch API tests into CI/CD.
 - **[2025/08]** Released [v0.4](https://github.com/FlagOpen/FlagCX/tree/release/v0.4):
   - Supports heterogeneous training of ERNIE4.5 on Nvidia and Iluvatar GPUs with Paddle + FlagCX.
   - Enables more robust and flexible deployments with full support of heterogeneous communication across arbitrary NIC configurations (bug fixes). 
