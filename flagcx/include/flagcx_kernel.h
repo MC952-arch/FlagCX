@@ -107,14 +107,15 @@ public:
 };
 typedef struct flagcxFifo *flagcxFifo_t;
 
+FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
+                                             flagcxDeviceTrigger_t trigger);
+#ifdef COMPILE_KERNEL
 // device-producer + host-consumer APIs
 FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t count,
                                                uint64_t peerRank,
                                                uint64_t datatype,
                                                uint64_t type);
-FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
-                                             flagcxDeviceTrigger_t trigger);
 // host-producer + device-consumer APIs
 // FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(flagcxReduceTrigger trigger);
 // FLAGCX_HOST_DECORATOR  flagcxResult_t dequeue(flagcxReduceTrigger_t trigger);
@@ -134,4 +135,5 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                    flagcxDataType_t datatype, int sendPeer, int recvPeer,
                    flagcxComm_t comm, flagcxStream_t stream);
+#endif // COMPILE_KERNEL
 #endif
