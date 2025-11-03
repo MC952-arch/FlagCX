@@ -208,14 +208,14 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
     }
   } else {
     if (args->done != 1) {
-      args->semaphore->signalCounter(1);
-      if (deviceAsyncLoad && deviceAsyncStore) {
-        if (args->deviceFuncRelaxedOrdering == 1) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-              flagcxMemcpyHostToDevice, resources->cpStream, NULL));
-        }
-      }
+      args->semaphore->subCounter(1);
+      // if (deviceAsyncKernel) {
+      //   if (args->deviceFuncRelaxedOrdering == 1) {
+      //     FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+      //         args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+      //         flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      //   }
+      // }
       args->done = 1;
     }
   }
@@ -329,14 +329,14 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     }
   } else {
     if (args->done != 1) {
-      args->semaphore->signalCounter(1);
-      if (deviceAsyncLoad && deviceAsyncStore) {
-        if (args->deviceFuncRelaxedOrdering == 1) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-              flagcxMemcpyHostToDevice, resources->cpStream, NULL));
-        }
-      }
+      args->semaphore->subCounter(1);
+      // if (deviceAsyncKernel) {
+      //   if (args->deviceFuncRelaxedOrdering == 1) {
+      //     FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+      //         args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
+      //         flagcxMemcpyHostToDevice, resources->cpStream, NULL));
+      //   }
+      // }
       args->done = 1;
     }
   }
