@@ -115,6 +115,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     semaphore = std::make_shared<flagcxHostSemaphore>();
   }
   flagcxStream_t launchStream = nullptr;
+  flagcxEvent_t launchEvent = nullptr;
 
   if (groupCommPreconnectHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommPreconnectHeadMain;
