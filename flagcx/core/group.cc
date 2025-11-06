@@ -393,7 +393,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       FLAGCXCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
                                                 (void *)semaphore.get()));
     }
-    FLAGCXCHECK(deviceAdaptor->streamSynchronize(launchStream));
   }
 
   while (!flagcxIntruQueueEmpty(asyncJobsMain)) {
