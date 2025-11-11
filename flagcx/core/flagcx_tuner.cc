@@ -158,10 +158,11 @@ flagcxResult_t flagcxTunerInit(size_t nRanks, size_t nNodes,
   ctx->logger = logFunction;
   *context = ctx;
 
-  // Initialize commTagIdxMap
+  // Initialize commTagIdxMap and activeCommList
   for (size_t i = 0; i < ctx->configList.size(); ++i) {
     const auto &cfg = ctx->configList[i];
     ctx->commTagIdxMap[cfg.commTag] = i;
+    ctx->activeCommList.push_back(i);
   }
 
   // Whether comm tag specified by environment variable
@@ -369,7 +370,6 @@ flagcxResult_t flagcxCreateDestroyHomoCommForTag(flagcxComm_t *comm, struct flag
     if((*comm)->tunerInnerComm != NULL){
       // Destroy tunerInnerComm
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy((*comm)->tunerInnerComm));
-
     }
 
     struct flagcxCommTag tag = {""};
@@ -414,7 +414,6 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
     return flagcxSuccess;
   }
 
-
   struct TunerCollCategory collCat = {collType, nBytes};
   auto it = ctx->collSeqMap.find(collCat);
   uint32_t seqId = 0;
@@ -438,7 +437,7 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
         //set tunerInnerComm (for flagcxCallWithTuner)
         const auto &cfg = ctx->configList[cfgIdx];
         FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
-        ctx->configCounterMap[key] = 1;  
+        ctx->configCounterMap[key] = 1;
       } else {
         const auto &cfg = ctx->configList[cfgIdx];
         FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
@@ -452,20 +451,31 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
   // communicator recorded for this collective category, find it.
   if ((*comm)->homoCommMap[collCat] == nullptr) {
     FLAGCXCHECK(findBestComm(ctx, collCat));
-  }
-
-  // Use the best communicator calculated earlier.
-  auto it2 = ctx->collBestCommMap.find(collCat);
-  if (it2 == ctx->collBestCommMap.end()) {
-    WARN("No best communicator found for collective type %d with size %zu.",
-         collType, nBytes);
-    return flagcxInternalError;
-  }
-  auto &cfg = ctx->configList[it2->second];
-  FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
-  *commTag = cfg.commTag;
-  INFO(FLAGCX_TUNING, "Use Communicator tag %s based on profile data.",
-       commTag->tag);
+    // Use the best communicator calculated.
+    auto it2 = ctx->collBestCommMap.find(collCat);
+    if (it2 == ctx->collBestCommMap.end()) {
+      WARN("No best communicator found for collective type %d with size %zu.",
+          collType, nBytes);
+      return flagcxInternalError;
+    }
+    auto &cfg = ctx->configList[it2->second];
+    FLAGCXCHECK(flagcxCreateDestroyHomoCommForTag(comm,ctx,it2->second,collCat));
+    (*comm)->homoCommMap[collCat]=(*comm)->tunerInnerComm;
+    FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
+    *commTag = cfg.commTag;
+ } else {
+    auto it2 = ctx->collBestCommMap.find(collCat);
+    if (it2 == ctx->collBestCommMap.end()) {
+      WARN("No best communicator found for collective type %d with size %zu.",
+          collType, nBytes);
+      return flagcxInternalError;
+    }
+    auto &cfg = ctx->configList[it2->second];
+    FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
+    (*comm)->tunerInnerComm = (*comm)->homoCommMap[collCat];
+    INFO(FLAGCX_TUNING, "Use Communicator tag %s based on profile data.",
+      commTag->tag);
+  } 
   return flagcxSuccess;
 }
 
