@@ -3,6 +3,7 @@
 #include "param.h"
 #include "timer.h"
 #include "tuner/tuner_util.h"
+#include "adaptor.h"
 #include <cfloat>
 #include <iostream>
 #include <map>
@@ -10,10 +11,6 @@
 #include <string>
 #include <vector>
 // A category of collective operation. the minimal unit for tuning.
-struct TunerCollCategory {
-  flagcxCommOp_t collType = flagcxNumCommOps;
-  size_t nBytes = 0;
-};
 
 bool operator<(const struct TunerCollCategory &lhs,
                const struct TunerCollCategory &rhs) {
@@ -87,6 +84,19 @@ struct TunerProfileKey {
   }
 };
 
+struct TunerCommTagCounterKey {
+  size_t nBytes;
+  uint32_t collType; // flagcxCommOp_t
+  uint32_t commTagIdx; // index of commTag in configList
+};
+
+static bool operator<(const struct TunerCommTagCounterKey &lhs,
+                      const struct TunerCommTagCounterKey &rhs) {
+  if (lhs.nBytes != rhs.nBytes) return lhs.nBytes < rhs.nBytes;
+  if (lhs.collType != rhs.collType) return lhs.collType < rhs.collType;
+  return lhs.commTagIdx < rhs.commTagIdx;
+}
+
 // number loops of collectives call before using profiled data.
 // Each loop will go thoroughly through all search space of all candidates.
 #define TUNER_SEARCH_NLOOPS 5
@@ -109,6 +119,7 @@ struct flagcxTunerContext {
   std::map<TunerCollCategory, int>
       collBestCommMap; // record the best communicator for each collective
                        // category. value is comm index in configList.
+  std::map<struct TunerCommTagCounterKey, int> configCounterMap; // record per (collType,nBytes,configIdx) counter.
 
   // timer
   flagcxTimer<TunerProfileKey> timer;
@@ -226,14 +237,14 @@ static int getCommIdxFromSeqId(const struct flagcxTunerContext *ctx,
   if (ctx->activeCommList.size() == 0) {
     return -1;
   }
-  return ctx->activeCommList[seqId % ctx->activeCommList.size()];
+  return ctx->activeCommList[seqId % ctx->searchNLoops];
 }
 
 // Given a communicator index in configList, get the corresponding startup phase
 // seqId for specific round. Logic must be consistent with getCommIdxFromSeqId.
 static int getSeqIdForCommIdx(const struct flagcxTunerContext *ctx, int commIdx,
                               uint32_t round) {
-  int seqId = round * ctx->activeCommList.size();
+  int seqId = 0;
   bool found = false;
   for (const auto &idx : ctx->activeCommList) {
     if (idx != commIdx) {
@@ -243,7 +254,7 @@ static int getSeqIdForCommIdx(const struct flagcxTunerContext *ctx, int commIdx,
       break;
     }
   }
-  return (found ? seqId : -1);
+  return (found ? (seqId * ctx->activeCommList.size()) + round : -1);
 }
 
 // add a small factor to avoid switching between two close communicators caused
@@ -327,6 +338,59 @@ static flagcxResult_t findBestComm(struct flagcxTunerContext *ctx,
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
+  flagcxUniqueId *uniqueIdData,
+  struct bootstrapState *state,
+  flagcxComm_t comm,
+  flagcxInnerComm_t *homoComm /*out*/) {
+int rank = comm->rank;
+int nranks = comm->nranks;
+memset((void *)commId, 0, sizeof(*commId));
+memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
+if (comm->homo_rank == 0) {
+cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
+}
+if (comm->homo_rank == 0) {
+memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
+}
+FLAGCXCHECK(
+bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
+FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+
+memcpy((void *)commId, (void *)&uniqueIdData[comm->homo_root_rank],
+sizeof(flagcxUniqueId));
+FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
+homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
+return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCreateDestroyHomoCommForTag(flagcxComm_t *comm, struct flagcxTunerContext *ctx ,
+  uint32_t seqId,const struct TunerCollCategory &collCat){
+    if((*comm)->tunerInnerComm != NULL){
+      // Destroy tunerInnerComm
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy((*comm)->tunerInnerComm));
+
+    }
+
+    struct flagcxCommTag tag = {""};
+    uint32_t idx = getCommIdxFromSeqId(ctx, seqId);
+    uint32_t nConfigs = 0;
+    FLAGCXCHECK(
+        (*comm)->tuner->getCandidateNumber((*comm)->tunerContext, &nConfigs));
+    FLAGCXCHECK(flagcxTunerSetCandidate((*comm)->tunerContext, idx, &tag));
+    INFO(FLAGCX_INIT | FLAGCX_TUNING,
+          "start to prepare communicator tag=%s(%u/%u)", tag.tag, idx, nConfigs);
+    flagcxInnerComm_t innerComm = NULL;
+    FLAGCXCHECK(
+        flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData, (struct bootstrapState*)((*comm)->tuner->bootstrap), *comm, &innerComm));
+    // Insert item into homoCommMap
+    (*comm)->homoCommMap[collCat] = nullptr;
+    // For backward compatible, also assign homo_comm field.
+    (*comm)->homo_comm = innerComm;
+    (*comm)->tunerInnerComm = innerComm;
+    return flagcxSuccess;
+  }
+
 // Communicator selection logic:
 // Always favor the communicator specified by environment variable if possible.
 // Otherwise,
@@ -337,7 +401,7 @@ static flagcxResult_t findBestComm(struct flagcxTunerContext *ctx,
 flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
                                       size_t nBytes, int numPipeOps,
                                       float **collCostTable, int regBuff,
-                                      struct flagcxCommTag *commTag) {
+                                      struct flagcxCommTag *commTag, flagcxComm_t *comm) {
   struct flagcxTunerContext *ctx =
       static_cast<struct flagcxTunerContext *>(context);
   // Use env comm tag when possible.
@@ -350,8 +414,7 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
     return flagcxSuccess;
   }
 
-  // for the first searchNLoops * activeCommCount collectives, use round-robin
-  // policy
+
   struct TunerCollCategory collCat = {collType, nBytes};
   auto it = ctx->collSeqMap.find(collCat);
   uint32_t seqId = 0;
@@ -362,24 +425,32 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
     seqId = it->second;
   }
 
-  if (seqId < ctx->searchNLoops * ctx->activeCommList.size()) {
-    int idx = getCommIdxFromSeqId(ctx, seqId);
-    if (idx == -1) {
-      WARN("No active communicator found for startup phase seqId=%u.", seqId);
-      return flagcxInternalError;
+  if(seqId < ctx->searchNLoops * ctx->activeCommList.size()){
+
+      // Every {collType, nBytes, commTagIdx} will be profiled searchNLoops times.
+      int cfgIdx = getCommIdxFromSeqId(ctx, seqId);
+      TunerCommTagCounterKey key{nBytes, static_cast<uint32_t>(collType),
+                                  static_cast<uint32_t>(cfgIdx)};
+      auto cit = ctx->configCounterMap.find(key);
+      if (cit == ctx->configCounterMap.end()){
+        // create a new communicator
+        FLAGCXCHECK(flagcxCreateDestroyHomoCommForTag(comm,ctx,seqId,collCat));
+        //set tunerInnerComm (for flagcxCallWithTuner)
+        const auto &cfg = ctx->configList[cfgIdx];
+        FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
+        ctx->configCounterMap[key] = 1;  
+      } else {
+        const auto &cfg = ctx->configList[cfgIdx];
+        FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
+        ctx->configCounterMap[key]++;
+      }
+      return flagcxSuccess;
     }
-    const auto &cfg = ctx->configList[idx];
-    FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
-    *commTag = cfg.commTag;
-    INFO(FLAGCX_TUNING, "Use Communicator tag %s in startup phase seqId=%u.",
-         commTag->tag, seqId);
-    return flagcxSuccess;
-  }
 
   // Select a communicator from active communicators based on profiling data
   // after searchNLoops * activeCommCount collectives. If we do not have a best
   // communicator recorded for this collective category, find it.
-  if (ctx->collBestCommMap.find(collCat) == ctx->collBestCommMap.end()) {
+  if ((*comm)->homoCommMap[collCat] == nullptr) {
     FLAGCXCHECK(findBestComm(ctx, collCat));
   }
 
