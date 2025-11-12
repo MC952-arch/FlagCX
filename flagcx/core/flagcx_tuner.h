@@ -71,7 +71,8 @@ struct flagcxTuner {
   flagcxResult_t (*getCollInfo)(void *context, flagcxCommOp_t collType,
                                 size_t nBytes, int numPipeOps,
                                 float **collCostTable, int regBuff,
-                                struct flagcxCommTag *commTag, flagcxComm_t *comm);
+                                struct flagcxCommTag *commTag,
+                                flagcxComm_t *comm);
 
   // Start profiling for a specific collective with given parameters.
   // Inputs:
@@ -102,11 +103,9 @@ struct flagcxTuner {
   flagcxResult_t (*destroy)(void *context);
 
   // Create/destroy communicator
-  flagcxResult_t (*createDestroyHomoComm)(flagcxComm_t *comm, 
-                                          struct flagcxTunerContext *ctx ,
-                                          uint32_t seqId,
-                                          const struct TunerCollCategory &collCat, 
-                                          bool createBest);
+  flagcxResult_t (*createDestroyHomoComm)(
+      flagcxComm_t *comm, struct flagcxTunerContext *ctx, uint32_t seqId,
+      const struct TunerCollCategory &collCat, bool createBest);
 };
 
 typedef struct flagcxTuner flagcxTuner_t;
@@ -119,10 +118,8 @@ bool operator==(const struct flagcxCommTag &lhs,
 extern flagcxTuner_t internalTuner;
 
 // On-demand communicator lifecycle helpers implemented in flagcx/flagcx.cc
-flagcxResult_t flagcxCreateHomoCommForTag(flagcxComm_t comm,
-                                          uint32_t idx);
-flagcxResult_t flagcxDestroyHomoCommByTag(flagcxComm_t comm,
-                                          uint32_t idx);
+flagcxResult_t flagcxCreateHomoCommForTag(flagcxComm_t comm, uint32_t idx);
+flagcxResult_t flagcxDestroyHomoCommByTag(flagcxComm_t comm, uint32_t idx);
 
 #define FLAGCXCALLWITHTUNER(call, comm, commOp, count, datatype, stream)       \
   do {                                                                         \

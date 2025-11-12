@@ -582,7 +582,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
 
   free(clusterInterRankData);
-  //free(uniqueIdData);
+  // free(uniqueIdData);
   free(vendorData);
 
   return flagcxSuccess;
@@ -623,7 +623,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Destroy homo comms
   if (comm->tuner) {
     for (const auto &item : comm->homoCommMap) {
-      if (item.second != nullptr){
+      if (item.second != nullptr) {
         FLAGCXCHECK(
             cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
       }
