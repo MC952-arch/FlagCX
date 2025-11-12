@@ -443,6 +443,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
       return flagcxInternalError;
     }
     (*comm)->homoCommMap.clear();
+    (*comm)->homoBestCommMap.clear();
   } else {
     (*comm)->tuner = NULL;
     FLAGCXCHECK(flagcxHomoCommInit(commId, uniqueIdData, state, *comm,
@@ -581,7 +582,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
 
   free(clusterInterRankData);
-  free(uniqueIdData);
+  //free(uniqueIdData);
   free(vendorData);
 
   return flagcxSuccess;
@@ -622,8 +623,10 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Destroy homo comms
   if (comm->tuner) {
     for (const auto &item : comm->homoCommMap) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
+      if (item.second != nullptr){
+        FLAGCXCHECK(
+            cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
+      }
     }
   } else {
     cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homo_comm);

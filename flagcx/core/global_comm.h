@@ -52,6 +52,8 @@ struct flagcxComm {
   void *tunerContext;
   std::map<struct TunerCollCategory, flagcxInnerComm_t>
       homoCommMap;                  // key: commTag returned by tuner
+  std::map<struct TunerCollCategory, flagcxInnerComm_t>
+      homoBestCommMap;              // key: commTag returned by tuner
   flagcxInnerComm_t tunerInnerComm; // innerComm selected by tuner
   flagcxUniqueId_t commId;
   flagcxUniqueId *uniqueIdData;

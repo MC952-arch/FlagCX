@@ -100,6 +100,13 @@ struct flagcxTuner {
 
   // Terminates the tuner and cleans up any resources that the tuner allocated.
   flagcxResult_t (*destroy)(void *context);
+
+  // Create/destroy communicator
+  flagcxResult_t (*createDestroyHomoComm)(flagcxComm_t *comm, 
+                                          struct flagcxTunerContext *ctx ,
+                                          uint32_t seqId,
+                                          const struct TunerCollCategory &collCat, 
+                                          bool createBest);
 };
 
 typedef struct flagcxTuner flagcxTuner_t;
@@ -124,14 +131,6 @@ flagcxResult_t flagcxDestroyHomoCommByTag(flagcxComm_t comm,
     struct flagcxCommTag tag = {""};                                           \
     FLAGCXCHECK(comm->tuner->getCollInfo(comm->tunerContext, commOp, nBytes,   \
                                          0, NULL, 0, &tag, &comm));            \
-    struct TunerCollCategory collCat = {commOp, nBytes};                      \
-    const auto it = comm->homoCommMap.find(collCat);                           \
-    if (it == comm->homoCommMap.end()) {                                       \
-      WARN("communicator for (coll=%d,size=%zu) was not initialized.",        \
-           commOp, nBytes);                                                    \
-      return flagcxInternalError;                                              \
-    }                                                                          \
-    comm->tunerInnerComm = it->second;                                         \
     flagcxProfileKey pkey;                                                     \
     FLAGCXCHECK(comm->tuner->startProfiling(comm->tunerContext, commOp,        \
                                             nBytes, stream, &tag, &pkey));     \
