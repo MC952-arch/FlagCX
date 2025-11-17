@@ -344,7 +344,7 @@ static flagcxResult_t findBestComm(struct flagcxTunerContext *ctx,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCreateDestroyHomoComm(
+flagcxResult_t flagcxCreateOrReplaceHomoComm(
     flagcxComm_t *comm, struct flagcxTunerContext *ctx, uint32_t seqId,
     const struct TunerCollCategory &collCat, bool createBest) {
 
@@ -437,7 +437,7 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
     if (cit == ctx->configCounterMap.end()) {
       // create a new communicator and destroy old communicator
       FLAGCXCHECK(
-          flagcxCreateDestroyHomoComm(comm, ctx, seqId, collCat, false));
+          flagcxCreateOrReplaceHomoComm(comm, ctx, seqId, collCat, false));
       (*comm)->tunerInnerComm = (*comm)->homoCommMap[collCat];
       const auto &cfg = ctx->configList[cfgIdx];
       *commTag = cfg.commTag;
@@ -475,7 +475,7 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
         std::min(profileDataRound,
                  static_cast<uint32_t>(ctx->searchNLoops - 1)));
     FLAGCXCHECK(
-        flagcxCreateDestroyHomoComm(comm, ctx, bestSeqId, collCat, true));
+        flagcxCreateOrReplaceHomoComm(comm, ctx, bestSeqId, collCat, true));
     (*comm)->tunerInnerComm = (*comm)->homoCommMap[collCat];
     // Store the best commincator of collCat into homoBestCommMap
     (*comm)->homoBestCommMap[collCat] = (*comm)->homoCommMap[collCat];
@@ -599,4 +599,4 @@ flagcxTuner_t internalTuner = {"internal tuner",
                                flagcxTunerStartProfiling,
                                flagcxTunerStopProfiling,
                                flagcxTunerDestroy,
-                               flagcxCreateDestroyHomoComm};
+                               flagcxCreateOrReplaceHomoComm};
