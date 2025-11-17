@@ -103,7 +103,7 @@ struct flagcxTuner {
   flagcxResult_t (*destroy)(void *context);
 
   // Create/destroy communicator
-  flagcxResult_t (*createDestroyHomoComm)(
+  flagcxResult_t (*createOrReplaceHomoComm)(
       flagcxComm_t *comm, struct flagcxTunerContext *ctx, uint32_t seqId,
       const struct TunerCollCategory &collCat, bool createBest);
 };
