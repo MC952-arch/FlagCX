@@ -563,9 +563,10 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
 
   free(clusterInterRankData);
-  // free(uniqueIdData);
   free(vendorData);
-
+  if (!useTuner){
+    free(uniqueIdData);
+  }
   return flagcxSuccess;
 }
 
@@ -600,8 +601,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
           cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->host_comm));
     }
   }
-  // Free uniqueIdData
-  free(comm->uniqueIdData);
   // Destroy homo comms
   if (comm->tuner) {
     for (const auto &item : comm->homoCommMap) {
@@ -617,6 +616,8 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Destroy tuner
   if (comm->tuner) {
     comm->tuner->destroy(comm->tunerContext);
+    // Free uniqueIdData
+    free(comm->uniqueIdData);
   }
 
   return flagcxSuccess;
