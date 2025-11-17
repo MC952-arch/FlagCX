@@ -1,7 +1,7 @@
 #ifndef FLAGCX_TUNER_H_
 #define FLAGCX_TUNER_H_
 
-#include "tuner.h"
+#include "../adaptor/include/tuner.h"
 
 // A category of collective operation. the minimal unit for tuning.
 struct TunerCollCategory {

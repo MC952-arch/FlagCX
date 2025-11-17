@@ -4,6 +4,7 @@
 #include "param.h"
 #include "timer.h"
 #include "tuner/tuner_util.h"
+#include "utils.h"
 #include <cfloat>
 #include <iostream>
 #include <map>
@@ -343,34 +344,6 @@ static flagcxResult_t findBestComm(struct flagcxTunerContext *ctx,
   return flagcxSuccess;
 }
 
-// Function helps init single homo cluster.
-// return homoComm via homoComm paramter.
-static flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
-                                         flagcxUniqueId *uniqueIdData,
-                                         struct bootstrapState *state,
-                                         flagcxComm_t comm,
-                                         flagcxInnerComm_t *homoComm /*out*/) {
-  int rank = comm->rank;
-  int nranks = comm->nranks;
-  memset((void *)commId, 0, sizeof(*commId));
-  memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
-  if (comm->homo_rank == 0) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
-  }
-  if (comm->homo_rank == 0) {
-    memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
-  }
-  FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
-
-  memcpy((void *)commId, (void *)&uniqueIdData[comm->homo_root_rank],
-         sizeof(flagcxUniqueId));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-      homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
-  return flagcxSuccess;
-}
-
 flagcxResult_t flagcxCreateDestroyHomoComm(
     flagcxComm_t *comm, struct flagcxTunerContext *ctx, uint32_t seqId,
     const struct TunerCollCategory &collCat, bool createBest) {
@@ -413,12 +386,13 @@ flagcxResult_t flagcxCreateDestroyHomoComm(
 }
 
 // Communicator selection logic:
-// Always favor the communicator specified by environment variable if possible.
-// Otherwise,
-// for the first searchNLoops * activeCommCount collectives {collType, nBytes}
-// we will cycle through all the communicators use round-robin policy.
-// after that, we will select the best communicator based on profiling data
-// if no profiling data available, we will return flagcxInternalError for now.
+// 1) Honor environment override when ctx->envTagIdx is set.
+// 2) Otherwise, for the initial searchNLoops * activeCommCount invocations of
+//    each {collType, nBytes}, cycle through ctx->activeCommList via seqId
+//    (tuning phase).
+// 3) After the tuning window, rely on the best communicator recorded in
+//    ctx->collBestCommMap (populated via profiling). If no best entry exists,
+//    return flagcxInternalError.
 flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
                                       size_t nBytes, int numPipeOps,
                                       float **collCostTable, int regBuff,

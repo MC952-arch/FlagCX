@@ -13,6 +13,7 @@
 #include "param.h"
 #include "proxy.h"
 #include "reg_pool.h"
+#include "utils.h"
 
 #include "timer.h"
 #include <cassert>
@@ -250,34 +251,6 @@ const char *flagcxGetLastError(flagcxComm_t comm) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->getLastError(comm->homo_comm);
   }
   return "Not implemented.";
-}
-
-// Function helps init single homo cluster.
-// return homoComm via homoComm paramter.
-static flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
-                                         flagcxUniqueId *uniqueIdData,
-                                         struct bootstrapState *state,
-                                         flagcxComm_t comm,
-                                         flagcxInnerComm_t *homoComm /*out*/) {
-  int rank = comm->rank;
-  int nranks = comm->nranks;
-  memset((void *)commId, 0, sizeof(*commId));
-  memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
-  if (comm->homo_rank == 0) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
-  }
-  if (comm->homo_rank == 0) {
-    memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
-  }
-  FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
-
-  memcpy((void *)commId, (void *)&uniqueIdData[comm->homo_root_rank],
-         sizeof(flagcxUniqueId));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-      homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
-  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,

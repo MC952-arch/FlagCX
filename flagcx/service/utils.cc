@@ -6,6 +6,7 @@
 
 #include "utils.h"
 #include "adaptor.h"
+#include "bootstrap.h"
 #include "core.h"
 #include "flagcx_common.h"
 #include <stdlib.h>
@@ -268,8 +269,8 @@ void *flagcxMemoryStack::allocateSpilled(struct flagcxMemoryStack *me,
     }
   }
 
-unhunked : { // We need to allocate the object out-of-band and put an Unhunk
-             // proxy in-band
+unhunked: { // We need to allocate the object out-of-band and put an Unhunk
+            // proxy in-band
   // to keep track of it.
   uintptr_t uproxy =
       (me->topFrame.bumper + alignof(Unhunk) - 1) & -uintptr_t(alignof(Unhunk));
@@ -400,4 +401,30 @@ void *flagcxOpenLib(const char *path, int flags,
     return nullptr;
   }
   return handle;
+}
+
+flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
+                                  flagcxUniqueId *uniqueIdData,
+                                  struct bootstrapState *state,
+                                  flagcxComm_t comm,
+                                  flagcxInnerComm_t *homoComm /*out*/) {
+  int rank = comm->rank;
+  int nranks = comm->nranks;
+  memset((void *)commId, 0, sizeof(*commId));
+  memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
+  if (comm->homo_rank == 0) {
+    cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
+  }
+  if (comm->homo_rank == 0) {
+    memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
+  }
+  FLAGCXCHECK(
+      bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
+  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+
+  memcpy((void *)commId, (void *)&uniqueIdData[comm->homo_root_rank],
+         sizeof(flagcxUniqueId));
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
+      homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
+  return flagcxSuccess;
 }
