@@ -564,7 +564,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
   free(clusterInterRankData);
   free(vendorData);
-  if (!useTuner){
+  if (!useTuner) {
     free(uniqueIdData);
   }
   return flagcxSuccess;
