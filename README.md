@@ -3,8 +3,13 @@
 
 
 ## Latest News
+- **[2025/11]** Released [v0.7](https://github.com/FlagOpen/FlagCX/tree/release/v0.7):
+  - Added support for TsingMicro, including tsmicroAdaptor and tcclAdaptor integrations.
+  - Implemented naïve kernel-free non-reduce collective communication (SendRecv, AlltoAll, AlltoAllv, Broadcast, Gather, Scatter, AllGather) using device-buffer IPC/RDMA techniques.
+  - Enabled automatic tuning on NVIDIA, Metax, and Hygon platforms, achieving 1.02×–1.26× speedups for AllReduce, AllGather, ReduceScatter, and AlltoAll.
+  - Enhanced flagcxNetAdaptor with one-sided primitives (put, putSignal, waitValue) and added retransmission support for improved reliability.
 - **[2025/10]** Released [v0.6](https://github.com/FlagOpen/FlagCX/tree/release/v0.6):
-  - Supported device-buffer P2P communication to achieve intra-node SendRecv operations.
+  - Supported device-buffer IPC communication to achieve intra-node SendRecv operations.
   - Introduced Device-initiated, Host-launched device-side primitives, enabling kernel-based communication directly from the device.
   - Enhanced automatic tuning functionality, achieving up to 50% performance improvement on Metax platforms for the AllReduce operation.
 - **[2025/09]** Released [v0.5](https://github.com/FlagOpen/FlagCX/tree/release/v0.5):
