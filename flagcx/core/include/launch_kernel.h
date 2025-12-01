@@ -95,6 +95,7 @@ struct flagcxDeviceSemaphoreBufferPool {
   flagcxDeviceSemaphoreBufferPool();
   ~flagcxDeviceSemaphoreBufferPool();
   int getSlotId();
+  void initialize();
   void setEvent(int id, flagcxEvent_t event);
   int *getHostPtr(int id);
   void *getDevicePtr(int id);
@@ -102,9 +103,9 @@ struct flagcxDeviceSemaphoreBufferPool {
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
 #define FLAGCX_SIGNALS_PER_SEMAPHORE 3
-#define FLAGCX_SIGNAL_START 0
-#define FLAGCX_SIGNAL_END 1
-#define FLAGCX_SIGNAL_COUNTER 2
+#define FLAGCX_SIGNAL_START_OFFSET 0
+#define FLAGCX_SIGNAL_END_OFFSET 1
+#define FLAGCX_SIGNAL_COUNTER_OFFSET 2
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
@@ -113,6 +114,9 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
+    if (deviceSemaphoreBufferPool.capacity == -1) {
+      deviceSemaphoreBufferPool.initialize();
+    }
     slotId = deviceSemaphoreBufferPool.getSlotId();
     signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
     dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
@@ -129,26 +133,33 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     deviceSemaphoreBufferPool.setEvent(slotId, event);
     return event;
   }
+  // Since the device kernel handles the signaling,
+  // host-side signalStart/End are intentionally no-op and not needed
   void signalStart() override {}
   void signalEnd() override {}
   void *getSignals() override { return dSignals; }
   void subCounter(int value) override {
-    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER, value,
+    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
                        __ATOMIC_RELEASE);
-    __sync_synchronize();
   }
   void addCounter(int value) override {
-    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER, value,
+    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
                        __ATOMIC_RELEASE);
-    __sync_synchronize();
   }
-  int getCounter() override { return signals[FLAGCX_SIGNAL_COUNTER]; }
+  int getCounter() override {
+    return __atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
+                           __ATOMIC_ACQUIRE);
+  }
   int pollStart() override {
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_START, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(signals + FLAGCX_SIGNAL_START_OFFSET,
+                           __ATOMIC_ACQUIRE);
   }
   int pollEnd() override {
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_END, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(signals + FLAGCX_SIGNAL_END_OFFSET,
+                           __ATOMIC_ACQUIRE);
   }
+  // Since the device kernel handles the signaling,
+  // host-side wait is intentionally no-op and not needed
   void wait() override {}
 };
 
