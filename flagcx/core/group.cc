@@ -88,24 +88,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       *asyncJobsMain = gjob->asyncJobsPtr;
   // volatile bool *groupAbortFlag = gjob->abortFlagPtr;
 
-  // only for device func, to be deprecated
-  // host func: {eventRecorded, hlArgs, NULL};
-  // device func: {eventRecorded, hlArgs, dlArgs};
-  // std::queue<flagcxFuncArgs> funcQueue;
-  // std::queue<std::vector<void *>> argsQueue;
-  // When relaxed ordering is enabled, the H2D copy is issued on cpStream
-  // Otherwise, it shares commStream with the device function to guarantee
-  // execution order
-  int deviceFuncRelaxedOrdering = 0;
-  const char *dfroStr = std::getenv("FLAGCX_DEVICE_FUNC_RELAXED_ORDERING");
-  if (dfroStr) {
-    if (std::stoi(dfroStr) == 1) {
-      deviceFuncRelaxedOrdering = 1;
-    } else {
-      deviceFuncRelaxedOrdering = 0;
-    }
-  }
-
   // Each groupLaunch we create a semaphore to track the p2p ops
   // and a stream to launch host or device func
   std::shared_ptr<flagcxSemaphore> semaphore;
@@ -250,7 +232,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             op->args.chunkSize = flagcxNetChunkSize;
             op->args.chunkSteps = (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
             op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
-            op->args.deviceFuncRelaxedOrdering = deviceFuncRelaxedOrdering;
             op->stream = p2p->stream;
             if (op->connection->transport == TRANSPORT_P2P) {
               setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 1,
