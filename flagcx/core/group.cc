@@ -387,8 +387,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
   if (launchStream != nullptr) {
     if (deviceAsyncKernel) {
-      FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(launchStream, deviceAsyncKernel,
-                                                (void *)semaphore.getSignals()));
+      FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
+          launchStream, deviceAsyncKernel, (void *)semaphore.getSignals()));
     } else {
       FLAGCXCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
                                                 (void *)semaphore.get()));
