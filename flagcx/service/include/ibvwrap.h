@@ -128,7 +128,8 @@ flagcxWrapIbvPostSend(struct ibv_qp *qp, struct ibv_send_wr *wr,
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
   if (ret != IBV_SUCCESS) {
-    // Don't warn on ENOMEM (Cannot allocate memory) as it's expected when send queue is full
+    // Don't warn on ENOMEM (Cannot allocate memory) as it's expected when send
+    // queue is full
     if (ret != ENOMEM) {
       WARN("ibv_post_send() failed with error %s, Bad WR %p, First WR %p",
            strerror(ret), wr, *bad_wr);
