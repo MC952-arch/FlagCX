@@ -126,14 +126,7 @@ struct flagcxProxyArgs {
   struct flagcxProxyArgs **proxyAppendPtr;
 
   /*for launch*/
-  int deviceFuncRelaxedOrdering = 0;
   std::shared_ptr<flagcxSemaphore> semaphore;
-  // only for device func, to be deprecated
-  // volatile bool eventRecorded = false;
-  // volatile bool hlArgs = false;
-  // volatile bool hEventReady = false;
-  // bool *volatile dlArgs;
-  // bool *volatile dEventReady;
 
   // user buffer registration
   void *regHandle = nullptr;
