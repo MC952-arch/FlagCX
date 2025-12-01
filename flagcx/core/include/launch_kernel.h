@@ -49,7 +49,7 @@ struct flagcxSemaphore {
 struct flagcxHostSemaphore : public flagcxSemaphore {
   int start;   // started or not
   int end;     // ended or not
-  int counter; // total operations to wait for inside the group
+  int counter; // total operations to wait for inside the group;
   std::vector<flagcxEvent_t> events;
 
   flagcxHostSemaphore() : start(0), end(0), counter(0) {}
@@ -87,64 +87,67 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
 struct flagcxDeviceSemaphoreBufferPool {
   int capacity;          // total slots
   int slotId;            // slot index in the pool
-  int *signalsPool;      // Host-mapped memory region
+  int *signalsPool;      // Host-mapped memory region, [start, end, counter] *
+                         // capacity
   void *dSignalsPool;    // Device alias
   flagcxEvent_t *events; // store first event of each semaphore
 
   flagcxDeviceSemaphoreBufferPool();
   ~flagcxDeviceSemaphoreBufferPool();
   int getSlotId();
-  void addEvent(int id, flagcxEvent_t event);
+  void setEvent(int id, flagcxEvent_t event);
   int *getHostPtr(int id);
   void *getDevicePtr(int id);
 };
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
+#define FLAGCX_SIGNALS_PER_SEMAPHORE 3
+#define FLAGCX_SIGNAL_START 0
+#define FLAGCX_SIGNAL_END 1
+#define FLAGCX_SIGNAL_COUNTER 2
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
-  int id;       // slot index in the pool
+  int slotId;
   int *signals; // [start, end, counter]
   void *dSignals;
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
-    id = deviceSemaphoreBufferPool.getSlotId();
-    signals = deviceSemaphoreBufferPool.getHostPtr(id);
-    dSignals = deviceSemaphoreBufferPool.getDevicePtr(id);
-    deviceAdaptor->hostGetDevicePointer((void **)&dSignals, (void *)signals);
+    slotId = deviceSemaphoreBufferPool.getSlotId();
+    signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
+    dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
   }
   ~flagcxDeviceSemaphore() override {
-    if (!events.empty()) {
-      // the first event is managed by the buffer pool
-      deviceSemaphoreBufferPool.addEvent(id, events[0]);
-      for (size_t i = 1; i < events.size(); ++i) {
-        deviceAdaptor->eventDestroy(events[i]);
-      }
+    for (auto event : events) {
+      deviceAdaptor->eventDestroy(event);
     }
   }
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);
     auto &event = events.back();
     deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    deviceSemaphoreBufferPool.setEvent(slotId, event);
     return event;
   }
-  // In future, we may implement device-side signal/wait APIs here,
-  // for now, we implement them outside
   void signalStart() override {}
   void signalEnd() override {}
   void *getSignals() override { return dSignals; }
   void subCounter(int value) override {
-    __atomic_fetch_sub(signals + 2, value, __ATOMIC_RELEASE);
+    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER, value,
+                       __ATOMIC_RELEASE);
+    __sync_synchronize();
   }
   void addCounter(int value) override {
-    __atomic_fetch_add(signals + 2, value, __ATOMIC_RELEASE);
+    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER, value,
+                       __ATOMIC_RELEASE);
+    __sync_synchronize();
   }
-  int getCounter() override { return signals[2]; }
+  int getCounter() override { return signals[FLAGCX_SIGNAL_COUNTER]; }
   int pollStart() override {
-    return __atomic_load_n(signals, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(signals + FLAGCX_SIGNAL_START, __ATOMIC_ACQUIRE);
   }
   int pollEnd() override {
-    return __atomic_load_n(signals + 1, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(signals + FLAGCX_SIGNAL_END, __ATOMIC_ACQUIRE);
   }
   void wait() override {}
 };
