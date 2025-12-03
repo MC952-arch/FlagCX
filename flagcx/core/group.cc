@@ -97,6 +97,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     semaphore = std::make_shared<flagcxHostSemaphore>();
   }
   flagcxStream_t launchStream = nullptr;
+  flagcxEvent_t launchEvent = nullptr;
 
   if (groupCommPreconnectHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommPreconnectHeadMain;
@@ -192,6 +193,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (semaphore->getCounter() == 1) {
               launchStream = op->stream;
+              launchEvent = op->event;
             } else {
               FLAGCXCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
@@ -245,6 +247,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (semaphore->getCounter() == 1) {
               launchStream = op->stream;
+              launchEvent = op->event;
             } else {
               FLAGCXCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
@@ -289,6 +292,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                       deviceAdaptor->eventRecord(op->event, op->stream));
                   if (semaphore->getCounter() == 1) {
                     launchStream = op->stream;
+                    launchEvent = op->event;
                   } else {
                     FLAGCXCHECK(deviceAdaptor->streamWaitEvent(launchStream,
                                                                op->event));
@@ -328,7 +332,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     } while (comm != nullptr);
   }
 
-  if (launchStream != nullptr) {
+  if (launchStream != nullptr && launchEvent != nullptr) {
     if (deviceAsyncKernel) {
       FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
           launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));
@@ -336,6 +340,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       FLAGCXCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
                                                 (void *)semaphore.get()));
     }
+    // device semaphore need this event to signal completion
+    FLAGCXCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
   }
 
   while (!flagcxIntruQueueEmpty(asyncJobsMain)) {

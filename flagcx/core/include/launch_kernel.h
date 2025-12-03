@@ -111,6 +111,7 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
   int *signals; // [start, end, counter]
   void *dSignals;
+  flagcxEvent_t headEvent;
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
@@ -120,8 +121,11 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     slotId = deviceSemaphoreBufferPool.getSlotId();
     signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
     dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
+    headEvent = nullptr;
   }
   ~flagcxDeviceSemaphore() override {
+    // Clear event in the pool
+    deviceSemaphoreBufferPool.setEvent(slotId, nullptr);
     for (auto event : events) {
       deviceAdaptor->eventDestroy(event);
     }
@@ -130,7 +134,11 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     events.push_back(nullptr);
     auto &event = events.back();
     deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
-    deviceSemaphoreBufferPool.setEvent(slotId, event);
+    // Set the first event to the pool
+    if (events.size() == 1) {
+      headEvent = event;
+      deviceSemaphoreBufferPool.setEvent(slotId, event);
+    }
     return event;
   }
   // Since the device kernel handles the signaling,
