@@ -143,6 +143,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
   if (!args->semaphore->pollStart()) {
     return flagcxSuccess;
   }
+  if (args->done) {
+    return flagcxSuccess;
+  }
   if (args->transmitted < args->chunkSteps) {
     int stepMask = args->sendStepMask;
 
@@ -218,6 +221,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
   if (!args->semaphore->pollStart()) {
+    return flagcxSuccess;
+  }
+  if (args->done) {
     return flagcxSuccess;
   }
   if (args->copied < args->chunkSteps) {
