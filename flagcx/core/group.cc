@@ -170,7 +170,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             op->pattern = flagcxPatternSend;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
-            op->channelId = 0;
+            op->channelId = p2p->chunk;
             op->root = peer;
             op->connection = comm->channels[op->channelId]
                                  .peers[peer]
@@ -249,7 +249,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             op->pattern = flagcxPatternRecv;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
-            op->channelId = 0;
+            op->channelId = p2p->chunk;
             op->root = peer;
             op->connection = comm->channels[op->channelId]
                                  .peers[peer]
@@ -340,7 +340,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   op->nbytes = sendTasks[i]->bytes;
                   op->sendbuff = (uint8_t *)sendTasks[i]->buff;
                   op->recvbuff = (uint8_t *)recvTasks[j]->buff;
-                  op->channelId = 0;
+                  op->channelId = 0; // self-channel index is always 0
                   op->root = peer;
                   op->connection = comm->channels[op->channelId]
                                        .peers[peer]
