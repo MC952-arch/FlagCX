@@ -155,7 +155,8 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       args->subs[step].stepSize =
           std::min(args->chunkSize, size - args->totalCopySize);
       if (!args->regBufFlag) {
-        args->subs[step].stepBuff = resources->buffers[0] + (flagcxNetChunkSize * step);
+        args->subs[step].stepBuff =
+            resources->buffers[0] + (flagcxNetChunkSize * step);
         if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
           FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
               args->subs[step].stepBuff, (char *)data + args->totalCopySize,
@@ -236,7 +237,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
           std::min(args->chunkSize, size - args->totalPostSize);
       if (!args->regBufFlag) {
         args->subs[args->posted & stepMask].stepBuff =
-            resources->buffers[0] + flagcxNetChunkSize * (args->posted & stepMask);
+            resources->buffers[0] +
+            flagcxNetChunkSize * (args->posted & stepMask);
       } else {
         args->subs[args->posted & stepMask].stepBuff =
             (void *)((char *)data + flagcxNetChunkSize * args->posted);

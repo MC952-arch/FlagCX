@@ -231,7 +231,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  ->recv[0]
                                  .proxyConn.connection;
             op->args.chunkSize = flagcxNetChunkSize;
-            op->args.chunkSteps = (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
+            op->args.chunkSteps =
+                (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
             op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
             op->stream = p2p->stream;
             if (op->connection->transport == TRANSPORT_P2P) {
@@ -306,7 +307,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  ->send[0]
                                  .proxyConn.connection;
             op->args.chunkSize = flagcxNetChunkSize;
-            op->args.chunkSteps = (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
+            op->args.chunkSteps =
+                (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
             op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
             op->stream = p2p->stream;
             if (op->connection->transport == TRANSPORT_P2P) {
