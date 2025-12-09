@@ -264,30 +264,45 @@ flagcxResult_t kunlunAdaptorEventQuery(flagcxEvent_t event) {
 
 flagcxResult_t kunlunAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
                                                size_t *size) {
-  // to be implemented
-  return flagcxNotSupported;
+  flagcxCalloc(handle, 1);
+  if (size != NULL) {
+    *size = sizeof(cudaIpcMemHandle_t);
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t kunlunAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
                                             void *devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (handle == NULL || devPtr == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaIpcGetMemHandle(&handle->base, devPtr));
+  return flagcxSuccess;
 }
 
 flagcxResult_t kunlunAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
                                              void **devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (handle == NULL || devPtr == NULL || *devPtr != NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaIpcOpenMemHandle(devPtr, handle->base,
+                                cudaIpcMemLazyEnablePeerAccess));
+  return flagcxSuccess;
 }
 
 flagcxResult_t kunlunAdaptorIpcMemHandleClose(void *devPtr) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (devPtr == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaIpcCloseMemHandle(devPtr));
+  return flagcxSuccess;
 }
 
 flagcxResult_t kunlunAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
-  // to be implemented
-  return flagcxNotSupported;
+  if (handle != NULL) {
+    free(handle);
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t kunlunAdaptorLaunchHostFunc(flagcxStream_t stream,
