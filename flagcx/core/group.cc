@@ -236,7 +236,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               op->args.chunkSize = flagcxP2pChunkSize;
               op->args.chunkSteps =
                   (p2p->bytes + flagcxP2pChunkSize - 1) / (flagcxP2pChunkSize);
-              op->args.sendStepMask = FLAGCX_P2P_MAX_STEPS - 1;
+              op->args.sendStepMask = flagcxP2pChunks - 1;
               setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 1,
                              &op->args.p2pOpHash, &op->args.p2pSlotIdx);
               setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 0,
@@ -272,7 +272,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               op->args.chunkSize = flagcxNetChunkSize;
               op->args.chunkSteps =
                   (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
-              op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
+              op->args.sendStepMask = flagcxNetChunks - 1;
               flagcxConnector *peerConns[] = {
                   comm->channels[op->channelId].peers[peer]->recv};
               FLAGCXCHECK(flagcxNetRegisterBuffer(
@@ -315,7 +315,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               op->args.chunkSize = flagcxP2pChunkSize;
               op->args.chunkSteps =
                   (p2p->bytes + flagcxP2pChunkSize - 1) / (flagcxP2pChunkSize);
-              op->args.sendStepMask = FLAGCX_P2P_MAX_STEPS - 1;
+              op->args.sendStepMask = flagcxP2pChunks - 1;
               setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 0,
                              &op->args.p2pOpHash, &op->args.p2pSlotIdx);
               setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 1,
@@ -347,7 +347,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               op->args.chunkSize = flagcxNetChunkSize;
               op->args.chunkSteps =
                   (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
-              op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
+              op->args.sendStepMask = flagcxNetChunks - 1;
               flagcxConnector *peerConns[] = {
                   comm->channels[op->channelId].peers[peer]->send};
               FLAGCXCHECK(flagcxNetRegisterBuffer(

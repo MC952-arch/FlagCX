@@ -18,8 +18,9 @@ typedef char flagcxNetHandle_t[FLAGCX_NET_HANDLE_MAXSIZE];
 
 extern int64_t flagcxNetBufferSize;
 extern int64_t flagcxNetChunkSize;
-#define FLAGCX_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
+extern int64_t flagcxNetChunks;
 #define FLAGCX_NET_MAX_STEPS 16
+#define FLAGCX_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
 
 flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm);
 int flagcxNetVersion(struct flagcxHeteroComm *comm);

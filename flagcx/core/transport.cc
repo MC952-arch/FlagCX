@@ -66,7 +66,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < FLAGCX_NET_MAX_STEPS; s++) {
+          for (int s = 0; s < flagcxNetChunks; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
@@ -132,7 +132,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < FLAGCX_NET_MAX_STEPS; s++) {
+          for (int s = 0; s < flagcxNetChunks; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }

@@ -339,12 +339,14 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
   flagcxNetBufferSize = flagcxParamNetBufferSize();
   flagcxNetChunkSize = flagcxParamNetChunkSize();
+  flagcxNetChunks =
+      (flagcxNetBufferSize + flagcxNetChunkSize - 1) / flagcxNetChunkSize;
   flagcxP2pBufferSize = flagcxParamP2pBufferSize();
   flagcxP2pChunkSize = flagcxParamP2pChunkSize();
-  assert((flagcxNetBufferSize + flagcxNetChunkSize - 1) / flagcxNetChunkSize <=
-         FLAGCX_NET_MAX_STEPS);
-  assert((flagcxP2pBufferSize + flagcxP2pChunkSize - 1) / flagcxP2pChunkSize <=
-         FLAGCX_P2P_MAX_STEPS);
+  flagcxP2pChunks =
+      (flagcxP2pBufferSize + flagcxP2pChunkSize - 1) / flagcxP2pChunkSize;
+  assert(flagcxNetChunks <= FLAGCX_NET_MAX_STEPS);
+  assert(flagcxP2pChunks <= FLAGCX_P2P_MAX_STEPS);
 
   FLAGCXCHECK(flagcxNetInit(comm));
   INFO(FLAGCX_INIT, "Using network %s", comm->netAdaptor->name);
