@@ -253,10 +253,14 @@ fail:
   return flagcxInternalError;
 }
 
-FLAGCX_PARAM(P2PBufferSize, "P2P_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
-FLAGCX_PARAM(P2PChunkSize, "P2P_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
-FLAGCX_PARAM(NetBufferSize, "NET_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
-FLAGCX_PARAM(NetChunkSize, "NET_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
+FLAGCX_PARAM(P2pBufferSize, "P2P_BUFFER_SIZE",
+             64L * 1024 * 1024); // default value to 64MB
+FLAGCX_PARAM(P2pChunkSize, "P2P_CHUNK_SIZE",
+             4L * 1024 * 1024); // default value to 4MB
+FLAGCX_PARAM(NetBufferSize, "NET_BUFFER_SIZE",
+             64L * 1024 * 1024); // default value to 64MB
+FLAGCX_PARAM(NetChunkSize, "NET_CHUNK_SIZE",
+             4L * 1024 * 1024); // default value to 4MB
 
 static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
   struct flagcxCommInitRankAsyncJob *job =
@@ -335,10 +339,12 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
   flagcxNetBufferSize = flagcxParamNetBufferSize();
   flagcxNetChunkSize = flagcxParamNetChunkSize();
-  flagcxP2PBufferSize = flagcxParamP2PBufferSize();
-  flagcxP2PChunkSize = flagcxParamP2PChunkSize();
-  assert((flagcxNetBufferSize + flagcxNetChunkSize - 1) / flagcxNetChunkSize <= FLAGCX_NET_MAX_STEPS);
-  assert((flagcxP2PBufferSize + flagcxP2PChunkSize - 1) / flagcxP2PChunkSize <= FLAGCX_P2P_MAX_STEPS);
+  flagcxP2pBufferSize = flagcxParamP2pBufferSize();
+  flagcxP2pChunkSize = flagcxParamP2pChunkSize();
+  assert((flagcxNetBufferSize + flagcxNetChunkSize - 1) / flagcxNetChunkSize <=
+         FLAGCX_NET_MAX_STEPS);
+  assert((flagcxP2pBufferSize + flagcxP2pChunkSize - 1) / flagcxP2pChunkSize <=
+         FLAGCX_P2P_MAX_STEPS);
 
   FLAGCXCHECK(flagcxNetInit(comm));
   INFO(FLAGCX_INIT, "Using network %s", comm->netAdaptor->name);

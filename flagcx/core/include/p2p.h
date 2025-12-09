@@ -9,11 +9,11 @@
 #include "transport.h"
 #include <stddef.h>
 
-extern int64_t flagcxP2PBufferSize;
-extern int64_t flagcxP2PChunkSize;
+extern int64_t flagcxP2pBufferSize;
+extern int64_t flagcxP2pChunkSize;
 
-#define FLAGCX_P2P_MAX_STEPS  16
-#define FLAGCX_P2P_MAX_OPS                                                  \
+#define FLAGCX_P2P_MAX_STEPS 16
+#define FLAGCX_P2P_MAX_OPS                                                     \
   (FLAGCX_P2P_MAX_STEPS * 2) // Maximum number of concurrent P2P operation pairs
 #define FLAGCX_P2P_IPC_HANDLE_SIZE 64
 
