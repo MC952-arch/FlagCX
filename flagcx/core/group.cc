@@ -182,6 +182,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
                 if (launchStream == nullptr) {
                   launchStream = op->stream;
+                  launchEvent = op->event;
                 } else {
                   FLAGCXCHECK(
                       deviceAdaptor->streamWaitEvent(launchStream, op->event));
@@ -282,6 +283,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
+              launchEvent = op->event;
             } else {
               FLAGCXCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
