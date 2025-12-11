@@ -149,9 +149,11 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
   }
   if (args->transmitted < args->chunkSteps) {
     int stepMask = args->sendStepMask;
-
     if (args->waitCopy < args->chunkSteps &&
         args->waitCopy - args->transmitted < flagcxNetChunks) {
+      TRACE(FLAGCX_PROXY,
+            "ProxySend BP1 waitCopy %d, copied %d, posted %d, transmitted %d",
+            args->waitCopy, args->copied, args->posted, args->transmitted);
       int step = args->waitCopy & stepMask;
       args->subs[step].stepSize =
           std::min(args->chunkSize, size - args->totalCopySize);
@@ -180,6 +182,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
     }
 
     if (args->copied < args->waitCopy) {
+      TRACE(FLAGCX_PROXY,
+            "ProxySend BP2 waitCopy %d, copied %d, posted %d, transmitted %d",
+            args->waitCopy, args->copied, args->posted, args->transmitted);
       int step = args->copied & stepMask;
       if (!args->regBufFlag) {
         if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
@@ -193,9 +198,14 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
 
     if (args->posted < args->copied) {
       void *req = NULL;
+      int tag = args->posted % flagcxNetChunks;
+      TRACE(FLAGCX_PROXY,
+            "ProxySend BP3 waitCopy %d, copied %d, posted %d, transmitted %d, "
+            "tag %d",
+            args->waitCopy, args->copied, args->posted, args->transmitted, tag);
       resources->netAdaptor->isend(
           resources->netSendComm, args->subs[args->posted & stepMask].stepBuff,
-          args->subs[args->posted & stepMask].stepSize, 0,
+          args->subs[args->posted & stepMask].stepSize, tag,
           args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
           &req);
       if (req) {
@@ -204,6 +214,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
     }
 
     if (args->transmitted < args->posted) {
+      TRACE(FLAGCX_PROXY,
+            "ProxySend BP4 waitCopy %d, copied %d, posted %d, transmitted %d",
+            args->waitCopy, args->copied, args->posted, args->transmitted);
       void *req = args->subs[args->transmitted & stepMask].requests[0];
       int done = 0, sizes;
       resources->netAdaptor->test(req, &done, &sizes);
@@ -212,6 +225,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       }
     }
   } else {
+    TRACE(FLAGCX_PROXY,
+          "ProxySend BP5 waitCopy %d, copied %d, posted %d, transmitted %d",
+          args->waitCopy, args->copied, args->posted, args->transmitted);
     if (args->done != 1) {
       args->semaphore->subCounter(1);
       args->done = 1;
@@ -228,108 +244,196 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
   if (args->done) {
     return flagcxSuccess;
   }
-  if (args->copied < args->chunkSteps) {
-    int stepMask = args->sendStepMask;
-    if (args->posted < args->chunkSteps &&
-        args->posted - args->copied < flagcxNetChunks) {
-      int tags[8] = {0};
+  int res = args->chunkSteps % flagcxNetChunks;
+  int niters = args->chunkSteps / flagcxNetChunks;
+  if (res > 0)
+    niters++;
+  TRACE(FLAGCX_PROXY,
+        "ProxyRecv BP0 bytes %d, buffSize %d, chunkSize %d, chunkSteps %d, "
+        "totalChunks %d, res %d, niters %d",
+        size, flagcxNetBufferSize, flagcxNetChunkSize, args->chunkSteps,
+        flagcxNetChunks, res, niters);
+  if (args->copied < niters) {
+    if (args->posted < niters && (args->posted - args->copied) < 1) {
+      int nreqs = (args->posted < niters - 1)
+                      ? (int)flagcxNetChunks
+                      : ((res > 0) ? res : (int)flagcxNetChunks);
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP1 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d, nreqs %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied, nreqs);
       void *req = NULL;
-      args->subs[args->posted & stepMask].stepSize =
-          std::min(args->chunkSize, size - args->totalPostSize);
-      if (!args->regBufFlag) {
-        args->subs[args->posted & stepMask].stepBuff =
-            resources->buffers[0] +
-            flagcxNetChunkSize * (args->posted & stepMask);
-      } else {
-        args->subs[args->posted & stepMask].stepBuff =
-            (void *)((char *)data + flagcxNetChunkSize * args->posted);
+      int tags[FLAGCX_NET_MAX_STEPS] = {0};
+      void *batchData[FLAGCX_NET_MAX_STEPS] = {NULL};
+      void *batchMhandles[FLAGCX_NET_MAX_STEPS] = {NULL};
+      size_t batchSize[FLAGCX_NET_MAX_STEPS] = {0};
+      int newPostSize = 0;
+      for (int i = 0; i < nreqs; ++i) {
+        tags[i] = i;
+        if (!args->regBufFlag) {
+          args->subs[i].stepBuff =
+              resources->buffers[0] + flagcxNetChunkSize * i;
+        } else {
+          args->subs[i].stepBuff =
+              (void *)((char *)data + flagcxNetBufferSize * args->posted +
+                       flagcxNetChunkSize * i);
+        }
+        batchData[i] = args->subs[i].stepBuff;
+        args->subs[i].stepSize = flagcxNetChunkSize;
+        if (args->posted == niters - 1 && i == nreqs - 1) {
+          args->subs[i].stepSize =
+              (size <= flagcxNetChunkSize)
+                  ? size
+                  : size - args->totalPostSize - newPostSize;
+        }
+        batchSize[i] = (size_t)args->subs[i].stepSize;
+        batchMhandles[i] =
+            args->regBufFlag ? args->regHandle : resources->mhandles[0];
+        newPostSize += batchSize[i];
       }
-      resources->netAdaptor->irecv(
-          resources->netRecvComm, 1,
-          &args->subs[args->posted & stepMask].stepBuff,
-          (size_t *)&args->subs[args->posted & stepMask].stepSize, tags,
-          args->regBufFlag ? &args->regHandle : resources->mhandles, NULL,
-          &req);
+      resources->netAdaptor->irecv(resources->netRecvComm, nreqs, batchData,
+                                   batchSize, tags, batchMhandles, NULL, &req);
       if (req) {
-        args->subs[args->posted & stepMask].requests[0] = req;
-        args->totalPostSize += args->subs[args->posted++ & stepMask].stepSize;
+        args->subs[0].requests[0] = req;
+        args->totalPostSize += newPostSize;
+        args->posted += 1;
       }
     }
 
     if (args->transmitted < args->posted) {
-      void *req = args->subs[args->transmitted & stepMask].requests[0];
-      int done = 0, sizes;
-      resources->netAdaptor->test(req, &done, &sizes);
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP2 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied);
+      void *req = args->subs[0].requests[0];
+      int done = 0;
+      int sizes[FLAGCX_NET_MAX_STEPS] = {0};
+      resources->netAdaptor->test(req, &done, sizes);
       if (done) {
-        args->transmitted++;
+        // for (int i = 0; i < FLAGCX_NET_MAX_STEPS; ++i) nreqs += sizes[i];
+        args->transmitted += 1;
       }
     }
 
     if (args->postFlush < args->transmitted) {
+      int nreqs = (args->postFlush < niters - 1)
+                      ? (int)flagcxNetChunks
+                      : ((res > 0) ? res : (int)flagcxNetChunks);
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP3 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d, nreqs %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied, nreqs);
       if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
         void *req = NULL;
-        resources->netAdaptor->iflush(
-            resources->netRecvComm, 1,
-            &args->subs[args->postFlush & stepMask].stepBuff,
-            &args->subs[args->postFlush & stepMask].stepSize,
-            args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
+        void *batchData[FLAGCX_NET_MAX_STEPS] = {NULL};
+        void *batchMhandles[FLAGCX_NET_MAX_STEPS] = {NULL};
+        int batchSize[FLAGCX_NET_MAX_STEPS] = {0};
+        for (int i = 0; i < nreqs; ++i) {
+          batchData[i] = args->subs[i].stepBuff;
+          batchSize[i] = args->subs[i].stepSize;
+          batchMhandles[i] =
+              args->regBufFlag ? args->regHandle : resources->mhandles[0];
+        }
+        resources->netAdaptor->iflush(resources->netRecvComm, nreqs, batchData,
+                                      batchSize, batchMhandles, &req);
         if (req) {
-          args->subs[args->postFlush++ & stepMask].requests[0] = req;
+          args->subs[0].requests[0] = req;
+          args->postFlush += 1;
         }
       } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
-        args->subs[args->postFlush & stepMask].requests[0] = (void *)0x1;
-        args->postFlush++;
+        args->subs[0].requests[0] = (void *)0x1;
+        args->postFlush += 1;
       }
     }
 
     if (args->flushed < args->postFlush) {
-      void *req = args->subs[args->flushed & stepMask].requests[0];
-      int done = 0, sizes;
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP4 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied);
+      void *req = args->subs[0].requests[0];
+      int done = 0;
+      int sizes[FLAGCX_NET_MAX_STEPS] = {0};
       if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET) &&
           req == (void *)0x1) {
         done = 1;
-        sizes = 0;
       } else {
-        resources->netAdaptor->test(req, &done, &sizes);
+        resources->netAdaptor->test(req, &done, sizes);
       }
       if (done) {
-        args->flushed++;
+        // for (int i = 0; i < FLAGCX_NET_MAX_STEPS; ++i) nreqs += sizes[i];
+        args->flushed += 1;
       }
     }
 
     if (args->waitCopy < args->flushed) {
-      int step = args->waitCopy & stepMask;
-      if (!args->regBufFlag) {
-        if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              (char *)data + args->totalCopySize, args->subs[step].stepBuff,
-              args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
-              resources->cpStream, args->subs[step].copyArgs));
-        } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              (char *)data + args->totalCopySize, args->subs[step].stepBuff,
-              args->subs[step].stepSize, flagcxMemcpyHostToDevice,
-              resources->cpStream, args->subs[step].copyArgs));
+      int nreqs = (args->waitCopy < niters - 1)
+                      ? (int)flagcxNetChunks
+                      : ((res > 0) ? res : (int)flagcxNetChunks);
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP5 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d, nreqs %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied, nreqs);
+      for (int i = 0; i < nreqs; ++i) {
+        if (!args->regBufFlag) {
+          if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+            FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                (char *)data + flagcxNetBufferSize * args->waitCopy +
+                    flagcxNetChunkSize * i,
+                args->subs[i].stepBuff, args->subs[i].stepSize,
+                flagcxMemcpyDeviceToDevice, resources->cpStream,
+                args->subs[i].copyArgs));
+          } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+            FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                (char *)data + flagcxNetBufferSize * args->waitCopy +
+                    flagcxNetChunkSize * i,
+                args->subs[i].stepBuff, args->subs[i].stepSize,
+                flagcxMemcpyHostToDevice, resources->cpStream,
+                args->subs[i].copyArgs));
+          }
+          FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[i],
+                                                 resources->cpStream));
         }
-        FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
-                                               resources->cpStream));
       }
-      args->totalCopySize += args->subs[step].stepSize;
+      // args->totalCopySize += args->subs[step].stepSize;
       args->waitCopy++;
     }
 
     if (args->copied < args->waitCopy) {
-      int step = args->copied & stepMask;
-      if (!args->regBufFlag) {
-        if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
-            flagcxSuccess) {
-          args->copied++;
+      int nreqs = (args->copied < niters - 1)
+                      ? (int)flagcxNetChunks
+                      : ((res > 0) ? res : (int)flagcxNetChunks);
+      int npass = 0;
+      TRACE(FLAGCX_PROXY,
+            "ProxyRecv BP6 posted %d, transmitted %d, postFlush %d, flushed "
+            "%d, waitCopy %d, copied %d, nreqs %d",
+            args->posted, args->transmitted, args->postFlush, args->flushed,
+            args->waitCopy, args->copied, nreqs);
+      for (int i = 0; i < nreqs; ++i) {
+        if (!args->regBufFlag) {
+          if (deviceAdaptor->eventQuery(resources->cpEvents[i]) ==
+              flagcxSuccess) {
+            npass++;
+          }
+        } else {
+          npass++;
         }
-      } else {
+      }
+      if (npass == nreqs) {
         args->copied++;
       }
     }
   } else {
+    TRACE(FLAGCX_PROXY,
+          "ProxyRecv BP7 posted %d, transmitted %d, postFlush %d, flushed %d, "
+          "waitCopy %d, copied %d",
+          args->posted, args->transmitted, args->postFlush, args->flushed,
+          args->waitCopy, args->copied);
     if (args->done != 1) {
       args->semaphore->subCounter(1);
       args->done = 1;
