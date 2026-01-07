@@ -1699,10 +1699,6 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
     } else if (commOp_ == flagcxCommOpScatter && eachNicPerRank_) {
       // setup heteroFuncs
       std::vector<flagcxC2cHeteroFunc> heteroFuncStep;
-      for (size_t s = 0; s < nPipePreSteps_ + nSeqInterSteps_ + nPipePostSteps_;
-           ++s) {
-        heteroFuncStep.emplace_back();
-      }
       size_t clusterOffset = 0;
       size_t dataOffset = 0;
       size_t rankCount = totalCount_ / comm_->nranks;
@@ -1715,6 +1711,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                                 sendDataOffset, rankCount, 0);
             heteroFuncStep.push_back(std::move(heteroFunc));
           }
+          clusterOffset += comm_->cluster_sizes[c];
           dataOffset += rankCount * comm_->cluster_sizes[c];
         }
       } else {
