@@ -2089,6 +2089,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
             preHomoFuncSteps_[step].emplace_back(
                 comm_->globalrank2homorank[rootRank_], 2, 1, 0,
                 clusterOffset * sendCount_, sendCount_, 2, postHomoFuncCommOp);
+            step++;
           }
         }
         clusterOffset += comm_->cluster_sizes[c];
@@ -2349,7 +2350,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
        (isRootCluster_ || !eachNicPerRank_)) ||
       (commOp_ == flagcxCommOpGather &&
        ((eachNicPerRank_ && isRootCluster_) ||
-        (!eachNicPerRank_ && rank_ == rootRank_)))) {
+        (!eachNicPerRank_ && rank_ != rootRank_)))) {
     deviceAdaptor->deviceMalloc(&scratchBuffer_,
                                 totalCount_ * getFlagcxDataTypeSize(datatype),
                                 flagcxMemDevice, stream);
