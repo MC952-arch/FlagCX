@@ -4,6 +4,12 @@
 
 #include "runner.h"
 
+static bool hostRunnerGroupStarted = false;
+static std::vector<void *> sendHostBuffers;
+static std::vector<void *> recvHostBuffers;
+static std::vector<void *> recvDeviceBuffers;
+static std::vector<size_t> recvBufferSizes;
+
 flagcxResult_t hostRunnerReduce(const void *sendbuff, void *recvbuff,
                                 size_t count, flagcxDataType_t datatype,
                                 flagcxRedOp_t op, int root, flagcxComm_t comm,
@@ -537,10 +543,13 @@ flagcxResult_t hostRunnerSend(const void *sendbuff, size_t count,
       buff_in, count, datatype, peer, comm->host_comm, NULL));
   timers[TIMER_COLL_COMM] = clockNano() - timers[TIMER_COLL_COMM];
 
-  // buff_in will be freed in gloo adaptor send function?
-  // TODO: check if buff_in should be freed here
+  // step 4: free host buffer
   timers[TIMER_COLL_FREE] = clockNano();
-  FLAGCXCHECK(deviceAdaptor->deviceFree(buff_in, flagcxMemHost, NULL));
+  if (!hostRunnerGroupStarted) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(buff_in, flagcxMemHost, NULL));
+  } else {
+    sendHostBuffers.push_back(buff_in);
+  }
   timers[TIMER_COLL_FREE] = clockNano() - timers[TIMER_COLL_FREE];
 
   timers[TIMER_COLL_TOTAL] = clockNano() - timers[TIMER_COLL_TOTAL];
@@ -576,13 +585,21 @@ flagcxResult_t hostRunnerRecv(void *recvbuff, size_t count,
 
   // step 3: memcpy h2d
   timers[TIMER_COLL_MEM_H2D] = clockNano();
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      recvbuff, buff_out, size, flagcxMemcpyHostToDevice, NULL, NULL));
+  if (!hostRunnerGroupStarted) {
+    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+        recvbuff, buff_out, size, flagcxMemcpyHostToDevice, NULL, NULL));
+  } else {
+    recvHostBuffers.push_back(buff_out);
+    recvDeviceBuffers.push_back(recvbuff);
+    recvBufferSizes.push_back(size);
+  }
   timers[TIMER_COLL_MEM_H2D] = clockNano() - timers[TIMER_COLL_MEM_H2D];
 
   // step 4: free host buffer
   timers[TIMER_COLL_FREE] = clockNano();
-  FLAGCXCHECK(deviceAdaptor->deviceFree(buff_out, flagcxMemHost, NULL));
+  if (!hostRunnerGroupStarted) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(buff_out, flagcxMemHost, NULL));
+  }
   timers[TIMER_COLL_FREE] = clockNano() - timers[TIMER_COLL_FREE];
 
   timers[TIMER_COLL_TOTAL] = clockNano() - timers[TIMER_COLL_TOTAL];
@@ -599,11 +616,30 @@ flagcxResult_t hostRunnerRecv(void *recvbuff, size_t count,
 
 flagcxResult_t hostRunnerGroupStart() {
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupStart());
+  hostRunnerGroupStarted = true;
   return flagcxSuccess;
 }
 
 flagcxResult_t hostRunnerGroupEnd() {
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->groupEnd());
+  if (hostRunnerGroupStarted) {
+    for (size_t i = 0; i < recvHostBuffers.size(); ++i) {
+      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+          recvDeviceBuffers[i], recvHostBuffers[i], recvBufferSizes[i],
+          flagcxMemcpyHostToDevice, NULL, NULL));
+    }
+    for (size_t i = 0; i < recvHostBuffers.size(); ++i) {
+      FLAGCXCHECK(
+          deviceAdaptor->deviceFree(sendHostBuffers[i], flagcxMemHost, NULL));
+      FLAGCXCHECK(
+          deviceAdaptor->deviceFree(recvHostBuffers[i], flagcxMemHost, NULL));
+    }
+    sendHostBuffers.clear();
+    recvHostBuffers.clear();
+    recvDeviceBuffers.clear();
+    recvBufferSizes.clear();
+    hostRunnerGroupStarted = false;
+  }
   return flagcxSuccess;
 }
 
