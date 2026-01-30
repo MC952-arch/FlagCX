@@ -38,15 +38,12 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                           void **buff, size_t /*size*/,
                                           int isRecv) {
   ncclResult_t res;
-  printf("111111 get staged buffer\n");
   if (isRecv && comm->recvStagedBuff == NULL) {
-    printf("222222 get staged buffer\n");
     FLAGCXCHECK(flagcxCalloc(&comm->recvStagedBuff, 1));
     res = ncclMemAlloc(&comm->recvStagedBuff->buff, NCCL_CUSTOM_ALLREDUCE_MAX_SIZE);
     if (res != ncclSuccess) {
       return (flagcxResult_t)res;
     }
-    printf("444444 get staged buffer\n");
     res = ncclCommWindowRegister(comm->base, comm->recvStagedBuff->buff,
                                  NCCL_CUSTOM_ALLREDUCE_MAX_SIZE,
                                  &comm->recvStagedBuff->win,
@@ -55,13 +52,11 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
       return (flagcxResult_t)res;
     }
   } else if (!isRecv && comm->sendStagedBuff == NULL) {
-    printf("333333 get staged buffer\n");
     FLAGCXCHECK(flagcxCalloc(&comm->sendStagedBuff, 1));
     res = ncclMemAlloc(&comm->sendStagedBuff->buff, NCCL_CUSTOM_ALLREDUCE_MAX_SIZE);
     if (res != ncclSuccess) {
       return (flagcxResult_t)res;
     }
-    printf("555555 get staged buffer\n");
     res = ncclCommWindowRegister(comm->base, comm->sendStagedBuff->buff,
                                  NCCL_CUSTOM_ALLREDUCE_MAX_SIZE,
                                  &comm->sendStagedBuff->win,
