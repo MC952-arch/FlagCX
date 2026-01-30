@@ -283,7 +283,7 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     duncclAdaptorCommUserRank, duncclAdaptorCommGetAsyncError,
     duncclAdaptorMemAlloc, duncclAdaptorMemFree, duncclAdaptorCommRegister,
     duncclAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     duncclAdaptorReduce, duncclAdaptorGather, duncclAdaptorScatter,

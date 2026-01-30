@@ -326,7 +326,7 @@ struct flagcxCCLAdaptor glooAdaptor = {
     glooAdaptorCommCount, glooAdaptorCommCuDevice, glooAdaptorCommUserRank,
     glooAdaptorCommGetAsyncError, glooAdaptorMemAlloc, glooAdaptorMemFree,
     glooAdaptorCommRegister, glooAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     glooAdaptorReduce, glooAdaptorGather, glooAdaptorScatter,

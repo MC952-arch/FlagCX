@@ -274,7 +274,7 @@ struct flagcxCCLAdaptor musa_mcclAdaptor = {
     mcclAdaptorCommCount, mcclAdaptorCommMuDevice, mcclAdaptorCommUserRank,
     mcclAdaptorCommGetAsyncError, mcclAdaptorMemAlloc, mcclAdaptorMemFree,
     mcclAdaptorCommRegister, mcclAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     mcclAdaptorReduce, mcclAdaptorGather, mcclAdaptorScatter,

@@ -94,7 +94,7 @@ struct flagcxCCLAdaptor {
   flagcxResult_t (*commRegister)(const flagcxInnerComm_t comm, void *buff,
                                  size_t size, void **handle);
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
-  // Window operations (symmetric)
+  // Symmetric operations
   flagcxResult_t (*commWindowRegister)(const flagcxInnerComm_t comm, void *buff,
                                         size_t size, void **win, int flags);
   flagcxResult_t (*commWindowDeregister)(const flagcxInnerComm_t comm, void *win);

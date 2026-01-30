@@ -364,7 +364,7 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     tcclAdaptorCommCount, tcclAdaptorCommCuDevice, tcclAdaptorCommUserRank,
     tcclAdaptorCommGetAsyncError, tcclAdaptorMemAlloc, tcclAdaptorMemFree,
     tcclAdaptorCommRegister, tcclAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     tcclAdaptorReduce, tcclAdaptorGather, tcclAdaptorScatter,

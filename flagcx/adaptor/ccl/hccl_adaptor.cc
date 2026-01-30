@@ -328,7 +328,7 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorCommCount, hcclAdaptorCommCuDevice, hcclAdaptorCommUserRank,
     hcclAdaptorCommGetAsyncError, hcclAdaptorMemAlloc, hcclAdaptorMemFree,
     hcclAdaptorCommRegister, hcclAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     hcclAdaptorReduce, hcclAdaptorGather, hcclAdaptorScatter,

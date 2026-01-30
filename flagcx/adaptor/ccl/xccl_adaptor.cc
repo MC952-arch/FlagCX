@@ -310,7 +310,7 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     xcclAdaptorCommCount, xcclAdaptorCommCuDevice, xcclAdaptorCommUserRank,
     xcclAdaptorCommGetAsyncError, xcclAdaptorMemAlloc, xcclAdaptorMemFree,
     xcclAdaptorCommRegister, xcclAdaptorCommDeregister,
-    // Window operations (symmetric)
+    // Symmetric operations
     NULL, NULL, NULL,
     // Communication functions
     xcclAdaptorReduce, xcclAdaptorGather, xcclAdaptorScatter,

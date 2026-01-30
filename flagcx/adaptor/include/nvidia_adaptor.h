@@ -15,14 +15,13 @@ struct stagedBuffer {
   void *buff;
   ncclWindow_t win;
 };
-typedef struct stagedBuffer stagedBuffer_t;
+typedef struct stagedBuffer *stagedBuffer_t;
 
 struct flagcxInnerComm {
   ncclComm_t base;
-  ncclDevComm devBase;
-  stagedBuffer_t *sendStagedBuff;
-  stagedBuffer_t *recvStagedBuff;
-  bool devBaseCreated;
+  ncclDevComm *devBase;
+  stagedBuffer_t sendStagedBuff;
+  stagedBuffer_t recvStagedBuff;
 };
 
 struct flagcxStream {
