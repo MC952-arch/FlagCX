@@ -234,6 +234,8 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     bootstrapAdaptorCommUserRank, bootstrapAdaptorCommGetAsyncError,
     bootstrapAdaptorMemAlloc, bootstrapAdaptorMemFree,
     bootstrapAdaptorCommRegister, bootstrapAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     bootstrapAdaptorReduce, bootstrapAdaptorGather, bootstrapAdaptorScatter,
     bootstrapAdaptorBroadcast, bootstrapAdaptorAllReduce,

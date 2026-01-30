@@ -94,6 +94,12 @@ struct flagcxCCLAdaptor {
   flagcxResult_t (*commRegister)(const flagcxInnerComm_t comm, void *buff,
                                  size_t size, void **handle);
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
+  // Window operations (symmetric)
+  flagcxResult_t (*commWindowRegister)(const flagcxInnerComm_t comm, void *buff,
+                                        size_t size, void **win, int flags);
+  flagcxResult_t (*commWindowDeregister)(const flagcxInnerComm_t comm, void *win);
+  flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
+                                     size_t size, int isRecv);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,

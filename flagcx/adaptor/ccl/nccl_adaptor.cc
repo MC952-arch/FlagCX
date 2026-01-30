@@ -1,7 +1,86 @@
 #include "nvidia_adaptor.h"
+#include "nccl_device.h"
 
 #ifdef USE_NVIDIA_ADAPTOR
 
+#define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
+#define NCCL_CUSTOM_ALLREDUCE_MAX_SIZE (8*1024*1024)
+
+static bool loaded = false;
+typedef void (*ncclCollFunc_t)(ncclWindow_t send_win, ncclWindow_t recv_win,
+                               void *recvbuffer, size_t count, flagcxDataType_t datatype,
+                               int nRanks, ncclDevComm &devComm,
+                               cudaStream_t cudaStream);
+static ncclCollFunc_t localAllReduce = NULL;
+static ncclCollFunc_t interleavedAllReduce = NULL;
+
+ncclResult_t loadCollFuncSymbol(const char *path, const char *name,
+                                ncclCollFunc_t *fn) {
+  void *handle = flagcxOpenLib(
+      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+      });
+
+  if (!handle)
+    return ncclSystemError;
+
+  void *sym = dlsym(handle, name);
+  if (!sym) {
+    fprintf(stderr, "dlsym failed: %s\n", dlerror());
+    return ncclSystemError;
+  }
+
+  *fn = (ncclCollFunc_t)sym;
+  return ncclSuccess;
+}
+
+flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t /*size*/,
+                                          int isRecv) {
+  ncclResult_t res;
+  printf("111111 get staged buffer\n");
+  if (isRecv && comm->recvStagedBuff == NULL) {
+    printf("222222 get staged buffer\n");
+    FLAGCXCHECK(flagcxCalloc(&comm->recvStagedBuff, 1));
+    res = ncclMemAlloc(&comm->recvStagedBuff->buff, NCCL_CUSTOM_ALLREDUCE_MAX_SIZE);
+    if (res != ncclSuccess) {
+      return (flagcxResult_t)res;
+    }
+    printf("444444 get staged buffer\n");
+    res = ncclCommWindowRegister(comm->base, comm->recvStagedBuff->buff,
+                                 NCCL_CUSTOM_ALLREDUCE_MAX_SIZE,
+                                 &comm->recvStagedBuff->win,
+                                 NCCL_WIN_COLL_SYMMETRIC);
+    if (res != ncclSuccess) {
+      return (flagcxResult_t)res;
+    }
+  } else if (!isRecv && comm->sendStagedBuff == NULL) {
+    printf("333333 get staged buffer\n");
+    FLAGCXCHECK(flagcxCalloc(&comm->sendStagedBuff, 1));
+    res = ncclMemAlloc(&comm->sendStagedBuff->buff, NCCL_CUSTOM_ALLREDUCE_MAX_SIZE);
+    if (res != ncclSuccess) {
+      return (flagcxResult_t)res;
+    }
+    printf("555555 get staged buffer\n");
+    res = ncclCommWindowRegister(comm->base, comm->sendStagedBuff->buff,
+                                 NCCL_CUSTOM_ALLREDUCE_MAX_SIZE,
+                                 &comm->sendStagedBuff->win,
+                                 NCCL_WIN_COLL_SYMMETRIC);
+    if (res != ncclSuccess) {
+      return (flagcxResult_t)res;
+    }
+  }
+  
+  if (buff) {
+    if (isRecv) {
+      *buff = comm->recvStagedBuff->buff;
+    } else {
+      *buff = comm->sendStagedBuff->buff;
+    }
+  }
+
+  return flagcxSuccess;
+}
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -24,11 +103,30 @@ const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
 flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
+  ncclResult_t res;
+  
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
-  return (flagcxResult_t)ncclCommInitRank(&(*comm)->base, nranks,
-                                          *(ncclUniqueId *)commId, rank);
+  res = ncclCommInitRank(&(*comm)->base, nranks, *(ncclUniqueId *)commId, rank);
+  if (res != ncclSuccess) {
+    return (flagcxResult_t)res;
+  }
+
+  if (flagcxGetEnv("FLAGCX_CUSTOM_ALLREDUCE_PATH") != NULL) {
+    ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+    reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+    reqs.lsaMultimem = true;
+    res = ncclDevCommCreate((*comm)->base, &reqs, &(*comm)->devBase);
+    if (res != ncclSuccess) {
+      return (flagcxResult_t)res;
+    }
+    (*comm)->devBaseCreated = true;
+    FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 1));
+    FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 0));
+  }
+
+  return flagcxSuccess;
 }
 
 flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
@@ -36,6 +134,23 @@ flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  // Cleanup staged buffers if they were allocated
+  if (comm->sendStagedBuff != NULL) {
+    ncclCommWindowDeregister(comm->base, comm->sendStagedBuff->win);
+    ncclMemFree(comm->sendStagedBuff->buff);
+    free(comm->sendStagedBuff);
+    comm->sendStagedBuff = NULL;
+  }
+  if (comm->recvStagedBuff != NULL) {
+    ncclCommWindowDeregister(comm->base, comm->recvStagedBuff->win);
+    ncclMemFree(comm->recvStagedBuff->buff);
+    free(comm->recvStagedBuff);
+    comm->recvStagedBuff = NULL;
+  }
+  if (comm->devBaseCreated) {
+    ncclDevCommDestroy(comm->base, &comm->devBase);
+    comm->devBaseCreated = false;
+  }
   return (flagcxResult_t)ncclCommDestroy(comm->base);
 }
 
@@ -88,6 +203,20 @@ flagcxResult_t ncclAdaptorCommDeregister(const flagcxInnerComm_t comm,
                                          void *handle) {
   return (flagcxResult_t)ncclCommDeregister(comm->base, handle);
 }
+
+flagcxResult_t ncclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return (flagcxResult_t)ncclCommWindowRegister(comm->base, buff, size,
+                                                 (ncclWindow_t *)win, flags);
+}
+
+flagcxResult_t ncclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return (flagcxResult_t)ncclCommWindowDeregister(comm->base,
+                                                   (ncclWindow_t)win);
+}
+
 
 flagcxResult_t ncclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
@@ -162,9 +291,38 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
-  return (flagcxResult_t)ncclAllReduce(
-      sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
-      comm->base, stream->base);
+  if (!loaded) {
+    const char *customAllreducePathEnv = flagcxGetEnv("FLAGCX_CUSTOM_ALLREDUCE_PATH");
+    if (customAllreducePathEnv) {
+      loadCollFuncSymbol(customAllreducePathEnv, "flagcxLocalAllReduce", &localAllReduce);
+      loadCollFuncSymbol(customAllreducePathEnv, "flagcxInterleavedAllReduce", &interleavedAllReduce);
+    }
+    loaded = true;
+  }
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  int nranks;
+  ncclCommCount(comm->base, &nranks);
+
+  const bool useCustom = (flagcxGetEnv("FLAGCX_CUSTOM_ALLREDUCE_PATH") != NULL &&
+                          localAllReduce != NULL && interleavedAllReduce != NULL &&
+                          size < NCCL_CUSTOM_ALLREDUCE_MAX_SIZE &&
+                          comm->devBaseCreated);
+
+  if (!useCustom) {
+    return (flagcxResult_t)ncclAllReduce(
+        sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
+        comm->base, stream->base);
+  }
+
+  cudaMemcpyAsync(comm->sendStagedBuff->buff, sendbuff, size, cudaMemcpyDeviceToDevice, stream->base);
+  if ((nranks <= 4 && size < 512 * 1024) ||
+      (nranks <= 8 && size < 256 * 1024)) {
+    localAllReduce(comm->sendStagedBuff->win, comm->recvStagedBuff->win, recvbuff, count, datatype, nranks, comm->devBase, stream->base);
+  } else {
+    interleavedAllReduce(comm->sendStagedBuff->win, comm->recvStagedBuff->win, recvbuff, count, datatype, nranks, comm->devBase, stream->base);
+    cudaMemcpyAsync(recvbuff, comm->recvStagedBuff->buff, size, cudaMemcpyDeviceToDevice, stream->base);
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t
@@ -272,6 +430,9 @@ struct flagcxCCLAdaptor ncclAdaptor = {
     ncclAdaptorCommCount, ncclAdaptorCommCuDevice, ncclAdaptorCommUserRank,
     ncclAdaptorCommGetAsyncError, ncclAdaptorMemAlloc, ncclAdaptorMemFree,
     ncclAdaptorCommRegister, ncclAdaptorCommDeregister,
+    // Window operations (symmetric)
+    ncclAdaptorCommWindowRegister, ncclAdaptorCommWindowDeregister,
+    ncclAdaptorGetStagedBuffer,
     // Communication functions
     ncclAdaptorReduce, ncclAdaptorGather, ncclAdaptorScatter,
     ncclAdaptorBroadcast, ncclAdaptorAllReduce, ncclAdaptorReduceScatter,

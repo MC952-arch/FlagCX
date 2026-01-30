@@ -288,6 +288,8 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     rcclAdaptorCommCount, rcclAdaptorCommCuDevice, rcclAdaptorCommUserRank,
     rcclAdaptorCommGetAsyncError, rcclAdaptorMemAlloc, rcclAdaptorMemFree,
     rcclAdaptorCommRegister, rcclAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     rcclAdaptorReduce, rcclAdaptorGather, rcclAdaptorScatter,
     rcclAdaptorBroadcast, rcclAdaptorAllReduce, rcclAdaptorReduceScatter,

@@ -279,6 +279,8 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     mcclAdaptorCommCount, mcclAdaptorCommMcDevice, mcclAdaptorCommUserRank,
     mcclAdaptorCommGetAsyncError, mcclAdaptorMemAlloc, mcclAdaptorMemFree,
     mcclAdaptorCommRegister, mcclAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     mcclAdaptorReduce, mcclAdaptorGather, mcclAdaptorScatter,
     mcclAdaptorBroadcast, mcclAdaptorAllReduce, mcclAdaptorReduceScatter,

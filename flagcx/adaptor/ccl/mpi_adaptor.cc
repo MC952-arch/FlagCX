@@ -342,6 +342,8 @@ struct flagcxCCLAdaptor mpiAdaptor = {
     mpiAdaptorCommCount, mpiAdaptorCommCuDevice, mpiAdaptorCommUserRank,
     mpiAdaptorCommGetAsyncError, mpiAdaptorMemAlloc, mpiAdaptorMemFree,
     mpiAdaptorCommRegister, mpiAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     mpiAdaptorReduce, mpiAdaptorGather, mpiAdaptorScatter, mpiAdaptorBroadcast,
     mpiAdaptorAllReduce, mpiAdaptorReduceScatter, mpiAdaptorAllGather,

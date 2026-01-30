@@ -8,8 +8,21 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <map>
+#include "nccl_device.h"
+
+
+struct stagedBuffer {
+  void *buff;
+  ncclWindow_t win;
+};
+typedef struct stagedBuffer stagedBuffer_t;
+
 struct flagcxInnerComm {
   ncclComm_t base;
+  ncclDevComm devBase;
+  stagedBuffer_t *sendStagedBuff;
+  stagedBuffer_t *recvStagedBuff;
+  bool devBaseCreated;
 };
 
 struct flagcxStream {

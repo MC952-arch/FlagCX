@@ -325,6 +325,8 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     cnclAdaptorCommCount, cnclAdaptorCommCuDevice, cnclAdaptorCommUserRank,
     cnclAdaptorCommGetAsyncError, cnclAdaptorMemAlloc, cnclAdaptorMemFree,
     cnclAdaptorCommRegister, cnclAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     cnclAdaptorReduce, cnclAdaptorGather, cnclAdaptorScatter,
     cnclAdaptorBroadcast, cnclAdaptorAllReduce, cnclAdaptorReduceScatter,

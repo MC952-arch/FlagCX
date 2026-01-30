@@ -284,6 +284,8 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorCommUserRank, ixncclAdaptorCommGetAsyncError,
     ixncclAdaptorMemAlloc, ixncclAdaptorMemFree, ixncclAdaptorCommRegister,
     ixncclAdaptorCommDeregister,
+    // Window operations (symmetric)
+    NULL, NULL, NULL,
     // Communication functions
     ixncclAdaptorReduce, ixncclAdaptorGather, ixncclAdaptorScatter,
     ixncclAdaptorBroadcast, ixncclAdaptorAllReduce, ixncclAdaptorReduceScatter,
