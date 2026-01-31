@@ -35,20 +35,16 @@
 #include <string>
 #include <vector>
 
+#define GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024) // 8MB
 using bufferPtr = std::unique_ptr<::gloo::transport::UnboundBuffer>;
 struct stagedBuffer {
   int offset;
-  int size = (4 * 1024 * 1024); // 4MB
+  int size = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
   int cnt;
   void *buffer;
   gloo::transport::UnboundBuffer *unboundBuffer;
 };
 typedef stagedBuffer *stagedBuffer_t;
-static std::list<bufferPtr> inputBuffers;
-static std::list<bufferPtr> outputBuffers;
-static constexpr std::chrono::milliseconds flagcxGlooDefaultTimeout =
-    std::chrono::seconds(10000);
-static int groupDepth = 0;
 
 #define GENERATE_GLOO_TYPES(type, func, args...)                               \
   switch (type) {                                                              \

@@ -629,7 +629,6 @@ flagcxResult_t hostRunnerGroupEnd() {
     recvHostBuffers.clear();
     recvDeviceBuffers.clear();
     recvBufferSizes.clear();
-    hostRunnerGroupDepth = 0;
   }
   return flagcxSuccess;
 }
