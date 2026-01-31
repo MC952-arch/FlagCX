@@ -4,6 +4,9 @@
 
 FLAGCX_PARAM(GlooIbDisable, "GLOO_IB_DISABLE", 0);
 
+static int groupDepth = 0;
+static constexpr std::chrono::milliseconds flagcxGlooDefaultTimeout =
+    std::chrono::seconds(10000);
 static std::vector<stagedBuffer_t> sendStagedBufferList;
 static std::vector<stagedBuffer_t> recvStagedBufferList;
 static std::vector<bufferPtr> unboundBufferStorage;
@@ -32,7 +35,7 @@ flagcxResult_t glooAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
     sbuff->offset = 0;
-    sbuff->size = (4 * 1024 * 1024); // 4MB
+    sbuff->size = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
     sbuff->cnt = 0;
     registered = false;
   }
@@ -65,6 +68,7 @@ flagcxResult_t glooAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
     }
   }
   *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
+  sbuff->offset += size;
   return flagcxSuccess;
 }
 
@@ -430,7 +434,6 @@ flagcxResult_t glooAdaptorGroupEnd() {
     }
     sendPeerTags.clear();
     recvPeerTags.clear();
-    groupDepth = 0;
   }
   return flagcxSuccess;
 }
