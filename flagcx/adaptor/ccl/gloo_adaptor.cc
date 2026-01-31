@@ -151,21 +151,6 @@ flagcxResult_t glooAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t glooAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                              void *buff, size_t size,
-                                              void **win, int flags) {
-  return flagcxNotSupported;
-}
-flagcxResult_t glooAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
-  return flagcxNotSupported;
-}
-
 flagcxResult_t glooAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  flagcxRedOp_t op, int root,
