@@ -47,6 +47,9 @@ flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   sbuff->size = newSize;
   if (!registered) {
     sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
     if (isRecv) {
       recvStagedBufferList.push_back(sbuff);
     } else {
@@ -54,7 +57,6 @@ flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
   }
   *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
-  sbuff->offset += size;
   return flagcxSuccess;
 }
 
@@ -285,9 +287,10 @@ flagcxResult_t bootstrapAdaptorSend(const void *sendbuff, size_t count,
                                     flagcxDataType_t datatype, int peer,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t /*stream*/) {
+  // TODO(MC952-arch): implement out-of-order sends
+  size_t size = count * getFlagcxDataTypeSize(datatype);
   FLAGCXCHECK(bootstrapSend(comm->base, peer, BOOTSTRAP_ADAPTOR_SEND_RECV_TAG,
-                            (void *)sendbuff,
-                            count * getFlagcxDataTypeSize(datatype)));
+                            (void *)sendbuff, size));
   return flagcxSuccess;
 }
 
@@ -295,8 +298,10 @@ flagcxResult_t bootstrapAdaptorRecv(void *recvbuff, size_t count,
                                     flagcxDataType_t datatype, int peer,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t /*stream*/) {
+  // TODO(MC952-arch): implement out-of-order recvs
+  size_t size = count * getFlagcxDataTypeSize(datatype);
   FLAGCXCHECK(bootstrapRecv(comm->base, peer, BOOTSTRAP_ADAPTOR_SEND_RECV_TAG,
-                            recvbuff, count * getFlagcxDataTypeSize(datatype)));
+                            recvbuff, size));
   return flagcxSuccess;
 }
 
