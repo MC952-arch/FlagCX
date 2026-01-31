@@ -8,8 +8,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <map>
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 3)
 #include "nccl_device.h"
-
+#endif
 
 struct stagedBuffer {
   void *buff;

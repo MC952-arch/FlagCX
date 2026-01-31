@@ -23,6 +23,23 @@ const char *glooAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
+flagcxResult_t glooAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t /*commId*/, int rank,
                                        bootstrapState *bootstrap) {
@@ -131,6 +148,21 @@ flagcxResult_t glooAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t glooAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return flagcxNotSupported;
+}
+flagcxResult_t glooAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
   return flagcxNotSupported;
 }
 
@@ -320,14 +352,15 @@ struct flagcxCCLAdaptor glooAdaptor = {
     // Basic functions
     glooAdaptorGetVersion, glooAdaptorGetUniqueId, glooAdaptorGetErrorString,
     glooAdaptorGetLastError,
+    // Symmetric operations
+    glooAdaptorCommWindowRegister, glooAdaptorCommWindowDeregister,
+    glooAdaptorGetStagedBuffer,
     // Communicator functions
     glooAdaptorCommInitRank, glooAdaptorCommFinalize, glooAdaptorCommDestroy,
     glooAdaptorCommAbort, glooAdaptorCommResume, glooAdaptorCommSuspend,
     glooAdaptorCommCount, glooAdaptorCommCuDevice, glooAdaptorCommUserRank,
     glooAdaptorCommGetAsyncError, glooAdaptorMemAlloc, glooAdaptorMemFree,
     glooAdaptorCommRegister, glooAdaptorCommDeregister,
-    // Symmetric operations
-    NULL, NULL, NULL,
     // Communication functions
     glooAdaptorReduce, glooAdaptorGather, glooAdaptorScatter,
     glooAdaptorBroadcast, glooAdaptorAllReduce, glooAdaptorReduceScatter,

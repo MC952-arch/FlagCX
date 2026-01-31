@@ -52,6 +52,23 @@ const char *cnclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
+flagcxResult_t cnclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
@@ -319,14 +336,15 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     // Basic functions
     cnclAdaptorGetVersion, cnclAdaptorGetUniqueId, cnclAdaptorGetErrorString,
     cnclAdaptorGetLastError,
+    // Symmetric operations
+    cnclAdaptorCommWindowRegister, cnclAdaptorCommWindowDeregister,
+    cnclAdaptorGetStagedBuffer,
     // Communicator functions
     cnclAdaptorCommInitRank, cnclAdaptorCommFinalize, cnclAdaptorCommDestroy,
     cnclAdaptorCommAbort, cnclAdaptorCommResume, cnclAdaptorCommSuspend,
     cnclAdaptorCommCount, cnclAdaptorCommCuDevice, cnclAdaptorCommUserRank,
     cnclAdaptorCommGetAsyncError, cnclAdaptorMemAlloc, cnclAdaptorMemFree,
     cnclAdaptorCommRegister, cnclAdaptorCommDeregister,
-    // Symmetric operations
-    NULL, NULL, NULL,
     // Communication functions
     cnclAdaptorReduce, cnclAdaptorGather, cnclAdaptorScatter,
     cnclAdaptorBroadcast, cnclAdaptorAllReduce, cnclAdaptorReduceScatter,

@@ -26,6 +26,21 @@ const char *mcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return mcclGetLastError(comm->base);
 }
 
+flagcxResult_t mcclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
@@ -273,14 +288,15 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     // Basic functions
     mcclAdaptorGetVersion, mcclAdaptorGetUniqueId, mcclAdaptorGetErrorString,
     mcclAdaptorGetLastError,
+    // Symmetric operations
+    mcclAdaptorCommWindowRegister, mcclAdaptorCommWindowDeregister,
+    mcclAdaptorGetStagedBuffer,
     // Communicator functions
     mcclAdaptorCommInitRank, mcclAdaptorCommFinalize, mcclAdaptorCommDestroy,
     mcclAdaptorCommAbort, mcclAdaptorCommResume, mcclAdaptorCommSuspend,
     mcclAdaptorCommCount, mcclAdaptorCommMcDevice, mcclAdaptorCommUserRank,
     mcclAdaptorCommGetAsyncError, mcclAdaptorMemAlloc, mcclAdaptorMemFree,
     mcclAdaptorCommRegister, mcclAdaptorCommDeregister,
-    // Symmetric operations
-    NULL, NULL, NULL,
     // Communication functions
     mcclAdaptorReduce, mcclAdaptorGather, mcclAdaptorScatter,
     mcclAdaptorBroadcast, mcclAdaptorAllReduce, mcclAdaptorReduceScatter,

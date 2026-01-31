@@ -84,6 +84,21 @@ const char *hcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
+flagcxResult_t hcclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
@@ -322,14 +337,15 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     // Basic functions
     hcclAdaptorGetVersion, hcclAdaptorGetUniqueId, hcclAdaptorGetErrorString,
     hcclAdaptorGetLastError,
+    // Symmetric operations
+    hcclAdaptorCommWindowRegister, hcclAdaptorCommWindowDeregister,
+    hcclAdaptorGetStagedBuffer,
     // Communicator functions
     hcclAdaptorCommInitRank, hcclAdaptorCommFinalize, hcclAdaptorCommDestroy,
     hcclAdaptorCommAbort, hcclAdaptorCommResume, hcclAdaptorCommSuspend,
     hcclAdaptorCommCount, hcclAdaptorCommCuDevice, hcclAdaptorCommUserRank,
     hcclAdaptorCommGetAsyncError, hcclAdaptorMemAlloc, hcclAdaptorMemFree,
     hcclAdaptorCommRegister, hcclAdaptorCommDeregister,
-    // Symmetric operations
-    NULL, NULL, NULL,
     // Communication functions
     hcclAdaptorReduce, hcclAdaptorGather, hcclAdaptorScatter,
     hcclAdaptorBroadcast, hcclAdaptorAllReduce, hcclAdaptorReduceScatter,

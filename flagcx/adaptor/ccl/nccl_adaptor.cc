@@ -1,5 +1,7 @@
 #include "nvidia_adaptor.h"
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 3)
 #include "nccl_device.h"
+#endif
 #include <cstring>
 
 #ifdef USE_NVIDIA_ADAPTOR
@@ -35,6 +37,38 @@ ncclResult_t loadCollFuncSymbol(const char *path, const char *name,
   return ncclSuccess;
 }
 
+flagcxResult_t ncclAdaptorGetVersion(int *version) {
+  return (flagcxResult_t)ncclGetVersion(version);
+}
+
+flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+  if (*uniqueId == NULL) {
+    flagcxCalloc(uniqueId, 1);
+  }
+  return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
+}
+
+const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
+  return ncclGetErrorString((ncclResult_t)result);
+}
+
+const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
+  return ncclGetLastError(comm->base);
+}
+
+flagcxResult_t ncclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return (flagcxResult_t)ncclCommWindowRegister(comm->base, buff, size,
+                                                 (ncclWindow_t *)win, flags);
+}
+
+flagcxResult_t ncclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return (flagcxResult_t)ncclCommWindowDeregister(comm->base,
+                                                   (ncclWindow_t)win);
+}
+
 flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                           void **buff, size_t /*size*/,
                                           int isRecv) {
@@ -66,7 +100,7 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
       return (flagcxResult_t)res;
     }
   }
-  
+
   if (buff) {
     if (isRecv) {
       *buff = comm->recvStagedBuff->buff;
@@ -76,24 +110,6 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   }
 
   return flagcxSuccess;
-}
-flagcxResult_t ncclAdaptorGetVersion(int *version) {
-  return (flagcxResult_t)ncclGetVersion(version);
-}
-
-flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
-  if (*uniqueId == NULL) {
-    flagcxCalloc(uniqueId, 1);
-  }
-  return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
-}
-
-const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
-  return ncclGetErrorString((ncclResult_t)result);
-}
-
-const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
-  return ncclGetLastError(comm->base);
 }
 
 flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -211,20 +227,6 @@ flagcxResult_t ncclAdaptorCommDeregister(const flagcxInnerComm_t comm,
                                          void *handle) {
   return (flagcxResult_t)ncclCommDeregister(comm->base, handle);
 }
-
-flagcxResult_t ncclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                              void *buff, size_t size,
-                                              void **win, int flags) {
-  return (flagcxResult_t)ncclCommWindowRegister(comm->base, buff, size,
-                                                 (ncclWindow_t *)win, flags);
-}
-
-flagcxResult_t ncclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                                void *win) {
-  return (flagcxResult_t)ncclCommWindowDeregister(comm->base,
-                                                   (ncclWindow_t)win);
-}
-
 
 flagcxResult_t ncclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
@@ -434,15 +436,15 @@ struct flagcxCCLAdaptor ncclAdaptor = {
     // Basic functions
     ncclAdaptorGetVersion, ncclAdaptorGetUniqueId, ncclAdaptorGetErrorString,
     ncclAdaptorGetLastError,
+    // Symmetric operations
+    ncclAdaptorCommWindowRegister, ncclAdaptorCommWindowDeregister,
+    ncclAdaptorGetStagedBuffer,
     // Communicator functions
     ncclAdaptorCommInitRank, ncclAdaptorCommFinalize, ncclAdaptorCommDestroy,
     ncclAdaptorCommAbort, ncclAdaptorCommResume, ncclAdaptorCommSuspend,
     ncclAdaptorCommCount, ncclAdaptorCommCuDevice, ncclAdaptorCommUserRank,
     ncclAdaptorCommGetAsyncError, ncclAdaptorMemAlloc, ncclAdaptorMemFree,
     ncclAdaptorCommRegister, ncclAdaptorCommDeregister,
-    // Symmetric operations
-    ncclAdaptorCommWindowRegister, ncclAdaptorCommWindowDeregister,
-    ncclAdaptorGetStagedBuffer,
     // Communication functions
     ncclAdaptorReduce, ncclAdaptorGather, ncclAdaptorScatter,
     ncclAdaptorBroadcast, ncclAdaptorAllReduce, ncclAdaptorReduceScatter,
