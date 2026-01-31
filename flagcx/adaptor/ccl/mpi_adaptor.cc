@@ -60,6 +60,9 @@ flagcxResult_t mpiAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
   sbuff->size = newSize;
   if (!registered) {
     sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
     if (isRecv) {
       recvStagedBufferList.push_back(sbuff);
     } else {

@@ -57,6 +57,9 @@ flagcxResult_t glooAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
   sbuff->size = newSize;
   if (!registered) {
     sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
     auto unboundBuffer = comm->base->createUnboundBuffer(
         const_cast<void *>(sbuff->buffer), sbuff->size);
     sbuff->unboundBuffer = unboundBuffer.get();
@@ -68,7 +71,6 @@ flagcxResult_t glooAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
     }
   }
   *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
-  sbuff->offset += size;
   return flagcxSuccess;
 }
 
@@ -365,7 +367,7 @@ flagcxResult_t glooAdaptorSend(const void *sendbuff, size_t count,
                                flagcxInnerComm_t comm,
                                flagcxStream_t /*stream*/) {
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  stagedBuffer *buff = sendStagedBufferList.back();
+  stagedBuffer_t buff = sendStagedBufferList.back();
   uint32_t utag;
   if (sendPeerTags.find(peer) != sendPeerTags.end()) {
     utag = sendPeerTags[peer];
@@ -389,7 +391,7 @@ flagcxResult_t glooAdaptorRecv(void *recvbuff, size_t count,
                                flagcxInnerComm_t comm,
                                flagcxStream_t /*stream*/) {
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  stagedBuffer *buff = recvStagedBufferList.back();
+  stagedBuffer_t buff = recvStagedBufferList.back();
   uint32_t utag;
   if (recvPeerTags.find(peer) != recvPeerTags.end()) {
     utag = recvPeerTags[peer];
