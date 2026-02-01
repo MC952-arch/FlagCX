@@ -94,12 +94,13 @@ flagcxResult_t ixncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 flagcxResult_t ixncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
                                                void *buff, size_t size,
-                                               void **win, int flags) {
+                                               flagcxWindow_t *win,
+                                               int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t ixncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                 void *win) {
+                                                 flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 

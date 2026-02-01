@@ -207,14 +207,14 @@ flagcxResult_t tcclAdaptorCommDeregister(const flagcxInnerComm_t comm,
   return fromTcclResult(result);
 }
 
-flagcxResult_t tcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                             void *buff, size_t size,
-                                             void **win, int flags) {
+flagcxResult_t tcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t tcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                               void *win) {
+flagcxResult_t tcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 

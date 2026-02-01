@@ -140,14 +140,14 @@ flagcxResult_t glooAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t glooAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                             void *buff, size_t size,
-                                             void **win, int flags) {
+flagcxResult_t glooAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t glooAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                               void *win) {
+flagcxResult_t glooAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 

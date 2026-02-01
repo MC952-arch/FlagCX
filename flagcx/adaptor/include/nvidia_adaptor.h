@@ -28,6 +28,14 @@ struct flagcxInnerComm {
 };
 
 struct flagcxStream {
+  cudaStream_t base;
+};
+
+struct flagcxEvent {
+  cudaEvent_t base;
+};
+
+struct flagcxIpcMemHandle {
   cudaIpcMemHandle_t base;
 };
 
@@ -36,7 +44,7 @@ struct flagcxWindow {
   ncclWindow_t base;
 };
 #else
-typedef void struct flagcxWindow
+struct flagcxWindow {};
 #endif
 
 #define DEVCHECK(func)                                                         \

@@ -19,22 +19,22 @@ static customAllReduce_t localAllReduce = NULL;
 static customAllReduce_t interleavedAllReduce = NULL;
 
 template <typename T>
-ncclResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
+flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
   void *handle = flagcxOpenLib(
       path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
         fprintf(stderr, "dlopen failed: %s\n", dlerror());
       });
   if (!handle)
-    return ncclSystemError;
+    return flagcxSystemError;
 
   void *sym = dlsym(handle, name);
   if (!sym) {
     fprintf(stderr, "dlsym failed: %s\n", dlerror());
-    return ncclSystemError;
+    return flagcxSystemError;
   }
 
   *fn = (T)sym;
-  return ncclSuccess;
+  return flagcxSuccess;
 }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 
@@ -112,7 +112,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
     auto fn = reinterpret_cast<pncclDevCommCreate_t>(
         dlsym(handle, "pncclDevCommCreate"));
-    res = fn((*comm)->base, &reqs, (*comm)->devBase);
+    FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
   }
 #endif
   FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 1));

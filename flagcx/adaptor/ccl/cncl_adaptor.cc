@@ -137,14 +137,14 @@ flagcxResult_t cnclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t cnclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                             void *buff, size_t size,
-                                             void **win, int flags) {
+flagcxResult_t cnclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t cnclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                               void *win) {
+flagcxResult_t cnclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 

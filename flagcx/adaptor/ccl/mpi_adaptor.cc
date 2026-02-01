@@ -161,13 +161,13 @@ flagcxResult_t mpiAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
 }
 
 flagcxResult_t mpiAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                            size_t size, void **win,
-                                            int flags) {
+                                            size_t size, flagcxWindow_t *win,
+                                            int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t mpiAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                              void *win) {
+                                              flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
