@@ -13,27 +13,18 @@ flagcxResult_t ixncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t ixncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                            void **buff, size_t size,
+                                            int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *ixncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
 
 const char *ixncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
-}
-
-flagcxResult_t ixncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                                void *buff, size_t size,
-                                                void **win, int flags) {
-  return flagcxNotSupported;
-}
-flagcxResult_t ixncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                  void *win) {
-  return flagcxNotSupported;
-}
-flagcxResult_t ixncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                            void **buff, size_t size,
-                                            int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t ixncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -98,6 +89,17 @@ flagcxResult_t ixncclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 // TODO: unsupported
 flagcxResult_t ixncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
                                          size_t size, void **handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ixncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                               void *buff, size_t size,
+                                               void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ixncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                 void *win) {
   return flagcxNotSupported;
 }
 
@@ -292,8 +294,6 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     // Basic functions
     ixncclAdaptorGetVersion, ixncclAdaptorGetUniqueId,
     ixncclAdaptorGetErrorString, ixncclAdaptorGetLastError,
-    // Symmetric operations
-    ixncclAdaptorCommWindowRegister, ixncclAdaptorCommWindowDeregister,
     ixncclAdaptorGetStagedBuffer,
     // Communicator functions
     ixncclAdaptorCommInitRank, ixncclAdaptorCommFinalize,
@@ -302,6 +302,8 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorCommUserRank, ixncclAdaptorCommGetAsyncError,
     ixncclAdaptorMemAlloc, ixncclAdaptorMemFree, ixncclAdaptorCommRegister,
     ixncclAdaptorCommDeregister,
+    // Symmetric functions
+    ixncclAdaptorCommWindowRegister, ixncclAdaptorCommWindowDeregister,
     // Communication functions
     ixncclAdaptorReduce, ixncclAdaptorGather, ixncclAdaptorScatter,
     ixncclAdaptorBroadcast, ixncclAdaptorAllReduce, ixncclAdaptorReduceScatter,

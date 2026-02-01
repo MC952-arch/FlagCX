@@ -13,6 +13,12 @@ flagcxResult_t glooAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return flagcxNotSupported;
 }
 
+flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 // TODO: unsupported
 const char *glooAdaptorGetErrorString(flagcxResult_t result) {
   return "Not Implemented";
@@ -21,23 +27,6 @@ const char *glooAdaptorGetErrorString(flagcxResult_t result) {
 // TODO: unsupported
 const char *glooAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
-}
-
-flagcxResult_t glooAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                              void *buff, size_t size,
-                                              void **win, int flags) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t glooAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -148,6 +137,17 @@ flagcxResult_t glooAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t glooAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                               void *win) {
   return flagcxNotSupported;
 }
 
@@ -336,16 +336,15 @@ struct flagcxCCLAdaptor glooAdaptor = {
     "GLOO",
     // Basic functions
     glooAdaptorGetVersion, glooAdaptorGetUniqueId, glooAdaptorGetErrorString,
-    glooAdaptorGetLastError,
-    // Symmetric operations
-    glooAdaptorCommWindowRegister, glooAdaptorCommWindowDeregister,
-    glooAdaptorGetStagedBuffer,
+    glooAdaptorGetLastError, glooAdaptorGetStagedBuffer,
     // Communicator functions
     glooAdaptorCommInitRank, glooAdaptorCommFinalize, glooAdaptorCommDestroy,
     glooAdaptorCommAbort, glooAdaptorCommResume, glooAdaptorCommSuspend,
     glooAdaptorCommCount, glooAdaptorCommCuDevice, glooAdaptorCommUserRank,
     glooAdaptorCommGetAsyncError, glooAdaptorMemAlloc, glooAdaptorMemFree,
     glooAdaptorCommRegister, glooAdaptorCommDeregister,
+    // Symmetric functions
+    glooAdaptorCommWindowRegister, glooAdaptorCommWindowDeregister,
     // Communication functions
     glooAdaptorReduce, glooAdaptorGather, glooAdaptorScatter,
     glooAdaptorBroadcast, glooAdaptorAllReduce, glooAdaptorReduceScatter,

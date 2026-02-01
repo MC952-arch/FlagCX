@@ -13,27 +13,18 @@ flagcxResult_t rcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t rcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *rcclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
 
 const char *rcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
-}
-
-flagcxResult_t rcclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                              void *buff, size_t size,
-                                              void **win, int flags) {
-  return flagcxNotSupported;
-}
-flagcxResult_t rcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-flagcxResult_t rcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t rcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -102,6 +93,17 @@ flagcxResult_t rcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t rcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, void **win,
+                                             int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               void *win) {
   return flagcxNotSupported;
 }
 
@@ -296,16 +298,15 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     "RCCL",
     // Basic functions
     rcclAdaptorGetVersion, rcclAdaptorGetUniqueId, rcclAdaptorGetErrorString,
-    rcclAdaptorGetLastError,
-    // Symmetric operations
-    rcclAdaptorCommWindowRegister, rcclAdaptorCommWindowDeregister,
-    rcclAdaptorGetStagedBuffer,
+    rcclAdaptorGetLastError, rcclAdaptorGetStagedBuffer,
     // Communicator functions
     rcclAdaptorCommInitRank, rcclAdaptorCommFinalize, rcclAdaptorCommDestroy,
     rcclAdaptorCommAbort, rcclAdaptorCommResume, rcclAdaptorCommSuspend,
     rcclAdaptorCommCount, rcclAdaptorCommCuDevice, rcclAdaptorCommUserRank,
     rcclAdaptorCommGetAsyncError, rcclAdaptorMemAlloc, rcclAdaptorMemFree,
     rcclAdaptorCommRegister, rcclAdaptorCommDeregister,
+    // Symmetric functions
+    rcclAdaptorCommWindowRegister, rcclAdaptorCommWindowDeregister,
     // Communication functions
     rcclAdaptorReduce, rcclAdaptorGather, rcclAdaptorScatter,
     rcclAdaptorBroadcast, rcclAdaptorAllReduce, rcclAdaptorReduceScatter,

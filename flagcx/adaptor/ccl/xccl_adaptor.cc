@@ -62,6 +62,12 @@ flagcxResult_t xcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       (BKCLUniqueId *)(((char *)*uniqueId) + sizeof(int)));
 }
 
+flagcxResult_t xcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 // Unsupported
 const char *xcclAdaptorGetErrorString(flagcxResult_t result) {
   return "flagcxNotSupported";
@@ -70,23 +76,6 @@ const char *xcclAdaptorGetErrorString(flagcxResult_t result) {
 // Unsupported
 const char *xcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "flagcxNotSupported";
-}
-
-flagcxResult_t xcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                              void *buff, size_t size,
-                                              void **win, int flags) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t xcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t xcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t xcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -155,6 +144,17 @@ flagcxResult_t xcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 // TODO: unsupported
 flagcxResult_t xcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
                                        size_t size, void **handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                               void *win) {
   return flagcxNotSupported;
 }
 
@@ -320,16 +320,15 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     "XCCL",
     // Basic functions
     xcclAdaptorGetVersion, xcclAdaptorGetUniqueId, xcclAdaptorGetErrorString,
-    xcclAdaptorGetLastError,
-    // Symmetric operations
-    xcclAdaptorCommWindowRegister, xcclAdaptorCommWindowDeregister,
-    xcclAdaptorGetStagedBuffer,
+    xcclAdaptorGetLastError, xcclAdaptorGetStagedBuffer,
     // Communicator functions
     xcclAdaptorCommInitRank, xcclAdaptorCommFinalize, xcclAdaptorCommDestroy,
     xcclAdaptorCommAbort, xcclAdaptorCommResume, xcclAdaptorCommSuspend,
     xcclAdaptorCommCount, xcclAdaptorCommCuDevice, xcclAdaptorCommUserRank,
     xcclAdaptorCommGetAsyncError, xcclAdaptorMemAlloc, xcclAdaptorMemFree,
     xcclAdaptorCommRegister, xcclAdaptorCommDeregister,
+    // Symmetric functions
+    xcclAdaptorCommWindowRegister, xcclAdaptorCommWindowDeregister,
     // Communication functions
     xcclAdaptorReduce, xcclAdaptorGather, xcclAdaptorScatter,
     xcclAdaptorBroadcast, xcclAdaptorAllReduce, xcclAdaptorReduceScatter,

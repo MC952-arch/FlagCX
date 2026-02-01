@@ -114,6 +114,8 @@ typedef struct flagcxStream *flagcxStream_t;
 typedef struct flagcxEvent *flagcxEvent_t;
 /* Opaque handle to flagcxIpcMemHandle */
 typedef struct flagcxIpcMemHandle *flagcxIpcMemHandle_t;
+/* Opaque handle to flagcxWindow */
+typedef struct flagcxWindow *flagcxWindow_t;
 
 /* Func(kernel) arguments */
 typedef struct {
@@ -187,6 +189,13 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm = NULL);
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle);
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle);
+
+/* Register/Deregister user buffer for symmetric operation */
+flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
+                                        size_t size, flagcxWindow_t *win,
+                                        int winFlags);
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
+                                          flagcxWindow_t win);
 
 /* Check if the FlagCX communicator type is homogeneous or heterogeneous */
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo);

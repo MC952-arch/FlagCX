@@ -8,15 +8,17 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <map>
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 3)
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 #include "nccl_device.h"
-#endif
-
 struct stagedBuffer {
   void *buff;
   ncclWindow_t win;
 };
 typedef struct stagedBuffer *stagedBuffer_t;
+#else
+typedef void *stagedBuffer_t;
+typedef void ncclDevComm;
+#endif
 
 struct flagcxInnerComm {
   ncclComm_t base;
@@ -26,16 +28,16 @@ struct flagcxInnerComm {
 };
 
 struct flagcxStream {
-  cudaStream_t base;
-};
-
-struct flagcxEvent {
-  cudaEvent_t base;
-};
-
-struct flagcxIpcMemHandle {
   cudaIpcMemHandle_t base;
 };
+
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
+struct flagcxWindow {
+  ncclWindow_t base;
+};
+#else
+typedef void struct flagcxWindow
+#endif
 
 #define DEVCHECK(func)                                                         \
   {                                                                            \

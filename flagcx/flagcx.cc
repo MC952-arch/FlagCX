@@ -330,6 +330,29 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxCommWindowRegister(const flagcxComm_t comm, void *buff,
+                                        size_t size, flagcxWindow_t *win,
+                                        int winFlags) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+        comm->homo_comm, buff, size, win, winFlags));
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
+                                          flagcxWindow_t win) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homo_comm, win));
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
@@ -775,7 +798,8 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
       }
     }
   } else {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homo_comm);
+    FLAGCXCHECK(
+        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homo_comm));
   }
 
   // Destroy tuner

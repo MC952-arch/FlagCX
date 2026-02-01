@@ -42,6 +42,12 @@ flagcxResult_t cnclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       flagcxResult_t)c2f_ret_map[cnclGetCliqueId((cnclCliqueId *)(*uniqueId))];
 }
 
+flagcxResult_t cnclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *cnclAdaptorGetErrorString(flagcxResult_t result) {
   return cnclGetErrorStr((cnclResult_t)f2c_ret_map[result]);
 }
@@ -50,23 +56,6 @@ const char *cnclAdaptorGetErrorString(flagcxResult_t result) {
 const char *cnclAdaptorGetLastError(flagcxInnerComm_t comm) {
   // return cnclGetLastError(comm->base);
   return "Not Implemented";
-}
-
-flagcxResult_t cnclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
-                                             void *buff, size_t size,
-                                             void **win, int flags) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t cnclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t cnclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -145,6 +134,17 @@ flagcxResult_t cnclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t cnclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                               void *win) {
   return flagcxNotSupported;
 }
 
@@ -335,16 +335,15 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     "CNCL",
     // Basic functions
     cnclAdaptorGetVersion, cnclAdaptorGetUniqueId, cnclAdaptorGetErrorString,
-    cnclAdaptorGetLastError,
-    // Symmetric operations
-    cnclAdaptorCommWindowRegister, cnclAdaptorCommWindowDeregister,
-    cnclAdaptorGetStagedBuffer,
+    cnclAdaptorGetLastError, cnclAdaptorGetStagedBuffer,
     // Communicator functions
     cnclAdaptorCommInitRank, cnclAdaptorCommFinalize, cnclAdaptorCommDestroy,
     cnclAdaptorCommAbort, cnclAdaptorCommResume, cnclAdaptorCommSuspend,
     cnclAdaptorCommCount, cnclAdaptorCommCuDevice, cnclAdaptorCommUserRank,
     cnclAdaptorCommGetAsyncError, cnclAdaptorMemAlloc, cnclAdaptorMemFree,
     cnclAdaptorCommRegister, cnclAdaptorCommDeregister,
+    // Symmetric functions
+    cnclAdaptorCommWindowRegister, cnclAdaptorCommWindowDeregister,
     // Communication functions
     cnclAdaptorReduce, cnclAdaptorGather, cnclAdaptorScatter,
     cnclAdaptorBroadcast, cnclAdaptorAllReduce, cnclAdaptorReduceScatter,

@@ -75,6 +75,12 @@ flagcxResult_t tcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return fromTcclResult(result);
 }
 
+flagcxResult_t tcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *tcclAdaptorGetErrorString(flagcxResult_t result) {
   // TODO: supported later
   return "Not Implemented";
@@ -208,13 +214,7 @@ flagcxResult_t tcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
 }
 
 flagcxResult_t tcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
-                                                void *win) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t tcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                          void **buff, size_t size,
-                                          int isRecv) {
+                                               void *win) {
   return flagcxNotSupported;
 }
 
@@ -374,16 +374,15 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     "TCCL",
     // Basic functions
     tcclAdaptorGetVersion, tcclAdaptorGetUniqueId, tcclAdaptorGetErrorString,
-    tcclAdaptorGetLastError,
-    // Symmetric operations
-    tcclAdaptorCommWindowRegister, tcclAdaptorCommWindowDeregister,
-    tcclAdaptorGetStagedBuffer,
+    tcclAdaptorGetLastError, tcclAdaptorGetStagedBuffer,
     // Communicator functions
     tcclAdaptorCommInitRank, tcclAdaptorCommFinalize, tcclAdaptorCommDestroy,
     tcclAdaptorCommAbort, tcclAdaptorCommResume, tcclAdaptorCommSuspend,
     tcclAdaptorCommCount, tcclAdaptorCommCuDevice, tcclAdaptorCommUserRank,
     tcclAdaptorCommGetAsyncError, tcclAdaptorMemAlloc, tcclAdaptorMemFree,
     tcclAdaptorCommRegister, tcclAdaptorCommDeregister,
+    // Symmetric functions
+    tcclAdaptorCommWindowRegister, tcclAdaptorCommWindowDeregister,
     // Communication functions
     tcclAdaptorReduce, tcclAdaptorGather, tcclAdaptorScatter,
     tcclAdaptorBroadcast, tcclAdaptorAllReduce, tcclAdaptorReduceScatter,

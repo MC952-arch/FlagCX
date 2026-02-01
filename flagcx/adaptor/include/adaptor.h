@@ -13,7 +13,9 @@
 #include "global_comm.h"
 #include "topo.h"
 
-typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
+template <typename... Args>
+using flagcxCustomOpFunc_t = void (*)(Args...);
+using flagcxLaunchFunc_t = flagcxCustomOpFunc_t<flagcxStream_t, void *>;
 
 #ifdef __cplusplus
 extern "C" {
@@ -73,13 +75,8 @@ struct flagcxCCLAdaptor {
   flagcxResult_t (*getUniqueId)(flagcxUniqueId_t *uniqueId);
   const char *(*getErrorString)(flagcxResult_t result);
   const char *(*getLastError)(flagcxInnerComm_t comm);
-
-  // Symmetric operations
-  flagcxResult_t (*commWindowRegister)(const flagcxInnerComm_t comm, void *buff,
-                                        size_t size, void **win, int flags);
-  flagcxResult_t (*commWindowDeregister)(const flagcxInnerComm_t comm, void *win);
   flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
-                                     size_t size, int isRecv);
+                                    size_t size, int isRecv);
 
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
@@ -101,6 +98,12 @@ struct flagcxCCLAdaptor {
   flagcxResult_t (*commRegister)(const flagcxInnerComm_t comm, void *buff,
                                  size_t size, void **handle);
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
+  // Symmetric functions
+  flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
+                                       size_t size, flagcxWindow_t *win,
+                                       int winFlags);
+  flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
+                                         flagcxWindow_t win);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,

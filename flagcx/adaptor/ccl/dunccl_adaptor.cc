@@ -13,27 +13,18 @@ flagcxResult_t duncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t duncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                            void **buff, size_t size,
+                                            int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *duncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
 
 const char *duncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
-}
-
-flagcxResult_t duncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                                void *buff, size_t size,
-                                                void **win, int flags) {
-  return flagcxNotSupported;
-}
-flagcxResult_t duncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                  void *win) {
-  return flagcxNotSupported;
-}
-flagcxResult_t duncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                            void **buff, size_t size,
-                                            int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t duncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -104,6 +95,17 @@ flagcxResult_t duncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 // TODO: unsupported
 flagcxResult_t duncclAdaptorCommDeregister(flagcxInnerComm_t comm,
                                            void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t duncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                               void *buff, size_t size,
+                                               void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t duncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                 void *win) {
   return flagcxNotSupported;
 }
 
@@ -291,8 +293,6 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     // Basic functions
     duncclAdaptorGetVersion, duncclAdaptorGetUniqueId,
     duncclAdaptorGetErrorString, duncclAdaptorGetLastError,
-    // Symmetric operations
-    duncclAdaptorCommWindowRegister, duncclAdaptorCommWindowDeregister,
     duncclAdaptorGetStagedBuffer,
     // Communicator functions
     duncclAdaptorCommInitRank, duncclAdaptorCommFinalize,
@@ -301,6 +301,8 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     duncclAdaptorCommUserRank, duncclAdaptorCommGetAsyncError,
     duncclAdaptorMemAlloc, duncclAdaptorMemFree, duncclAdaptorCommRegister,
     duncclAdaptorCommDeregister,
+    // Symmetric functions
+    duncclAdaptorCommWindowRegister, duncclAdaptorCommWindowDeregister,
     // Communication functions
     duncclAdaptorReduce, duncclAdaptorGather, duncclAdaptorScatter,
     duncclAdaptorBroadcast, duncclAdaptorAllReduce, duncclAdaptorReduceScatter,

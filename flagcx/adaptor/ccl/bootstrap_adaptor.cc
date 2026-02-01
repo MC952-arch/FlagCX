@@ -13,6 +13,12 @@ flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return flagcxNotSupported;
 }
 
+flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                               void **buff, size_t size,
+                                               int isRecv) {
+  return flagcxNotSupported;
+}
+
 // TODO: unsupported
 const char *bootstrapAdaptorGetErrorString(flagcxResult_t result) {
   return "Not Implemented";
@@ -21,23 +27,6 @@ const char *bootstrapAdaptorGetErrorString(flagcxResult_t result) {
 // TODO: unsupported
 const char *bootstrapAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
-}
-
-flagcxResult_t bootstrapAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                                  void *buff, size_t size,
-                                                  void **win, int flags) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t bootstrapAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                    void *win) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                                void **buff, size_t size,
-                                                int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -118,6 +107,17 @@ flagcxResult_t bootstrapAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 // TODO: unsupported
 flagcxResult_t bootstrapAdaptorCommDeregister(flagcxInnerComm_t comm,
                                               void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t bootstrapAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                                  void *buff, size_t size,
+                                                  void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t bootstrapAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                    void *win) {
   return flagcxNotSupported;
 }
 
@@ -243,8 +243,6 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     // Basic functions
     bootstrapAdaptorGetVersion, bootstrapAdaptorGetUniqueId,
     bootstrapAdaptorGetErrorString, bootstrapAdaptorGetLastError,
-    // Symmetric operations
-    bootstrapAdaptorCommWindowRegister, bootstrapAdaptorCommWindowDeregister,
     bootstrapAdaptorGetStagedBuffer,
     // Communicator functions
     bootstrapAdaptorCommInitRank, bootstrapAdaptorCommFinalize,
@@ -254,6 +252,8 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     bootstrapAdaptorCommUserRank, bootstrapAdaptorCommGetAsyncError,
     bootstrapAdaptorMemAlloc, bootstrapAdaptorMemFree,
     bootstrapAdaptorCommRegister, bootstrapAdaptorCommDeregister,
+    // Symmetric functions
+    bootstrapAdaptorCommWindowRegister, bootstrapAdaptorCommWindowDeregister,
     // Communication functions
     bootstrapAdaptorReduce, bootstrapAdaptorGather, bootstrapAdaptorScatter,
     bootstrapAdaptorBroadcast, bootstrapAdaptorAllReduce,

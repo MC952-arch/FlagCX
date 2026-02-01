@@ -27,6 +27,11 @@ flagcxResult_t mpiAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return flagcxSuccess;
 }
 
+flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                         void **buff, size_t size, int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *mpiAdaptorGetErrorString(flagcxResult_t result) {
   switch (result) {
     case flagcxSuccess:
@@ -41,21 +46,6 @@ const char *mpiAdaptorGetErrorString(flagcxResult_t result) {
 const char *mpiAdaptorGetLastError(flagcxInnerComm_t comm) {
 
   return "MPI: No Error";
-}
-
-flagcxResult_t mpiAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                             void *buff, size_t size,
-                                             void **win, int flags) {
-  return flagcxNotSupported;
-}
-flagcxResult_t mpiAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               void *win) {
-  return flagcxNotSupported;
-}
-flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                         void **buff, size_t size,
-                                         int isRecv) {
-  return flagcxNotSupported;
 }
 
 flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
@@ -167,6 +157,17 @@ flagcxResult_t mpiAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t mpiAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mpiAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                            size_t size, void **win,
+                                            int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mpiAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                              void *win) {
   return flagcxNotSupported;
 }
 
@@ -350,16 +351,15 @@ struct flagcxCCLAdaptor mpiAdaptor = {
     "MPI",
     // Basic functions
     mpiAdaptorGetVersion, mpiAdaptorGetUniqueId, mpiAdaptorGetErrorString,
-    mpiAdaptorGetLastError,
-    // Symmetric operations
-    mpiAdaptorCommWindowRegister, mpiAdaptorCommWindowDeregister,
-    mpiAdaptorGetStagedBuffer,
+    mpiAdaptorGetLastError, mpiAdaptorGetStagedBuffer,
     // Communicator functions
     mpiAdaptorCommInitRank, mpiAdaptorCommFinalize, mpiAdaptorCommDestroy,
     mpiAdaptorCommAbort, mpiAdaptorCommResume, mpiAdaptorCommSuspend,
     mpiAdaptorCommCount, mpiAdaptorCommCuDevice, mpiAdaptorCommUserRank,
     mpiAdaptorCommGetAsyncError, mpiAdaptorMemAlloc, mpiAdaptorMemFree,
     mpiAdaptorCommRegister, mpiAdaptorCommDeregister,
+    // Symmetric functions
+    mpiAdaptorCommWindowRegister, mpiAdaptorCommWindowDeregister,
     // Communication functions
     mpiAdaptorReduce, mpiAdaptorGather, mpiAdaptorScatter, mpiAdaptorBroadcast,
     mpiAdaptorAllReduce, mpiAdaptorReduceScatter, mpiAdaptorAllGather,
