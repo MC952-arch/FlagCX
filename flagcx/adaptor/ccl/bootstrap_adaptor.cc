@@ -83,12 +83,12 @@ flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t bootstrapAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = sendStagedBufferList[i];
     free(buff->buffer);
     free(buff);
   }
-  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = recvStagedBufferList[i];
     free(buff->buffer);
     free(buff);
@@ -99,12 +99,12 @@ flagcxResult_t bootstrapAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t bootstrapAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = sendStagedBufferList[i];
     free(buff->buffer);
     free(buff);
   }
-  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = recvStagedBufferList[i];
     free(buff->buffer);
     free(buff);
@@ -115,12 +115,12 @@ flagcxResult_t bootstrapAdaptorCommDestroy(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t bootstrapAdaptorCommAbort(flagcxInnerComm_t comm) {
-  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = sendStagedBufferList[i];
     free(buff->buffer);
     free(buff);
   }
-  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
     stagedBuffer *buff = recvStagedBufferList[i];
     free(buff->buffer);
     free(buff);
