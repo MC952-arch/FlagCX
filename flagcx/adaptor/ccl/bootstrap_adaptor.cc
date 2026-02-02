@@ -20,36 +20,36 @@ flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
 flagcxResult_t bootstrapAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                                void **buff, size_t size,
                                                int isRecv) {
-  bool registered = true;
-  stagedBuffer *sbuff =
-      isRecv
-          ? (recvStagedBufferList.empty() ? NULL : recvStagedBufferList.back())
-          : (sendStagedBufferList.empty() ? NULL : sendStagedBufferList.back());
+  stagedBuffer *sbuff = NULL;
+  if (isRecv) {
+    for (auto it = recvStagedBufferList.begin();
+         it != recvStagedBufferList.end(); it++) {
+      if ((*it)->size - (*it)->offset >= size) {
+        sbuff = (*it);
+        break;
+      }
+    }
+  } else {
+    for (auto it = sendStagedBufferList.begin();
+         it != sendStagedBufferList.end(); it++) {
+      if ((*it)->size - (*it)->offset >= size) {
+        sbuff = (*it);
+        break;
+      }
+    }
+  }
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
     sbuff->offset = 0;
-    sbuff->size = BOOTSTRAP_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
-    registered = false;
-  }
-  int newSize = sbuff->size;
-  int idleSize = newSize - sbuff->offset;
-  while (idleSize < size) {
-    newSize *= 2;
-    idleSize = newSize;
-  }
-  // create a new buffer
-  if (newSize > sbuff->size && registered) {
-    sbuff = NULL;
-    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
-    sbuff->offset = 0;
-    registered = false;
-  }
-  sbuff->size = newSize;
-  if (!registered) {
+    int newSize = BOOTSTRAP_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
+    while (newSize < size) {
+      newSize *= 2;
+    }
     sbuff->buffer = malloc(newSize);
     if (sbuff->buffer == NULL) {
       return flagcxSystemError;
     }
+    sbuff->size = newSize;
     if (isRecv) {
       recvStagedBufferList.push_back(sbuff);
     } else {

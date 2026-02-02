@@ -28,39 +28,37 @@ flagcxResult_t glooAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
 flagcxResult_t glooAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                           void **buff, size_t size,
                                           int isRecv) {
-  bool registered = true;
-  stagedBuffer *sbuff =
-      isRecv
-          ? (recvStagedBufferList.empty() ? NULL : recvStagedBufferList.back())
-          : (sendStagedBufferList.empty() ? NULL : sendStagedBufferList.back());
+  stagedBuffer *sbuff = NULL;
+  if (isRecv) {
+    for (auto it = recvStagedBufferList.begin();
+         it != recvStagedBufferList.end(); it++) {
+      if ((*it)->size - (*it)->offset >= size) {
+        sbuff = (*it);
+        break;
+      }
+    }
+  } else {
+    for (auto it = sendStagedBufferList.begin();
+         it != sendStagedBufferList.end(); it++) {
+      if ((*it)->size - (*it)->offset >= size) {
+        sbuff = (*it);
+        break;
+      }
+    }
+  }
   if (sbuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
     sbuff->offset = 0;
-    sbuff->size = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
     sbuff->cnt = 0;
-    registered = false;
-  }
-  int newSize = sbuff->size;
-  int idleSize = newSize - sbuff->offset;
-  while (idleSize < size) {
-    newSize *= 2;
-    idleSize = newSize;
-  }
-  // create a new buffer
-  if (newSize > sbuff->size && registered) {
-    sbuff = NULL;
-    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
-    sbuff->offset = 0;
-    sbuff->cnt = 0;
-    sbuff->unboundBuffer = NULL;
-    registered = false;
-  }
-  sbuff->size = newSize;
-  if (!registered) {
+    int newSize = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
+    while (newSize < size) {
+      newSize *= 2;
+    }
     sbuff->buffer = malloc(newSize);
     if (sbuff->buffer == NULL) {
       return flagcxSystemError;
     }
+    sbuff->size = newSize;
     auto unboundBuffer = comm->base->createUnboundBuffer(
         const_cast<void *>(sbuff->buffer), sbuff->size);
     sbuff->unboundBuffer = unboundBuffer.get();
