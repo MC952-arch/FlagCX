@@ -330,7 +330,7 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCommWindowRegister(const flagcxComm_t comm, void *buff,
+flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));

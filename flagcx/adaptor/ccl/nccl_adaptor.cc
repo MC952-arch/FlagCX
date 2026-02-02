@@ -30,6 +30,7 @@ flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
   void *sym = dlsym(handle, name);
   if (!sym) {
     fprintf(stderr, "dlsym failed: %s\n", dlerror());
+    dlclose(handle);
     return flagcxSystemError;
   }
 
@@ -52,23 +53,46 @@ flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
 flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
                                           void **buff, size_t /*size*/,
                                           int isRecv) {
+  flagcxResult_t res = flagcxSuccess;
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   if (isRecv && comm->recvStagedBuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&comm->recvStagedBuff, 1));
-    FLAGCXCHECK((flagcxResult_t)ncclMemAlloc(
-        &comm->recvStagedBuff->buff, NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE));
-    FLAGCXCHECK((flagcxResult_t)ncclCommWindowRegister(
+    res = (flagcxResult_t)ncclMemAlloc(&comm->recvStagedBuff->buff,
+                                       NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE);
+    if (res != flagcxSuccess) {
+      free(comm->recvStagedBuff);
+      comm->recvStagedBuff = NULL;
+      return res;
+    }
+    res = (flagcxResult_t)ncclCommWindowRegister(
         comm->base, comm->recvStagedBuff->buff,
         NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE, &comm->recvStagedBuff->win,
-        NCCL_WIN_COLL_SYMMETRIC));
+        NCCL_WIN_COLL_SYMMETRIC);
+    if (res != flagcxSuccess) {
+      (void)ncclMemFree(comm->recvStagedBuff->buff);
+      free(comm->recvStagedBuff);
+      comm->recvStagedBuff = NULL;
+      return res;
+    }
   } else if (!isRecv && comm->sendStagedBuff == NULL) {
     FLAGCXCHECK(flagcxCalloc(&comm->sendStagedBuff, 1));
-    FLAGCXCHECK((flagcxResult_t)ncclMemAlloc(
-        &comm->sendStagedBuff->buff, NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE));
-    FLAGCXCHECK((flagcxResult_t)ncclCommWindowRegister(
+    res = (flagcxResult_t)ncclMemAlloc(&comm->sendStagedBuff->buff,
+                                       NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE);
+    if (res != flagcxSuccess) {
+      free(comm->sendStagedBuff);
+      comm->sendStagedBuff = NULL;
+      return res;
+    }
+    res = (flagcxResult_t)ncclCommWindowRegister(
         comm->base, comm->sendStagedBuff->buff,
         NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE, &comm->sendStagedBuff->win,
-        NCCL_WIN_COLL_SYMMETRIC));
+        NCCL_WIN_COLL_SYMMETRIC);
+    if (res != flagcxSuccess) {
+      (void)ncclMemFree(comm->sendStagedBuff->buff);
+      free(comm->sendStagedBuff);
+      comm->sendStagedBuff = NULL;
+      return res;
+    }
   }
   if (buff) {
     if (isRecv) {
@@ -78,7 +102,7 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
     }
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-  return flagcxSuccess;
+  return res;
 }
 
 const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
@@ -102,17 +126,27 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   if ((*comm)->devBase == NULL) {
+    // TODO(MC952-arch): auto-detect symmetric support
     // Create device communicator
     FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
     ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
     reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+    // TODO(MC952-arch): auto-detect multimem support
     reqs.lsaMultimem = true;
     using pncclDevCommCreate_t = ncclResult_t (*)(
         ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
     void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-    auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-        dlsym(handle, "pncclDevCommCreate"));
-    FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+    if (handle) {
+      auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+          dlsym(handle, "pncclDevCommCreate"));
+      if (fn) {
+        FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+      }
+      dlclose(handle);
+    }
+    if ((*comm)->devBase == NULL) {
+      WARN("ncclDevComm is not initialized succefully");
+    }
   }
 #endif
   FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 1));
@@ -335,6 +369,8 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+  // TODO(MC952-arch): use a mutex to avoid race condition in multi-thread
+  // scenario
   if (!customOpLoaded[flagcxCommOpAllReduce]) {
     const char *customAllreducePathEnv =
         flagcxGetEnv("FLAGCX_CUSTOM_ALLREDUCE_PATH");
