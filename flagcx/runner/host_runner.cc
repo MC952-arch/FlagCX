@@ -22,9 +22,9 @@ flagcxResult_t hostRunnerReduce(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -80,9 +80,9 @@ flagcxResult_t hostRunnerGather(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -136,9 +136,9 @@ flagcxResult_t hostRunnerScatter(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, totalSize, 0, comm->host_comm));
+      comm->host_comm, &buffIn, totalSize, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -191,9 +191,9 @@ flagcxResult_t hostRunnerBroadcast(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -246,9 +246,9 @@ flagcxResult_t hostRunnerAllReduce(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -303,9 +303,9 @@ flagcxResult_t hostRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, send_size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, send_size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, recv_size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, recv_size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -358,9 +358,9 @@ flagcxResult_t hostRunnerAllGather(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, totalSize, 1, comm->host_comm));
+      comm->host_comm, &buffOut, totalSize, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -412,9 +412,9 @@ flagcxResult_t hostRunnerAlltoAll(const void *sendbuff, void *recvbuff,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -477,9 +477,9 @@ flagcxResult_t hostRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, max_send_size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, max_send_size, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, max_recv_size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, max_recv_size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -530,7 +530,7 @@ flagcxResult_t hostRunnerSend(const void *sendbuff, size_t count,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffIn, size, 0, comm->host_comm));
+      comm->host_comm, &buffIn, size, 0));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
@@ -573,7 +573,7 @@ flagcxResult_t hostRunnerRecv(void *recvbuff, size_t count,
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      &buffOut, size, 1, comm->host_comm));
+      comm->host_comm, &buffOut, size, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: recv

@@ -75,8 +75,6 @@ struct flagcxCCLAdaptor {
   // Basic functions
   flagcxResult_t (*getVersion)(int *version);
   flagcxResult_t (*getUniqueId)(flagcxUniqueId_t *uniqueId);
-  flagcxResult_t (*getStagedBuffer)(void **buff, int size, int isRecv,
-                                    flagcxInnerComm_t comm);
   const char *(*getErrorString)(flagcxResult_t result);
   const char *(*getLastError)(flagcxInnerComm_t comm);
   flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
