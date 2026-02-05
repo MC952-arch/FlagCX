@@ -2,43 +2,6 @@
 
 #ifdef USE_NVIDIA_ADAPTOR
 
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-#include "nccl_device.h"
-
-#define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
-#define NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
-
-// Try to load custom ops once
-#define MAX_NUM_COMM_OPS 16
-static bool customOpLoaded[MAX_NUM_COMM_OPS] = {false};
-
-using customAllReduce_t =
-    flagcxCustomOpFunc_t<ncclWindow_t, ncclWindow_t, void *, size_t,
-                         flagcxDataType_t, int, ncclDevComm &, cudaStream_t>;
-static customAllReduce_t localAllReduce = NULL;
-static customAllReduce_t interleavedAllReduce = NULL;
-
-template <typename T>
-flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
-  void *handle = flagcxOpenLib(
-      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-      });
-  if (!handle)
-    return flagcxSystemError;
-
-  void *sym = dlsym(handle, name);
-  if (!sym) {
-    fprintf(stderr, "dlsym failed: %s\n", dlerror());
-    dlclose(handle);
-    return flagcxSystemError;
-  }
-
-  *fn = (T)sym;
-  return flagcxSuccess;
-}
-#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -148,7 +111,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       WARN("ncclDevComm is not initialized succefully");
     }
   }
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 1));
   FLAGCXCHECK(ncclAdaptorGetStagedBuffer(*comm, NULL, 0, 0));
   return flagcxSuccess;
@@ -171,7 +134,7 @@ flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     free(comm->devBase);
   }
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommFinalize(comm->base));
   free(comm);
   return flagcxSuccess;
@@ -194,7 +157,7 @@ flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     free(comm->devBase);
   }
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
   free(comm);
   return flagcxSuccess;
@@ -217,7 +180,7 @@ flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     free(comm->devBase);
   }
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommAbort(comm->base));
   free(comm);
   return flagcxSuccess;
@@ -280,7 +243,7 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                                 &(*win)->base, winFlags);
 #else
   return flagcxNotSupported;
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 }
 
 flagcxResult_t ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
@@ -292,7 +255,7 @@ flagcxResult_t ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
   return res;
 #else
   return flagcxNotSupported;
-#endif
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 }
 
 flagcxResult_t ncclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -368,51 +331,39 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-  // TODO(MC952-arch): use a mutex to avoid race condition in multi-thread
-  // scenario
-  if (!customOpLoaded[flagcxCommOpAllReduce]) {
-    const char *customAllreducePathEnv =
-        flagcxGetEnv("FLAGCX_CUSTOM_ALLREDUCE_PATH");
-    if (customAllreducePathEnv) {
-      FLAGCXCHECK(loadCommOpFuncSymbol<customAllReduce_t>(
-          customAllreducePathEnv, "flagcxLocalAllReduce", &localAllReduce));
-      FLAGCXCHECK(loadCommOpFuncSymbol<customAllReduce_t>(
-          customAllreducePathEnv, "flagcxInterleavedAllReduce",
-          &interleavedAllReduce));
-    }
-    customOpLoaded[flagcxCommOpAllReduce] = true;
-  }
+#if defined(COMPILE_KERNEL) && (NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0))
   size_t size = count * getFlagcxDataTypeSize(datatype);
   int nranks;
   FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
-  if (localAllReduce == NULL || interleavedAllReduce == NULL ||
-      size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) {
-    return (flagcxResult_t)ncclAllReduce(
+  if (size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) {
+    FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
         sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
-        comm->base, stream->base);
+        comm->base, stream->base));
   } else {
     DEVCHECK(cudaMemcpyAsync(comm->sendStagedBuff->buff, sendbuff, size,
                              cudaMemcpyDeviceToDevice, stream->base));
     if ((nranks <= 4 && size < 512 * 1024) ||
         (nranks <= 8 && size < 256 * 1024)) {
-      localAllReduce(comm->sendStagedBuff->win, comm->recvStagedBuff->win,
-                     recvbuff, count, datatype, nranks, *comm->devBase,
-                     stream->base);
+      FLAGCXCHECK((flagcxResult_t)ncclAdaptorLocalAllReduce(
+          sendbuff, recvbuff, comm->sendStagedBuff->win,
+          comm->recvStagedBuff->win, count, (ncclDataType_t)datatype,
+          (ncclRedOp_t)op, *comm->devBase, stream->base));
     } else {
-      interleavedAllReduce(comm->sendStagedBuff->win, comm->recvStagedBuff->win,
-                           recvbuff, count, datatype, nranks, *comm->devBase,
-                           stream->base);
+      FLAGCXCHECK((flagcxResult_t)ncclAdaptorInterleavedAllReduce(
+          sendbuff, recvbuff, comm->sendStagedBuff->win,
+          comm->recvStagedBuff->win, count, (ncclDataType_t)datatype,
+          (ncclRedOp_t)op, *comm->devBase, stream->base));
       DEVCHECK(cudaMemcpyAsync(recvbuff, comm->recvStagedBuff->buff, size,
                                cudaMemcpyDeviceToDevice, stream->base));
     }
   }
-  return flagcxSuccess;
 #else
-  return (flagcxResult_t)ncclAllReduce(
+  FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
       sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
-      comm->base, stream->base);
-#endif
+      comm->base, stream->base));
+#endif // defined(COMPILE_KERNEL) && (NCCL_VERSION_CODE > NCCL_VERSION(2, 28,
+       // 0))
+  return flagcxSuccess;
 }
 
 flagcxResult_t
