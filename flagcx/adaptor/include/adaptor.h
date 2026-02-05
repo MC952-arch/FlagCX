@@ -12,10 +12,7 @@
 #include "flagcx.h"
 #include "global_comm.h"
 #include "topo.h"
-
-template <typename... Args>
-using flagcxCustomOpFunc_t = void (*)(Args...);
-using flagcxLaunchFunc_t = flagcxCustomOpFunc_t<flagcxStream_t, void *>;
+#include "utils.h"
 
 #ifdef __cplusplus
 extern "C" {
