@@ -331,11 +331,14 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
-#if defined(COMPILE_KERNEL) && (NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0))
+#if defined(COMPILE_KERNEL_HOST) && (NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0))
   size_t size = count * getFlagcxDataTypeSize(datatype);
   int nranks;
   FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
-  if (size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) {
+  if ((size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) ||
+      (datatype != flagcxFloat32 && datatype != flagcxFloat16 &&
+       datatype != flagcxBFloat16) ||
+      (op != flagcxSum)) {
     FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
         sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
         comm->base, stream->base));
@@ -361,8 +364,8 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
       sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
       comm->base, stream->base));
-#endif // defined(COMPILE_KERNEL) && (NCCL_VERSION_CODE > NCCL_VERSION(2, 28,
-       // 0))
+#endif // defined(COMPILE_KERNEL_HOST) && (NCCL_VERSION_CODE > NCCL_VERSION(2,
+       // 28, 0))
   return flagcxSuccess;
 }
 

@@ -1,3 +1,7 @@
+/*************************************************************************
+ * Copyright (c) 2025 BAAI. All rights reserved.
+ ************************************************************************/
+
 #include "nvidia_adaptor.h"
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 #include "nccl_device.h"
@@ -6,7 +10,7 @@
 #include <cuda_bf16.h>
 #include <type_traits>
 
-// Helper structures and functions from main.cu
+// Helper structures and functions
 template <typename T, int sz>
 struct __align__(alignof(T) * sz) array_t {
   T data[sz];
@@ -20,50 +24,9 @@ struct packed_t {
   using A = array_t<float, N / sizeof(float)>;
 };
 
-#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __forceinline__
-
 // Type aliases for compatibility
 typedef __half half;
 typedef __nv_bfloat16 nv_bfloat16;
-
-// Scalar cast functions
-FLAGCX_DEVICE_INLINE_DECORATOR float upcast_s_new(half val) { return __half2float(val); }
-
-template <typename T>
-FLAGCX_DEVICE_INLINE_DECORATOR T downcast_s(float val);
-
-template <>
-FLAGCX_DEVICE_INLINE_DECORATOR half downcast_s(float val) {
-  return __float2half(val);
-}
-
-#if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
-FLAGCX_DEVICE_INLINE_DECORATOR float upcast_s_new(nv_bfloat16 val) { return __bfloat162float(val); }
-template <>
-FLAGCX_DEVICE_INLINE_DECORATOR nv_bfloat16 downcast_s(float val) {
-  return __float2bfloat16(val);
-}
-FLAGCX_DEVICE_INLINE_DECORATOR nv_bfloat16& assign_add(nv_bfloat16& a, nv_bfloat16 b) {
-  a = __hadd(a, b);
-  return a;
-}
-#endif
-
-// Scalar add functions
-FLAGCX_DEVICE_INLINE_DECORATOR half& assign_add(half& a, half b) {
-  a = __hadd(a, b);
-  return a;
-}
-FLAGCX_DEVICE_INLINE_DECORATOR float& assign_add(float& a, float b) { return a += b; }
-
-template <typename T, int N>
-FLAGCX_DEVICE_INLINE_DECORATOR array_t<T, N>& packed_assign_add(array_t<T, N>& a, array_t<T, N> b) {
-#pragma unroll
-  for (int i = 0; i < N; i++) {
-    assign_add(a.data[i], b.data[i]);
-  }
-  return a;
-}
 
 template<typename T>
 FLAGCX_DEVICE_INLINE_DECORATOR uint32_t pack32(T lo, T hi) {
@@ -197,7 +160,6 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
 template <typename T>
 __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
                                            ncclWindow_t recvwin, size_t recvoffset,
-                                           //size_t count, int root,
                                            void *recvbuffer, size_t count, int root,
                                            struct ncclDevComm devComm) {
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
@@ -208,83 +170,71 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
   const int rank = devComm.rank, nRanks = devComm.nRanks;
   const int globalTid = threadIdx.x + blockDim.x * (rank + blockIdx.x * nRanks);
   const int globalNthreads = blockDim.x * gridDim.x * nRanks;
-  //const int tid = threadIdx.x + blockDim.x * blockIdx.x;
-  //const int stride = blockDim.x * gridDim.x;
   using P = typename packed_t<T, 4>::P;
   size_t pSize = packed_t<T, 4>::P::size;
   count /= pSize;
 
   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
   T* mmRecvPtr = (T*)ncclGetLsaMultimemPointer(recvwin, recvoffset, devComm);
-  //T* lsaTmpRecvPtr = (T*)ncclGetLsaPointer(recvwin, recvoffset, rank);
-  //T* lsaRecvPtr = (T*)recvbuffer;
 
 #pragma unroll
   for (size_t offset = globalTid; offset < count; offset += globalNthreads) {
     array_t<T, 2> v = multimem_sum<T, 2>(mmSendPtr+pSize*offset);
     multimem_st<T, 2>(mmRecvPtr+pSize*offset, v);
-    //lsa_ldst<T, 2>(lsaTmpRecvPtr + pSize*offset, lsaRecvPtr + pSize*offset);
   }
   bar.sync(ncclCoopCta(), cuda::memory_order_release);
-//#pragma unroll
-//  for (size_t offset = tid; offset < count; offset += stride) {
-//    lsa_ldst<T, 2>(lsaTmpRecvPtr + pSize*offset, lsaRecvPtr + pSize*offset);
-//  }
 }
 
-template <typename T>
-__global__ void twoStageAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                        ncclWindow_t recvwin, size_t recvoffset,
-                                        //size_t count, int root,
-                                        void *recvbuffer, size_t count, int root,
-                                        struct ncclDevComm devComm) {
-  ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
-                                         ncclTeamLsa(devComm),
-                                         devComm.lsaBarrier, blockIdx.x, true};
-  bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);
+// template <typename T>
+// __global__ void twoStageAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
+//                                         ncclWindow_t recvwin, size_t recvoffset,
+//                                         void *recvbuffer, size_t count, int root,
+//                                         struct ncclDevComm devComm) {
+//   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
+//                                          ncclTeamLsa(devComm),
+//                                          devComm.lsaBarrier, blockIdx.x, true};
+//   bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);
 
-  const int rank = devComm.rank, nRanks = devComm.nRanks;
-  const int globalTid = threadIdx.x + blockDim.x * blockIdx.x;
-  const int globalNthreads = blockDim.x * gridDim.x;
-  using P = typename packed_t<T, 4>::P;
-  size_t pSize = packed_t<T, 4>::P::size;
-  count /= pSize;
-  size_t part = count / nRanks;
-  size_t largestPart = part + count % nRanks;
-  size_t start = rank * part;
-  size_t end = (rank == nRanks - 1) ? count : start + part;
-  //const T* ptrs[8];
-  //T* tmps[8];
-  T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
-  T* mmRecvPtr = (T*)ncclGetLsaMultimemPointer(recvwin, recvoffset, devComm);
-  T* lsaRecvPtr = (T*)recvbuffer;
+//   const int rank = devComm.rank, nRanks = devComm.nRanks;
+//   const int globalTid = threadIdx.x + blockDim.x * blockIdx.x;
+//   const int globalNthreads = blockDim.x * gridDim.x;
+//   using P = typename packed_t<T, 4>::P;
+//   size_t pSize = packed_t<T, 4>::P::size;
+//   count /= pSize;
+//   size_t part = count / nRanks;
+//   size_t largestPart = part + count % nRanks;
+//   size_t start = rank * part;
+//   size_t end = (rank == nRanks - 1) ? count : start + part;
+//   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
+//   T* mmRecvPtr = (T*)ncclGetLsaMultimemPointer(recvwin, recvoffset, devComm);
+//   T* lsaRecvPtr = (T*)recvbuffer;
 
-  // stage 1: reduce scatter
-#pragma unroll
-  for (size_t offset = start + globalTid; offset < end; offset += globalNthreads) {
-    array_t<T, 2> v = multimem_sum<T, 2>(mmSendPtr+pSize*offset);
-    multimem_st<T, 2>(mmRecvPtr+pSize*offset, v);
-  }
-  bar.sync(ncclCoopCta(), cuda::memory_order_release);
+//   // stage 1: reduce scatter
+// #pragma unroll
+//   for (size_t offset = start + globalTid; offset < end; offset += globalNthreads) {
+//     array_t<T, 2> v = multimem_sum<T, 2>(mmSendPtr+pSize*offset);
+//     multimem_st<T, 2>(mmRecvPtr+pSize*offset, v);
+//   }
+//   bar.sync(ncclCoopCta(), cuda::memory_order_release);
 
-  // stage 2: allgather
-  for (int idx = globalTid; idx < largestPart; idx += globalNthreads) {
-#pragma unroll
-    for (int i = 0; i < nRanks; i++) {
-      T* lsaTmpRecvPtr = (T*)ncclGetLsaPointer(recvwin, recvoffset, i);
-      int gatherFromRank = ((rank + i) % nRanks);
-      if (gatherFromRank == nRanks - 1 || idx < part) {
-        int dstIdx = gatherFromRank * part + idx;
-        lsa_ldst<T, 2>(lsaTmpRecvPtr + pSize*dstIdx, lsaRecvPtr + pSize*dstIdx);
-      }
-    }
-  }
-}
+//   // stage 2: allgather
+//   for (int idx = globalTid; idx < largestPart; idx += globalNthreads) {
+// #pragma unroll
+//     for (int i = 0; i < nRanks; i++) {
+//       T* lsaTmpRecvPtr = (T*)ncclGetLsaPointer(recvwin, recvoffset, i);
+//       int gatherFromRank = ((rank + i) % nRanks);
+//       if (gatherFromRank == nRanks - 1 || idx < part) {
+//         int dstIdx = gatherFromRank * part + idx;
+//         lsa_ldst<T, 2>(lsaTmpRecvPtr + pSize*dstIdx, lsaRecvPtr + pSize*dstIdx);
+//       }
+//     }
+//   }
+// }
 
 // Helper function to launch appropriate kernel
 template <typename T>
 void launchLocalAllReduceKernel(ncclWindow_t send_win, void *recvbuffer,
-                                size_t count, size_t nRanks, ncclDevComm& devComm,
+                                size_t count, ncclDevComm& devComm,
                                 cudaStream_t stream) {
   localAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT, NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0,
                             stream>>>(send_win, 0, recvbuffer, count, 0, devComm);
@@ -292,7 +242,7 @@ void launchLocalAllReduceKernel(ncclWindow_t send_win, void *recvbuffer,
 
 template <typename T>
 void launchInterleavedAllReduceKernel(ncclWindow_t send_win, ncclWindow_t recv_win, void *recvbuffer,
-                                      size_t count, size_t nRanks, ncclDevComm& devComm,
+                                      size_t count, ncclDevComm& devComm,
                                       cudaStream_t stream) {
   interleavedAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT, NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0,
                                   stream>>>(send_win, 0, recv_win, 0, recvbuffer, count, 0, devComm);
@@ -300,6 +250,7 @@ void launchInterleavedAllReduceKernel(ncclWindow_t send_win, ncclWindow_t recv_w
   //                             stream>>>(send_win, 0, recv_win, 0, recvbuffer, count, 0, devComm);
 }
 
+extern "C"
 ncclResult_t ncclAdaptorLocalAllReduce(const void *sendbuff,
                                        void *recvbuff,
                                        ncclWindow_t send_win,
@@ -323,10 +274,11 @@ ncclResult_t ncclAdaptorLocalAllReduce(const void *sendbuff,
     default:
       return ncclInvalidArgument;
   }
-  return flagcxSuccess;
+  return ncclSuccess;
 
 }
 
+extern "C"
 ncclResult_t ncclAdaptorInterleavedAllReduce(const void *sendbuff,
                                              void *recvbuff,
                                              ncclWindow_t send_win,
@@ -350,6 +302,6 @@ ncclResult_t ncclAdaptorInterleavedAllReduce(const void *sendbuff,
     default:
       return ncclInvalidArgument;
   }
-  return flagcxSuccess;
+  return ncclSuccess;
 }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)

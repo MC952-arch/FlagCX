@@ -21,7 +21,7 @@ struct stagedBuffer {
 };
 typedef struct stagedBuffer *stagedBuffer_t;
 
-#if defined(COMPILE_KERNEL)
+#if defined(COMPILE_KERNEL_HOST)
 extern "C" ncclResult_t
 ncclAdaptorLocalAllReduce(const void *sendbuff, void *recvbuff,
                           ncclWindow_t send_win, ncclWindow_t recv_win,
@@ -32,7 +32,7 @@ extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
     const void *sendbuff, void *recvbuff, ncclWindow_t send_win,
     ncclWindow_t recv_win, size_t count, ncclDataType_t datatype,
     ncclRedOp_t op, ncclDevComm &devComm, cudaStream_t stream);
-#endif // COMPILE_KERNEL
+#endif // COMPILE_KERNEL_HOST
 
 #else
 

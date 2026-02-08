@@ -130,14 +130,15 @@ NET_ADAPTOR_FLAG =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 ifeq ($(USE_NVIDIA), 1)
+	include makefiles/nvidia_gencode.mk
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
 	DEVICE_LINK = -lcudart -lcuda
 	DEVICE_RUNTIME = CUDA
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 	DEVICE_LINKER = $(DEVICE_HOME)/bin/nvcc -dlink
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC
+	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
+	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
 	DEVICE_FILE_EXTENSION = cu
 	CCL_LIB = $(CCL_HOME)/lib
 	CCL_INCLUDE = $(CCL_HOME)/include
