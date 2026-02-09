@@ -411,8 +411,8 @@ flagcxCreateOrReplaceHomoComm(flagcxComm_t *comm,
                                  *comm, &innerComm));
   // Store new communicator of collCat into homoCommMap
   (*comm)->homoCommMap[collCat] = innerComm;
-  // For backward compatible, also assign homo_comm field.
-  (*comm)->homo_comm = innerComm;
+  // For backward compatible, also assign homoComm field.
+  (*comm)->homoComm = innerComm;
   return flagcxSuccess;
 }
 
@@ -639,7 +639,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
                                    (struct bootstrapState *)(ctx->bootstrap),
                                    *comm, &newInner));
     (*comm)->tunerInnerComm = newInner;
-    (*comm)->homo_comm = newInner;
+    (*comm)->homoComm = newInner;
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
     ctx->commConfigId += 1;
     // if all communicator configurations have been tested, set the environment
@@ -670,7 +670,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
                                    (struct bootstrapState *)(ctx->bootstrap),
                                    *comm, &newInner));
     (*comm)->tunerInnerComm = newInner;
-    (*comm)->homo_comm = newInner;
+    (*comm)->homoComm = newInner;
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
     std::stringstream msg;
     msg << "Best Envs: ";

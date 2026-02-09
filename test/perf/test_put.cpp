@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
   flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
 
   struct flagcxComm *innerComm = comm;
-  struct flagcxHeteroComm *hetero = innerComm->hetero_comm;
+  struct flagcxHeteroComm *hetero = innerComm->heteroComm;
   if (hetero == nullptr) {
     int isHomo = 0;
     flagcxIsHomoComm(comm, &isHomo);
@@ -219,7 +219,7 @@ int main(int argc, char *argv[]) {
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
         std::memset((char *)window + current_send_offset, value, size);
 
-        res = flagcxHeteroPut(comm->hetero_comm, receiverRank,
+        res = flagcxHeteroPut(comm->heteroComm, receiverRank,
                               current_send_offset, current_recv_offset, size);
         fatal(res, "flagcxHeteroPut warmup failed", proc);
         res = flagcxHeteroPutSignal(hetero, receiverRank, signalOffset);
@@ -246,12 +246,12 @@ int main(int argc, char *argv[]) {
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
         std::memset((char *)window + current_send_offset, value, size);
 
-        res = flagcxHeteroPut(comm->hetero_comm, receiverRank,
+        res = flagcxHeteroPut(comm->heteroComm, receiverRank,
                               current_send_offset, current_recv_offset, size);
         fatal(res, "flagcxHeteroPut failed", proc);
 
-        res = flagcxHeteroPutSignal(comm->hetero_comm, receiverRank,
-                                    signalOffset);
+        res =
+            flagcxHeteroPutSignal(comm->heteroComm, receiverRank, signalOffset);
         fatal(res, "flagcxHeteroPutSignal failed", proc);
       } else if (isReceiver) {
         res = netAdaptor->waitValue((void **)globalHandles, receiverRank,

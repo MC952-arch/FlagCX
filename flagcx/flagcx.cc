@@ -92,15 +92,15 @@ flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
   if (comm == NULL) {
     return flagcxInternalError;
   }
-  if (comm->comm_type != flagcxCommunicatorHybrid &&
-      comm->comm_type != flagcxCommunicatorHomo) {
+  if (comm->commType != flagcxCommunicatorHybrid &&
+      comm->commType != flagcxCommunicatorHomo) {
     return flagcxInternalError;
   }
   return flagcxSuccess;
 }
 
 bool useHomoComm(flagcxComm_t comm) {
-  return comm->comm_type == flagcxCommunicatorHomo;
+  return comm->commType == flagcxCommunicatorHomo;
 }
 
 bool useHostComm() {
@@ -183,7 +183,7 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  struct flagcxHeteroComm *heteroComm = comm->hetero_comm;
+  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->put == NULL ||
       heteroComm->netAdaptor->regMr == NULL) {
@@ -309,12 +309,12 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     return flagcxInvalidArgument;
   }
   if (useHomoComm(comm) && !useHeteroComm()) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(comm->homo_comm, buff,
+    cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(comm->homoComm, buff,
                                                       size, handle);
   } else {
-    globalRegPool.registerBuffer((void *)comm->hetero_comm, buff, size);
+    globalRegPool.registerBuffer((void *)comm->heteroComm, buff, size);
     *handle = reinterpret_cast<void *>(
-        globalRegPool.getItem((void *)comm->hetero_comm, buff));
+        globalRegPool.getItem((void *)comm->heteroComm, buff));
   }
   return flagcxSuccess;
 }
@@ -322,10 +322,9 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homo_comm,
-                                                        handle);
+    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm, handle);
   } else {
-    globalRegPool.deregisterBuffer((void *)comm->hetero_comm, handle);
+    globalRegPool.deregisterBuffer((void *)comm->heteroComm, handle);
   }
   return flagcxSuccess;
 }
@@ -336,7 +335,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-        comm->homo_comm, buff, size, win, winFlags));
+        comm->homoComm, buff, size, win, winFlags));
     return flagcxSuccess;
   }
   return flagcxNotSupported;
@@ -347,7 +346,7 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homo_comm, win));
+        comm->homoComm, win));
     return flagcxSuccess;
   }
   return flagcxNotSupported;
@@ -397,7 +396,7 @@ const char *flagcxGetLastError(flagcxComm_t comm) {
     return "Undefined: flagcxComm is not fully initialized.";
   }
   if (useHomoComm(comm)) {
-    return cclAdaptors[flagcxCCLAdaptorDevice]->getLastError(comm->homo_comm);
+    return cclAdaptors[flagcxCCLAdaptorDevice]->getLastError(comm->homoComm);
   }
   return "Not implemented.";
 }
@@ -414,21 +413,21 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->rank = rank;
   (*comm)->nranks = nranks;
   (*comm)->nclusters = -1;
-  (*comm)->homo_rank = -1;
-  (*comm)->homo_root_rank = -1;
-  (*comm)->homo_ranks = -1;
-  (*comm)->has_single_rank_homo_comm = -1;
+  (*comm)->homoRank = -1;
+  (*comm)->homoRootRank = -1;
+  (*comm)->homoRanks = -1;
+  (*comm)->hasSingleRankHomoComm = -1;
   (*comm)->magic = 0;
   (*comm)->abortFlag = 0;
   (*comm)->bootstrap = NULL;
-  (*comm)->host_comm = NULL;
-  (*comm)->homo_comm = NULL;
-  (*comm)->hetero_comm = NULL;
-  (*comm)->cluster_ids = NULL;
-  (*comm)->cluster_sizes = NULL;
-  (*comm)->cluster_inter_ranks = NULL;
-  (*comm)->globalrank2homorank = NULL;
-  (*comm)->comm_type = flagcxCommunicatorUnknown;
+  (*comm)->hostComm = NULL;
+  (*comm)->homoComm = NULL;
+  (*comm)->heteroComm = NULL;
+  (*comm)->clusterIds = NULL;
+  (*comm)->clusterSizes = NULL;
+  (*comm)->clusterInterRanks = NULL;
+  (*comm)->globalRank2HomoRank = NULL;
+  (*comm)->commType = flagcxCommunicatorUnknown;
   (*comm)->homoInterRootRank = -1;
   (*comm)->homoInterMyRank = -1;
   (*comm)->homoInterRanks = -1;
@@ -472,8 +471,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(flagcxCalloc(&clusterIdData, nranks));
   FLAGCXCHECK(flagcxCalloc(&clusterInterRankData, nranks));
   FLAGCXCHECK(flagcxCollectClusterInfos(
-      vendorData, &(*comm)->comm_type, globalRankToHomoRankData + rank,
-      &(*comm)->homo_root_rank, &(*comm)->homo_ranks, clusterIdData + rank,
+      vendorData, &(*comm)->commType, globalRankToHomoRankData + rank,
+      &(*comm)->homoRootRank, &(*comm)->homoRanks, clusterIdData + rank,
       clusterInterRankData + rank, &(*comm)->nclusters, rank, nranks));
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)globalRankToHomoRankData, sizeof(int)));
@@ -481,9 +480,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)clusterInterRankData, sizeof(int)));
   FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
-  (*comm)->homo_rank = globalRankToHomoRankData[rank];
-  (*comm)->cluster_ids = clusterIdData;
-  (*comm)->globalrank2homorank = globalRankToHomoRankData;
+  (*comm)->homoRank = globalRankToHomoRankData[rank];
+  (*comm)->clusterIds = clusterIdData;
+  (*comm)->globalRank2HomoRank = globalRankToHomoRankData;
 
   // fill clusterVendorMap
   FLAGCXCHECK(flagcxFillClusterVendorInfo(vendorData, (*comm), clusterIdData,
@@ -507,14 +506,14 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
   }
   clusterSizes[cid] = nranks - sum;
-  (*comm)->cluster_sizes = clusterSizes;
+  (*comm)->clusterSizes = clusterSizes;
 
   for (int i = 0; i < nranks; ++i) {
     if (clusterInterRankData[i] != -1) {
       clusterInterRanks[clusterIdData[i]] = clusterInterRankData[i];
     }
   }
-  (*comm)->cluster_inter_ranks = clusterInterRanks;
+  (*comm)->clusterInterRanks = clusterInterRanks;
 
   int start = 0;
   if (clusterIdData[rank] >= 1) {
@@ -522,12 +521,11 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
       start += clusterSizes[i];
     }
   }
-  (*comm)->homo_inter_rank = clusterInterRanks[clusterIdData[rank]] - start;
 
   // Build c2cSchedule
   FLAGCXCHECK(flagcxCalloc(&(*comm)->c2cSchedule, (*comm)->nclusters));
   int nLocals = (*comm)->nclusters;
-  int local = (*comm)->cluster_ids[rank];
+  int local = (*comm)->clusterIds[rank];
 
   int nLocalsPow2 = pow2Up(nLocals);
   uint32_t localRound = 0;
@@ -552,18 +550,18 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
          (*comm)->c2cSchedule[i].recvCluster);
   }
 
-  // Update comm has_single_rank_homo_comm
+  // Update comm hasSingleRankHomoComm
   for (int i = 0; i < (*comm)->nclusters; ++i) {
-    if ((*comm)->cluster_sizes[i] == 1) {
-      (*comm)->has_single_rank_homo_comm = 1;
+    if ((*comm)->clusterSizes[i] == 1) {
+      (*comm)->hasSingleRankHomoComm = 1;
     }
   }
-  if ((*comm)->has_single_rank_homo_comm == -1) {
-    (*comm)->has_single_rank_homo_comm = 0;
+  if ((*comm)->hasSingleRankHomoComm == -1) {
+    (*comm)->hasSingleRankHomoComm = 0;
   }
-  if ((*comm)->has_single_rank_homo_comm == 1 && useHomoComm(*comm)) {
+  if ((*comm)->hasSingleRankHomoComm == 1 && useHomoComm(*comm)) {
     // no need to record it for homo comm
-    (*comm)->has_single_rank_homo_comm = 0;
+    (*comm)->hasSingleRankHomoComm = 0;
   }
 
   flagcxUniqueId *uniqueIdData;
@@ -611,13 +609,13 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
           flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
       // Insert item into homoCommMap
       (*comm)->tunerInnerComm = innerComm;
-      // For backward compatible, also assign homo_comm field.
-      (*comm)->homo_comm = innerComm;
+      // For backward compatible, also assign homoComm field.
+      (*comm)->homoComm = innerComm;
     }
   } else {
     (*comm)->tuner = NULL;
     FLAGCXCHECK(flagcxHomoCommInit(commId, uniqueIdData, state, *comm,
-                                   &((*comm)->homo_comm)));
+                                   &((*comm)->homoComm)));
   }
 
   if (!useHomoComm(*comm) || useHeteroComm()) {
@@ -635,14 +633,14 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     memcpy((void *)commId, (void *)&uniqueIdData[0], sizeof(flagcxUniqueId));
     // call flagcxHeteroCommInitRank
     FLAGCXCHECK(
-        flagcxHeteroCommInitRank(&(*comm)->hetero_comm, nranks, *commId, rank));
+        flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks, *commId, rank));
 
     // Init host cclAdaptor
-    if (useHostComm() || (*comm)->has_single_rank_homo_comm) {
-      FLAGCXCHECK((*comm)->hetero_comm->netAdaptor->getProperties(
-          (*comm)->hetero_comm->netDev, state->properties));
+    if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
+      FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
+          (*comm)->heteroComm->netDev, state->properties));
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
-          &(*comm)->host_comm, nranks, commId, rank, state));
+          &(*comm)->hostComm, nranks, commId, rank, state));
     }
   }
 
@@ -657,7 +655,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                              strcmp(enableTopoDetect, "True") ==
                                  0)) { // safety check nic distance is only
                                        // available after topo detection
-      FLAGCXCHECK(flagcxGetNicDistance((*comm)->hetero_comm->topoServer, rank,
+      FLAGCXCHECK(flagcxGetNicDistance((*comm)->heteroComm->topoServer, rank,
                                        nicDistanceData + rank));
     } else {
       nicDistanceData[rank].distance = rank % 2 + 1;
@@ -699,21 +697,19 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
       (*comm)->homoInterRanks = myClusterInterRanks.size();
     }
 
-    INFO(
-        FLAGCX_INIT,
-        "rank = %d, nranks = %d, nclusters = %d, cluster_id = %d, cluster_size "
-        "= %d, "
-        "cluster_inter_rank = %d, homo_rank = %d, homo_root_rank = %d, "
-        "homo_inter_rank = %d, homo_ranks = %d, "
-        "has_single_rank_homo_comm = %d, "
-        "homoInterRootRank = %d, homoInterMyRank = %d, homoInterRanks = %d",
-        rank, nranks, (*comm)->nclusters, (*comm)->cluster_ids[rank],
-        (*comm)->cluster_sizes[(*comm)->cluster_ids[rank]],
-        (*comm)->cluster_inter_ranks[(*comm)->cluster_ids[rank]],
-        (*comm)->homo_rank, (*comm)->homo_root_rank, (*comm)->homo_inter_rank,
-        (*comm)->homo_ranks, (*comm)->has_single_rank_homo_comm,
-        (*comm)->homoInterRootRank, (*comm)->homoInterMyRank,
-        (*comm)->homoInterRanks);
+    INFO(FLAGCX_INIT,
+         "rank = %d, nranks = %d, nclusters = %d, "
+         "clusterId = %d, clusterSize = %d, "
+         "clusterInterRank = %d, homoRank = %d, "
+         "homoRootRank = %d, homoRanks = %d, "
+         "homoInterRootRank = %d, homoInterMyRank = %d, "
+         "homoInterRanks = %d, hasSingleRankHomoComm = %d, ",
+         rank, nranks, (*comm)->nclusters, (*comm)->clusterIds[rank],
+         (*comm)->clusterSizes[(*comm)->clusterIds[rank]],
+         (*comm)->clusterInterRanks[(*comm)->clusterIds[rank]],
+         (*comm)->homoRank, (*comm)->homoRootRank, (*comm)->homoRanks,
+         (*comm)->homoInterRootRank, (*comm)->homoInterMyRank,
+         (*comm)->homoInterRanks, (*comm)->hasSingleRankHomoComm);
 
     // Experimental for multi-nic support
     // Reset commId and homo inter root rank calls underlying GetUniqueId
@@ -762,7 +758,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   FLAGCXCHECK(
-      cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homo_comm));
+      cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm));
   if (!useHomoComm(comm)) {
     // TODO: to be implemented
     return flagcxNotSupported;
@@ -774,9 +770,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   // Destroy cluster info
-  free(comm->cluster_ids);
-  free(comm->cluster_sizes);
-  free(comm->globalrank2homorank);
+  free(comm->clusterIds);
+  free(comm->clusterSizes);
+  free(comm->globalRank2HomoRank);
   free(comm->c2cSchedule);
 
   // Destroy bootstrap state and net
@@ -784,11 +780,11 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   if (!useHomoComm(comm)) {
     // Destroy hetero comm
-    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->hetero_comm));
+    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
     // Destroy host comm
     if (useHostComm()) {
       FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->host_comm));
+          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
     }
   }
   // Destroy homo comms
@@ -801,7 +797,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     }
   } else {
     FLAGCXCHECK(
-        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homo_comm));
+        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
   }
 
   // Destroy tuner
@@ -816,7 +812,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homo_comm));
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homoComm));
   if (!useHomoComm(comm)) {
     // TODO: to be implemented.
     return flagcxNotSupported;
@@ -826,7 +822,7 @@ flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommResume(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commResume(comm->homo_comm));
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commResume(comm->homoComm));
   if (!useHomoComm(comm)) {
     // TODO: to be implemented.
     return flagcxNotSupported;
@@ -836,8 +832,7 @@ flagcxResult_t flagcxCommResume(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommSuspend(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(
-      cclAdaptors[flagcxCCLAdaptorDevice]->commSuspend(comm->homo_comm));
+  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commSuspend(comm->homoComm));
   if (!useHomoComm(comm)) {
     // TODO: to be implemented.
     return flagcxNotSupported;
@@ -848,31 +843,31 @@ flagcxResult_t flagcxCommSuspend(flagcxComm_t comm) {
 flagcxResult_t flagcxCommCount(const flagcxComm_t comm, int *count) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
-    return cclAdaptors[flagcxCCLAdaptorDevice]->commCount(comm->homo_comm,
+    return cclAdaptors[flagcxCCLAdaptorDevice]->commCount(comm->homoComm,
                                                           count);
   }
-  return flagcxHeteroCommCount(comm->hetero_comm, count);
+  return flagcxHeteroCommCount(comm->heteroComm, count);
 }
 
 flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device) {
   return cclAdaptors[flagcxCCLAdaptorDevice]->commGetDeviceNumber(
-      comm->homo_comm, device);
+      comm->homoComm, device);
 }
 
 flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
-    return cclAdaptors[flagcxCCLAdaptorDevice]->commUserRank(comm->homo_comm,
+    return cclAdaptors[flagcxCCLAdaptorDevice]->commUserRank(comm->homoComm,
                                                              rank);
   }
-  return flagcxHeteroCommUserRank(comm->hetero_comm, rank);
+  return flagcxHeteroCommUserRank(comm->heteroComm, rank);
 }
 
 flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, void **buffer) {
-  if (comm->hetero_comm->fifoBuffer == NULL) {
+  if (comm->heteroComm->fifoBuffer == NULL) {
     return flagcxInvalidUsage;
   }
-  *buffer = comm->hetero_comm->fifoBuffer;
+  *buffer = comm->heteroComm->fifoBuffer;
   return flagcxSuccess;
 }
 
@@ -881,7 +876,7 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm)) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->commGetAsyncError(
-        comm->homo_comm, asyncError);
+        comm->homoComm, asyncError);
   }
   // TODO: to be implemented.
   return flagcxNotSupported;
@@ -908,11 +903,11 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
   if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->reduce(
         sendbuff, recvbuff, count, datatype, op, root, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C reduce op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->reduce(
         sendbuff, recvbuff, count, datatype, op, root, comm, stream));
@@ -933,11 +928,11 @@ flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
   } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->gather(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C gather op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->gather(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
@@ -958,11 +953,11 @@ flagcxResult_t flagcxScatter(const void *sendbuff, void *recvbuff, size_t count,
   } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->scatter(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C scatter op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->scatter(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
@@ -984,11 +979,11 @@ flagcxResult_t flagcxBroadcast(const void *sendbuff, void *recvbuff,
   } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->broadcast(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C broadcast op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->broadcast(
         sendbuff, recvbuff, count, datatype, root, comm, stream));
@@ -1010,11 +1005,11 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
   } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->allReduce(
         sendbuff, recvbuff, count, datatype, op, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C allreduce op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->allReduce(
         sendbuff, recvbuff, count, datatype, op, comm, stream));
@@ -1033,11 +1028,11 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
   if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->reduceScatter(
         sendbuff, recvbuff, recvcount, datatype, op, comm, stream));
-  } else if (useHostComm() || comm->has_single_rank_homo_comm) {
+  } else if (useHostComm() || comm->hasSingleRankHomoComm) {
     // c2c validation
-    if (comm->has_single_rank_homo_comm) {
+    if (comm->hasSingleRankHomoComm) {
       WARN("Host comm is required to perform C2C reducescatter op when "
-           "comm->has_single_rank_homo_comm is True");
+           "comm->hasSingleRankHomoComm is True");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->reduceScatter(
         sendbuff, recvbuff, recvcount, datatype, op, comm, stream));

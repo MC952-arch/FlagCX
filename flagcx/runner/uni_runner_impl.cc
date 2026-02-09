@@ -784,7 +784,7 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxCommOp_t commOp) {
   flagcxFifo_t fifo = NULL;
   flagcxResult_t res = flagcxSuccess;
-  flagcxHeteroComm_t hcomm = comm->hetero_comm;
+  flagcxHeteroComm_t hcomm = comm->heteroComm;
 
   p2pEventPoolSize = flagcxParamP2pEventPoolSize();
   uniRunnerNSlices = flagcxParamUniRunnerNSlices();
