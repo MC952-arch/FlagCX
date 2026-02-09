@@ -521,29 +521,3 @@ flagcxCommOp_t commOpStringToEnum(const std::string &commOpStr) {
   }
   return flagcxCommNoOp; // default
 }
-
-// Load a custom operation symbol from a shared library
-template <typename T>
-flagcxResult_t loadCustomOpSymbol(const char *path, const char *name, T *fn) {
-  void *handle = flagcxOpenLib(
-      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-      });
-  if (!handle)
-    return flagcxSystemError;
-
-  void *sym = dlsym(handle, name);
-  if (!sym) {
-    fprintf(stderr, "dlsym failed: %s\n", dlerror());
-    dlclose(handle);
-    return flagcxSystemError;
-  }
-
-  *fn = (T)sym;
-  return flagcxSuccess;
-}
-
-flagcxResult_t loadKernelSymbol(const char *path, const char *name,
-                                flagcxLaunchFunc_t *fn) {
-  return loadCustomOpSymbol<flagcxLaunchFunc_t>(path, name, fn);
-}

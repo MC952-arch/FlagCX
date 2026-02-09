@@ -145,6 +145,7 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
   const int globalNthreads = blockDim.x * gridDim.x;
   using P = typename packed_t<T, 4>::P;
   size_t pSize = packed_t<T, 4>::P::size;
+  assert (count % pSize == 0 && "count must be divisible by pSize");
   count /= pSize;
 
   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
@@ -172,6 +173,7 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
   const int globalNthreads = blockDim.x * gridDim.x * nRanks;
   using P = typename packed_t<T, 4>::P;
   size_t pSize = packed_t<T, 4>::P::size;
+  assert (count % pSize == 0 && "count must be divisible by pSize");
   count /= pSize;
 
   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
@@ -200,6 +202,7 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
 //   const int globalNthreads = blockDim.x * gridDim.x;
 //   using P = typename packed_t<T, 4>::P;
 //   size_t pSize = packed_t<T, 4>::P::size;
+//   assert (count % pSize == 0 && "count must be divisible by pSize");
 //   count /= pSize;
 //   size_t part = count / nRanks;
 //   size_t largestPart = part + count % nRanks;
