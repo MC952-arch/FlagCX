@@ -137,9 +137,12 @@ FLAGCX_DEVICE_INLINE_DECORATOR constexpr size_t elemsPerPack() {
   return packed_t<T, ByteSize>::num_elems;
 }
 
-// Multimem load-reduce: atomically reduces values across all GPUs
+// Multimem load-reduce operations
 // Supported types: half, nv_bfloat16, float, double
+// Supported ops: sum (add), min, max
 // ByteSize=4 for 16/32-bit types, ByteSize=8 for 64-bit types
+
+// Sum reduction
 template <typename T, int ByteSize = (sizeof(T) <= 4 ? 4 : 8)>
 FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
 multimem_sum(T* addr) {
@@ -175,6 +178,86 @@ multimem_sum(T* addr) {
         : "memory");
   }
   return ret;
+}
+
+// Min reduction (only supported for 16-bit types: half, bfloat16)
+template <typename T, int ByteSize = 4>
+FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
+multimem_min(T* addr) {
+  static_assert(std::is_same<T, half>::value || std::is_same<T, nv_bfloat16>::value,
+                "multimem min only supports half and bfloat16");
+  using P = packed_t<T, ByteSize>;
+  typename P::array_type ret;
+  if constexpr (std::is_same<T, nv_bfloat16>::value) {
+    typename P::storage_t h;
+    asm volatile(
+        "multimem.ld_reduce.global.min.bf16x2 %0, [%1];"
+        : "=r"(h)
+        : "l"(addr)
+        : "memory");
+    unpack<T, ByteSize>(h, ret.data);
+  } else if constexpr (std::is_same<T, half>::value) {
+    typename P::storage_t h;
+    asm volatile(
+        "multimem.ld_reduce.global.min.f16x2 %0, [%1];"
+        : "=r"(h)
+        : "l"(addr)
+        : "memory");
+    unpack<T, ByteSize>(h, ret.data);
+  }
+  return ret;
+}
+
+// Max reduction (only supported for 16-bit types: half, bfloat16)
+template <typename T, int ByteSize = 4>
+FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
+multimem_max(T* addr) {
+  static_assert(std::is_same<T, half>::value || std::is_same<T, nv_bfloat16>::value,
+                "multimem max only supports half and bfloat16");
+  using P = packed_t<T, ByteSize>;
+  typename P::array_type ret;
+  if constexpr (std::is_same<T, nv_bfloat16>::value) {
+    typename P::storage_t h;
+    asm volatile(
+        "multimem.ld_reduce.global.max.bf16x2 %0, [%1];"
+        : "=r"(h)
+        : "l"(addr)
+        : "memory");
+    unpack<T, ByteSize>(h, ret.data);
+  } else if constexpr (std::is_same<T, half>::value) {
+    typename P::storage_t h;
+    asm volatile(
+        "multimem.ld_reduce.global.max.f16x2 %0, [%1];"
+        : "=r"(h)
+        : "l"(addr)
+        : "memory");
+    unpack<T, ByteSize>(h, ret.data);
+  }
+  return ret;
+}
+
+// Generic multimem reduce dispatcher
+// Note: min/max only supported for 16-bit types (half, bfloat16)
+//       sum supported for all floating-point types
+template <typename T, int ByteSize = (sizeof(T) <= 4 ? 4 : 8)>
+FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
+multimem_reduce(T* addr, ncclRedOp_t op) {
+  if constexpr (std::is_same<T, half>::value || std::is_same<T, nv_bfloat16>::value) {
+    // 16-bit types support sum, min, max
+    switch (op) {
+      case ncclSum:
+        return multimem_sum<T, ByteSize>(addr);
+      case ncclMin:
+        return multimem_min<T, ByteSize>(addr);
+      case ncclMax:
+        return multimem_max<T, ByteSize>(addr);
+      default:
+        return multimem_sum<T, ByteSize>(addr);
+    }
+  } else {
+    // 32/64-bit types only support sum
+    return multimem_sum<T, ByteSize>(addr);
+  }
 }
 
 // Multimem store: broadcasts value to all GPUs
@@ -226,8 +309,8 @@ lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
 // ByteSize: 4 bytes for 16/32-bit types, 8 bytes for 64-bit types
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                     void* recvbuffer, size_t count, int root,
-                                     struct ncclDevComm devComm) {
+                                     void* recvbuffer, size_t count,
+                                     ncclRedOp_t op, struct ncclDevComm devComm) {
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -243,7 +326,7 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
 
 #pragma unroll
   for (size_t offset = globalTid; offset < packCount; offset += globalNthreads) {
-    auto v = multimem_sum<T, ByteSize>(mmSendPtr + pSize * offset);
+    auto v = multimem_reduce<T, ByteSize>(mmSendPtr + pSize * offset, op);
     lsa_st<T, ByteSize>(lsaRecvPtr + pSize * offset, v);
   }
 }
@@ -252,8 +335,8 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
                                            ncclWindow_t recvwin, size_t recvoffset,
-                                           void* recvbuffer, size_t count, int root,
-                                           struct ncclDevComm devComm) {
+                                           void* recvbuffer, size_t count,
+                                           ncclRedOp_t op, struct ncclDevComm devComm) {
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -270,7 +353,7 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
 
 #pragma unroll
   for (size_t offset = globalTid; offset < packCount; offset += globalNthreads) {
-    auto v = multimem_sum<T, ByteSize>(mmSendPtr + pSize * offset);
+    auto v = multimem_reduce<T, ByteSize>(mmSendPtr + pSize * offset, op);
     multimem_st<T, ByteSize>(mmRecvPtr + pSize * offset, v);
   }
   bar.sync(ncclCoopCta(), cuda::memory_order_release);
@@ -279,45 +362,59 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
 // Kernel launchers
 template <typename T>
 void launchLocalAllReduceKernel(ncclWindow_t sendwin, void* recvbuffer,
-                                size_t count, ncclDevComm& devComm,
-                                cudaStream_t stream) {
+                                size_t count, ncclRedOp_t op,
+                                ncclDevComm& devComm, cudaStream_t stream) {
   localAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT,
                             NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0, stream>>>(
-      sendwin, 0, recvbuffer, count, 0, devComm);
+      sendwin, 0, recvbuffer, count, op, devComm);
 }
 
 template <typename T>
 void launchInterleavedAllReduceKernel(ncclWindow_t sendwin, ncclWindow_t recvwin,
                                       void* recvbuffer, size_t count,
-                                      ncclDevComm& devComm, cudaStream_t stream) {
+                                      ncclRedOp_t op, ncclDevComm& devComm,
+                                      cudaStream_t stream) {
   interleavedAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT,
                                   NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0, stream>>>(
-      sendwin, 0, recvwin, 0, recvbuffer, count, 0, devComm);
+      sendwin, 0, recvwin, 0, recvbuffer, count, op, devComm);
 }
 
 // Public API
-// Supported types for multimem add reduction: half, bfloat16, float, double
-// Integer types (int8, uint8, int32, uint32, int64, uint64) are NOT supported
-// by multimem.ld_reduce.add - they only support min/max operations
+// Supported types: half, bfloat16, float, double (floating-point only)
+// Supported ops:
+//   - ncclSum: all floating-point types
+//   - ncclMin, ncclMax: only half and bfloat16 (16-bit types)
+// Integer types are NOT supported by multimem.ld_reduce
+// ncclProd and ncclAvg are NOT supported by multimem hardware
 extern "C" ncclResult_t ncclAdaptorLocalAllReduce(
     const void* sendbuff, void* recvbuff, ncclWindow_t sendwin,
     ncclWindow_t recvwin, size_t count, ncclDataType_t datatype,
     ncclRedOp_t op, ncclDevComm& devComm, cudaStream_t stream) {
+  // Validate reduction operation
+  if (op != ncclSum && op != ncclMin && op != ncclMax) {
+    return ncclInvalidArgument;
+  }
+  // min/max only supported for 16-bit types
+  if ((op == ncclMin || op == ncclMax) &&
+      (datatype != ncclFloat16 && datatype != ncclBfloat16)) {
+    return ncclInvalidArgument;
+  }
+
   switch (datatype) {
     case ncclFloat16:
-      launchLocalAllReduceKernel<half>(sendwin, recvbuff, count, devComm, stream);
+      launchLocalAllReduceKernel<half>(sendwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclFloat32:
-      launchLocalAllReduceKernel<float>(sendwin, recvbuff, count, devComm, stream);
+      launchLocalAllReduceKernel<float>(sendwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclFloat64:
-      launchLocalAllReduceKernel<double>(sendwin, recvbuff, count, devComm, stream);
+      launchLocalAllReduceKernel<double>(sendwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclBfloat16:
-      launchLocalAllReduceKernel<nv_bfloat16>(sendwin, recvbuff, count, devComm, stream);
+      launchLocalAllReduceKernel<nv_bfloat16>(sendwin, recvbuff, count, op, devComm, stream);
       break;
     default:
-      // Integer types not supported by multimem add reduction
+      // Integer types not supported
       return ncclInvalidArgument;
   }
   return ncclSuccess;
@@ -327,21 +424,31 @@ extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
     const void* sendbuff, void* recvbuff, ncclWindow_t sendwin,
     ncclWindow_t recvwin, size_t count, ncclDataType_t datatype,
     ncclRedOp_t op, ncclDevComm& devComm, cudaStream_t stream) {
+  // Validate reduction operation
+  if (op != ncclSum && op != ncclMin && op != ncclMax) {
+    return ncclInvalidArgument;
+  }
+  // min/max only supported for 16-bit types
+  if ((op == ncclMin || op == ncclMax) &&
+      (datatype != ncclFloat16 && datatype != ncclBfloat16)) {
+    return ncclInvalidArgument;
+  }
+
   switch (datatype) {
     case ncclFloat16:
-      launchInterleavedAllReduceKernel<half>(sendwin, recvwin, recvbuff, count, devComm, stream);
+      launchInterleavedAllReduceKernel<half>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclFloat32:
-      launchInterleavedAllReduceKernel<float>(sendwin, recvwin, recvbuff, count, devComm, stream);
+      launchInterleavedAllReduceKernel<float>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclFloat64:
-      launchInterleavedAllReduceKernel<double>(sendwin, recvwin, recvbuff, count, devComm, stream);
+      launchInterleavedAllReduceKernel<double>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
       break;
     case ncclBfloat16:
-      launchInterleavedAllReduceKernel<nv_bfloat16>(sendwin, recvwin, recvbuff, count, devComm, stream);
+      launchInterleavedAllReduceKernel<nv_bfloat16>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
       break;
     default:
-      // Integer types not supported by multimem add reduction
+      // Integer types not supported
       return ncclInvalidArgument;
   }
   return ncclSuccess;

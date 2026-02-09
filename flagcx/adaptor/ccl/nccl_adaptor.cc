@@ -335,10 +335,7 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
   size_t size = count * getFlagcxDataTypeSize(datatype);
   int nranks;
   FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
-  if ((size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) ||
-      (datatype != flagcxFloat32 && datatype != flagcxDouble &&
-       datatype != flagcxFloat16 && datatype != flagcxBfloat16) ||
-      (op != flagcxSum)) {
+  if (size >= NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE) {
     FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
         sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
         comm->base, stream->base));
