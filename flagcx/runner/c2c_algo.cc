@@ -2255,11 +2255,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
   if (getenv("FLAGCX_ALGO_EXPORT_PREFIX")) {
     exportXml(getenv("FLAGCX_ALGO_EXPORT_PREFIX"));
   } else if (getenv("FLAGCX_ALGO_EXPORT_PATH")) {
-    const char *algo_path = getenv("FLAGCX_ALGO_EXPORT_PATH");
-    size_t algo_hash =
+    const char *algoPath = getenv("FLAGCX_ALGO_EXPORT_PATH");
+    size_t algoHash =
         genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_, commOp_, redOp_);
     char prefix[128];
-    snprintf(prefix, sizeof(prefix), "%s/%lu", algo_path, algo_hash);
+    snprintf(prefix, sizeof(prefix), "%s/%lu", algoPath, algoHash);
     exportXml(prefix);
   }
   return flagcxSuccess;
@@ -2323,16 +2323,16 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
   const char *algorithm = getenv("FLAGCX_C2C_ALGO");
   if (algorithm != NULL && (strcmp(algorithm, "XML_INPUT") == 0 ||
                             strcmp(algorithm, "Xml_input") == 0)) {
-    const char *algo_path = getenv("FLAGCX_ALGO_IMPORT_PATH");
-    const char *algo_prefix = getenv("FLAGCX_ALGO_IMPORT_PREFIX");
-    if (algo_prefix) {
-      FLAGCXCHECK(importXml(algo_prefix));
+    const char *algoPath = getenv("FLAGCX_ALGO_IMPORT_PATH");
+    const char *algoPrefix = getenv("FLAGCX_ALGO_IMPORT_PREFIX");
+    if (algoPrefix) {
+      FLAGCXCHECK(importXml(algoPrefix));
       importAlgoFromXmlFile = 1;
-    } else if (algo_path) {
-      size_t algo_hash = genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_,
-                                        commOp_, redOp_);
+    } else if (algoPath) {
+      size_t algoHash = genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_,
+                                       commOp_, redOp_);
       char prefix[128];
-      snprintf(prefix, sizeof(prefix), "%s/%lu", algo_path, algo_hash);
+      snprintf(prefix, sizeof(prefix), "%s/%lu", algoPath, algoHash);
       FLAGCXCHECK(importXml(prefix));
       importAlgoFromXmlFile = 1;
     }

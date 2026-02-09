@@ -297,21 +297,21 @@ flagcxResult_t hostRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   timers[TIMER_COLL_TOTAL] = clockNano();
   void *buffIn;
   void *buffOut;
-  size_t recv_size = recvcount * getFlagcxDataTypeSize(datatype);
-  size_t send_size = comm->nranks * recv_size;
+  size_t recvSize = recvcount * getFlagcxDataTypeSize(datatype);
+  size_t sendSize = comm->nranks * recvSize;
 
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      comm->hostComm, &buffIn, send_size, 0));
+      comm->hostComm, &buffIn, sendSize, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      comm->hostComm, &buffOut, recv_size, 1));
+      comm->hostComm, &buffOut, recvSize, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
   timers[TIMER_COLL_MEM_D2H] = clockNano();
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(buffIn, const_cast<void *>(sendbuff),
-                                          send_size, flagcxMemcpyDeviceToHost,
+                                          sendSize, flagcxMemcpyDeviceToHost,
                                           NULL, NULL));
   timers[TIMER_COLL_MEM_D2H] = clockNano() - timers[TIMER_COLL_MEM_D2H];
 
@@ -324,7 +324,7 @@ flagcxResult_t hostRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   // step 4: memcpy h2d
   timers[TIMER_COLL_MEM_H2D] = clockNano();
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      recvbuff, buffOut, recv_size, flagcxMemcpyHostToDevice, NULL, NULL));
+      recvbuff, buffOut, recvSize, flagcxMemcpyHostToDevice, NULL, NULL));
   timers[TIMER_COLL_MEM_H2D] = clockNano() - timers[TIMER_COLL_MEM_H2D];
 
   // step 5: free staged buffer
@@ -464,29 +464,29 @@ flagcxResult_t hostRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
   void *buffIn;
   void *buffOut;
   // Calculate max possible size needed for send and receive buffers
-  size_t max_send_size = 0, max_recv_size = 0, send_size = 0, recv_size = 0;
+  size_t maxSendSize = 0, maxRecvSize = 0, sendSize = 0, recvSize = 0;
   for (int i = 0; i < comm->nranks; i++) {
-    send_size = (sendcounts[i] + sdispls[i]) * getFlagcxDataTypeSize(datatype);
-    recv_size = (recvcounts[i] + rdispls[i]) * getFlagcxDataTypeSize(datatype);
-    if (send_size > max_send_size)
-      max_send_size = send_size;
-    if (recv_size > max_recv_size)
-      max_recv_size = recv_size;
+    sendSize = (sendcounts[i] + sdispls[i]) * getFlagcxDataTypeSize(datatype);
+    recvSize = (recvcounts[i] + rdispls[i]) * getFlagcxDataTypeSize(datatype);
+    if (sendSize > maxSendSize)
+      maxSendSize = sendSize;
+    if (recvSize > maxRecvSize)
+      maxRecvSize = recvSize;
   }
 
   // step 1: get staged buffer
   timers[TIMER_COLL_ALLOC] = clockNano();
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      comm->hostComm, &buffIn, max_send_size, 0));
+      comm->hostComm, &buffIn, maxSendSize, 0));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->getStagedBuffer(
-      comm->hostComm, &buffOut, max_recv_size, 1));
+      comm->hostComm, &buffOut, maxRecvSize, 1));
   timers[TIMER_COLL_ALLOC] = clockNano() - timers[TIMER_COLL_ALLOC];
 
   // step 2: memcpy d2h
   timers[TIMER_COLL_MEM_D2H] = clockNano();
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      buffIn, const_cast<void *>(sendbuff), max_send_size,
-      flagcxMemcpyDeviceToHost, NULL, NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(buffIn, const_cast<void *>(sendbuff),
+                                          maxSendSize, flagcxMemcpyDeviceToHost,
+                                          NULL, NULL));
   timers[TIMER_COLL_MEM_D2H] = clockNano() - timers[TIMER_COLL_MEM_D2H];
 
   // step 3: alltoallv
@@ -499,7 +499,7 @@ flagcxResult_t hostRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
   // step 4: memcpy h2d
   timers[TIMER_COLL_MEM_H2D] = clockNano();
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      recvbuff, buffOut, max_recv_size, flagcxMemcpyHostToDevice, NULL, NULL));
+      recvbuff, buffOut, maxRecvSize, flagcxMemcpyHostToDevice, NULL, NULL));
   timers[TIMER_COLL_MEM_H2D] = clockNano() - timers[TIMER_COLL_MEM_H2D];
 
   // step 5: free staged buffer
