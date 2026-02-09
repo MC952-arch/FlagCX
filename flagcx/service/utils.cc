@@ -483,11 +483,11 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
                              actual_filename);
   }
 
-  // Read tune_objects array
+  // Read tuneObjects array from JSON "tune_objects" key
   if (j[groupKey].contains("tune_objects") &&
       j[groupKey]["tune_objects"].is_array()) {
     for (const auto &obj : j[groupKey]["tune_objects"]) {
-      config.tune_objects.emplace_back(obj);
+      config.tuneObjects.emplace_back(obj);
     }
   }
 

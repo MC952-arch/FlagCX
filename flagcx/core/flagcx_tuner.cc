@@ -531,38 +531,38 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
 
 // Handle flagscale tuning logic
 // This function processes flagscale tuning configuration:
-// 1. Matches the collective operation and size against tune_objects to
+// 1. Matches the collective operation and size against tuneObjects to
 // determine
 //    if this comm needs tuning (sets comm->isTunningComm)
 // 2. Reads FLAGCX_TUNER_CONFIG_ID and FLAGCX_TUNER_BEST_CONFIG_ID from
 // environment
-// 3. Switches communicator config if config_id increments by 1
-// Returns flagcxSuccess on success, flagcxInternalError if config_id is invalid
+// 3. Switches communicator config if configId increments by 1
+// Returns flagcxSuccess on success, flagcxInternalError if configId is invalid
 flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes) {
   struct flagcxTunerContext *ctx =
       static_cast<struct flagcxTunerContext *>(context);
-  // Execute matching only once when tune_objects has values
+  // Execute matching only once when tuneObjects has values
   const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
-  const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
-  if (config_id == -1) {
+  const int configId = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
+  if (configId == -1) {
     // reset isTunningComm flag in case we are sequentially tuning multiple
     // communicators
     comm->isTunningComm = false;
     ctx->tunerCommMatchingDone = false;
   }
   // static bool matchingDone = false;
-  if (needPatternMatching(ctx, config_id)) {
+  if (needPatternMatching(ctx, configId)) {
     // Determine if this comm needs tuning
     FlagScaleConfig config = readFlagScaleJson();
-    if (!config.tune_objects.empty()) {
+    if (!config.tuneObjects.empty()) {
       bool isTuningComm = false;
       flagcxCommOp_t currentCommOp = commOp;
       INFO(FLAGCX_TUNING, "flagcxTuner finding match for commOp=%d, nBytes=%zu",
            currentCommOp, nBytes);
-      for (size_t idx = 0; idx < config.tune_objects.size(); ++idx) {
-        const TuneObject &item = config.tune_objects[idx];
+      for (size_t idx = 0; idx < config.tuneObjects.size(); ++idx) {
+        const TuneObject &item = config.tuneObjects[idx];
         std::string opStr = getTuneObjectCommOp(item);
         flagcxCommOp_t tuneCommOp = commOpStringToEnum(opStr);
         if (tuneCommOp == currentCommOp && item.nBytes == (int64_t)nBytes) {
@@ -580,35 +580,35 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
   }
 
   // Need tuning this comm
-  // Handle config_id logic
+  // Handle configId logic
   // static int lastFlagscaleConfigId = -1;
   const char *bestConfigIdEnv = getenv("FLAGCX_TUNER_BEST_CONFIG_ID");
   const int bestConfigId =
       (bestConfigIdEnv != NULL) ? atoi(bestConfigIdEnv) : -1;
 
-  // if config_id is -1, use the default communicator config
-  if (config_id == -1) {
+  // if configId is -1, use the default communicator config
+  if (configId == -1) {
     return flagcxSuccess;
   }
 
-  // if config_id is greater than lastFlagscaleConfigId by 1,
+  // if configId is greater than lastFlagscaleConfigId by 1,
   // switch to the new communicator config
-  if (config_id - ctx->lastFlagscaleConfigId == 1) {
-    ctx->lastFlagscaleConfigId = config_id;
-    INFO(FLAGCX_TUNING, "call switchCommConfig with config_id=%d", config_id);
+  if (configId - ctx->lastFlagscaleConfigId == 1) {
+    ctx->lastFlagscaleConfigId = configId;
+    INFO(FLAGCX_TUNING, "call switchCommConfig with configId=%d", configId);
     FLAGCXCHECK(
         comm->tuner->switchCommConfig(comm->tunerContext, &comm, bestConfigId));
     return flagcxSuccess;
   }
 
-  // if config_id is equal to lastFlagscaleConfigId, don't switch communicator
+  // if configId is equal to lastFlagscaleConfigId, don't switch communicator
   // config
-  if (config_id - ctx->lastFlagscaleConfigId == 0) {
+  if (configId - ctx->lastFlagscaleConfigId == 0) {
     return flagcxSuccess; // Should call call() and return
   }
 
-  // Invalid config_id
-  WARN("config_id=%d is invalid", config_id);
+  // Invalid configId
+  WARN("configId=%d is invalid", configId);
   return flagcxInternalError;
 }
 
@@ -681,7 +681,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
         msg << "  ";
       }
     }
-    INFO(FLAGCX_TUNING, "switch to the best config, config_id=%d. %s",
+    INFO(FLAGCX_TUNING, "switch to the best config, configId=%d. %s",
          ctx->bestConfigId, msg.str().c_str());
     return flagcxSuccess;
   }

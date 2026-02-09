@@ -773,9 +773,9 @@ struct TuneObject {
 };
 
 struct FlagScaleConfig {
-  std::vector<TuneObject> tune_objects;
-  int config_id;
-  int best_config_id;
+  std::vector<TuneObject> tuneObjects;
+  int configId;
+  int bestConfigId;
 };
 
 // Read flagscale.json file and return all values （for tuning）
