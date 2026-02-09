@@ -9,7 +9,7 @@
 #include "flagcx_common.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
-#include "ibuc_retrans.h"
+#include "ib_retrans.h"
 #include "ibvwrap.h"
 #include "net.h"
 #include "param.h"
@@ -643,11 +643,11 @@ flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
   // Poll any remaining completions before destroying CQ
   if (base->cq) {
     struct ibv_wc wcs[64];
-    int n_cqe = 0;
+    int nCqe = 0;
     // Poll multiple times to drain all pending completions
     for (int i = 0; i < 16; i++) {
-      flagcxWrapIbvPollCq(base->cq, 64, wcs, &n_cqe);
-      if (n_cqe == 0)
+      flagcxWrapIbvPollCq(base->cq, 64, wcs, &nCqe);
+      if (nCqe == 0)
         break;
     }
   }
@@ -680,7 +680,7 @@ flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
 
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
                                 struct flagcxIbNetCommDevBase *base,
-                                int access_flags, struct flagcxIbQp *qp) {
+                                int accessFlags, struct flagcxIbQp *qp) {
   struct ibv_qp_init_attr qpInitAttr;
   memset(&qpInitAttr, 0, sizeof(struct ibv_qp_init_attr));
   qpInitAttr.send_cq = base->cq;
@@ -699,7 +699,7 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   qpAttr.qp_state = IBV_QPS_INIT;
   qpAttr.pkey_index = flagcxParamIbPkey();
   qpAttr.port_num = ib_port;
-  qpAttr.qp_access_flags = access_flags;
+  qpAttr.qp_access_flags = accessFlags;
   FLAGCXCHECK(flagcxWrapIbvModifyQp(qp->qp, &qpAttr,
                                     IBV_QP_STATE | IBV_QP_PKEY_INDEX |
                                         IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
@@ -893,12 +893,12 @@ ib_connect_check:
       meta.ctrlLid[i] = ibDev->portAttr.lid;
       meta.ctrlGid[i] = commDev->base.gidInfo.localGid;
 
-      size_t ack_buf_size =
+      size_t ackBufSize =
           (sizeof(struct flagcxIbAckMsg) + FLAGCX_IB_ACK_BUF_PADDING) *
           FLAGCX_IB_ACK_BUF_COUNT;
-      commDev->ackBuffer = malloc(ack_buf_size);
+      commDev->ackBuffer = malloc(ackBufSize);
       FLAGCXCHECK(flagcxWrapIbvRegMr(&commDev->ackMr, commDev->base.pd,
-                                     commDev->ackBuffer, ack_buf_size,
+                                     commDev->ackBuffer, ackBufSize,
                                      IBV_ACCESS_LOCAL_WRITE));
 
       TRACE(FLAGCX_NET,
@@ -1041,7 +1041,7 @@ ib_connect:
     uint8_t gidIndex = commDev->base.gidInfo.localGidIndex;
 
     struct ibv_qp *qp = comm->base.qps[q].qp;
-    if (remQpInfo->eceSupported && remQpInfo->eceSupported)
+    if (remQpInfo->eceSupported)
       FLAGCXCHECK(
           flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->eceSupported));
 
@@ -1065,7 +1065,7 @@ ib_connect:
 
   // Setup control QP for retransmission if enabled
   if (comm->retrans.enabled && remMeta.retransEnabled) {
-    bool all_ah_success = true;
+    bool allAhSuccess = true;
 
     for (int i = 0; i < comm->base.ndevs; i++) {
       flagcxIbSendCommDev *commDev = &comm->devs[i];
@@ -1086,16 +1086,16 @@ ib_connect:
           commDev->base.gidInfo.localGidIndex);
 
       if (ah_result != flagcxSuccess || !commDev->ctrlQp.ah) {
-        all_ah_success = false;
+        allAhSuccess = false;
         break;
       }
 
-      size_t buf_entry_size =
+      size_t bufEntrySize =
           sizeof(struct flagcxIbAckMsg) + FLAGCX_IB_ACK_BUF_PADDING;
       for (int r = 0; r < 32; r++) {
         struct ibv_sge sge;
-        sge.addr = (uint64_t)((char *)commDev->ackBuffer + r * buf_entry_size);
-        sge.length = buf_entry_size;
+        sge.addr = (uint64_t)((char *)commDev->ackBuffer + r * bufEntrySize);
+        sge.length = bufEntrySize;
         sge.lkey = commDev->ackMr->lkey;
 
         struct ibv_recv_wr recv_wr;
@@ -1116,7 +1116,7 @@ ib_connect:
             i, commDev->ctrlQp.qp->qp_num, remMeta.ctrlQpn[i]);
     }
 
-    if (!all_ah_success) {
+    if (!allAhSuccess) {
       comm->retrans.enabled = 0;
 
       for (int i = 0; i < comm->base.ndevs; i++) {
@@ -1128,7 +1128,7 @@ ib_connect:
       }
     }
 
-    if (all_ah_success && comm->retrans.enabled) {
+    if (allAhSuccess && comm->retrans.enabled) {
       flagcxResult_t mr_result = flagcxWrapIbvRegMr(
           &comm->retransHdrMr, comm->devs[0].base.pd, comm->retransHdrPool,
           sizeof(comm->retransHdrPool), IBV_ACCESS_LOCAL_WRITE);
@@ -1412,12 +1412,12 @@ ib_recv:
             "Receiver: Control QP created for dev %d, qpn=%u, lid=%u", i,
             meta.ctrlQpn[i], meta.ctrlLid[i]);
 
-      size_t ack_buf_size =
+      size_t ackBufSize =
           (sizeof(struct flagcxIbAckMsg) + FLAGCX_IB_ACK_BUF_PADDING) *
           FLAGCX_IB_ACK_BUF_COUNT;
-      rCommDev->ackBuffer = malloc(ack_buf_size);
+      rCommDev->ackBuffer = malloc(ackBufSize);
       FLAGCXCHECK(flagcxWrapIbvRegMr(&rCommDev->ackMr, rCommDev->base.pd,
-                                     rCommDev->ackBuffer, ack_buf_size,
+                                     rCommDev->ackBuffer, ackBufSize,
                                      IBV_ACCESS_LOCAL_WRITE));
 
       TRACE(FLAGCX_NET,
@@ -2155,11 +2155,11 @@ static flagcxResult_t flagcxIbrcProcessWc(struct flagcxIbRequest *r,
       r->recv.sizes[0] = size;
 
       struct flagcxIbAckMsg ack_msg = {0};
-      int should_ack = 0;
+      int shouldAck = 0;
       FLAGCXCHECK(flagcxIbRetransRecvPacket(&rComm->retrans, seq, &ack_msg,
-                                            &should_ack));
+                                            &shouldAck));
 
-      if (should_ack) {
+      if (shouldAck) {
         flagcxResult_t ack_result =
             flagcxIbRetransSendAckViaUd(rComm, &ack_msg, devIndex);
         if (ack_result != flagcxSuccess) {
@@ -2201,11 +2201,11 @@ flagcxResult_t flagcxIbCloseSend(void *sendComm) {
       struct flagcxIbSendCommDev *commDev = comm->devs + i;
       if (commDev->base.cq) {
         struct ibv_wc wcs[64];
-        int n_cqe = 0;
+        int nCqe = 0;
         // Poll multiple times to drain all pending completions
         for (int j = 0; j < 16; j++) {
-          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &n_cqe);
-          if (n_cqe == 0)
+          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &nCqe);
+          if (nCqe == 0)
             break;
         }
       }
@@ -2259,11 +2259,11 @@ flagcxResult_t flagcxIbCloseRecv(void *recvComm) {
       struct flagcxIbRecvCommDev *commDev = comm->devs + i;
       if (commDev->base.cq) {
         struct ibv_wc wcs[64];
-        int n_cqe = 0;
+        int nCqe = 0;
         // Poll multiple times to drain all pending completions
         for (int j = 0; j < 16; j++) {
-          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &n_cqe);
-          if (n_cqe == 0)
+          flagcxWrapIbvPollCq(commDev->base.cq, 64, wcs, &nCqe);
+          if (nCqe == 0)
             break;
         }
       }

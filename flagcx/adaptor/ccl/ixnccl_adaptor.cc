@@ -219,15 +219,15 @@ flagcxResult_t ixncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
-    res = ncclSend(static_cast<const void *>(buffer_in + r * size), size,
+    res = ncclSend(static_cast<const void *>(bufferIn + r * size), size,
                    ncclChar, r, comm->base, stream->base);
-    res = ncclRecv(static_cast<void *>(buffer_out + r * size), size, ncclChar,
-                   r, comm->base, stream->base);
+    res = ncclRecv(static_cast<void *>(bufferOut + r * size), size, ncclChar, r,
+                   comm->base, stream->base);
   }
   res = ncclGroupEnd();
 
@@ -245,18 +245,18 @@ flagcxResult_t ixncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
-      res = ncclSend(static_cast<const void *>(buffer_in + sdispls[r] * size),
+      res = ncclSend(static_cast<const void *>(bufferIn + sdispls[r] * size),
                      sendcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      res = ncclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      res = ncclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                      recvcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }

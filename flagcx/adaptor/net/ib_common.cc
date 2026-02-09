@@ -1,6 +1,6 @@
 #include "ib_common.h"
-
 #include "flagcx_common.h"
+#include "ib_retrans.h"
 #include "ibvwrap.h"
 #include "socket.h"
 #include "timer.h"
@@ -133,10 +133,10 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
         for (int w = 0; w < wrDone; w++) {
           struct ibv_wc *wc = wcs + w;
 
-          bool is_retrans_completion = (wc->wr_id == 0xFFFFFFFEULL);
+          bool isRetransCompletion = (wc->wr_id == FLAGCX_RETRANS_WR_ID);
 
           bool handled = false;
-          if (is_retrans_completion && ops && ops->process_wc) {
+          if (isRetransCompletion && ops && ops->process_wc) {
             FLAGCXCHECK(ops->process_wc(r, wc, i, &handled));
             if (handled)
               continue;

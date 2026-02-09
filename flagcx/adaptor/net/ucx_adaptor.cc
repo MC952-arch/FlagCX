@@ -140,22 +140,22 @@ static void ibGdrSupportInitOnce() {
 /* for data direct nic, the device name is ends with suffix '_dma`.
  * remove this suffix before passing name to device */
 void plugin_get_device_name(const char *input, char *output,
-                            size_t output_size) {
+                            size_t outputSize) {
   const char *suffix = "_dma";
-  size_t input_len = strlen(input);
-  size_t suffix_len = strlen(suffix);
+  size_t inputLen = strlen(input);
+  size_t suffixLen = strlen(suffix);
 
-  if (input_len >= suffix_len &&
-      strcmp(input + input_len - suffix_len, suffix) == 0) {
-    size_t new_len = input_len - suffix_len;
-    if (new_len >= output_size) {
-      new_len = output_size - 1;
+  if (inputLen >= suffixLen &&
+      strcmp(input + inputLen - suffixLen, suffix) == 0) {
+    size_t newLen = inputLen - suffixLen;
+    if (newLen >= outputSize) {
+      newLen = outputSize - 1;
     }
-    memcpy(output, input, new_len);
-    output[new_len] = '\0';
+    memcpy(output, input, newLen);
+    output[newLen] = '\0';
   } else {
-    strncpy(output, input, output_size - 1);
-    output[output_size - 1] = '\0';
+    strncpy(output, input, outputSize - 1);
+    output[outputSize - 1] = '\0';
   }
 }
 // Missing arrays and constants
@@ -187,12 +187,12 @@ flagcxResult_t flagcxIbStatsInit(struct flagcxIbStats *stat) {
 }
 
 flagcxResult_t flagcxP2pIbPciPath(flagcxIbDev *devs, int num_devs,
-                                  char *dev_name, char **path, int *real_port) {
-  char device_path[PATH_MAX];
-  snprintf(device_path, PATH_MAX, "/sys/class/infiniband/%s/device", dev_name);
-  char *p = realpath(device_path, NULL);
+                                  char *devName, char **path, int *realPort) {
+  char devicePath[PATH_MAX];
+  snprintf(devicePath, PATH_MAX, "/sys/class/infiniband/%s/device", devName);
+  char *p = realpath(devicePath, NULL);
   if (p == NULL) {
-    WARN("Could not find real path of %s", device_path);
+    WARN("Could not find real path of %s", devicePath);
   } else {
     // Merge multi-port NICs into the same PCI device
     p[strlen(p) - 1] = '0';
@@ -200,10 +200,10 @@ flagcxResult_t flagcxP2pIbPciPath(flagcxIbDev *devs, int num_devs,
     if (flagcxParamIbMergeVfs())
       p[strlen(p) - 3] = p[strlen(p) - 4] = '0';
     // Keep the real port aside (the ibv port is always 1 on recent cards)
-    *real_port = 0;
+    *realPort = 0;
     for (int d = 0; d < num_devs; d++) {
       if (flagcxIbMatchVfPath(p, flagcxIbDevs[d].pciPath))
-        (*real_port)++;
+        (*realPort)++;
     }
     *path = p;
   }
@@ -279,7 +279,7 @@ static __thread int
     flagcxUcxDmaSupportInitDev; // which device to init, must be thread local
 static void flagcxUcxDmaBufSupportInitOnce() {
   flagcxResult_t res;
-  int dev_fail = 0;
+  int devFail = 0;
 
   // This is a physical device, not a virtual one, so select from ibDevs
   flagcxIbMergedDev *mergedDev =
@@ -295,7 +295,7 @@ static void flagcxUcxDmaBufSupportInitOnce() {
   dev_fail |= (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   FLAGCXCHECKGOTO(flagcxWrapIbvDeallocPd(pd), res, failure);
   // stop the search and goto failure
-  if (dev_fail)
+  if (devFail)
     goto failure;
   ibDev->dmaBufSupported = 1;
   return;
@@ -599,8 +599,8 @@ static struct flagcxUcxWorker *flagcxUcxWorkers[MAX_IB_DEVS];
 static int flagcxUcxWorkerCount = 0;
 
 static void send_handler_nbx(void *request, ucs_status_t status,
-                             void *user_data) {
-  int *pending = (int *)user_data;
+                             void *userData) {
+  int *pending = (int *)userData;
 
   assert(status == UCS_OK);
   assert(*pending > 0);
@@ -609,9 +609,9 @@ static void send_handler_nbx(void *request, ucs_status_t status,
 }
 
 static void recv_handler_nbx(void *request, ucs_status_t status,
-                             const ucp_tag_recv_info_t *tag_info,
-                             void *user_data) {
-  send_handler_nbx(request, status, user_data);
+                             const ucp_tag_recv_info_t *tagInfo,
+                             void *userData) {
+  send_handler_nbx(request, status, userData);
 }
 
 static union flagcxSocketAddress flagcxUcxIfAddr;
@@ -711,7 +711,7 @@ static flagcxResult_t flagcxUcxInitWorker(ucp_context_h ctx,
 
 static flagcxResult_t flagcxUcxWorkerGetNetaddress(ucp_worker_h worker,
                                                    ucp_address_t **address,
-                                                   size_t *address_length) {
+                                                   size_t *addressLength) {
   ucp_worker_attr_t attr;
 
   attr.field_mask =
@@ -913,7 +913,7 @@ flagcxResult_t flagcxUcxConnect(int dev, void *handle, void **send_comm) {
   struct flagcxUcxCommStage *stage = &recv_handle->stage;
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)stage->comm;
   ucp_address_t *my_addr;
-  size_t local_addr_len;
+  size_t localAddrLen;
   int ready;
 
   *send_comm = NULL;
@@ -942,12 +942,12 @@ flagcxUcxConnectCheck:
   comm->tag = recv_handle->tag;
   comm->gpuFlush.enabled = 0;
   FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucxWorker->worker, &my_addr,
-                                           &local_addr_len));
+                                           &localAddrLen));
   FLAGCXCHECK(flagcxUcxAddEp(comm->ucxWorker, &comm->sock));
-  TRACE(FLAGCX_NET, "NET/UCX: Worker address length: %zu", local_addr_len);
+  TRACE(FLAGCX_NET, "NET/UCX: Worker address length: %zu", localAddrLen);
 
-  FLAGCXCHECK(flagcxSocketSend(&comm->sock, &local_addr_len, sizeof(size_t)));
-  FLAGCXCHECK(flagcxSocketSend(&comm->sock, my_addr, local_addr_len));
+  FLAGCXCHECK(flagcxSocketSend(&comm->sock, &localAddrLen, sizeof(size_t)));
+  FLAGCXCHECK(flagcxSocketSend(&comm->sock, my_addr, localAddrLen));
   FLAGCXCHECK(flagcxSocketSend(&comm->sock, &comm->ctag, sizeof(ucp_tag_t)));
 
   *send_comm = comm;
@@ -959,7 +959,7 @@ flagcxResult_t flagcxUcxAccept(void *listen_comm, void **recv_comm) {
   flagcxUcxListenComm_t *l_comm = (flagcxUcxListenComm_t *)listen_comm;
   struct flagcxUcxCommStage *stage = &l_comm->stage;
   flagcxUcxComm_t *r_comm = (flagcxUcxComm_t *)stage->comm;
-  size_t peer_addr_len;
+  size_t peerAddrLen;
   ucp_address_t *peer_addr;
   ucp_ep_params_t ep_params;
   int ready;
@@ -988,13 +988,13 @@ flagcxUcxAcceptCheck:
 
   flagcxUcxRequestInit(r_comm);
 
-  FLAGCXCHECK(flagcxSocketRecv(&r_comm->sock, &peer_addr_len, sizeof(size_t)));
-  peer_addr = (ucp_address_t *)malloc(peer_addr_len);
+  FLAGCXCHECK(flagcxSocketRecv(&r_comm->sock, &peerAddrLen, sizeof(size_t)));
+  peer_addr = (ucp_address_t *)malloc(peerAddrLen);
   if (peer_addr == NULL) {
     return flagcxSystemError;
   }
 
-  FLAGCXCHECK(flagcxSocketRecv(&r_comm->sock, peer_addr, peer_addr_len));
+  FLAGCXCHECK(flagcxSocketRecv(&r_comm->sock, peer_addr, peerAddrLen));
   ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
   ep_params.address = peer_addr;
   UCXCHECK(ucp_ep_create(r_comm->ucxWorker->worker, &ep_params, &r_comm->ep));
@@ -1004,10 +1004,10 @@ flagcxUcxAcceptCheck:
   r_comm->gpuFlush.enabled = (flagcx_p2p_gdr_support() == flagcxSuccess);
   if (r_comm->gpuFlush.enabled) {
     ucp_address_t *my_addr;
-    size_t local_addr_len;
+    size_t localAddrLen;
 
     FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(r_comm->ucxWorker->worker,
-                                             &my_addr, &local_addr_len));
+                                             &my_addr, &localAddrLen));
     ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
     ep_params.address = my_addr;
     UCXCHECK(ucp_ep_create(r_comm->ucxWorker->worker, &ep_params,
@@ -1029,8 +1029,8 @@ flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
   ucp_mem_map_params_t mmap_params;
   flagcxUcxMhandle_t *mh;
   uint64_t reg_addr, reg_size;
-  size_t rkey_buf_size;
-  void *rkey_buf;
+  size_t rkeyBufSize;
+  void *rkeyBuf;
 
   FLAGCXCHECK(flagcxIbMalloc((void **)&mh, sizeof(flagcxUcxMhandle_t)));
   reg_addr = addr & (~(REG_ALIGN - 1));
@@ -1048,10 +1048,10 @@ flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
 
   UCXCHECK(ucp_mem_map(ctx->flagcxUcxCtx, &mmap_params, &mh->ucpMemh));
   if (ctx->gpuFlush.enabled) {
-    UCXCHECK(ucp_rkey_pack(ctx->flagcxUcxCtx, mh->ucpMemh, &rkey_buf,
-                           &rkey_buf_size));
-    UCXCHECK(ucp_ep_rkey_unpack(ctx->gpuFlush.flushEp, rkey_buf, &mh->rkey));
-    ucp_rkey_buffer_release(rkey_buf);
+    UCXCHECK(
+        ucp_rkey_pack(ctx->flagcxUcxCtx, mh->ucpMemh, &rkeyBuf, &rkeyBufSize));
+    UCXCHECK(ucp_ep_rkey_unpack(ctx->gpuFlush.flushEp, rkeyBuf, &mh->rkey));
+    ucp_rkey_buffer_release(rkeyBuf);
   }
 
   *mhandle = mh;
@@ -1109,7 +1109,7 @@ static flagcxResult_t flagcxUcxSendCheck(flagcxUcxComm_t *comm) {
   ucp_tag_message_h msg_tag;
   ucp_tag_recv_info_t info_tag;
   ucp_ep_params_t ep_params;
-  void *ucp_req;
+  void *ucpReq;
   ucs_status_t status;
 
   ucp_worker_progress(comm->ucxWorker->worker);
@@ -1130,20 +1130,20 @@ static flagcxResult_t flagcxUcxSendCheck(flagcxUcxComm_t *comm) {
   }
 
   params.op_attr_mask = 0;
-  ucp_req = ucp_tag_msg_recv_nbx(comm->ucxWorker->worker, comm->msg,
-                                 info_tag.length, msg_tag, &params);
-  if (UCS_PTR_IS_ERR(ucp_req)) {
+  ucpReq = ucp_tag_msg_recv_nbx(comm->ucxWorker->worker, comm->msg,
+                                info_tag.length, msg_tag, &params);
+  if (UCS_PTR_IS_ERR(ucpReq)) {
     WARN("Unable to receive connect msg (%s)",
-         ucs_status_string(UCS_PTR_STATUS(ucp_req)));
+         ucs_status_string(UCS_PTR_STATUS(ucpReq)));
     free(comm->msg);
     comm->msg = NULL;
     return flagcxSystemError;
-  } else if (ucp_req == NULL) {
+  } else if (ucpReq == NULL) {
     goto out_set_ready;
   }
 
   assert(comm->connectReq == NULL);
-  comm->connectReq = ucp_req;
+  comm->connectReq = ucpReq;
 
 out_check_status:
   status = ucp_request_check_status(comm->connectReq);
@@ -1178,30 +1178,30 @@ static void flagcxUcxRecvSetReady(flagcxUcxComm_t *comm) {
   comm->ready = 1;
 }
 
-static void check_handler(void *request, ucs_status_t status, void *user_data) {
+static void check_handler(void *request, ucs_status_t status, void *userData) {
   assert(status == UCS_OK);
-  flagcxUcxRecvSetReady((flagcxUcxComm_t *)user_data);
+  flagcxUcxRecvSetReady((flagcxUcxComm_t *)userData);
   ucp_request_free(request);
 }
 
 flagcxResult_t flagcxUcxRecvCheck(flagcxUcxComm_t *comm) {
   ucp_request_param_t params;
   ucp_address_t *my_addr;
-  size_t local_addr_len;
-  size_t msg_len;
+  size_t localAddrLen;
+  size_t msgLen;
 
   if (comm->connectReq != NULL) {
     goto done;
   }
 
   FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucxWorker->worker, &my_addr,
-                                           &local_addr_len));
+                                           &localAddrLen));
   flagcxUcxAddEp(comm->ucxWorker, &comm->sock);
 
-  msg_len = sizeof(flagcxUcxConnectMsg_t) + local_addr_len;
-  comm->msg = (flagcxUcxConnectMsg_t *)calloc(1, msg_len);
-  comm->msg->addrLen = local_addr_len;
-  memcpy(comm->msg + 1, my_addr, local_addr_len);
+  msgLen = sizeof(flagcxUcxConnectMsg_t) + localAddrLen;
+  comm->msg = (flagcxUcxConnectMsg_t *)calloc(1, msgLen);
+  comm->msg->addrLen = localAddrLen;
+  memcpy(comm->msg + 1, my_addr, localAddrLen);
 
   params.op_attr_mask =
       UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_USER_DATA;
@@ -1210,7 +1210,7 @@ flagcxResult_t flagcxUcxRecvCheck(flagcxUcxComm_t *comm) {
 
   assert(comm->connectReq == NULL);
   comm->connectReq =
-      ucp_tag_send_nbx(comm->ep, comm->msg, msg_len, comm->ctag, &params);
+      ucp_tag_send_nbx(comm->ep, comm->msg, msgLen, comm->ctag, &params);
   if (UCS_PTR_IS_ERR(comm->connectReq)) {
     WARN("Unable to send connect message");
     free(comm->msg);
@@ -1236,7 +1236,7 @@ flagcxResult_t flagcxUcxIsend(void *send_comm, void *data, size_t size, int tag,
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)send_comm;
   flagcxUcxMhandle_t *mh = (flagcxUcxMhandle_t *)mhandle;
   flagcxUcxRequest_t *req;
-  void *ucp_req;
+  void *ucpReq;
   ucp_request_param_t params;
 
   if (comm->ready == 0) {
@@ -1263,13 +1263,13 @@ flagcxResult_t flagcxUcxIsend(void *send_comm, void *data, size_t size, int tag,
     params.memh = mh->ucpMemh;
   }
 
-  ucp_req = ucp_tag_send_nbx(comm->ep, data, size,
-                             flagcxUcxUcpTag(comm->tag, tag), &params);
-  if (UCS_PTR_IS_ERR(ucp_req)) {
+  ucpReq = ucp_tag_send_nbx(comm->ep, data, size,
+                            flagcxUcxUcpTag(comm->tag, tag), &params);
+  if (UCS_PTR_IS_ERR(ucpReq)) {
     WARN("ucx_isend: unable to send message (%s)",
-         ucs_status_string(UCS_PTR_STATUS(ucp_req)));
+         ucs_status_string(UCS_PTR_STATUS(ucpReq)));
     return flagcxSystemError;
-  } else if (ucp_req == NULL) {
+  } else if (ucpReq == NULL) {
     req->pending--;
   }
 
@@ -1282,7 +1282,7 @@ flagcxResult_t flagcxUcxIrecv(void *recv_comm, int n, void **data,
                               void **phandles, void **request) {
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)recv_comm;
   flagcxUcxMhandle_t **mh = (flagcxUcxMhandle_t **)mhandle;
-  void *ucp_req;
+  void *ucpReq;
   flagcxUcxRequest_t *req;
   ucp_request_param_t params;
 
@@ -1319,14 +1319,14 @@ flagcxResult_t flagcxUcxIrecv(void *recv_comm, int n, void **data,
       params.op_attr_mask &= ~UCP_OP_ATTR_FIELD_MEMH;
     }
 
-    ucp_req =
+    ucpReq =
         ucp_tag_recv_nbx(comm->ucxWorker->worker, data[i], sizes[i],
                          flagcxUcxUcpTag(comm->tag, tags[i]), tagMask, &params);
-    if (UCS_PTR_IS_ERR(ucp_req)) {
+    if (UCS_PTR_IS_ERR(ucpReq)) {
       WARN("ucx_irecv: unable to post receive %d/%d (%s)", i, n,
-           ucs_status_string(UCS_PTR_STATUS(ucp_req)));
+           ucs_status_string(UCS_PTR_STATUS(ucpReq)));
       return flagcxSystemError;
-    } else if (ucp_req == NULL) {
+    } else if (ucpReq == NULL) {
       req->pending--;
     }
   }
@@ -1342,7 +1342,7 @@ flagcxResult_t flagcxUcxIflush(void *recv_comm, int n, void **data, int *sizes,
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)recv_comm;
   flagcxUcxMhandle_t **mh = (flagcxUcxMhandle_t **)mhandle;
   flagcxUcxRequest_t *req;
-  void *ucp_req;
+  void *ucpReq;
   ucp_request_param_t params;
 
   *request = NULL;
@@ -1363,13 +1363,13 @@ flagcxResult_t flagcxUcxIflush(void *recv_comm, int n, void **data, int *sizes,
       UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_USER_DATA;
   params.cb.send = send_handler_nbx;
   params.user_data = &req->pending;
-  ucp_req = ucp_get_nbx(comm->gpuFlush.flushEp, &comm->gpuFlush.hostMem, size,
-                        (uint64_t)data[last], mh[last]->rkey, &params);
-  if (UCS_PTR_IS_ERR(ucp_req)) {
+  ucpReq = ucp_get_nbx(comm->gpuFlush.flushEp, &comm->gpuFlush.hostMem, size,
+                       (uint64_t)data[last], mh[last]->rkey, &params);
+  if (UCS_PTR_IS_ERR(ucpReq)) {
     WARN("ucx_iflush: unable to read data (%s)",
-         ucs_status_string(UCS_PTR_STATUS(ucp_req)));
+         ucs_status_string(UCS_PTR_STATUS(ucpReq)));
     return flagcxSystemError;
-  } else if (ucp_req == NULL) {
+  } else if (ucpReq == NULL) {
     req->pending--;
   }
 
@@ -1399,28 +1399,28 @@ flagcxResult_t flagcxUcxTest(void *request, int *done, int *size) {
   return flagcxSuccess;
 }
 
-static void wait_close(ucp_worker_h worker, void *ucp_req) {
+static void wait_close(ucp_worker_h worker, void *ucpReq) {
   ucs_status_t status;
 
-  if (UCS_PTR_IS_PTR(ucp_req)) {
+  if (UCS_PTR_IS_PTR(ucpReq)) {
     do {
       ucp_worker_progress(worker);
-      status = ucp_request_check_status(ucp_req);
+      status = ucp_request_check_status(ucpReq);
     } while (status == UCS_INPROGRESS);
-    ucp_request_free(ucp_req);
-  } else if (ucp_req != NULL) {
+    ucp_request_free(ucpReq);
+  } else if (ucpReq != NULL) {
     WARN("Failed to close UCX endpoint");
   }
 }
 
 flagcxResult_t flagcxUcxCloseSend(void *send_comm) {
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)send_comm;
-  void *close_req;
+  void *closeReq;
 
   if (comm) {
     if (comm->ep) {
-      close_req = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, close_req);
+      closeReq = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
+      wait_close(comm->ucxWorker->worker, closeReq);
       int close = 1;
       FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
     }
@@ -1433,17 +1433,17 @@ flagcxResult_t flagcxUcxCloseSend(void *send_comm) {
 
 flagcxResult_t flagcxUcxCloseRecv(void *recv_comm) {
   flagcxUcxComm_t *comm = (flagcxUcxComm_t *)recv_comm;
-  void *close_req;
+  void *closeReq;
 
   if (comm) {
     if (comm->gpuFlush.enabled) {
-      close_req =
+      closeReq =
           ucp_ep_close_nb(comm->gpuFlush.flushEp, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, close_req);
+      wait_close(comm->ucxWorker->worker, closeReq);
     }
     if (comm->ep) {
-      close_req = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucxWorker->worker, close_req);
+      closeReq = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
+      wait_close(comm->ucxWorker->worker, closeReq);
       int close = 1;
       FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
     }

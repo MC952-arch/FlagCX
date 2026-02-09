@@ -107,16 +107,16 @@ flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     }
   }
 
-  int mpi_rank, mpi_size;
-  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+  int mpiRank, mpiSize;
+  MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
+  MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
 
   // validate parameters if bootstrap is provided
   if (bootstrap != nullptr) {
-    if (rank != mpi_rank || nranks != mpi_size) {
+    if (rank != mpiRank || nranks != mpiSize) {
       printf("Warning: Expected rank/size (%d/%d) differs from MPI (%d/%d), "
              "using MPI values\n",
-             rank, nranks, mpi_rank, mpi_size);
+             rank, nranks, mpiRank, mpiSize);
     }
   }
 
@@ -126,7 +126,7 @@ flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
   // use actual MPI rank and size to create context
   (*comm)->base =
-      std::make_shared<flagcxMpiContext>(mpi_rank, mpi_size, bootstrap);
+      std::make_shared<flagcxMpiContext>(mpiRank, mpiSize, bootstrap);
 
   // check if context is created successfully
   if (!(*comm)->base || !(*comm)->base->isValidContext()) {
@@ -354,22 +354,22 @@ flagcxResult_t mpiAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   }
 
   int size = comm->base->getSize();
-  MPI_Datatype mpi_datatype = getFlagcxToMpiDataType(datatype);
+  MPI_Datatype mpiDatatype = getFlagcxToMpiDataType(datatype);
 
-  std::vector<int> mpi_sendcounts(size), mpi_recvcounts(size);
-  std::vector<int> mpi_sdispls(size), mpi_rdispls(size);
+  std::vector<int> mpiSendcounts(size), mpiRecvcounts(size);
+  std::vector<int> mpiSdispls(size), mpiRdispls(size);
 
   for (int i = 0; i < size; i++) {
-    mpi_sendcounts[i] = static_cast<int>(sendcounts[i]);
-    mpi_recvcounts[i] = static_cast<int>(recvcounts[i]);
-    mpi_sdispls[i] = static_cast<int>(sdispls[i]);
-    mpi_rdispls[i] = static_cast<int>(rdispls[i]);
+    mpiSendcounts[i] = static_cast<int>(sendcounts[i]);
+    mpiRecvcounts[i] = static_cast<int>(recvcounts[i]);
+    mpiSdispls[i] = static_cast<int>(sdispls[i]);
+    mpiRdispls[i] = static_cast<int>(rdispls[i]);
   }
 
   int result =
-      MPI_Alltoallv(sendbuff, mpi_sendcounts.data(), mpi_sdispls.data(),
-                    mpi_datatype, recvbuff, mpi_recvcounts.data(),
-                    mpi_rdispls.data(), mpi_datatype, comm->base->getMpiComm());
+      MPI_Alltoallv(sendbuff, mpiSendcounts.data(), mpiSdispls.data(),
+                    mpiDatatype, recvbuff, mpiRecvcounts.data(),
+                    mpiRdispls.data(), mpiDatatype, comm->base->getMpiComm());
 
   return (result == MPI_SUCCESS) ? flagcxSuccess : flagcxInternalError;
 }
@@ -387,10 +387,10 @@ flagcxResult_t mpiAdaptorSend(const void *sendbuff, size_t count,
     return flagcxInvalidArgument;
   }
 
-  MPI_Datatype mpi_datatype = getFlagcxToMpiDataType(datatype);
+  MPI_Datatype mpiDatatype = getFlagcxToMpiDataType(datatype);
   int tag = 0;
 
-  int result = MPI_Send(sendbuff, static_cast<int>(count), mpi_datatype, peer,
+  int result = MPI_Send(sendbuff, static_cast<int>(count), mpiDatatype, peer,
                         tag, comm->base->getMpiComm());
 
   return (result == MPI_SUCCESS) ? flagcxSuccess : flagcxSystemError;
@@ -410,11 +410,11 @@ flagcxResult_t mpiAdaptorRecv(void *recvbuff, size_t count,
     return flagcxInvalidArgument;
   }
 
-  MPI_Datatype mpi_datatype = getFlagcxToMpiDataType(datatype);
+  MPI_Datatype mpiDatatype = getFlagcxToMpiDataType(datatype);
   int tag = 0;
   MPI_Status status;
 
-  int result = MPI_Recv(recvbuff, static_cast<int>(count), mpi_datatype, peer,
+  int result = MPI_Recv(recvbuff, static_cast<int>(count), mpiDatatype, peer,
                         tag, comm->base->getMpiComm(), &status);
 
   return (result == MPI_SUCCESS) ? flagcxSuccess : flagcxSystemError;

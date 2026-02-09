@@ -11,7 +11,7 @@
 #include "flagcx_common.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
-#include "ibuc_retrans.h"
+#include "ib_retrans.h"
 #include "ibvwrap.h"
 #include "net.h"
 #include "param.h"
@@ -34,23 +34,23 @@ static void flagcxIbucPollCompletions(struct flagcxIbSendComm *comm) {
     return;
 
   struct ibv_wc wcs[64];
-  int retrans_freed = 0;
+  int retransFreed = 0;
 
   for (int i = 0; i < comm->base.ndevs; i++) {
     struct flagcxIbNetCommDevBase *devBase = &comm->devs[i].base;
     if (!devBase || !devBase->cq)
       continue;
-    for (int poll_round = 0; poll_round < 16; poll_round++) {
-      int n_cqe = 0;
-      flagcxWrapIbvPollCq(devBase->cq, 64, wcs, &n_cqe);
+    for (int pollRound = 0; pollRound < 16; pollRound++) {
+      int nCqe = 0;
+      flagcxWrapIbvPollCq(devBase->cq, 64, wcs, &nCqe);
 
-      if (n_cqe == 0)
+      if (nCqe == 0)
         break;
-      for (int j = 0; j < n_cqe; j++) {
+      for (int j = 0; j < nCqe; j++) {
         if (wcs[j].status == IBV_WC_SUCCESS &&
             wcs[j].wr_id == FLAGCX_RETRANS_WR_ID) {
           comm->outstandingRetrans--;
-          retrans_freed++;
+          retransFreed++;
         }
       }
     }
@@ -66,10 +66,10 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
   if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
     struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
 
-    static __thread uint64_t last_log_time = 0;
-    uint64_t now_us = flagcxIbGetTimeUs();
-    if (now_us - last_log_time > 100000) {
-      last_log_time = now_us;
+    static __thread uint64_t lastLogTime = 0;
+    uint64_t nowUs = flagcxIbGetTimeUs();
+    if (nowUs - lastLogTime > 100000) {
+      lastLogTime = nowUs;
     }
 
     if (sComm->retrans.enabled) {
@@ -87,9 +87,8 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
           // Only poll if control QP is still valid
           if (sComm->devs[i].ctrlQp.qp && sComm->devs[i].ctrlQp.cq) {
             for (int p = 0; p < 4; p++) {
-              flagcxResult_t poll_result =
-                  flagcxIbRetransRecvAckViaUd(sComm, i);
-              if (poll_result != flagcxSuccess)
+              flagcxResult_t pollResult = flagcxIbRetransRecvAckViaUd(sComm, i);
+              if (pollResult != flagcxSuccess)
                 break;
             }
           } else {
@@ -99,19 +98,19 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
           }
         }
 
-        uint64_t now_us = flagcxIbGetTimeUs();
+        uint64_t nowUs2 = flagcxIbGetTimeUs();
         const uint64_t CHECK_INTERVAL_US = 1000;
-        if (now_us - sComm->lastTimeoutCheckUs >= CHECK_INTERVAL_US) {
-          flagcxResult_t retrans_result =
+        if (nowUs2 - sComm->lastTimeoutCheckUs >= CHECK_INTERVAL_US) {
+          flagcxResult_t retransResult =
               flagcxIbRetransCheckTimeout(&sComm->retrans, sComm);
-          if (retrans_result != flagcxSuccess &&
-              retrans_result != flagcxInProgress) {
+          if (retransResult != flagcxSuccess &&
+              retransResult != flagcxInProgress) {
             if (flagcxDebugNoWarn == 0)
               INFO(FLAGCX_ALL,
                    "%s:%d -> %d (retransmission check failed, continuing)",
-                   __FILE__, __LINE__, retrans_result);
+                   __FILE__, __LINE__, retransResult);
           }
-          sComm->lastTimeoutCheckUs = now_us;
+          sComm->lastTimeoutCheckUs = nowUs2;
         }
       }
     }
@@ -156,37 +155,36 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
     struct flagcxIbRecvComm *rComm = (struct flagcxIbRecvComm *)r->base;
 
     if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL) {
-      int buf_idx = (int)wc->wr_id;
+      int bufIdx = (int)wc->wr_id;
 
-      if (buf_idx < 0 || buf_idx >= rComm->srqMgr.bufCount) {
-        WARN("SRQ completion with invalid buffer index: %d (max=%d)", buf_idx,
+      if (bufIdx < 0 || bufIdx >= rComm->srqMgr.bufCount) {
+        WARN("SRQ completion with invalid buffer index: %d (max=%d)", bufIdx,
              rComm->srqMgr.bufCount);
         *handled = true;
         return flagcxSuccess;
       }
 
-      void *chunk_addr = rComm->srqMgr.bufs[buf_idx].buffer;
+      void *chunkAddr = rComm->srqMgr.bufs[bufIdx].buffer;
 
       if (wc->opcode == IBV_WC_RECV) {
-        struct flagcxIbRetransHdr *hdr =
-            (struct flagcxIbRetransHdr *)chunk_addr;
+        struct flagcxIbRetransHdr *hdr = (struct flagcxIbRetransHdr *)chunkAddr;
         if (hdr->magic == FLAGCX_RETRANS_MAGIC) {
           uint32_t seq = hdr->seq;
 
-          struct flagcxIbAckMsg ack_msg = {0};
-          int should_ack = 0;
-          FLAGCXCHECK(flagcxIbRetransRecvPacket(&rComm->retrans, seq, &ack_msg,
-                                                &should_ack));
+          struct flagcxIbAckMsg ackMsg = {0};
+          int shouldAck = 0;
+          FLAGCXCHECK(flagcxIbRetransRecvPacket(&rComm->retrans, seq, &ackMsg,
+                                                &shouldAck));
 
-          if (should_ack) {
-            flagcxResult_t ack_result =
-                flagcxIbRetransSendAckViaUd(rComm, &ack_msg, 0);
-            if (ack_result != flagcxSuccess) {
+          if (shouldAck) {
+            flagcxResult_t ackResult =
+                flagcxIbRetransSendAckViaUd(rComm, &ackMsg, 0);
+            if (ackResult != flagcxSuccess) {
               TRACE(FLAGCX_NET, "Failed to send ACK for seq=%u (result=%d)",
-                    seq, ack_result);
+                    seq, ackResult);
             } else {
               TRACE(FLAGCX_NET, "Sent ACK for seq=%u, ack_seq=%u", seq,
-                    ack_msg.ackSeq);
+                    ackMsg.ackSeq);
             }
           }
 
@@ -194,8 +192,8 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
                 seq);
         }
 
-        rComm->srqMgr.bufs[buf_idx].inUse = 0;
-        rComm->srqMgr.freeBufIndices[rComm->srqMgr.freeBufCount] = buf_idx;
+        rComm->srqMgr.bufs[bufIdx].inUse = 0;
+        rComm->srqMgr.freeBufIndices[rComm->srqMgr.freeBufCount] = bufIdx;
         rComm->srqMgr.freeBufCount++;
         rComm->srqMgr.postSrqCount++;
         *handled = true;
@@ -209,20 +207,20 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
             flagcxIbDecodeImmData(wc->imm_data, &seq, &size);
             r->recv.sizes[0] = size;
 
-            struct flagcxIbAckMsg ack_msg = {0};
-            int should_ack = 0;
+            struct flagcxIbAckMsg ackMsg2 = {0};
+            int shouldAck2 = 0;
             FLAGCXCHECK(flagcxIbRetransRecvPacket(&rComm->retrans, seq,
-                                                  &ack_msg, &should_ack));
+                                                  &ackMsg2, &shouldAck2));
 
-            if (should_ack) {
-              flagcxResult_t ack_result =
-                  flagcxIbRetransSendAckViaUd(rComm, &ack_msg, 0);
-              if (ack_result != flagcxSuccess) {
+            if (shouldAck2) {
+              flagcxResult_t ackResult2 =
+                  flagcxIbRetransSendAckViaUd(rComm, &ackMsg2, 0);
+              if (ackResult2 != flagcxSuccess) {
                 TRACE(FLAGCX_NET, "Failed to send ACK for seq=%u (result=%d)",
-                      seq, ack_result);
+                      seq, ackResult2);
               } else {
                 TRACE(FLAGCX_NET, "Sent ACK for seq=%u, ack_seq=%u", seq,
-                      ack_msg.ackSeq);
+                      ackMsg2.ackSeq);
               }
             } else {
               TRACE(FLAGCX_NET, "No ACK needed for seq=%u (expect=%u)", seq,
@@ -233,8 +231,8 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
           }
         }
 
-        rComm->srqMgr.bufs[buf_idx].inUse = 0;
-        rComm->srqMgr.freeBufIndices[rComm->srqMgr.freeBufCount] = buf_idx;
+        rComm->srqMgr.bufs[bufIdx].inUse = 0;
+        rComm->srqMgr.freeBufIndices[rComm->srqMgr.freeBufCount] = bufIdx;
         rComm->srqMgr.freeBufCount++;
         rComm->srqMgr.postSrqCount++;
         r->events[devIndex]--;
@@ -526,11 +524,11 @@ flagcxResult_t flagcxIbucDestroyBase(struct flagcxIbNetCommDevBase *base) {
   // Poll any remaining completions before destroying CQ
   if (base->cq) {
     struct ibv_wc wcs[64];
-    int n_cqe = 0;
+    int nCqe = 0;
     // Poll multiple times to drain all pending completions
     for (int i = 0; i < 16; i++) {
-      flagcxWrapIbvPollCq(base->cq, 64, wcs, &n_cqe);
-      if (n_cqe == 0)
+      flagcxWrapIbvPollCq(base->cq, 64, wcs, &nCqe);
+      if (nCqe == 0)
         break;
     }
   }
@@ -539,14 +537,14 @@ flagcxResult_t flagcxIbucDestroyBase(struct flagcxIbNetCommDevBase *base) {
 
   pthread_mutex_lock(&flagcxIbDevs[base->ibDevN].lock);
   if (0 == --flagcxIbDevs[base->ibDevN].pdRefs) {
-    flagcxResult_t pd_result =
+    flagcxResult_t pdResult =
         flagcxWrapIbvDeallocPd(flagcxIbDevs[base->ibDevN].pd);
-    if (pd_result != flagcxSuccess) {
+    if (pdResult != flagcxSuccess) {
       if (flagcxDebugNoWarn == 0)
         INFO(FLAGCX_ALL,
              "Failed to deallocate PD: %d (non-fatal, may have remaining "
              "resources)",
-             pd_result);
+             pdResult);
       res = flagcxSuccess;
     } else {
       res = flagcxSuccess;
@@ -648,12 +646,12 @@ flagcxResult_t flagcxIbucRtrQpWithType(struct ibv_qp *qp, uint8_t sGidIndex,
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
   qpAttr.ah_attr.port_num = info->ibPort;
-  int modify_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                     IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
+  int modifyFlags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                    IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
   if (qp_type == IBV_QPT_RC) {
-    modify_flags |= IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+    modifyFlags |= IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
   }
-  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp, &qpAttr, modify_flags));
+  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp, &qpAttr, modifyFlags));
   return flagcxSuccess;
 }
 
@@ -676,12 +674,12 @@ flagcxResult_t flagcxIbucRtsQpWithType(struct ibv_qp *qp,
     qpAttr.max_rd_atomic = 1;
   }
 
-  int modify_flags = IBV_QP_STATE | IBV_QP_SQ_PSN;
+  int modifyFlags = IBV_QP_STATE | IBV_QP_SQ_PSN;
   if (qp_type == IBV_QPT_RC) {
-    modify_flags |= IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
-                    IBV_QP_MAX_QP_RD_ATOMIC;
+    modifyFlags |= IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+                   IBV_QP_MAX_QP_RD_ATOMIC;
   }
-  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp, &qpAttr, modify_flags));
+  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp, &qpAttr, modifyFlags));
   return flagcxSuccess;
 }
 
@@ -954,7 +952,7 @@ ibuc_connect:
     uint8_t gidIndex = commDev->base.gidInfo.localGidIndex;
 
     struct ibv_qp *qp = comm->base.qps[q].qp;
-    if (remQpInfo->eceSupported && remQpInfo->eceSupported)
+    if (remQpInfo->eceSupported)
       FLAGCXCHECK(
           flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->eceSupported));
 
