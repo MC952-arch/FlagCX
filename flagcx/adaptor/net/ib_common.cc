@@ -100,8 +100,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
       }
       if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
         struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
-        if (sComm->outstanding_sends > 0)
-          sComm->outstanding_sends--;
+        if (sComm->outstandingSends > 0)
+          sComm->outstandingSends--;
       }
       FLAGCXCHECK(flagcxIbFreeRequest(r));
       return flagcxSuccess;
@@ -148,7 +148,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
             char localGidString[INET6_ADDRSTRLEN] = "";
             char remoteGidString[INET6_ADDRSTRLEN] = "";
             const char *localGidStr = NULL, *remoteGidStr = NULL;
-            if (r->devBases[i]->gidInfo.link_layer == IBV_LINK_LAYER_ETHERNET) {
+            if (r->devBases[i]->gidInfo.linkLayer == IBV_LINK_LAYER_ETHERNET) {
               localGidStr =
                   inet_ntop(AF_INET6, &r->devBases[i]->gidInfo.localGid,
                             localGidString, sizeof(localGidString));

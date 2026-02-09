@@ -732,7 +732,7 @@ static flagcxResult_t flagcxUcxWorkerGetNetaddress(ucp_worker_h worker,
 }
 
 static flagcxResult_t flagcxUcxGetCtxAndWorker(int dev, ucp_context_h *ctx,
-                                               flagcxUcxWorker_t **ucx_worker,
+                                               flagcxUcxWorker_t **ucxWorker,
                                                ucp_tag_t *newtag) {
   pthread_mutex_lock(&flagcxUcxLock);
   flagcxResult_t result;
@@ -773,7 +773,7 @@ static flagcxResult_t flagcxUcxGetCtxAndWorker(int dev, ucp_context_h *ctx,
   }
 
   *ctx = w->ctx;
-  *ucx_worker = w;
+  *ucxWorker = w;
   if (newtag != NULL) {
     *newtag = ++flagcxUcxWorkerTags[dev];
   }
@@ -788,15 +788,15 @@ err:
   return flagcxSystemError;
 }
 
-static flagcxResult_t flagcxUcxFreeWorker(flagcxUcxWorker_t *ucx_worker) {
+static flagcxResult_t flagcxUcxFreeWorker(flagcxUcxWorker_t *ucxWorker) {
   int dev, dummy, done = 0;
   struct flagcxUcxEpList *ep, *cur;
   struct flagcxUcxWorker *next;
   flagcxResult_t result;
 
   pthread_mutex_lock(&flagcxUcxLock);
-  ucx_worker->count--;
-  if (ucx_worker->count == 0) {
+  ucxWorker->count--;
+  if (ucxWorker->count == 0) {
     flagcxUcxWorkerCount--;
     done = flagcxUcxWorkerCount == 0;
   }
@@ -808,12 +808,12 @@ static flagcxResult_t flagcxUcxFreeWorker(flagcxUcxWorker_t *ucx_worker) {
 
   for (dev = 0; dev < sizeof(flagcxUcxWorkers) / sizeof(*flagcxUcxWorkers);
        dev++) {
-    for (ucx_worker = flagcxUcxWorkers[dev]; ucx_worker != NULL;
-         ucx_worker = next) {
-      next = ucx_worker->next;
-      assert(ucx_worker->count == 0);
+    for (ucxWorker = flagcxUcxWorkers[dev]; ucxWorker != NULL;
+         ucxWorker = next) {
+      next = ucxWorker->next;
+      assert(ucxWorker->count == 0);
 
-      ep = ucx_worker->eps;
+      ep = ucxWorker->eps;
       while (ep) {
         cur = ep;
         result = flagcxSocketRecv(ep->sock, &dummy, sizeof(int));
@@ -825,8 +825,8 @@ static flagcxResult_t flagcxUcxFreeWorker(flagcxUcxWorker_t *ucx_worker) {
         close(cur->sock->fd);
         free(cur);
       }
-      ucp_worker_destroy(ucx_worker->worker);
-      free(ucx_worker);
+      ucp_worker_destroy(ucxWorker->worker);
+      free(ucxWorker);
     }
 
     flagcxUcxWorkers[dev] = NULL;
@@ -839,17 +839,17 @@ static flagcxResult_t flagcxUcxFreeWorker(flagcxUcxWorker_t *ucx_worker) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxUcxAddEp(flagcxUcxWorker_t *ucx_worker,
+static flagcxResult_t flagcxUcxAddEp(flagcxUcxWorker_t *ucxWorker,
                                      struct flagcxSocket *sock) {
-  struct flagcxUcxEpList *new_ep =
+  struct flagcxUcxEpList *newEp =
       (struct flagcxUcxEpList *)malloc(sizeof(struct flagcxUcxEpList));
-  if (new_ep == NULL) {
+  if (newEp == NULL) {
     return flagcxSystemError;
   }
 
-  new_ep->sock = sock;
-  new_ep->next = ucx_worker->eps;
-  ucx_worker->eps = new_ep;
+  newEp->sock = sock;
+  newEp->next = ucxWorker->eps;
+  ucxWorker->eps = newEp;
   return flagcxSuccess;
 }
 
@@ -888,7 +888,7 @@ flagcxResult_t flagcxUcxListen(int dev, void *handle, void **listen_comm) {
   FLAGCXCHECK(flagcxSocketListen(&comm->sock));
   FLAGCXCHECK(flagcxSocketGetAddr(&comm->sock, &my_handle->connectAddr));
   FLAGCXCHECK(
-      flagcxUcxGetCtxAndWorker(dev, &comm->ctx, &comm->ucx_worker, &comm->tag));
+      flagcxUcxGetCtxAndWorker(dev, &comm->ctx, &comm->ucxWorker, &comm->tag));
 
   comm->dev = dev;
   my_handle->tag = comm->tag;
@@ -900,11 +900,11 @@ flagcxResult_t flagcxUcxListen(int dev, void *handle, void **listen_comm) {
 static void flagcxUcxRequestInit(flagcxUcxComm_t *comm) {
   static const int entries = sizeof(comm->reqs) / sizeof(*comm->reqs);
 
-  comm->free_req = NULL;
+  comm->freeReq = NULL;
   for (int i = entries - 1; i >= 0; i--) {
     comm->reqs[i].comm = comm;
-    comm->reqs[i].next = comm->free_req;
-    comm->free_req = &comm->reqs[i];
+    comm->reqs[i].next = comm->freeReq;
+    comm->freeReq = &comm->reqs[i];
   }
 }
 
@@ -937,13 +937,13 @@ flagcxUcxConnectCheck:
   if (!ready)
     return flagcxSuccess;
 
-  FLAGCXCHECK(flagcxUcxGetCtxAndWorker(dev, &comm->ctx, &comm->ucx_worker,
-                                       &comm->ctag));
+  FLAGCXCHECK(
+      flagcxUcxGetCtxAndWorker(dev, &comm->ctx, &comm->ucxWorker, &comm->ctag));
   comm->tag = recv_handle->tag;
   comm->gpuFlush.enabled = 0;
-  FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucx_worker->worker, &my_addr,
+  FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucxWorker->worker, &my_addr,
                                            &local_addr_len));
-  FLAGCXCHECK(flagcxUcxAddEp(comm->ucx_worker, &comm->sock));
+  FLAGCXCHECK(flagcxUcxAddEp(comm->ucxWorker, &comm->sock));
   TRACE(FLAGCX_NET, "NET/UCX: Worker address length: %zu", local_addr_len);
 
   FLAGCXCHECK(flagcxSocketSend(&comm->sock, &local_addr_len, sizeof(size_t)));
@@ -983,7 +983,7 @@ flagcxUcxAcceptCheck:
     return flagcxSuccess;
 
   r_comm->ctx = l_comm->ctx;
-  r_comm->ucx_worker = l_comm->ucx_worker;
+  r_comm->ucxWorker = l_comm->ucxWorker;
   r_comm->tag = l_comm->tag;
 
   flagcxUcxRequestInit(r_comm);
@@ -997,7 +997,7 @@ flagcxUcxAcceptCheck:
   FLAGCXCHECK(flagcxSocketRecv(&r_comm->sock, peer_addr, peer_addr_len));
   ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
   ep_params.address = peer_addr;
-  UCXCHECK(ucp_ep_create(r_comm->ucx_worker->worker, &ep_params, &r_comm->ep));
+  UCXCHECK(ucp_ep_create(r_comm->ucxWorker->worker, &ep_params, &r_comm->ep));
   FLAGCXCHECK(
       flagcxSocketRecv(&r_comm->sock, &r_comm->ctag, sizeof(ucp_tag_t)));
 
@@ -1006,12 +1006,12 @@ flagcxUcxAcceptCheck:
     ucp_address_t *my_addr;
     size_t local_addr_len;
 
-    FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(r_comm->ucx_worker->worker,
+    FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(r_comm->ucxWorker->worker,
                                              &my_addr, &local_addr_len));
     ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
     ep_params.address = my_addr;
-    UCXCHECK(ucp_ep_create(r_comm->ucx_worker->worker, &ep_params,
-                           &r_comm->gpuFlush.flush_ep));
+    UCXCHECK(ucp_ep_create(r_comm->ucxWorker->worker, &ep_params,
+                           &r_comm->gpuFlush.flushEp));
     free(my_addr);
   }
 
@@ -1041,16 +1041,16 @@ flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
       UCP_MEM_MAP_PARAM_FIELD_ADDRESS | UCP_MEM_MAP_PARAM_FIELD_LENGTH;
   mmap_params.address = (void *)reg_addr;
   mmap_params.length = reg_size;
-  mh->mem_type =
+  mh->memType =
       (type == FLAGCX_PTR_HOST) ? UCS_MEMORY_TYPE_HOST : UCS_MEMORY_TYPE_CUDA;
   mmap_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
-  mmap_params.memory_type = (ucs_memory_type_t)mh->mem_type;
+  mmap_params.memory_type = (ucs_memory_type_t)mh->memType;
 
-  UCXCHECK(ucp_mem_map(ctx->flagcxUcxCtx, &mmap_params, &mh->ucp_memh));
+  UCXCHECK(ucp_mem_map(ctx->flagcxUcxCtx, &mmap_params, &mh->ucpMemh));
   if (ctx->gpuFlush.enabled) {
-    UCXCHECK(ucp_rkey_pack(ctx->flagcxUcxCtx, mh->ucp_memh, &rkey_buf,
+    UCXCHECK(ucp_rkey_pack(ctx->flagcxUcxCtx, mh->ucpMemh, &rkey_buf,
                            &rkey_buf_size));
-    UCXCHECK(ucp_ep_rkey_unpack(ctx->gpuFlush.flush_ep, rkey_buf, &mh->rkey));
+    UCXCHECK(ucp_ep_rkey_unpack(ctx->gpuFlush.flushEp, rkey_buf, &mh->rkey));
     ucp_rkey_buffer_release(rkey_buf);
   }
 
@@ -1066,7 +1066,7 @@ flagcxResult_t flagcxUcxDeregMr(void *comm, void *mhandle) {
     ucp_rkey_destroy(mh->rkey);
   }
 
-  ucp_mem_unmap(ctx->flagcxUcxCtx, mh->ucp_memh);
+  ucp_mem_unmap(ctx->flagcxUcxCtx, mh->ucpMemh);
   free(mhandle);
 
   return flagcxSuccess;
@@ -1079,23 +1079,23 @@ flagcxResult_t flagcxUcxRegMrDmaBuf(void *comm, void *data, size_t size,
 }
 
 static flagcxUcxRequest_t *flagcxUcxRequestGet(flagcxUcxComm_t *comm) {
-  flagcxUcxRequest_t *req = comm->free_req;
+  flagcxUcxRequest_t *req = comm->freeReq;
 
   if (req == NULL) {
     WARN("NET/UCX: unable to allocate FlagCX request");
     return NULL;
   }
 
-  comm->free_req = req->next;
-  req->worker = comm->ucx_worker->worker;
+  comm->freeReq = req->next;
+  req->worker = comm->ucxWorker->worker;
   req->pending = 0;
   req->count = 0;
   return req;
 }
 
 static void flagcxUcxRequestRelease(flagcxUcxRequest_t *req) {
-  req->next = req->comm->free_req;
-  req->comm->free_req = req;
+  req->next = req->comm->freeReq;
+  req->comm->freeReq = req;
 }
 
 static void flagcxUcxRequestAdd(flagcxUcxRequest_t *req, int size) {
@@ -1112,13 +1112,13 @@ static flagcxResult_t flagcxUcxSendCheck(flagcxUcxComm_t *comm) {
   void *ucp_req;
   ucs_status_t status;
 
-  ucp_worker_progress(comm->ucx_worker->worker);
+  ucp_worker_progress(comm->ucxWorker->worker);
 
-  if (comm->connect_req != NULL) {
+  if (comm->connectReq != NULL) {
     goto out_check_status;
   }
 
-  msg_tag = ucp_tag_probe_nb(comm->ucx_worker->worker, comm->ctag, tagMask, 1,
+  msg_tag = ucp_tag_probe_nb(comm->ucxWorker->worker, comm->ctag, tagMask, 1,
                              &info_tag);
   if (msg_tag == NULL) {
     return flagcxSuccess;
@@ -1130,7 +1130,7 @@ static flagcxResult_t flagcxUcxSendCheck(flagcxUcxComm_t *comm) {
   }
 
   params.op_attr_mask = 0;
-  ucp_req = ucp_tag_msg_recv_nbx(comm->ucx_worker->worker, comm->msg,
+  ucp_req = ucp_tag_msg_recv_nbx(comm->ucxWorker->worker, comm->msg,
                                  info_tag.length, msg_tag, &params);
   if (UCS_PTR_IS_ERR(ucp_req)) {
     WARN("Unable to receive connect msg (%s)",
@@ -1142,11 +1142,11 @@ static flagcxResult_t flagcxUcxSendCheck(flagcxUcxComm_t *comm) {
     goto out_set_ready;
   }
 
-  assert(comm->connect_req == NULL);
-  comm->connect_req = ucp_req;
+  assert(comm->connectReq == NULL);
+  comm->connectReq = ucp_req;
 
 out_check_status:
-  status = ucp_request_check_status(comm->connect_req);
+  status = ucp_request_check_status(comm->connectReq);
   if (status == UCS_INPROGRESS) {
     return flagcxSuccess;
   }
@@ -1158,13 +1158,13 @@ out_check_status:
     return flagcxSystemError;
   }
 
-  ucp_request_free(comm->connect_req);
-  comm->connect_req = NULL;
+  ucp_request_free(comm->connectReq);
+  comm->connectReq = NULL;
 
 out_set_ready:
   ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
   ep_params.address = (ucp_address_t *)(comm->msg + 1);
-  UCXCHECK(ucp_ep_create(comm->ucx_worker->worker, &ep_params, &comm->ep));
+  UCXCHECK(ucp_ep_create(comm->ucxWorker->worker, &ep_params, &comm->ep));
   comm->ready = 1;
   free(comm->msg);
   comm->msg = NULL;
@@ -1190,17 +1190,17 @@ flagcxResult_t flagcxUcxRecvCheck(flagcxUcxComm_t *comm) {
   size_t local_addr_len;
   size_t msg_len;
 
-  if (comm->connect_req != NULL) {
+  if (comm->connectReq != NULL) {
     goto done;
   }
 
-  FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucx_worker->worker, &my_addr,
+  FLAGCXCHECK(flagcxUcxWorkerGetNetaddress(comm->ucxWorker->worker, &my_addr,
                                            &local_addr_len));
-  flagcxUcxAddEp(comm->ucx_worker, &comm->sock);
+  flagcxUcxAddEp(comm->ucxWorker, &comm->sock);
 
   msg_len = sizeof(flagcxUcxConnectMsg_t) + local_addr_len;
   comm->msg = (flagcxUcxConnectMsg_t *)calloc(1, msg_len);
-  comm->msg->addr_len = local_addr_len;
+  comm->msg->addrLen = local_addr_len;
   memcpy(comm->msg + 1, my_addr, local_addr_len);
 
   params.op_attr_mask =
@@ -1208,20 +1208,20 @@ flagcxResult_t flagcxUcxRecvCheck(flagcxUcxComm_t *comm) {
   params.cb.send = check_handler;
   params.user_data = comm;
 
-  assert(comm->connect_req == NULL);
-  comm->connect_req =
+  assert(comm->connectReq == NULL);
+  comm->connectReq =
       ucp_tag_send_nbx(comm->ep, comm->msg, msg_len, comm->ctag, &params);
-  if (UCS_PTR_IS_ERR(comm->connect_req)) {
+  if (UCS_PTR_IS_ERR(comm->connectReq)) {
     WARN("Unable to send connect message");
     free(comm->msg);
     return flagcxSystemError;
-  } else if (comm->connect_req == NULL) {
+  } else if (comm->connectReq == NULL) {
     flagcxUcxRecvSetReady(comm);
     return flagcxSuccess;
   }
 
 done:
-  ucp_worker_progress(comm->ucx_worker->worker);
+  ucp_worker_progress(comm->ucxWorker->worker);
   return flagcxSuccess;
 }
 
@@ -1260,7 +1260,7 @@ flagcxResult_t flagcxUcxIsend(void *send_comm, void *data, size_t size, int tag,
   params.user_data = &req->pending;
   if (mh) {
     params.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
-    params.memh = mh->ucp_memh;
+    params.memh = mh->ucpMemh;
   }
 
   ucp_req = ucp_tag_send_nbx(comm->ep, data, size,
@@ -1314,13 +1314,13 @@ flagcxResult_t flagcxUcxIrecv(void *recv_comm, int n, void **data,
 
     if (mh[i]) {
       params.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
-      params.memh = mh[i]->ucp_memh;
+      params.memh = mh[i]->ucpMemh;
     } else {
       params.op_attr_mask &= ~UCP_OP_ATTR_FIELD_MEMH;
     }
 
     ucp_req =
-        ucp_tag_recv_nbx(comm->ucx_worker->worker, data[i], sizes[i],
+        ucp_tag_recv_nbx(comm->ucxWorker->worker, data[i], sizes[i],
                          flagcxUcxUcpTag(comm->tag, tags[i]), tagMask, &params);
     if (UCS_PTR_IS_ERR(ucp_req)) {
       WARN("ucx_irecv: unable to post receive %d/%d (%s)", i, n,
@@ -1363,7 +1363,7 @@ flagcxResult_t flagcxUcxIflush(void *recv_comm, int n, void **data, int *sizes,
       UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_USER_DATA;
   params.cb.send = send_handler_nbx;
   params.user_data = &req->pending;
-  ucp_req = ucp_get_nbx(comm->gpuFlush.flush_ep, &comm->gpuFlush.hostMem, size,
+  ucp_req = ucp_get_nbx(comm->gpuFlush.flushEp, &comm->gpuFlush.hostMem, size,
                         (uint64_t)data[last], mh[last]->rkey, &params);
   if (UCS_PTR_IS_ERR(ucp_req)) {
     WARN("ucx_iflush: unable to read data (%s)",
@@ -1420,11 +1420,11 @@ flagcxResult_t flagcxUcxCloseSend(void *send_comm) {
   if (comm) {
     if (comm->ep) {
       close_req = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucx_worker->worker, close_req);
+      wait_close(comm->ucxWorker->worker, close_req);
       int close = 1;
       FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
     }
-    flagcxUcxFreeWorker(comm->ucx_worker);
+    flagcxUcxFreeWorker(comm->ucxWorker);
     free(comm);
   }
 
@@ -1438,16 +1438,16 @@ flagcxResult_t flagcxUcxCloseRecv(void *recv_comm) {
   if (comm) {
     if (comm->gpuFlush.enabled) {
       close_req =
-          ucp_ep_close_nb(comm->gpuFlush.flush_ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucx_worker->worker, close_req);
+          ucp_ep_close_nb(comm->gpuFlush.flushEp, UCP_EP_CLOSE_MODE_FLUSH);
+      wait_close(comm->ucxWorker->worker, close_req);
     }
     if (comm->ep) {
       close_req = ucp_ep_close_nb(comm->ep, UCP_EP_CLOSE_MODE_FLUSH);
-      wait_close(comm->ucx_worker->worker, close_req);
+      wait_close(comm->ucxWorker->worker, close_req);
       int close = 1;
       FLAGCXCHECK(flagcxSocketSend(&comm->sock, &close, sizeof(int)));
     }
-    flagcxUcxFreeWorker(comm->ucx_worker);
+    flagcxUcxFreeWorker(comm->ucxWorker);
     free(comm);
   }
 

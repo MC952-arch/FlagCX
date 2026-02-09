@@ -130,7 +130,7 @@ flagcxResult_t flagcxIbRetransAddPacket(struct flagcxIbRetransState *state,
     memcpy(entry->rkeys, rkeys, sizeof(entry->rkeys));
   }
 
-  entry->retry_count = 0;
+  entry->retryCount = 0;
   entry->valid = 1;
 
   state->bufferTail = (state->bufferTail + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
@@ -268,7 +268,7 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
     return flagcxSuccess;
 
   // Check if retrans_hdr_mr is initialized (required for retransmission)
-  if (!comm->retrans_hdr_mr) {
+  if (!comm->retransHdrMr) {
     // retrans_hdr_mr not initialized, likely due to initialization failure
     // Disable retransmission to prevent further attempts
     comm->retrans.enabled = 0;
@@ -302,12 +302,12 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
   }
 
   // Flow control: Check if we have room for retransmission
-  int total_outstanding = comm->outstanding_sends + comm->outstanding_retrans;
-  if (total_outstanding >= comm->max_outstanding) {
+  int total_outstanding = comm->outstandingSends + comm->outstandingRetrans;
+  if (total_outstanding >= comm->maxOutstanding) {
     TRACE(FLAGCX_NET,
           "Retrans deferred: outstanding=%d (sends=%d + retrans=%d) >= max=%d",
-          total_outstanding, comm->outstanding_sends, comm->outstanding_retrans,
-          comm->max_outstanding);
+          total_outstanding, comm->outstandingSends, comm->outstandingRetrans,
+          comm->maxOutstanding);
     return flagcxSuccess; // Defer retransmission, will retry later
   }
 
@@ -337,7 +337,7 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
   struct ibv_sge sge[2];
   memset(&wr, 0, sizeof(wr));
 
-  struct flagcxIbRetransHdr *hdr = &comm->retrans_hdr_pool[seq % 32];
+  struct flagcxIbRetransHdr *hdr = &comm->retransHdrPool[seq % 32];
   hdr->magic = FLAGCX_RETRANS_MAGIC;
   hdr->seq = seq;
   hdr->size = entry->size;
@@ -345,7 +345,7 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
 
   sge[0].addr = (uint64_t)hdr;
   sge[0].length = sizeof(struct flagcxIbRetransHdr);
-  sge[0].lkey = comm->retrans_hdr_mr->lkey;
+  sge[0].lkey = comm->retransHdrMr->lkey;
 
   sge[1].addr = (uint64_t)entry->data;
   sge[1].length = entry->size;
@@ -388,7 +388,7 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
         for (int i = 0; i < total_polled; i++) {
           if (wcs[i].wr_id == FLAGCX_RETRANS_WR_ID &&
               wcs[i].status == IBV_WC_SUCCESS) {
-            comm->outstanding_retrans--;
+            comm->outstandingRetrans--;
           }
         }
 
@@ -412,10 +412,10 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
     }
   }
 
-  entry->retry_count++;
+  entry->retryCount++;
   entry->sendTimeUs = flagcxIbGetTimeUs();
   comm->retrans.totalRetrans++;
-  comm->outstanding_retrans++;
+  comm->outstandingRetrans++;
 
   return flagcxSuccess;
 }
@@ -441,10 +441,10 @@ flagcxResult_t flagcxIbRetransCheckTimeout(struct flagcxIbRetransState *state,
       uint64_t elapsed_us = now_us - entry->sendTimeUs;
 
       if (elapsed_us >= state->rtoUs) {
-        if (entry->retry_count >= state->maxRetry) {
+        if (entry->retryCount >= state->maxRetry) {
           WARN("Packet exceeded max retries: seq=%u, retry=%d, max=%d. "
                "Transmission failed, aborting operation.",
-               entry->seq, entry->retry_count, state->maxRetry);
+               entry->seq, entry->retryCount, state->maxRetry);
           return flagcxRemoteError;
         }
 

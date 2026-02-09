@@ -270,16 +270,16 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
   int nranks = state->nranks;
   struct flagcxIbGlobalHandleInfo *info = NULL;
   FLAGCXCHECK(flagcxCalloc(&info, 1));
-  FLAGCXCHECK(flagcxCalloc(&info->base_vas, nranks));
+  FLAGCXCHECK(flagcxCalloc(&info->baseVas, nranks));
   FLAGCXCHECK(flagcxCalloc(&info->rkeys, nranks));
   FLAGCXCHECK(flagcxCalloc(&info->lkeys, nranks));
 
-  info->base_vas[state->rank] = (uintptr_t)buff;
+  info->baseVas[state->rank] = (uintptr_t)buff;
   info->rkeys[state->rank] = mr->rkey;
   info->lkeys[state->rank] = mr->lkey;
 
   FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)info->base_vas, sizeof(uintptr_t)));
+      bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)));
   FLAGCXCHECK(bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)));
   FLAGCXCHECK(bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)));
   // Store globalHandles in global variable
@@ -288,7 +288,7 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
        state->rank, nranks);
   for (int i = 0; i < nranks; i++) {
     INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
-         info->base_vas[i], info->rkeys[i], info->lkeys[i]);
+         info->baseVas[i], info->rkeys[i], info->lkeys[i]);
   }
   INFO(FLAGCX_REG, "flagcxOneSideRegister: allgather results printed");
 

@@ -96,15 +96,15 @@ struct flagcxIbMergedDev {
 struct flagcxIbQpInfo {
   uint32_t qpn;
   struct ibv_ece ece;
-  int ece_supported;
+  int eceSupported;
   int devIndex;
 };
 
 struct flagcxIbDevInfo {
   uint32_t lid;
-  uint8_t ib_port;
+  uint8_t ibPort;
   enum ibv_mtu mtu;
-  uint8_t link_layer;
+  uint8_t linkLayer;
   uint64_t spn;
   uint64_t iid;
   uint32_t fifoRkey;
@@ -112,7 +112,7 @@ struct flagcxIbDevInfo {
 };
 
 struct flagcxIbGidInfo {
-  uint8_t link_layer;
+  uint8_t linkLayer;
   union ibv_gid localGid;
   int32_t localGidIndex;
 };
@@ -123,7 +123,7 @@ struct flagcxIbMrHandle {
 
 // Structure to store handle info for allgather
 struct flagcxIbGlobalHandleInfo {
-  uintptr_t *base_vas;
+  uintptr_t *baseVas;
   uint32_t *rkeys;
   uint32_t *lkeys;
 };
@@ -202,7 +202,7 @@ struct flagcxIbRetransEntry {
   void *data;
   uint32_t lkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
   uint32_t rkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  int retry_count;
+  int retryCount;
   int valid;
 };
 
@@ -346,14 +346,14 @@ struct flagcxIbSendComm {
   int ar;
 
   struct flagcxIbRetransState retrans;
-  uint64_t last_timeout_check_us;
+  uint64_t lastTimeoutCheckUs;
 
-  int outstanding_sends;
-  int outstanding_retrans;
-  int max_outstanding;
+  int outstandingSends;
+  int outstandingRetrans;
+  int maxOutstanding;
 
-  struct flagcxIbRetransHdr retrans_hdr_pool[32];
-  struct ibv_mr *retrans_hdr_mr;
+  struct flagcxIbRetransHdr retransHdrPool[32];
+  struct ibv_mr *retransHdrMr;
 };
 
 struct flagcxIbGpuFlush {

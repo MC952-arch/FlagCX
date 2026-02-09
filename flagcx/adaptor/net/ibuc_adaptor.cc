@@ -49,7 +49,7 @@ static void flagcxIbucPollCompletions(struct flagcxIbSendComm *comm) {
       for (int j = 0; j < n_cqe; j++) {
         if (wcs[j].status == IBV_WC_SUCCESS &&
             wcs[j].wr_id == FLAGCX_RETRANS_WR_ID) {
-          comm->outstanding_retrans--;
+          comm->outstandingRetrans--;
           retrans_freed++;
         }
       }
@@ -101,7 +101,7 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
 
         uint64_t now_us = flagcxIbGetTimeUs();
         const uint64_t CHECK_INTERVAL_US = 1000;
-        if (now_us - sComm->last_timeout_check_us >= CHECK_INTERVAL_US) {
+        if (now_us - sComm->lastTimeoutCheckUs >= CHECK_INTERVAL_US) {
           flagcxResult_t retrans_result =
               flagcxIbRetransCheckTimeout(&sComm->retrans, sComm);
           if (retrans_result != flagcxSuccess &&
@@ -111,7 +111,7 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
                    "%s:%d -> %d (retransmission check failed, continuing)",
                    __FILE__, __LINE__, retrans_result);
           }
-          sComm->last_timeout_check_us = now_us;
+          sComm->lastTimeoutCheckUs = now_us;
         }
       }
     }
@@ -144,9 +144,9 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
   if (wc->wr_id == FLAGCX_RETRANS_WR_ID) {
     if (r->base->isSend) {
       struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
-      sComm->outstanding_retrans--;
+      sComm->outstandingRetrans--;
       TRACE(FLAGCX_NET, "SEND retrans completed, outstanding_retrans=%d",
-            sComm->outstanding_retrans);
+            sComm->outstandingRetrans);
     }
     *handled = true;
     return flagcxSuccess;
@@ -633,7 +633,7 @@ flagcxResult_t flagcxIbucRtrQpWithType(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.max_dest_rd_atomic = 1;
     qpAttr.min_rnr_timer = 12;
   }
-  if (info->link_layer == IBV_LINK_LAYER_ETHERNET) {
+  if (info->linkLayer == IBV_LINK_LAYER_ETHERNET) {
     qpAttr.ah_attr.is_global = 1;
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = info->iid;
@@ -647,7 +647,7 @@ flagcxResult_t flagcxIbucRtrQpWithType(struct ibv_qp *qp, uint8_t sGidIndex,
   }
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
-  qpAttr.ah_attr.port_num = info->ib_port;
+  qpAttr.ah_attr.port_num = info->ibPort;
   int modify_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
                      IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
   if (qp_type == IBV_QPT_RC) {
@@ -772,7 +772,7 @@ ibuc_connect_check:
 
     // Query ece capabilities (enhanced connection establishment)
     FLAGCXCHECK(flagcxWrapIbvQueryEce(comm->base.qps[q].qp, &meta.qpInfo[q].ece,
-                                      &meta.qpInfo[q].ece_supported));
+                                      &meta.qpInfo[q].eceSupported));
     devIndex = (devIndex + 1) % comm->base.ndevs;
   }
 
@@ -785,7 +785,7 @@ ibuc_connect_check:
 
     // Write to the metadata struct via this pointer
     flagcxIbDevInfo *devInfo = meta.devs + i;
-    devInfo->ib_port = ibucDev->portNum;
+    devInfo->ibPort = ibucDev->portNum;
     devInfo->mtu = ibucDev->portAttr.active_mtu;
     devInfo->lid = ibucDev->portAttr.lid;
 
@@ -799,9 +799,9 @@ ibuc_connect_check:
     devInfo->fifoRkey = commDev->fifoMr->rkey;
 
     // RoCE support
-    devInfo->link_layer = commDev->base.gidInfo.link_layer =
+    devInfo->linkLayer = commDev->base.gidInfo.linkLayer =
         ibucDev->portAttr.link_layer;
-    if (devInfo->link_layer == IBV_LINK_LAYER_ETHERNET) {
+    if (devInfo->linkLayer == IBV_LINK_LAYER_ETHERNET) {
       FLAGCXCHECK(flagcxIbGetGidIndex(ibucDev->context, ibucDev->portNum,
                                       ibucDev->portAttr.gid_tbl_len,
                                       &commDev->base.gidInfo.localGidIndex));
@@ -833,12 +833,12 @@ ibuc_connect_check:
       TRACE(FLAGCX_NET,
             "Send: Created control QP for dev %d: qpn=%u, link_layer=%d, "
             "lid=%u, gid=%lx:%lx",
-            i, commDev->ctrlQp.qp->qp_num, devInfo->link_layer, meta.ctrlLid[i],
+            i, commDev->ctrlQp.qp->qp_num, devInfo->linkLayer, meta.ctrlLid[i],
             (unsigned long)meta.ctrlGid[i].global.subnet_prefix,
             (unsigned long)meta.ctrlGid[i].global.interface_id);
     }
 
-    if (devInfo->link_layer == IBV_LINK_LAYER_INFINIBAND) { // IB
+    if (devInfo->linkLayer == IBV_LINK_LAYER_INFINIBAND) { // IB
       for (int q = 0; q < comm->base.nqps; q++) {
         // Print just the QPs for this dev
         if (comm->base.qps[q].devIndex == i)
@@ -860,7 +860,7 @@ ibuc_connect_check:
                "comp_mask=0x%x} GID %ld (%lX/%lX) fifoRkey=0x%x fifoLkey=0x%x",
                comm->base.ndevs > 2 ? "FLAGCX MergedDev" : "FLAGCX Dev", dev,
                commDev->base.ibDevN, ibucDev->portNum, meta.qpInfo[q].qpn,
-               devInfo->mtu, meta.qpInfo[q].ece_supported,
+               devInfo->mtu, meta.qpInfo[q].eceSupported,
                meta.qpInfo[q].ece.vendor_id, meta.qpInfo[q].ece.options,
                meta.qpInfo[q].ece.comp_mask,
                (int64_t)commDev->base.gidInfo.localGidIndex, devInfo->spn,
@@ -909,13 +909,13 @@ ibuc_connect:
         comm->base.nRemDevs);
   }
 
-  int link_layer;
-  link_layer = remMeta.devs[0].link_layer;
+  int linkLayer;
+  linkLayer = remMeta.devs[0].linkLayer;
   for (int i = 1; i < remMeta.ndevs; i++) {
-    if (remMeta.devs[i].link_layer != link_layer) {
-      WARN("NET/IBUC : Can't merge net devices with different link_layer. i=%d "
-           "remMeta.ndevs=%d link_layer=%d rem_link_layer=%d",
-           i, remMeta.ndevs, link_layer, remMeta.devs[i].link_layer);
+    if (remMeta.devs[i].linkLayer != linkLayer) {
+      WARN("NET/IBUC : Can't merge net devices with different linkLayer. i=%d "
+           "remMeta.ndevs=%d linkLayer=%d rem_linkLayer=%d",
+           i, remMeta.ndevs, linkLayer, remMeta.devs[i].linkLayer);
       return flagcxInternalError;
     }
   }
@@ -954,15 +954,15 @@ ibuc_connect:
     uint8_t gidIndex = commDev->base.gidInfo.localGidIndex;
 
     struct ibv_qp *qp = comm->base.qps[q].qp;
-    if (remQpInfo->ece_supported && remQpInfo->ece_supported)
+    if (remQpInfo->eceSupported && remQpInfo->eceSupported)
       FLAGCXCHECK(
-          flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->ece_supported));
+          flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->eceSupported));
 
     FLAGCXCHECK(flagcxIbucRtrQp(qp, gidIndex, remQpInfo->qpn, remDevInfo));
     FLAGCXCHECK(flagcxIbucRtsQp(qp));
   }
 
-  if (link_layer == IBV_LINK_LAYER_ETHERNET) { // RoCE
+  if (linkLayer == IBV_LINK_LAYER_ETHERNET) { // RoCE
     for (int q = 0; q < comm->base.nqps; q++) {
       struct flagcxIbQp *qp = comm->base.qps + q;
       int ibDevN = comm->devs[qp->devIndex].base.ibDevN;
@@ -971,7 +971,7 @@ ibuc_connect:
            "NET/IBUC: IbucDev %d Port %d qpn %d set_ece={supported=%d, "
            "vendor_id=0x%x, options=0x%x, comp_mask=0x%x}",
            ibDevN, ibucDev->portNum, remMeta.qpInfo[q].qpn,
-           remMeta.qpInfo[q].ece_supported, remMeta.qpInfo[q].ece.vendor_id,
+           remMeta.qpInfo[q].eceSupported, remMeta.qpInfo[q].ece.vendor_id,
            remMeta.qpInfo[q].ece.options, remMeta.qpInfo[q].ece.comp_mask);
     }
   }
@@ -981,7 +981,7 @@ ibuc_connect:
     // IBUC typically has very few in-flight packets; force immediate ACKs
     comm->retrans.ackInterval = 1;
   }
-  comm->last_timeout_check_us = 0;
+  comm->lastTimeoutCheckUs = 0;
 
   // IBUC always enables retransmission, force it on
   comm->retrans.enabled = 1;
@@ -1068,10 +1068,10 @@ ibuc_connect:
 
     if (all_ah_success && comm->retrans.enabled) {
       flagcxResult_t mr_result = flagcxWrapIbvRegMr(
-          &comm->retrans_hdr_mr, comm->devs[0].base.pd, comm->retrans_hdr_pool,
-          sizeof(comm->retrans_hdr_pool), IBV_ACCESS_LOCAL_WRITE);
+          &comm->retransHdrMr, comm->devs[0].base.pd, comm->retransHdrPool,
+          sizeof(comm->retransHdrPool), IBV_ACCESS_LOCAL_WRITE);
 
-      if (mr_result != flagcxSuccess || !comm->retrans_hdr_mr) {
+      if (mr_result != flagcxSuccess || !comm->retransHdrMr) {
         WARN("Failed to register retrans_hdr_mr, disabling retransmission");
         comm->retrans.enabled = 0;
         // Clean up already created resources
@@ -1090,9 +1090,9 @@ ibuc_connect:
     }
   }
 
-  comm->outstanding_sends = 0;
-  comm->outstanding_retrans = 0;
-  comm->max_outstanding = flagcxParamIbMaxOutstanding();
+  comm->outstandingSends = 0;
+  comm->outstandingRetrans = 0;
+  comm->maxOutstanding = flagcxParamIbMaxOutstanding();
 
   comm->base.ready = 1;
   stage->state = flagcxIbCommStateConnected;
@@ -1259,13 +1259,13 @@ ib_recv:
     devIndex = (devIndex + 1) % rComm->base.ndevs;
 
     // Set the ece (enhanced connection establishment) on this QP before RTR
-    if (remMeta.qpInfo[q].ece_supported) {
+    if (remMeta.qpInfo[q].eceSupported) {
       FLAGCXCHECK(flagcxWrapIbvSetEce(qp->qp, &remMeta.qpInfo[q].ece,
-                                      &meta.qpInfo[q].ece_supported));
+                                      &meta.qpInfo[q].eceSupported));
 
-      if (meta.qpInfo[q].ece_supported)
+      if (meta.qpInfo[q].eceSupported)
         FLAGCXCHECK(flagcxWrapIbvQueryEce(qp->qp, &meta.qpInfo[q].ece,
-                                          &meta.qpInfo[q].ece_supported));
+                                          &meta.qpInfo[q].eceSupported));
     }
 
     FLAGCXCHECK(flagcxIbucRtrQp(qp->qp, rCommDev->base.gidInfo.localGidIndex,
@@ -1307,8 +1307,8 @@ ib_recv:
           &rCommDev->gpuFlush.qp));
       struct flagcxIbDevInfo devInfo;
       devInfo.lid = ibucDev->portAttr.lid;
-      devInfo.link_layer = ibucDev->portAttr.link_layer;
-      devInfo.ib_port = ibucDev->portNum;
+      devInfo.linkLayer = ibucDev->portAttr.link_layer;
+      devInfo.ibPort = ibucDev->portNum;
       devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
       devInfo.iid = rCommDev->base.gidInfo.localGid.global.interface_id;
       devInfo.mtu = ibucDev->portAttr.active_mtu;
@@ -1374,9 +1374,9 @@ ib_recv:
 
     // Fill Handle
     meta.devs[i].lid = ibucDev->portAttr.lid;
-    meta.devs[i].link_layer = rCommDev->base.gidInfo.link_layer =
+    meta.devs[i].linkLayer = rCommDev->base.gidInfo.linkLayer =
         ibucDev->portAttr.link_layer;
-    meta.devs[i].ib_port = ibucDev->portNum;
+    meta.devs[i].ibPort = ibucDev->portNum;
     meta.devs[i].spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
     meta.devs[i].iid = rCommDev->base.gidInfo.localGid.global.interface_id;
 
@@ -1827,7 +1827,7 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
     FLAGCXCHECK(add_result);
   }
 
-  comm->outstanding_sends++;
+  comm->outstandingSends++;
 
   return flagcxSuccess;
 }
@@ -2106,8 +2106,8 @@ flagcxResult_t flagcxIbucCloseSend(void *sendComm) {
           FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->ackMr));
         if (commDev->ackBuffer != NULL)
           free(commDev->ackBuffer);
-        if (i == 0 && comm->retrans_hdr_mr != NULL) {
-          FLAGCXCHECK(flagcxWrapIbvDeregMr(comm->retrans_hdr_mr));
+        if (i == 0 && comm->retransHdrMr != NULL) {
+          FLAGCXCHECK(flagcxWrapIbvDeregMr(comm->retransHdrMr));
         }
       }
     }
