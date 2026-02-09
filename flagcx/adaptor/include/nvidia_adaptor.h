@@ -24,14 +24,14 @@ typedef struct stagedBuffer *stagedBuffer_t;
 #if defined(COMPILE_KERNEL_HOST)
 extern "C" ncclResult_t
 ncclAdaptorLocalAllReduce(const void *sendbuff, void *recvbuff,
-                          ncclWindow_t send_win, ncclWindow_t recv_win,
+                          ncclWindow_t sendwin, ncclWindow_t recvwin,
                           size_t count, ncclDataType_t datatype, ncclRedOp_t op,
                           ncclDevComm &devComm, cudaStream_t stream);
 
 extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
-    const void *sendbuff, void *recvbuff, ncclWindow_t send_win,
-    ncclWindow_t recv_win, size_t count, ncclDataType_t datatype,
-    ncclRedOp_t op, ncclDevComm &devComm, cudaStream_t stream);
+    const void *sendbuff, void *recvbuff, ncclWindow_t sendwin,
+    ncclWindow_t recvwin, size_t count, ncclDataType_t datatype, ncclRedOp_t op,
+    ncclDevComm &devComm, cudaStream_t stream);
 #endif // COMPILE_KERNEL_HOST
 
 #else
