@@ -294,23 +294,28 @@ multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
   }
 }
 
-// Store to local/shared memory
+// Store to local/shared memory using vectorized store
 template <typename T, int ByteSize = defaultByteSize<T>()>
 FLAGCX_DEVICE_INLINE_DECORATOR void
 lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
   constexpr int N = packed_t<T, ByteSize>::num_elems;
-#pragma unroll
-  for (int i = 0; i < N; i++) {
-    addr[i] = val.data[i];
+  if constexpr (N == 1) {
+    // Single element (float, double) - direct store is already optimal
+    addr[0] = val.data[0];
+  } else {
+    // Multiple elements (half, bfloat16) - use vectorized store
+    using storage_t = typename packed_t<T, ByteSize>::storage_t;
+    *reinterpret_cast<storage_t*>(addr) = pack<T, ByteSize>(val.data);
   }
 }
 
 // Local AllReduce: reduce from multimem, store to local buffer
 // ByteSize: 4 bytes for 16/32-bit types, 8 bytes for 64-bit types
 template <typename T, int ByteSize = defaultByteSize<T>()>
-__global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                     void* recvbuffer, size_t count,
-                                     ncclRedOp_t op, struct ncclDevComm devComm) {
+__global__ void __launch_bounds__(NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA)
+localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
+                     void* recvbuffer, size_t count,
+                     ncclRedOp_t op, struct ncclDevComm devComm) {
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -324,7 +329,6 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
   T* lsaRecvPtr = (T*)recvbuffer;
 
-#pragma unroll
   for (size_t offset = globalTid; offset < packCount; offset += globalNthreads) {
     auto v = multimem_reduce<T, ByteSize>(mmSendPtr + pSize * offset, op);
     lsa_st<T, ByteSize>(lsaRecvPtr + pSize * offset, v);
@@ -333,10 +337,11 @@ __global__ void localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
 
 // Interleaved AllReduce: reduce from multimem, store to multimem
 template <typename T, int ByteSize = defaultByteSize<T>()>
-__global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                           ncclWindow_t recvwin, size_t recvoffset,
-                                           void* recvbuffer, size_t count,
-                                           ncclRedOp_t op, struct ncclDevComm devComm) {
+__global__ void __launch_bounds__(NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA)
+interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
+                           ncclWindow_t recvwin, size_t recvoffset,
+                           size_t count, ncclRedOp_t op,
+                           struct ncclDevComm devComm) {
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -351,7 +356,6 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
   T* mmSendPtr = (T*)ncclGetLsaMultimemPointer(sendwin, sendoffset, devComm);
   T* mmRecvPtr = (T*)ncclGetLsaMultimemPointer(recvwin, recvoffset, devComm);
 
-#pragma unroll
   for (size_t offset = globalTid; offset < packCount; offset += globalNthreads) {
     auto v = multimem_reduce<T, ByteSize>(mmSendPtr + pSize * offset, op);
     multimem_st<T, ByteSize>(mmRecvPtr + pSize * offset, v);
@@ -359,24 +363,38 @@ __global__ void interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffs
   bar.sync(ncclCoopCta(), cuda::memory_order_release);
 }
 
-// Kernel launchers
+// Kernel launchers with error checking
 template <typename T>
-void launchLocalAllReduceKernel(ncclWindow_t sendwin, void* recvbuffer,
-                                size_t count, ncclRedOp_t op,
-                                ncclDevComm& devComm, cudaStream_t stream) {
+ncclResult_t launchLocalAllReduceKernel(ncclWindow_t sendwin, void* recvbuffer,
+                                        size_t count, ncclRedOp_t op,
+                                        ncclDevComm& devComm, cudaStream_t stream) {
   localAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT,
                             NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0, stream>>>(
       sendwin, 0, recvbuffer, count, op, devComm);
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? ncclSuccess : ncclUnhandledCudaError;
 }
 
 template <typename T>
-void launchInterleavedAllReduceKernel(ncclWindow_t sendwin, ncclWindow_t recvwin,
-                                      void* recvbuffer, size_t count,
-                                      ncclRedOp_t op, ncclDevComm& devComm,
-                                      cudaStream_t stream) {
+ncclResult_t launchInterleavedAllReduceKernel(ncclWindow_t sendwin, ncclWindow_t recvwin,
+                                              size_t count, ncclRedOp_t op,
+                                              ncclDevComm& devComm, cudaStream_t stream) {
   interleavedAllReduceKernel<T><<<NCCL_ADAPTOR_DEVICE_CTA_COUNT,
                                   NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA, 0, stream>>>(
-      sendwin, 0, recvwin, 0, recvbuffer, count, op, devComm);
+      sendwin, 0, recvwin, 0, count, op, devComm);
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? ncclSuccess : ncclUnhandledCudaError;
+}
+
+// Helper to get element alignment requirement for a datatype
+static inline size_t getAlignmentRequirement(ncclDataType_t datatype) {
+  switch (datatype) {
+    case ncclFloat16:
+    case ncclBfloat16:
+      return 2;  // multimem operates on 2 elements (f16x2, bf16x2)
+    default:
+      return 1;  // float/double operate on single elements
+  }
 }
 
 // Public API
@@ -386,6 +404,7 @@ void launchInterleavedAllReduceKernel(ncclWindow_t sendwin, ncclWindow_t recvwin
 //   - ncclMin, ncclMax: only half and bfloat16 (16-bit types)
 // Integer types are NOT supported by multimem.ld_reduce
 // ncclProd and ncclAvg are NOT supported by multimem hardware
+// Note: For 16-bit types, count must be even (multimem operates on 2 elements)
 extern "C" ncclResult_t ncclAdaptorLocalAllReduce(
     const void* sendbuff, void* recvbuff, ncclWindow_t sendwin,
     ncclWindow_t recvwin, size_t count, ncclDataType_t datatype,
@@ -399,25 +418,23 @@ extern "C" ncclResult_t ncclAdaptorLocalAllReduce(
       (datatype != ncclFloat16 && datatype != ncclBfloat16)) {
     return ncclInvalidArgument;
   }
+  // Validate count alignment (16-bit types require even count)
+  if (count % getAlignmentRequirement(datatype) != 0) {
+    return ncclInvalidArgument;
+  }
 
   switch (datatype) {
     case ncclFloat16:
-      launchLocalAllReduceKernel<half>(sendwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchLocalAllReduceKernel<half>(sendwin, recvbuff, count, op, devComm, stream);
     case ncclFloat32:
-      launchLocalAllReduceKernel<float>(sendwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchLocalAllReduceKernel<float>(sendwin, recvbuff, count, op, devComm, stream);
     case ncclFloat64:
-      launchLocalAllReduceKernel<double>(sendwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchLocalAllReduceKernel<double>(sendwin, recvbuff, count, op, devComm, stream);
     case ncclBfloat16:
-      launchLocalAllReduceKernel<nv_bfloat16>(sendwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchLocalAllReduceKernel<nv_bfloat16>(sendwin, recvbuff, count, op, devComm, stream);
     default:
-      // Integer types not supported
       return ncclInvalidArgument;
   }
-  return ncclSuccess;
 }
 
 extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
@@ -433,25 +450,23 @@ extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
       (datatype != ncclFloat16 && datatype != ncclBfloat16)) {
     return ncclInvalidArgument;
   }
+  // Validate count alignment (16-bit types require even count)
+  if (count % getAlignmentRequirement(datatype) != 0) {
+    return ncclInvalidArgument;
+  }
 
   switch (datatype) {
     case ncclFloat16:
-      launchInterleavedAllReduceKernel<half>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchInterleavedAllReduceKernel<half>(sendwin, recvwin, count, op, devComm, stream);
     case ncclFloat32:
-      launchInterleavedAllReduceKernel<float>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchInterleavedAllReduceKernel<float>(sendwin, recvwin, count, op, devComm, stream);
     case ncclFloat64:
-      launchInterleavedAllReduceKernel<double>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchInterleavedAllReduceKernel<double>(sendwin, recvwin, count, op, devComm, stream);
     case ncclBfloat16:
-      launchInterleavedAllReduceKernel<nv_bfloat16>(sendwin, recvwin, recvbuff, count, op, devComm, stream);
-      break;
+      return launchInterleavedAllReduceKernel<nv_bfloat16>(sendwin, recvwin, count, op, devComm, stream);
     default:
-      // Integer types not supported
       return ncclInvalidArgument;
   }
-  return ncclSuccess;
 }
 
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
