@@ -88,4 +88,32 @@ else
     $(CUDA8_GENCODE) \
     $(CUDA8_PTX)
 endif
-# $(info DEVICE_COMPILER_GENCODE is ${DEVICE_COMPILER_GENCODE})
+
+# ----------------
+# Multicast primitive support check (requires sm_90+)
+# If sm_90+ gencode exists: filter out < sm_90 gencodes
+# If no sm_90+ gencode: keep all gencodes and define NVCC_GENCODE_MULTICAST_UNSUPPORTED
+# ----------------
+
+# Define all sm_90+ gencodes for detection
+SM90_PLUS_GENCODES = $(CUDA12_GENCODE) $(CUDA12_8_GENCODE) $(CUDA13_GENCODE) $(CUDA12_PTX) $(CUDA13_PTX)
+
+# Check if any sm_90+ gencode is present in DEVICE_COMPILER_GENCODE
+HAS_SM90_PLUS := $(strip $(foreach gc,$(SM90_PLUS_GENCODES),$(findstring $(gc),$(DEVICE_COMPILER_GENCODE))))
+
+ifneq ($(HAS_SM90_PLUS),)
+  # Has sm_90+ support: filter out older gencodes for multicast kernel compilation
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA8_GENCODE),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA9_GENCODE),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA10_GENCODE),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA11_GENCODE),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA8_PTX),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA9_PTX),$(DEVICE_COMPILER_GENCODE))
+  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA11_PTX),$(DEVICE_COMPILER_GENCODE))
+  $(info Multicast support enabled. Using DEVICE_COMPILER_GENCODE: ${DEVICE_COMPILER_GENCODE})
+else
+  # No sm_90+ support: keep all gencodes and disable multicast
+  NVCC_GENCODE_MULTICAST_UNSUPPORTED := 1
+  $(info WARNING: No sm_90+ architecture detected. Multicast primitives disabled. Custom AllReduce will fallback to ncclAllReduce.)
+  $(info Using DEVICE_COMPILER_GENCODE: ${DEVICE_COMPILER_GENCODE})
+endif

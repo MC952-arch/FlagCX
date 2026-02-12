@@ -332,7 +332,8 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
-    (NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)) && (__CUDA_ARCH__ >= 900)
+    (NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)) &&                            \
+    !defined(NVCC_GENCODE_MULTICAST_UNSUPPORTED)
   size_t size = count * getFlagcxDataTypeSize(datatype);
   int nranks;
   FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
@@ -362,8 +363,7 @@ flagcxResult_t ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK((flagcxResult_t)ncclAllReduce(
       sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
       comm->base, stream->base));
-#endif // defined(COMPILE_KERNEL_HOST) && (NCCL_VERSION_CODE > NCCL_VERSION(2,
-       // 28, 0) && (__CUDA_ARCH__ >= 900))
+#endif
   return flagcxSuccess;
 }
 

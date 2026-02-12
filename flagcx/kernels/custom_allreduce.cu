@@ -148,6 +148,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
 multimem_sum(T* addr) {
   using P = packed_t<T, ByteSize>;
   typename P::array_type ret;
+#if __CUDA_ARCH__ >= 900
   if constexpr (std::is_same<T, nv_bfloat16>::value) {
     typename P::storage_t h;
     asm volatile(
@@ -177,6 +178,7 @@ multimem_sum(T* addr) {
         : "l"(addr)
         : "memory");
   }
+#endif
   return ret;
 }
 
@@ -188,6 +190,7 @@ multimem_min(T* addr) {
                 "multimem min only supports half and bfloat16");
   using P = packed_t<T, ByteSize>;
   typename P::array_type ret;
+#if __CUDA_ARCH__ >= 900
   if constexpr (std::is_same<T, nv_bfloat16>::value) {
     typename P::storage_t h;
     asm volatile(
@@ -205,6 +208,7 @@ multimem_min(T* addr) {
         : "memory");
     unpack<T, ByteSize>(h, ret.data);
   }
+#endif
   return ret;
 }
 
@@ -216,6 +220,7 @@ multimem_max(T* addr) {
                 "multimem max only supports half and bfloat16");
   using P = packed_t<T, ByteSize>;
   typename P::array_type ret;
+#if __CUDA_ARCH__ >= 900
   if constexpr (std::is_same<T, nv_bfloat16>::value) {
     typename P::storage_t h;
     asm volatile(
@@ -233,6 +238,7 @@ multimem_max(T* addr) {
         : "memory");
     unpack<T, ByteSize>(h, ret.data);
   }
+#endif
   return ret;
 }
 
@@ -264,6 +270,7 @@ multimem_reduce(T* addr, ncclRedOp_t op) {
 template <typename T, int ByteSize = (sizeof(T) <= 4 ? 4 : 8)>
 FLAGCX_DEVICE_INLINE_DECORATOR void
 multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
+#if __CUDA_ARCH__ >= 900
   using P = packed_t<T, ByteSize>;
   if constexpr (std::is_same<T, nv_bfloat16>::value) {
     typename P::storage_t h = pack<T, ByteSize>(val.data);
@@ -292,6 +299,7 @@ multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
         : "l"(addr), "d"(val.data[0])
         : "memory");
   }
+#endif
 }
 
 // Store to local/shared memory using vectorized store
