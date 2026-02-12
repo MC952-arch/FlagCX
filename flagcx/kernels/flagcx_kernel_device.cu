@@ -1,10 +1,7 @@
 #include "comm.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-
-#ifndef flagcxTriggerMask
-#define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
-#endif
+#include "device_utils.h"
 
 FLAGCX_DEVICE_DECORATOR size_t
 getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {

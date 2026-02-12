@@ -11,6 +11,20 @@
 #define FLAGCX_DEVICE_LAUNCH_KERNEL cudaLaunchKernel
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#if defined(__CUDACC__)
+FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
+  int delay = 1 << (iter < 15 ? iter : 15);
+#if __CUDA_ARCH__ >= 700
+  __nanosleep(delay);
+#else
+  uint64_t start = clock64();
+  while (clock64() - start < (uint64_t)delay) { /* spin */
+  }
+#endif
+}
+#endif // __CUDACC__
+
 #else
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR

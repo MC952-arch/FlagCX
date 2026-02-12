@@ -1,6 +1,6 @@
-#include "device_utils.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "device_utils.h"
 
 #define WARP_SIZE 32
 #define FULL_MASK 0xffffffff

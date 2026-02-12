@@ -1,7 +1,7 @@
 #include "comm.h"
-#include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "global_comm.h"
+
 FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(const void *sendbuff,
                                              void *recvbuff, size_t count,
                                              flagcxDataType_t datatype,
@@ -24,11 +24,12 @@ FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(const void *sendbuff,
   }
 }
 
-void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                   flagcxDataType_t datatype, int sendPeer, int recvPeer,
-                   flagcxComm_t comm, flagcxStream_t stream) {
+flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
+                             flagcxDataType_t datatype, int sendPeer, int recvPeer,
+                             flagcxComm_t comm, flagcxStream_t stream) {
   void *fifo = NULL;
-  flagcxCommFifoBuffer(comm, &fifo);
+  FLAGCXCHECK(flagcxCommFifoBuffer(comm, &fifo));
   flagcxP2pKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
       sendbuff, recvbuff, count, datatype, sendPeer, recvPeer, fifo);
+  return flagcxSuccess;
 }
