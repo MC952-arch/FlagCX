@@ -521,7 +521,6 @@ flagcxResult_t flagcxGetLocalNetFromGpu(int apu, int *dev,
   char name[FLAGCX_MAX_NET_NAME + 1] = {0};
   // first try getting local net from existing xml file
   FLAGCXCHECK(flagcxGetLocalNetFromXmlFile(apu, name, FLAGCX_MAX_NET_NAME + 1));
-  const char *enable_topo_detect = flagcxGetEnv("FLAGCX_ENABLE_TOPO_DETECT");
   if (strlen(name) == 0) {
     INFO(FLAGCX_GRAPH, "did not find local net for apu %d in xml topo", apu);
     const char *useNet = flagcxGetEnv("FLAGCX_USENET");
@@ -536,9 +535,7 @@ flagcxResult_t flagcxGetLocalNetFromGpu(int apu, int *dev,
     comm->netAdaptor->getDevFromName(name, dev);
   }
 
-  if (strlen(name) == 0 && enable_topo_detect &&
-      (strcmp(enable_topo_detect, "TRUE") == 0 ||
-       strcmp(enable_topo_detect, "True") == 0)) {
+  if (strlen(name) == 0) {
     FLAGCXCHECK(flagcxTopoGetLocalNet(comm->topoServer, comm->rank, dev));
   }
 

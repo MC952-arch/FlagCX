@@ -650,17 +650,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->clusterInterRankList.resize((*comm)->nclusters);
     struct flagcxNicDistance *nicDistanceData;
     FLAGCXCHECK(flagcxCalloc(&nicDistanceData, nranks));
-    const char *enableTopoDetect = flagcxGetEnv("FLAGCX_ENABLE_TOPO_DETECT");
-    if (enableTopoDetect && (strcmp(enableTopoDetect, "TRUE") == 0 ||
-                             strcmp(enableTopoDetect, "True") ==
-                                 0)) { // safety check nic distance is only
-                                       // available after topo detection
-      FLAGCXCHECK(flagcxGetNicDistance((*comm)->heteroComm->topoServer, rank,
-                                       nicDistanceData + rank));
-    } else {
-      nicDistanceData[rank].distance = rank % 2 + 1;
-      nicDistanceData[rank].netGuid = rank; // give a dummy value
-    }
+    FLAGCXCHECK(flagcxGetNicDistance((*comm)->heteroComm->topoServer, rank,
+                                     nicDistanceData + rank));
     FLAGCXCHECK(bootstrapAllGather(state, (void *)nicDistanceData,
                                    sizeof(flagcxNicDistance)));
     FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
