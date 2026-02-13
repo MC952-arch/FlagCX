@@ -1,7 +1,7 @@
 #include "comm.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "device_utils.h"
+#include "atomic_device.h"
 
 FLAGCX_DEVICE_DECORATOR size_t
 getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
@@ -75,14 +75,12 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer) {
   // Enqueue WAIT primitive so host knows to synchronize
   enqueue(fifoBuffer, 0, 0, 0, 0, flagcxDevicePrimWait);
 
-  volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
-
-  // Memory fence to ensure all previous enqueues are visible
-  FLAGCX_DEVICE_THREAD_FENCE();
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
 
   // Wait until all items are consumed (consumed catches up to produced)
   int iter = 0;
-  while (buffer[2] > buffer[1]) {
+  while (flagcxDeviceAtomicLoad(&buffer[2], flagcxDeviceMemoryOrderAcquire) >
+         flagcxDeviceAtomicLoad(&buffer[1], flagcxDeviceMemoryOrderAcquire)) {
     spinBackoff(iter++);
   }
   return flagcxSuccess;
@@ -93,26 +91,26 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t peerRank,
                                                uint64_t datatype,
                                                uint64_t type) {
-  volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
-  uint64_t capacity = buffer[0];
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  uint64_t capacity = flagcxDeviceAtomicLoad(&buffer[0], flagcxDeviceMemoryOrderRelaxed);
 
   // 1. Atomically reserve a slot
-  uint64_t mySlot = atomicAdd((unsigned long long *)&buffer[2], 1ULL);
+  uint64_t mySlot = flagcxDeviceAtomicFetchAdd(&buffer[2], (uint64_t)1, flagcxDeviceMemoryOrderAcqRel);
 
   // 2. Wait until there's space (mySlot - consumed < capacity)
   int iter = 0;
-  while ((int64_t)(mySlot - buffer[1]) >= (int64_t)capacity) {
+  while ((int64_t)(mySlot - flagcxDeviceAtomicLoad(&buffer[1], flagcxDeviceMemoryOrderAcquire)) >= (int64_t)capacity) {
     spinBackoff(iter++);
   }
 
   // 3. Compute slot index and get pointer to slot's raw uint64_t fields
   uint64_t idx = mySlot % capacity;
-  volatile uint64_t *slotFst =
+  uint64_t *slotFst =
       buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
-  volatile uint64_t *slotSnd = slotFst + 1;
+  uint64_t *slotSnd = slotFst + 1;
 
-  // 4. Write address first (explicit volatile write)
-  *slotFst = addr;
+  // 4. Write address first
+  flagcxDeviceAtomicStore(slotFst, addr, flagcxDeviceMemoryOrderRelaxed);
 
   // 5. Build snd value with valid bit set
   uint64_t sndValue =
@@ -126,11 +124,8 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
           << flagcxDeviceTriggerOffPrim |
       flagcxDeviceTriggerValidMask;  // Set valid bit
 
-  // 6. Memory fence to ensure fst is visible before snd
-  FLAGCX_DEVICE_THREAD_FENCE();
-
-  // 7. Write snd with valid bit (explicit volatile write, signals data is ready)
-  *slotSnd = sndValue;
+  // 6. Write snd with valid bit (release ensures fst is visible before snd)
+  flagcxDeviceAtomicStore(slotSnd, sndValue, flagcxDeviceMemoryOrderRelease);
 
   return flagcxSuccess;
 }
