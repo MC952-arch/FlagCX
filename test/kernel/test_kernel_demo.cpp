@@ -48,8 +48,6 @@ int main(int argc, char *argv[]) {
   void *sendHandle, *recvHandle;
   size_t count;
   timer tim;
-  int recvPeer = (proc - 1 + totalProcs) % totalProcs;
-  int sendPeer = (proc + 1) % totalProcs;
 
   if (local_register) {
     // allocate buffer
@@ -68,16 +66,16 @@ int main(int argc, char *argv[]) {
   // Warm-up for large size
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, max_bytes / sizeof(float), DATATYPE,
-                  sendPeer, recvPeer, comm, stream);
+    flagcxP2pDemo(sendbuff, recvbuff, max_bytes / sizeof(float), DATATYPE, comm,
+                  stream);
   }
   devHandle->streamSynchronize(stream);
 
   // Warm-up for small size
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, min_bytes / sizeof(float), DATATYPE,
-                  sendPeer, recvPeer, comm, stream);
+    flagcxP2pDemo(sendbuff, recvbuff, min_bytes / sizeof(float), DATATYPE, comm,
+                  stream);
   }
   devHandle->streamSynchronize(stream);
 
@@ -103,8 +101,7 @@ int main(int argc, char *argv[]) {
     tim.reset();
     for (int i = 0; i < num_iters; i++) {
       // launch p2p kernel
-      flagcxP2pDemo(sendbuff, recvbuff, count, DATATYPE, sendPeer, recvPeer,
-                    comm, stream);
+      flagcxP2pDemo(sendbuff, recvbuff, count, DATATYPE, comm, stream);
     }
     devHandle->streamSynchronize(stream);
 

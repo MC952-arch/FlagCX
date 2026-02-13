@@ -56,12 +56,14 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   uint64_t prod = buffer[2];
 
   if (prod > cons) {
+    // Get pointer to slot's raw uint64_t fields
     uint64_t idx = cons % capacity;
-    volatile flagcxDeviceTrigger *slot =
-        ((volatile flagcxDeviceTrigger *)(buffer + 3)) + idx;
+    volatile uint64_t *slotFst =
+        buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+    volatile uint64_t *slotSnd = slotFst + 1;
 
     // Wait for valid bit to be set (data is committed by producer)
-    while (!(slot->snd & flagcxDeviceTriggerValidMask)) {
+    while (!(*slotSnd & flagcxDeviceTriggerValidMask)) {
       // Spin wait - GPU thread hasn't finished writing yet
       __sync_synchronize();
     }
@@ -70,11 +72,11 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
     __sync_synchronize();
 
     // Copy data (clear valid bit in the copy)
-    trigger->fst = slot->fst;
-    trigger->snd = slot->snd & ~flagcxDeviceTriggerValidMask;
+    trigger->fst = *slotFst;
+    trigger->snd = *slotSnd & ~flagcxDeviceTriggerValidMask;
 
     // Clear valid bit in slot for reuse
-    slot->snd = 0;
+    *slotSnd = 0;
 
     // Memory fence before updating consumed
     __sync_synchronize();

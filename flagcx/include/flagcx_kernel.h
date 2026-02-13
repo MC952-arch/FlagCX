@@ -143,8 +143,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
 flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                             flagcxDataType_t datatype, int sendPeer,
-                             int recvPeer, flagcxComm_t comm,
+                             flagcxDataType_t datatype, flagcxComm_t comm,
                              flagcxStream_t stream);
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
                                   size_t nblocks, flagcxStream_t stream);

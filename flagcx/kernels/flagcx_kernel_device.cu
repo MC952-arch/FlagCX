@@ -105,13 +105,14 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
     spinBackoff(iter++);
   }
 
-  // 3. Compute slot index
+  // 3. Compute slot index and get pointer to slot's raw uint64_t fields
   uint64_t idx = mySlot % capacity;
-  volatile flagcxDeviceTrigger *trigger =
-      ((volatile flagcxDeviceTrigger *)(buffer + 3)) + idx;
+  volatile uint64_t *slotFst =
+      buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+  volatile uint64_t *slotSnd = slotFst + 1;
 
-  // 4. Write address first
-  trigger->fst = addr;
+  // 4. Write address first (explicit volatile write)
+  *slotFst = addr;
 
   // 5. Build snd value with valid bit set
   uint64_t sndValue =
@@ -128,8 +129,8 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
   // 6. Memory fence to ensure fst is visible before snd
   FLAGCX_DEVICE_THREAD_FENCE();
 
-  // 7. Write snd with valid bit (signals data is ready)
-  trigger->snd = sndValue;
+  // 7. Write snd with valid bit (explicit volatile write, signals data is ready)
+  *slotSnd = sndValue;
 
   return flagcxSuccess;
 }
