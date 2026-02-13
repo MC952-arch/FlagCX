@@ -63,9 +63,15 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
     volatile uint64_t *slotSnd = slotFst + 1;
 
     // Wait for valid bit to be set (data is committed by producer)
+    // Use hybrid approach: spin vigorously first, then yield to reduce CPU
+    // usage
+    int spins = 0;
     while (!(*slotSnd & flagcxDeviceTriggerValidMask)) {
-      // Spin wait - GPU thread hasn't finished writing yet
       __sync_synchronize();
+      if (++spins > 1000) {
+        sched_yield();
+        spins = 0;
+      }
     }
 
     // Memory fence before reading

@@ -114,14 +114,14 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
 
   // 5. Build snd value with valid bit set
   uint64_t sndValue =
-      (count & flagcxTriggerMask(flagcxDeviceTriggerBitsCount))
-          << flagcxDeviceTriggerOffCount |
-      (peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
-          << flagcxDeviceTriggerOffPeerRank |
-      (datatype & flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype))
-          << flagcxDeviceTriggerOffDatatype |
-      (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
-          << flagcxDeviceTriggerOffPrim |
+      ((count & flagcxTriggerMask(flagcxDeviceTriggerBitsCount))
+          << flagcxDeviceTriggerOffCount) |
+      ((peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
+          << flagcxDeviceTriggerOffPeerRank) |
+      ((datatype & flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype))
+          << flagcxDeviceTriggerOffDatatype) |
+      ((type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
+          << flagcxDeviceTriggerOffPrim) |
       flagcxDeviceTriggerValidMask;  // Set valid bit
 
   // 6. Write snd with valid bit (release ensures fst is visible before snd)

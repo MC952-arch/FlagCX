@@ -45,8 +45,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
                                                       int *idx) {
   while (true) {
-    uint64_t oldConsumed = flagcxDeviceAtomicLoad(buffer + 1, flagcxDeviceMemoryOrderAcquire);
-    uint64_t curProduced = flagcxDeviceAtomicLoad(buffer + 2, flagcxDeviceMemoryOrderAcquire);
+    uint64_t oldConsumed = *(buffer + 1); // consumed
+    uint64_t curProduced = *(buffer + 2); // produced
     if (oldConsumed >= curProduced) {
       // no-op, task dequeued by other consumers
       *idx = -1;
