@@ -133,10 +133,21 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Destroy stream first (sync any pending work)
+  devHandle->streamDestroy(stream);
+
   if (local_register) {
-    // deregister buffer
+    // deregister buffer (must be done before comm destroy)
     flagcxCommDeregister(comm, sendHandle);
     flagcxCommDeregister(comm, recvHandle);
+  }
+
+  // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
+  // The kernel proxy thread holds a CUDA stream that can interfere with
+  // deviceFree
+  flagcxCommDestroy(comm);
+
+  if (local_register) {
     // deallocate buffer
     flagcxMemFree(sendbuff);
     flagcxMemFree(recvbuff);
@@ -145,8 +156,6 @@ int main(int argc, char *argv[]) {
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }
   free(hello);
-  devHandle->streamDestroy(stream);
-  flagcxCommDestroy(comm);
   flagcxHandleFree(handler);
 
   MPI_Finalize();

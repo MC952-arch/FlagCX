@@ -148,7 +148,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     datatype = __shfl_sync(FULL_MASK, datatype, 0);
     redop = __shfl_sync(FULL_MASK, redop, 0);
     flagcxReduceKernel(fst, snd, out, count, nthreads, datatype, redop);
-    __syncthreads();
+    FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
 
     // (5) set completion flag

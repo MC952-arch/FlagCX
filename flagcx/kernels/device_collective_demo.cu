@@ -26,7 +26,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(
   }
 
   // Ensure all threads finish enqueuing before termination
-  __syncthreads();
+  FLAGCX_DEVICE_SYNC_THREADS();
 
   // Only thread 0 sends termination and waits
   if (tid == 0) {
