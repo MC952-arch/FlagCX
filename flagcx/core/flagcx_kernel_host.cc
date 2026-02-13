@@ -50,20 +50,37 @@ flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger) {
-  int idx = -1;
-  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
   uint64_t capacity = buffer[0];
   uint64_t cons = buffer[1];
   uint64_t prod = buffer[2];
-  int distance = prod - cons;
-  if (distance > 0) {
-    idx = cons % capacity;
-    memcpy((void *)trigger,
-           (void *)(buffer + 3 +
-                    sizeof(flagcxDeviceTrigger) / sizeof(uint64_t) * idx),
-           sizeof(flagcxDeviceTrigger));
+
+  if (prod > cons) {
+    uint64_t idx = cons % capacity;
+    volatile flagcxDeviceTrigger *slot =
+        ((volatile flagcxDeviceTrigger *)(buffer + 3)) + idx;
+
+    // Wait for valid bit to be set (data is committed by producer)
+    while (!(slot->snd & flagcxDeviceTriggerValidMask)) {
+      // Spin wait - GPU thread hasn't finished writing yet
+      __sync_synchronize();
+    }
+
+    // Memory fence before reading
     __sync_synchronize();
-    buffer[1] = buffer[1] + 1;
+
+    // Copy data (clear valid bit in the copy)
+    trigger->fst = slot->fst;
+    trigger->snd = slot->snd & ~flagcxDeviceTriggerValidMask;
+
+    // Clear valid bit in slot for reuse
+    slot->snd = 0;
+
+    // Memory fence before updating consumed
+    __sync_synchronize();
+
+    // Update consumed counter
+    buffer[1] = cons + 1;
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }

@@ -34,6 +34,9 @@ constexpr unsigned int flagcxDeviceTriggerOffPrim =
     flagcxDeviceTriggerOffDatatype + flagcxDeviceTriggerBitsDatatype;
 constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
 constexpr unsigned int flagcxDeviceTriggerBitsFifoReserved = 1;
+// Valid bit for lock-free MPSC FIFO (bit 63 of snd field)
+constexpr unsigned int flagcxDeviceTriggerOffValid = 63;
+constexpr uint64_t flagcxDeviceTriggerValidMask = (1ULL << 63);
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
