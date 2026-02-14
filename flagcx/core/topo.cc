@@ -521,16 +521,6 @@ flagcxResult_t flagcxGetLocalNetFromGpu(int apu, int *dev,
   char name[FLAGCX_MAX_NET_NAME + 1] = {0};
   // first try getting local net from existing xml file
   FLAGCXCHECK(flagcxGetLocalNetFromXmlFile(apu, name, FLAGCX_MAX_NET_NAME + 1));
-  if (strlen(name) == 0) {
-    INFO(FLAGCX_GRAPH, "did not find local net for apu %d in xml topo", apu);
-    const char *useNet = flagcxGetEnv("FLAGCX_USENET");
-    if (useNet != NULL) {
-      INFO(FLAGCX_GRAPH,
-           "APU %d use net %s specified in FLAGCX_USENET environment variable.",
-           apu, useNet);
-      strncpy(name, useNet, FLAGCX_MAX_NET_NAME);
-    }
-  }
   if (strlen(name) != 0) {
     comm->netAdaptor->getDevFromName(name, dev);
   }

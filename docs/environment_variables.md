@@ -131,7 +131,6 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_TOPO_FILE` | None | Path to XML topology file for network/GPU topology |
 | `FLAGCX_TOPO_DUMP_FILE` | None | Path to dump discovered topology as XML |
-| `FLAGCX_USENET` | None | Specify network device name to use for communication |
 | `FLAGCX_INTERSERVER_ROUTE_FILE` | None | Path to inter-server routing configuration file |
 
 ---
