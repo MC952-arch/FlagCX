@@ -169,7 +169,6 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_RUNTIME_PROXY` | 0 | When set to 1, enables runtime proxy mode |
-| `FLAGCX_KERNEL_PROXY` | None | Kernel proxy configuration |
 | `FLAGCX_PROGRESS_APPENDOP_FREQ` | 8 | Frequency of append operation in progress loop |
 | `FLAGCX_P2P_DISABLE` | 0 | When set to 1, disables P2P transport |
 | `FLAGCX_P2P_SCHEDULE_DISABLE` | 0 | When set to 1, disables P2P scheduling optimization |
