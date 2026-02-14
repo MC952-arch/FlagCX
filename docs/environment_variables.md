@@ -6,17 +6,17 @@ This document provides a comprehensive reference for all environment variables u
 
 - [Debug and Logging](#debug-and-logging)
 - [Communication Mode](#communication-mode)
+- [Buffer and Memory](#buffer-and-memory)
+- [Proxy and Runtime](#proxy-and-runtime)
+- [Topology Configuration](#topology-configuration)
+- [Tuner Configuration](#tuner-configuration)
+- [HybridRunner Configuration](#hybridrunner-configuration)
+- [UniRunner Configuration](#unirunner-configuration)
 - [Network Configuration](#network-configuration)
   - [InfiniBand (IB) Settings](#infiniband-ib-settings)
   - [IB Retransmission](#ib-retransmission)
   - [Socket Network](#socket-network)
   - [UCX Network](#ucx-network)
-- [Buffer and Memory](#buffer-and-memory)
-- [Topology Configuration](#topology-configuration)
-- [Algorithm Selection](#algorithm-selection)
-- [Tuner Configuration](#tuner-configuration)
-- [Proxy and Runtime](#proxy-and-runtime)
-- [UniRunner Configuration](#unirunner-configuration)
 - [Miscellaneous](#miscellaneous)
 
 ---
@@ -42,6 +42,86 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_COMM_ID` | None | Specifies the communication ID for bootstrap. When set, rank 0 will create the root |
 | `FLAGCX_HOSTID` | None | Override the host identifier string for host hashing |
 | `FLAGCX_CLUSTER_SPLIT_LIST` | None | Comma-separated list of cluster split counts (e.g., 2,4,8) |
+
+---
+
+## Buffer and Memory
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_NET_BUFFER_SIZE` | 67108864 (64MB) | Network buffer size in bytes |
+| `FLAGCX_NET_CHUNK_SIZE` | 4194304 (4MB) | Network chunk size in bytes |
+| `FLAGCX_P2P_BUFFER_SIZE` | 67108864 (64MB) | P2P buffer size in bytes |
+| `FLAGCX_P2P_CHUNK_SIZE` | 16777216 (16MB) | P2P chunk size in bytes |
+| `FLAGCX_SEMAPHORE_BUFFER_POOL_CAPACITY` | 32 | Capacity of semaphore buffer pool |
+| `FLAGCX_KERNEL_FIFO_CAPACITY` | Default | Kernel FIFO capacity |
+| `FLAGCX_REDUCE_FIFO_CAPACITY` | Default | Reduce operation FIFO capacity |
+| `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
+| `FLAGCX_ENABLE_ONE_SIDE_REGISTER` | 0 | When set to 1, enables one-sided memory registration |
+
+---
+
+## Proxy and Runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_RUNTIME_PROXY` | 0 | When set to 1, enables runtime proxy mode |
+| `FLAGCX_PROGRESS_APPENDOP_FREQ` | 8 | Frequency of append operation in progress loop |
+| `FLAGCX_P2P_DISABLE` | 0 | When set to 1, disables P2P transport |
+| `FLAGCX_P2P_SCHEDULE_DISABLE` | 0 | When set to 1, disables P2P scheduling optimization |
+| `FLAGCX_DEVICE_FUNC_PATH` | None | Path to device function library for async kernel loading |
+
+---
+
+## Topology Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_TOPO_FILE` | None | Path to XML topology file for network/GPU topology |
+| `FLAGCX_TOPO_DUMP_FILE` | None | Path to dump discovered topology as XML |
+| `FLAGCX_INTERSERVER_ROUTE_FILE` | None | Path to inter-server routing configuration file |
+
+---
+
+## Tuner Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_USE_TUNER` | 0 | When set to 1, enables the internal tuner |
+| `FLAGCX_USE_COMM_TAG` | None | Specifies a communicator tag to use from config list |
+| `FLAGCX_TUNER_SEARCH_NLOOPS` | 5 | Number of loops for tuner search (minimum 5) |
+| `FLAGCX_TUNER_CONFIG_ID` | None | Current tuner configuration ID (for FlagScale tuning) |
+| `FLAGCX_TUNER_BEST_CONFIG_ID` | None | Best tuner configuration ID (for FlagScale tuning) |
+| `FLAGCX_TUNER_DONE` | None | Set to 1 when tuning is complete (set by system) |
+| `FLAGCX_TUNE_FILE` | None | Path to tune file |
+| `FLAGCX_TUNE_GROUP_IDX` | None | Tune group index |
+| `FLAGCX_TUNING_WITH_FLAGSCALE` | 0 | When set to 1, enables tuning with FlagScale |
+
+---
+
+## HybridRunner Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_C2C_ALGO` | Sequential | C2C algorithm selection. Values: RING_PIPELINED, XML_INPUT |
+| `FLAGCX_C2C_ALGO_EXPORT_PATH` | None | Directory path to export algorithm XML files |
+| `FLAGCX_C2C_ALGO_EXPORT_PREFIX` | None | Prefix for exported algorithm XML files |
+| `FLAGCX_C2C_ALGO_IMPORT_PATH` | None | Directory path to import algorithm XML files |
+| `FLAGCX_C2C_ALGO_IMPORT_PREFIX` | None | Prefix for imported algorithm XML files |
+| `FLAGCX_C2C_SEARCH_GRANULARITY` | None | Granularity for C2C algorithm search |
+
+---
+
+## UniRunner Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
+| `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for UniRunner |
+| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for UniRunner |
+| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for UniRunner |
+| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in UniRunner |
+| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in UniRunner |
 
 ---
 
@@ -106,86 +186,6 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_GLOO_IB_DISABLE` | 0 | When set to 1, disables IB for Gloo transport |
-
----
-
-## Buffer and Memory
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_NET_BUFFER_SIZE` | 67108864 (64MB) | Network buffer size in bytes |
-| `FLAGCX_NET_CHUNK_SIZE` | 4194304 (4MB) | Network chunk size in bytes |
-| `FLAGCX_P2P_BUFFER_SIZE` | 67108864 (64MB) | P2P buffer size in bytes |
-| `FLAGCX_P2P_CHUNK_SIZE` | 16777216 (16MB) | P2P chunk size in bytes |
-| `FLAGCX_SEMAPHORE_BUFFER_POOL_CAPACITY` | 32 | Capacity of semaphore buffer pool |
-| `FLAGCX_KERNEL_FIFO_CAPACITY` | Default | Kernel FIFO capacity |
-| `FLAGCX_REDUCE_FIFO_CAPACITY` | Default | Reduce operation FIFO capacity |
-| `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
-| `FLAGCX_ENABLE_ONE_SIDE_REGISTER` | 0 | When set to 1, enables one-sided memory registration |
-
----
-
-## Topology Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_TOPO_FILE` | None | Path to XML topology file for network/GPU topology |
-| `FLAGCX_TOPO_DUMP_FILE` | None | Path to dump discovered topology as XML |
-| `FLAGCX_INTERSERVER_ROUTE_FILE` | None | Path to inter-server routing configuration file |
-
----
-
-## Algorithm Selection
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_C2C_ALGO` | Sequential | C2C algorithm selection. Values: RING_PIPELINED, XML_INPUT |
-| `FLAGCX_ALGO_EXPORT_PATH` | None | Directory path to export algorithm XML files |
-| `FLAGCX_ALGO_EXPORT_PREFIX` | None | Prefix for exported algorithm XML files |
-| `FLAGCX_ALGO_IMPORT_PATH` | None | Directory path to import algorithm XML files |
-| `FLAGCX_ALGO_IMPORT_PREFIX` | None | Prefix for imported algorithm XML files |
-| `FLAGCX_C2C_SEARCH_GRANULARITY` | None | Granularity for C2C algorithm search |
-
----
-
-## Tuner Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_USE_TUNER` | 0 | When set to 1, enables the internal tuner |
-| `FLAGCX_USE_COMM_TAG` | None | Specifies a communicator tag to use from config list |
-| `FLAGCX_TUNER_SEARCH_NLOOPS` | 5 | Number of loops for tuner search (minimum 5) |
-| `FLAGCX_TUNER_CONFIG_ID` | None | Current tuner configuration ID (for FlagScale tuning) |
-| `FLAGCX_TUNER_BEST_CONFIG_ID` | None | Best tuner configuration ID (for FlagScale tuning) |
-| `FLAGCX_TUNER_DONE` | None | Set to 1 when tuning is complete (set by system) |
-| `FLAGCX_TUNE_FILE` | None | Path to tune file |
-| `FLAGCX_TUNE_GROUP_IDX` | None | Tune group index |
-| `TUNING_WITH_FLAGSCALE` | 0 | When set to 1, enables tuning with FlagScale |
-
----
-
-## Proxy and Runtime
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_RUNTIME_PROXY` | 0 | When set to 1, enables runtime proxy mode |
-| `FLAGCX_PROGRESS_APPENDOP_FREQ` | 8 | Frequency of append operation in progress loop |
-| `FLAGCX_P2P_DISABLE` | 0 | When set to 1, disables P2P transport |
-| `FLAGCX_P2P_SCHEDULE_DISABLE` | 0 | When set to 1, disables P2P scheduling optimization |
-| `FLAGCX_DEVICE_FUNC_PATH` | None | Path to device function library for async kernel loading |
-
----
-
-## UniRunner Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
-| `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for UniRunner |
-| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for UniRunner |
-| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for UniRunner |
-| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in UniRunner |
-| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in UniRunner |
 
 ---
 

@@ -583,7 +583,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->isTuningWithFlagscale = false;
     bool isTuningWithFlagscale = false;
     const char *isTuningWithFlagscaleEnv =
-        flagcxGetEnv("TUNING_WITH_FLAGSCALE");
+        flagcxGetEnv("FLAGCX_TUNING_WITH_FLAGSCALE");
     if (isTuningWithFlagscaleEnv) {
       isTuningWithFlagscale =
           (std::stoi(isTuningWithFlagscaleEnv) == 1) ? true : false;
