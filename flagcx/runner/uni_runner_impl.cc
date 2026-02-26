@@ -758,7 +758,7 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
   curr = flagcxIntruQueueHead(&runnerState->redInflightQueue);
   while (curr) {
     flagcxReduceTrigger_t trigger =
-        (flagcxReduceTrigger *)(runnerState->fifo->buffer + 4) +
+        (flagcxReduceTrigger *)(runnerState->fifo->buffer + flagcxFifoIdxData) +
         curr->nodeData.red.triggerIdx;
     if (trigger->pollState() == flagcxReduceTriggerComplete) {
       trigger->setState(flagcxReduceTriggerAvailable);
@@ -865,7 +865,8 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
       TRACE(FLAGCX_KERNEL,
             "runUniRunner: all queues empty, terminating runner loop");
       // set terminate flag
-      __atomic_store_n(fifo->buffer + 3, 1, __ATOMIC_RELEASE);
+      __atomic_store_n(fifo->buffer + flagcxFifoIdxTerminate, 1,
+                       __ATOMIC_RELEASE);
       break;
     }
 

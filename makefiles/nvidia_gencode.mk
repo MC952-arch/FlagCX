@@ -91,8 +91,7 @@ endif
 
 # ----------------
 # Multicast primitive support check (requires sm_90+)
-# If sm_90+ gencode exists: filter out < sm_90 gencodes
-# If no sm_90+ gencode: keep all gencodes and define NVCC_GENCODE_MULTICAST_UNSUPPORTED
+# Keep sm_80+ for A100 compatibility, multicast kernels use __CUDA_ARCH__ guards
 # ----------------
 
 # Define all sm_90+ gencodes for detection
@@ -102,15 +101,14 @@ SM90_PLUS_GENCODES = $(CUDA12_GENCODE) $(CUDA12_8_GENCODE) $(CUDA13_GENCODE) $(C
 HAS_SM90_PLUS := $(strip $(foreach gc,$(SM90_PLUS_GENCODES),$(findstring $(gc),$(DEVICE_COMPILER_GENCODE))))
 
 ifneq ($(HAS_SM90_PLUS),)
-  # Has sm_90+ support: filter out older gencodes for multicast kernel compilation
+  # Has sm_90+ support: keep sm_80+ for compatibility
+  # Multicast kernels use #if __CUDA_ARCH__ >= 900 guards in source code
   DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA8_GENCODE),$(DEVICE_COMPILER_GENCODE))
   DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA9_GENCODE),$(DEVICE_COMPILER_GENCODE))
   DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA10_GENCODE),$(DEVICE_COMPILER_GENCODE))
-  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA11_GENCODE),$(DEVICE_COMPILER_GENCODE))
   DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA8_PTX),$(DEVICE_COMPILER_GENCODE))
   DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA9_PTX),$(DEVICE_COMPILER_GENCODE))
-  DEVICE_COMPILER_GENCODE := $(filter-out $(CUDA11_PTX),$(DEVICE_COMPILER_GENCODE))
-  $(info Multicast support enabled. Using DEVICE_COMPILER_GENCODE: ${DEVICE_COMPILER_GENCODE})
+  $(info Multicast support enabled (sm_90+). Using DEVICE_COMPILER_GENCODE: ${DEVICE_COMPILER_GENCODE})
 else
   # No sm_90+ support: keep all gencodes and disable multicast
   NVCC_GENCODE_MULTICAST_UNSUPPORTED := 1

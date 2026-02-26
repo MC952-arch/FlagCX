@@ -79,8 +79,8 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer) {
 
   // Wait until all items are consumed (consumed catches up to produced)
   int iter = 0;
-  while (flagcxDeviceAtomicLoad(&buffer[2], flagcxDeviceMemoryOrderAcquire) >
-         flagcxDeviceAtomicLoad(&buffer[1], flagcxDeviceMemoryOrderAcquire)) {
+  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced], flagcxDeviceMemoryOrderAcquire) >
+         flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire)) {
     spinBackoff(iter++);
   }
   return flagcxSuccess;
@@ -92,21 +92,21 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t datatype,
                                                uint64_t type) {
   uint64_t *buffer = (uint64_t *)fifoBuffer;
-  uint64_t capacity = flagcxDeviceAtomicLoad(&buffer[0], flagcxDeviceMemoryOrderRelaxed);
+  uint64_t capacity = flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxCapacity], flagcxDeviceMemoryOrderRelaxed);
 
   // 1. Atomically reserve a slot
-  uint64_t mySlot = flagcxDeviceAtomicFetchAdd(&buffer[2], (uint64_t)1, flagcxDeviceMemoryOrderAcqRel);
+  uint64_t mySlot = flagcxDeviceAtomicFetchAdd(&buffer[flagcxFifoIdxProduced], (uint64_t)1, flagcxDeviceMemoryOrderAcqRel);
 
   // 2. Wait until there's space (mySlot - consumed < capacity)
   int iter = 0;
-  while ((int64_t)(mySlot - flagcxDeviceAtomicLoad(&buffer[1], flagcxDeviceMemoryOrderAcquire)) >= (int64_t)capacity) {
+  while ((int64_t)(mySlot - flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire)) >= (int64_t)capacity) {
     spinBackoff(iter++);
   }
 
   // 3. Compute slot index and get pointer to slot's raw uint64_t fields
   uint64_t idx = mySlot % capacity;
   uint64_t *slotFst =
-      buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+      buffer + flagcxFifoIdxData + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
   uint64_t *slotSnd = slotFst + 1;
 
   // 4. Write address first

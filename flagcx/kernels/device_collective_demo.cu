@@ -16,20 +16,18 @@ FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(
     const void *sendbuff, void *recvbuff, size_t count,
     flagcxDataType_t datatype, int myRank, int nRanks, void *fifoBuffer) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
 
   // Each thread handles one peer (tid = peer index)
-  // Skip if tid >= nRanks or tid == myRank (no self-communication)
-  if (tid < nRanks && tid != myRank) {
+  if (tid < nRanks) {
     int peerRank = tid;
 
     // Calculate offsets for this peer's send and receive buffers
-    size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
     size_t offset = peerRank * count * elementSize;
     const void *peerSendBuff = (const char *)sendbuff + offset;
     void *peerRecvBuff = (char *)recvbuff + offset;
 
-    // Send to peer and receive from peer
-    // Each thread's operations are ordered: send then recv
+    // Trigger P2P operations
     flagcxDeviceSend(peerSendBuff, count, datatype, peerRank, fifoBuffer);
     flagcxDeviceRecv(peerRecvBuff, count, datatype, peerRank, fifoBuffer);
   }
@@ -62,5 +60,6 @@ flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
   // Each thread handles communication with one peer, preserving ordering
   flagcxP2pKernel<<<NBLOCKS, NTHREADS_PER_BLOCK, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
       sendbuff, recvbuff, count, datatype, myRank, nRanks, fifo);
+
   return flagcxSuccess;
 }

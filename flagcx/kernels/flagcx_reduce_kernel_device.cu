@@ -45,8 +45,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
                                                       int *idx) {
   while (true) {
-    uint64_t oldConsumed = *(buffer + 1); // consumed
-    uint64_t curProduced = *(buffer + 2); // produced
+    uint64_t oldConsumed = *(buffer + flagcxFifoIdxConsumed);
+    uint64_t curProduced = *(buffer + flagcxFifoIdxProduced);
     if (oldConsumed >= curProduced) {
       // no-op, task dequeued by other consumers
       *idx = -1;
@@ -54,7 +54,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
     }
     // set consumed from `oldConsumed` to `oldConsumed+1`
     uint64_t expected = oldConsumed;
-    if (flagcxDeviceAtomicCompareExchange(buffer + 1, expected, oldConsumed + 1,
+    if (flagcxDeviceAtomicCompareExchange(buffer + flagcxFifoIdxConsumed, expected, oldConsumed + 1,
                                           flagcxDeviceMemoryOrderAcqRel)) {
       *idx = oldConsumed;
       break;
@@ -88,9 +88,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     int p = -1;
     int term = -1;
     if (tid == 0) {
-      c = flagcxDeviceAtomicLoad(&vBuf[1], flagcxDeviceMemoryOrderAcquire); // consumed
-      p = flagcxDeviceAtomicLoad(&vBuf[2], flagcxDeviceMemoryOrderAcquire); // produced
-      term = flagcxDeviceAtomicLoad(&vBuf[3], flagcxDeviceMemoryOrderAcquire);
+      c = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire);
+      p = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxProduced], flagcxDeviceMemoryOrderAcquire);
+      term = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxTerminate], flagcxDeviceMemoryOrderAcquire);
     }
     c = __shfl_sync(FULL_MASK, c, 0);
     p = __shfl_sync(FULL_MASK, p, 0);
@@ -130,9 +130,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     uint64_t nthreads;
     uint64_t datatype;
     uint64_t redop;
-    int slot = myIdx & (*vBuf - 1);
+    int slot = myIdx & (vBuf[flagcxFifoIdxCapacity] - 1);
     if (tid == 0) {
-      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
+      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;
       fst = t->getInput1();
       snd = t->getInput2();
       out = t->getOutput();
@@ -154,7 +154,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
 
     // (5) set completion flag
     if (tid == 0) {
-      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
+      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;
       t->setComplete();
     }
   }
