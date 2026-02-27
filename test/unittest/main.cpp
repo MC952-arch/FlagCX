@@ -350,15 +350,6 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Warm-up iterations to initialize kernel proxy
-  const int numWarmupIters = 5;
-  for (int i = 0; i < numWarmupIters; i++) {
-    flagcxP2pDemo(sendbuff, recvbuff, countPerPeer, flagcxFloat, comm, stream);
-  }
-  devHandle->streamSynchronize(stream);
-
-  MPI_Barrier(MPI_COMM_WORLD);
-
   // Launch P2P kernel demo
   flagcxResult_t result = flagcxP2pDemo(sendbuff, recvbuff, countPerPeer,
                                         flagcxFloat, comm, stream);

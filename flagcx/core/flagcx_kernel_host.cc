@@ -86,12 +86,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
 
     // Clear valid bit in slot for reuse
     *slotSnd = 0;
-
-    // Memory fence before updating consumed
-    __sync_synchronize();
-
-    // Update consumed counter
-    buffer[flagcxFifoIdxConsumed] = cons + 1;
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }
