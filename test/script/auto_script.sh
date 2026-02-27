@@ -5,7 +5,7 @@ mkdir -p $BUILD_DIR
 
 export MPI_HOME=/usr/local/mpi
 export PATH=$MPI_HOME/bin:$PATH
-make USE_NVIDIA=1
+make -j$(nproc) USE_NVIDIA=1
 
 if [ $? -ne 0 ]; then
     echo "Compilation failed!"
@@ -13,7 +13,7 @@ if [ $? -ne 0 ]; then
 fi
 
 cd test/perf
-make USE_NVIDIA=1
+make -j$(nproc) USE_NVIDIA=1
 
 if [ $? -ne 0 ]; then
     echo "Test compilation failed!"

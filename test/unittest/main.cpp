@@ -1,5 +1,7 @@
 #include "flagcx_coll_test.hpp"
+#include "flagcx_kernel_test.hpp"
 #include "flagcx_topo_test.hpp"
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string.h>
@@ -329,6 +331,60 @@ TEST_F(FlagCXTopoTest, TopoDetection) {
   std::cout << "executing flagcxCommInitRank" << std::endl;
   auto result = flagcxCommInitRank(&comm, nranks, uniqueId, rank);
   EXPECT_EQ(result, flagcxSuccess);
+}
+
+TEST_F(FlagCXKernelTest, P2pDemo) {
+  flagcxComm_t &comm = handler->comm;
+  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+
+  // count per peer
+  size_t countPerPeer = count / nranks;
+
+  // Initialize sendbuff: all elements = rank (my rank)
+  for (size_t i = 0; i < count; i++) {
+    ((float *)hostsendbuff)[i] = (float)rank;
+  }
+
+  devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
+                          flagcxMemcpyHostToDevice, NULL);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Warm-up iterations to initialize kernel proxy
+  const int numWarmupIters = 5;
+  for (int i = 0; i < numWarmupIters; i++) {
+    flagcxP2pDemo(sendbuff, recvbuff, countPerPeer, flagcxFloat, comm, stream);
+  }
+  devHandle->streamSynchronize(stream);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Launch P2P kernel demo
+  flagcxResult_t result = flagcxP2pDemo(sendbuff, recvbuff, countPerPeer,
+                                        flagcxFloat, comm, stream);
+  devHandle->streamSynchronize(stream);
+  EXPECT_EQ(result, flagcxSuccess);
+
+  // Copy results back
+  devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
+                          flagcxMemcpyDeviceToHost, NULL);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Verify: recvbuff[p*countPerPeer] should equal p for all p
+  bool success = true;
+  for (int p = 0; p < nranks; p++) {
+    float expected = (float)p;
+    float actual = ((float *)hostrecvbuff)[p * countPerPeer];
+    if (actual != expected) {
+      success = false;
+      if (rank == 0) {
+        std::cout << "Mismatch at peer " << p << ": expected " << expected
+                  << ", got " << actual << std::endl;
+      }
+    }
+  }
+  EXPECT_TRUE(success);
 }
 
 int main(int argc, char *argv[]) {
