@@ -158,4 +158,44 @@ flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                              flagcxStream_t stream);
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
                                   size_t nblocks, flagcxStream_t stream);
+
+// ==========================================================================
+// Device Communicator — Host-side lifecycle management
+// ==========================================================================
+
+// Requirements for creating a device communicator
+typedef struct {
+  int lsaBarrierCount; // Number of LSA barrier slots (typically = CTA count)
+  int lsaMultimem;     // Whether to enable multicast/multimem (0/1)
+  int ginBarrierCount; // Number of GIN barrier slots for inter-node
+  int ginSignalCount;  // Number of GIN signal slots
+} flagcxDevCommRequirements;
+
+#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
+  { 0, 0, 0, 0 }
+
+// Opaque handle to a device communicator (host-side lifetime management).
+// Internally wraps ncclDevComm on NVIDIA backend.
+typedef struct flagcxDevCommInternal *flagcxDevComm_t;
+
+// Create a device communicator for custom kernel usage.
+// On NVIDIA backend, internally calls pncclDevCommCreate with the given
+// requirements.  The returned handle must be destroyed with
+// flagcxDevCommDestroy.
+flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
+                                   const flagcxDevCommRequirements *reqs,
+                                   flagcxDevComm_t *devComm);
+
+// Destroy a device communicator created by flagcxDevCommCreate.
+flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm);
+
+// Intra-node AllReduce using FlagCX Device API (LSA peer pointers + barrier).
+// The caller provides a window-registered buffer (via flagcxMemAlloc +
+// flagcxCommWindowRegister) already containing the input data.  The kernel
+// runs an in-place AllReduce across all intra-node GPUs.
+// devComm must be created via flagcxDevCommCreate beforehand.
+flagcxResult_t flagcxIntraAllReduceDemo(void *windowBuff, flagcxWindow_t win,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxDevComm_t devComm,
+                                        flagcxStream_t stream);
 #endif

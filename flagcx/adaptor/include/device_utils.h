@@ -7,6 +7,7 @@
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
 #define FLAGCX_DEVICE_INLINE_DECORATOR __forceinline__ __device__
+#define FLAGCX_HOST_DEVICE_INLINE __forceinline__ __host__ __device__
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
@@ -33,6 +34,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR
 #define FLAGCX_DEVICE_INLINE_DECORATOR
+#define FLAGCX_HOST_DEVICE_INLINE inline
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR
 #define FLAGCX_DEVICE_STREAM_PTR
 #define FLAGCX_DEVICE_THREAD_FENCE
