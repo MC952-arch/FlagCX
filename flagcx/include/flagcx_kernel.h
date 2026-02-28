@@ -14,6 +14,17 @@ typedef enum {
   flagcxDevicePrimWait = 3
 } flagcxDevicePrim;
 
+// Unified buffer index enumeration for fifo
+// Layout: [capacity][consumed][produced][terminate][data...]
+// Note: flagcxFifoIdxTerminate is only used by flagcxReduceTrigger fifo
+typedef enum {
+  flagcxFifoIdxCapacity = 0,
+  flagcxFifoIdxConsumed = 1,
+  flagcxFifoIdxProduced = 2,
+  flagcxFifoIdxTerminate = 3,
+  flagcxFifoIdxData = 4
+} flagcxFifoIndex;
+
 typedef enum {
   flagcxReduceTriggerAvailable = 0,
   flagcxReduceTriggerEnqueued = 1,
@@ -96,10 +107,10 @@ struct alignas(16) flagcxReduceTrigger {
 typedef flagcxReduceTrigger *flagcxReduceTrigger_t;
 
 struct flagcxFifo {
-  // flagcxDeviceTrigger fifo:
-  // 0: capacity, 1: consumed, 2: produced, 3+: buffer
-  // flagcxReduceTrigger fifo:
-  // 0: capacity, 1: consumed, 2: produced, 3: terminate, 4+:buffer
+  // Unified fifo layout: [capacity][consumed][produced][terminate][data...]
+  // flagcxDeviceTrigger fifo: terminate slot is reserved but unused
+  // flagcxReduceTrigger fifo: terminate slot is used
+  // See flagcxFifoIndex enumeration for index values
   uint64_t *buffer;
 
 public:

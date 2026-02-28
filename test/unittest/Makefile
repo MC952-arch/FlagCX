@@ -9,12 +9,14 @@ OBJDIR := $(BUILDDIR)/obj
 INCLUDEDIR := \
         $(abspath include) \
         $(abspath coll/include) \
+        $(abspath kernel/include) \
         $(abspath topo/include) \
         $(abspath ../../third-party/googletest/googletest/include)
 
 LIBSRCFILES := \
         $(wildcard *.cpp) \
         $(wildcard coll/*.cpp) \
+        $(wildcard kernel/*.cpp) \
         $(wildcard topo/*.cpp)
 
 BINOBJ := $(LIBSRCFILES:%.cpp=$(OBJDIR)/%.o)
@@ -42,7 +44,7 @@ $(BINDIR)/$(TARGET): $(BINOBJ)
 $(OBJDIR)/%.o: %.cpp
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I../../flagcx/include -I$(MPI_INCLUDE) -I/usr/local/include -c -Wvla -Wno-unused-function -Wno-sign-compare -Wall -g
+	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(MPI_INCLUDE) -I/usr/local/include -c -Wvla -Wno-unused-function -Wno-sign-compare -Wall -g
 
 -include $(BINOBJ:.o=.d)
 

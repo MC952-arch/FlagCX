@@ -861,8 +861,21 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   pthread_create(&comm->proxyState->progressState.thread, NULL,
                  flagcxProxyProgress, comm->proxyState);
 #ifdef COMPILE_KERNEL_HOST
+  // Initialize synchronization primitives before creating thread
+  pthread_mutex_init(&comm->proxyState->kernelState.initMutex, NULL);
+  pthread_cond_init(&comm->proxyState->kernelState.initCond, NULL);
+  comm->proxyState->kernelState.ready = 0;
+
   pthread_create(&comm->proxyState->kernelState.thread, NULL,
                  flagcxProxyKernelService, (void *)comm);
+
+  // Wait for kernel proxy thread to finish initialization
+  pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
+  while (comm->proxyState->kernelState.ready == 0) {
+    pthread_cond_wait(&comm->proxyState->kernelState.initCond,
+                      &comm->proxyState->kernelState.initMutex);
+  }
+  pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
 #endif
 
   comm->proxyState->initialized = 1;
@@ -974,8 +987,10 @@ out:
   pthread_mutex_unlock(&comm->proxyState->mutex);
   pthread_join(comm->proxyState->progressState.thread, nullptr);
 #ifdef COMPILE_KERNEL_HOST
-  // Stop kernel thread
+  // Stop kernel thread and cleanup its mutex/cond
   pthread_join(comm->proxyState->kernelState.thread, nullptr);
+  pthread_mutex_destroy(&comm->proxyState->kernelState.initMutex);
+  pthread_cond_destroy(&comm->proxyState->kernelState.initCond);
 #endif
 
   // Free P2P resources in proxy thread (CUDA resources must be freed in the
@@ -1049,6 +1064,12 @@ void *flagcxProxyKernelService(void *args) {
   // Allocate trigger structure
   FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
 
+  // Signal that initialization is complete
+  pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
+  comm->proxyState->kernelState.ready = 1;
+  pthread_cond_signal(&comm->proxyState->kernelState.initCond);
+  pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
+
   while (true) {
     if (comm->proxyState->kernelState.stop == 1)
       break;
@@ -1113,6 +1134,9 @@ void *flagcxProxyKernelService(void *args) {
       default:
         break;
     }
+    // Mark item as consumed AFTER processing
+    __sync_synchronize();
+    ((volatile uint64_t *)fifo->buffer)[flagcxFifoIdxConsumed]++;
     if (res != flagcxSuccess)
       break;
   }

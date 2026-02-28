@@ -319,11 +319,13 @@ lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
 
 // Local AllReduce: reduce from multimem, store to local buffer
 // ByteSize: 4 bytes for 16/32-bit types, 8 bytes for 64-bit types
+// Note: This kernel requires sm_90+ for multicast support
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void __launch_bounds__(NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA)
 localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
                      void* recvbuffer, size_t count,
                      ncclRedOp_t op, struct ncclDevComm devComm) {
+#if __CUDA_ARCH__ >= 900
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -341,15 +343,18 @@ localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
     auto v = multimem_reduce<T, ByteSize>(mmSendPtr + pSize * offset, op);
     lsa_st<T, ByteSize>(lsaRecvPtr + pSize * offset, v);
   }
+#endif
 }
 
 // Interleaved AllReduce: reduce from multimem, store to multimem
+// Note: This kernel requires sm_90+ for multicast support
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void __launch_bounds__(NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA)
 interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
                            ncclWindow_t recvwin, size_t recvoffset,
                            size_t count, ncclRedOp_t op,
                            struct ncclDevComm devComm) {
+#if __CUDA_ARCH__ >= 900
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
@@ -369,6 +374,7 @@ interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
     multimem_st<T, ByteSize>(mmRecvPtr + pSize * offset, v);
   }
   bar.sync(ncclCoopCta(), cuda::memory_order_release);
+#endif
 }
 
 // Kernel launchers with error checking

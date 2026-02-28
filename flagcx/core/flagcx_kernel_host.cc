@@ -30,14 +30,16 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   INFO(FLAGCX_KERNEL, "flagcxFifoInit called");
   uint64_t flagcxKernelFifoCapacity = flagcxParamKernelFifoCapacity();
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
-                                          3 * sizeof(uint64_t) +
+                                          flagcxFifoIdxData * sizeof(uint64_t) +
                                               flagcxKernelFifoCapacity *
                                                   sizeof(flagcxDeviceTrigger),
                                           flagcxMemHost, NULL));
-  buffer[0] = flagcxKernelFifoCapacity;
-  buffer[1] = 0;
-  buffer[2] = 0;
-  memset((void *)(buffer + 3), 0,
+  buffer[flagcxFifoIdxCapacity] = flagcxKernelFifoCapacity;
+  buffer[flagcxFifoIdxConsumed] = 0;
+  buffer[flagcxFifoIdxProduced] = 0;
+  buffer[flagcxFifoIdxTerminate] =
+      0; // reserved, unused for flagcxDeviceTrigger fifo
+  memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
   return flagcxSuccess;
 }
@@ -51,15 +53,16 @@ flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger) {
   volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
-  uint64_t capacity = buffer[0];
-  uint64_t cons = buffer[1];
-  uint64_t prod = buffer[2];
+  uint64_t capacity = buffer[flagcxFifoIdxCapacity];
+  uint64_t cons = buffer[flagcxFifoIdxConsumed];
+  uint64_t prod = buffer[flagcxFifoIdxProduced];
 
   if (prod > cons) {
     // Get pointer to slot's raw uint64_t fields
     uint64_t idx = cons % capacity;
     volatile uint64_t *slotFst =
-        buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+        buffer + flagcxFifoIdxData +
+        idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
     volatile uint64_t *slotSnd = slotFst + 1;
 
     // Wait for valid bit to be set (data is committed by producer)
@@ -83,12 +86,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
 
     // Clear valid bit in slot for reuse
     *slotSnd = 0;
-
-    // Memory fence before updating consumed
-    __sync_synchronize();
-
-    // Update consumed counter
-    buffer[1] = cons + 1;
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }
