@@ -173,7 +173,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  flagcxDevCommDestroy(devComm);
+  flagcxDevCommDestroy(comm, devComm);
   flagcxCommWindowDeregister(comm, win);
   flagcxMemFree(windowBuff, comm);
   devHandle->streamDestroy(stream);

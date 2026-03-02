@@ -21,7 +21,6 @@
 // ==========================================================================
 struct flagcxDevCommInternal {
   ncclDevComm ncclDev;   // Populated by pncclDevCommCreate
-  ncclComm_t ncclComm;   // NCCL comm handle (needed for pncclDevCommDestroy)
 };
 
 // ==========================================================================
@@ -46,7 +45,6 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevCommInternal));
-  handle->ncclComm = innerComm->base;
 
   // Map opaque FlagCX requirements to NCCL requirements
   ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
@@ -86,9 +84,18 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm) {
+flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm) {
   if (devComm == nullptr) {
     return flagcxSuccess;
+  }
+  if (comm == nullptr) {
+    return flagcxInvalidArgument;
+  }
+
+  flagcxInnerComm_t innerComm = comm->homoComm;
+  if (innerComm == nullptr) {
+    free(devComm);
+    return flagcxInternalError;
   }
 
   // Load pncclDevCommDestroy via dlsym
@@ -100,7 +107,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm) {
     auto fn = reinterpret_cast<pncclDevCommDestroy_t>(
         dlsym(libHandle, "pncclDevCommDestroy"));
     if (fn) {
-      fn(devComm->ncclComm, &devComm->ncclDev);
+      fn(innerComm->base, &devComm->ncclDev);
     }
     dlclose(libHandle);
   }
@@ -109,18 +116,20 @@ flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm) {
   return flagcxSuccess;
 }
 
-// Intra-node AllReduce: each block reads from all LSA peers via
+// Intra-node AllReduce: each block reads from all peers via team-based
 // flagcxGetPeerPointer, reduces (sum), and writes result back to all peers.
 template <typename T>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxIntraAllReduceKernel(flagcxDeviceComm devComm, flagcxDeviceWindow win,
                                size_t offset, size_t count) {
+  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+
   // Create barrier session using simplified FlagCX API (4 params).
   // Internally maps to NCCL's 6-param ncclLsaBarrierSession constructor:
   //   {ncclCoopCta(), devComm._base, ncclTeamLsa(devComm._base),
-  //    devComm._base.lsaBarrier, blockIdx.x, true}
+  //    devComm._base.lsaBarrier, blockIdx.x, false}
   flagcxIntraBarrierSession<flagcxCoopBlock> bar{
-      flagcxCoopBlock(), devComm, flagcxTeamIntra(devComm), blockIdx.x};
+      flagcxCoopBlock(), devComm, intra, blockIdx.x};
 
   // Pre-reduce barrier
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
@@ -136,11 +145,11 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   for (size_t o = globalTid; o < count; o += globalNthreads) {
     T v = T(0);
     for (int peer = 0; peer < nRanks; peer++) {
-      T* inputPtr = (T*)flagcxGetPeerPointer(win, offset, peer);
+      T* inputPtr = (T*)flagcxGetPeerPointer(win, offset, intra, peer);
       v += inputPtr[o];
     }
     for (int peer = 0; peer < nRanks; peer++) {
-      T* outputPtr = (T*)flagcxGetPeerPointer(win, offset, peer);
+      T* outputPtr = (T*)flagcxGetPeerPointer(win, offset, intra, peer);
       outputPtr[o] = v;
     }
   }
@@ -222,7 +231,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   return flagcxNotSupported;
 }
 
-flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm) {
+flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm) {
   return flagcxNotSupported;
 }
 
