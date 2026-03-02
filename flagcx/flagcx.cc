@@ -308,24 +308,54 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     WARN("Invalid buffer or size for buffer registration.");
     return flagcxInvalidArgument;
   }
+
+  // Step 1: Register in globalRegPool (both paths)
+  globalRegPool.registerBuffer((void *)comm->homoComm, buff, size);
+  flagcxRegItem *regItem = globalRegPool.getItem((void *)comm->homoComm, buff);
+
+  *handle = reinterpret_cast<void *>(regItem);
+
+  // Step 2a: Homo path — backend CCL registration
   if (useHomoComm(comm) && !useHeteroComm()) {
+    void *homoHandle = nullptr;
     cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(comm->homoComm, buff,
-                                                      size, handle);
-  } else {
-    globalRegPool.registerBuffer((void *)comm->heteroComm, buff, size);
-    *handle = reinterpret_cast<void *>(
-        globalRegPool.getItem((void *)comm->heteroComm, buff));
+                                                      size, &homoHandle);
+    regItem->homoRegHandle = homoHandle;
   }
+
+  // Step 2b: Create IPC handle for the buffer (both paths)
+  {
+    flagcxIpcMemHandle_t handlePtr = nullptr;
+    size_t ipcSize = 0;
+    flagcxResult_t r1 = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    if (r1 != flagcxSuccess)
+      return r1;
+    flagcxResult_t r2 = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+    if (r2 != flagcxSuccess) {
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      return r2;
+    }
+    memcpy(&regItem->ipcHandleData, handlePtr, sizeof(flagcxIpcHandleData));
+    deviceAdaptor->ipcMemHandleFree(handlePtr);
+  }
+
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm, handle);
-  } else {
-    globalRegPool.deregisterBuffer((void *)comm->heteroComm, handle);
+  if (handle == nullptr)
+    return flagcxSuccess;
+  flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
+
+  // Backend-specific deregistration (homo path only)
+  if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
+    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
+                                                        regItem->homoRegHandle);
   }
+
+  // Clean up globalRegPool (both paths)
+  globalRegPool.deregisterBuffer((void *)comm->homoComm, handle);
   return flagcxSuccess;
 }
 
@@ -334,15 +364,26 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-        comm->homoComm, buff, size, win, winFlags));
-    return flagcxSuccess;
+    flagcxResult_t res =
+        cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+            comm->homoComm, buff, size, win, winFlags);
+    if (res == flagcxSuccess) {
+      return flagcxSuccess;
+    }
+    WARN("flagcxCommWindowRegister: backend returned %d, window not available",
+         res);
+    *win = nullptr;
+    return flagcxNotSupported;
   }
+  *win = nullptr;
   return flagcxNotSupported;
 }
 
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
                                           flagcxWindow_t win) {
+  if (win == nullptr) {
+    return flagcxSuccess;
+  }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
@@ -420,6 +461,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->magic = 0;
   (*comm)->abortFlag = 0;
   (*comm)->bootstrap = NULL;
+  (*comm)->localRank = 0;
+  (*comm)->localRanks = 1;
+  (*comm)->localRankToRank = NULL;
   (*comm)->hostComm = NULL;
   (*comm)->homoComm = NULL;
   (*comm)->heteroComm = NULL;
@@ -462,6 +506,37 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)vendorData, sizeof(flagcxVendor)));
   FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+
+  // Compute intra-node topology using hostHash
+  {
+    uint64_t myHash = getHostHash();
+    uint64_t *hostHashes = nullptr;
+    FLAGCXCHECK(flagcxCalloc(&hostHashes, nranks));
+    hostHashes[rank] = myHash;
+    FLAGCXCHECK(bootstrapAllGather(state, hostHashes, sizeof(uint64_t)));
+    FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+
+    int localCount = 0;
+    for (int r = 0; r < nranks; r++) {
+      if (hostHashes[r] == myHash)
+        localCount++;
+    }
+    (*comm)->localRanks = localCount;
+
+    FLAGCXCHECK(flagcxCalloc(&(*comm)->localRankToRank, localCount));
+    int lr = 0;
+    for (int r = 0; r < nranks; r++) {
+      if (hostHashes[r] == myHash) {
+        (*comm)->localRankToRank[lr] = r;
+        if (r == rank)
+          (*comm)->localRank = lr;
+        lr++;
+      }
+    }
+    free(hostHashes);
+    INFO(FLAGCX_INIT, "Intra-node topology: localRank=%d localRanks=%d",
+         (*comm)->localRank, (*comm)->localRanks);
+  }
 
   // Init cluster info
   int *globalRankToHomoRankData;
@@ -797,6 +872,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->clusterIds);
   free(comm->clusterSizes);
   free(comm->globalRank2HomoRank);
+  free(comm->localRankToRank);
   free(comm->c2cSchedule);
 
   // Destroy bootstrap state and net

@@ -29,6 +29,7 @@ int main(int argc, char *argv[]) {
   int num_iters = args.getTestIters();
   int print_buffer = args.isPrintBuffer();
   uint64_t split_mask = args.getSplitMask();
+  int local_register = args.getLocalRegister();
 
   flagcxHandlerGroup_t handler;
   flagcxHandleInit(&handler);
@@ -69,19 +70,44 @@ int main(int argc, char *argv[]) {
   devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
   devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
 
-  // Allocate window-registered buffer via flagcxMemAlloc +
-  // flagcxCommWindowRegister
-  void *windowBuff = nullptr;
+  // Allocate registered buffer + device memory handle
+  // -R 1: IPC mode (flagcxCommRegister + flagcxDevMemCreate with win=NULL)
+  // -R 2: Window mode (flagcxCommWindowRegister + flagcxDevMemCreate with win)
+  void *regBuff = nullptr;
+  void *regHandle = nullptr;
   flagcxWindow_t win = nullptr;
-  flagcxMemAlloc(&windowBuff, max_bytes, comm);
-  flagcxCommWindowRegister(comm, windowBuff, max_bytes, &win, 0);
+  flagcxDevMem_t devMem = nullptr;
+  // IPC mode requires cudaMalloc memory (Decision 7.23):
+  // flagcxMemAlloc uses VMM (cuMemCreate) which is incompatible with
+  // cudaIpcGetMemHandle.
+  // TODO: Add VMM-compatible IPC via cuMemExportToShareableHandle in
+  // flagcxMemAlloc workflow.
+  if (local_register == 1) {
+    devHandle->deviceMalloc(&regBuff, max_bytes, flagcxMemDevice, NULL);
+  } else {
+    flagcxMemAlloc(&regBuff, max_bytes, comm);
+  }
+  if (local_register == 2) {
+    // Window mode (NCCL > 2.28 only)
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, max_bytes, &win, 0));
+    flagcxDevMemCreate(comm, regBuff, max_bytes, win, &devMem);
+  } else if (local_register == 1) {
+    // IPC mode (all NCCL versions)
+    flagcxCommRegister(comm, regBuff, max_bytes, &regHandle);
+    flagcxDevMemCreate(comm, regBuff, max_bytes, nullptr, &devMem);
+  } else {
+    fprintf(stderr, "Error: -R must be 1 (IPC) or 2 (window)\n");
+    MPI_Finalize();
+    return 1;
+  }
 
   // Host buffer for initialization and verification
   void *hostbuff = malloc(max_bytes);
 
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Intra-node AllReduce Benchmark\n");
-    printf("# nRanks: %d\n", totalProcs);
+    printf("# nRanks: %d, regMode: %s\n", totalProcs,
+           local_register == 2 ? "window" : "ipc");
     printf("# %-12s %-14s %-14s %-14s %-8s\n", "Size(B)", "Time(us)",
            "AlgBW(GB/s)", "BusBW(GB/s)", "Correct");
   }
@@ -90,11 +116,11 @@ int main(int argc, char *argv[]) {
   {
     size_t count = max_bytes / sizeof(float);
     for (int i = 0; i < num_warmup_iters; i++) {
-      devHandle->deviceMemcpy(windowBuff, sendbuff, count * sizeof(float),
+      devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(windowBuff, win, count, DATATYPE, devComm,
+      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
                                stream);
-      devHandle->deviceMemcpy(recvbuff, windowBuff, count * sizeof(float),
+      devHandle->deviceMemcpy(recvbuff, regBuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
     }
     devHandle->streamSynchronize(stream);
@@ -119,11 +145,11 @@ int main(int argc, char *argv[]) {
     // Timed iterations
     timer tim;
     for (int i = 0; i < num_iters; i++) {
-      devHandle->deviceMemcpy(windowBuff, sendbuff, bytes,
+      devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(windowBuff, win, count, DATATYPE, devComm,
+      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
                                stream);
-      devHandle->deviceMemcpy(recvbuff, windowBuff, bytes,
+      devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
     }
     devHandle->streamSynchronize(stream);
@@ -173,9 +199,18 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
+  flagcxDevMemDestroy(comm, devMem);
   flagcxDevCommDestroy(comm, devComm);
-  flagcxCommWindowDeregister(comm, win);
-  flagcxMemFree(windowBuff, comm);
+  if (local_register == 2) {
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, win));
+  } else if (local_register == 1) {
+    flagcxCommDeregister(comm, regHandle);
+  }
+  if (local_register == 1) {
+    devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
+  } else {
+    flagcxMemFree(regBuff, comm);
+  }
   devHandle->streamDestroy(stream);
   devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
   devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);

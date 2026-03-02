@@ -5,6 +5,7 @@
 #include "check.h"
 #include "comm.h"
 #include "device.h"
+#include "register.h"
 #include "shmutils.h"
 #include "transport.h"
 #include <stddef.h>
@@ -16,7 +17,7 @@ size_t computeP2pChunkSize(size_t nbytes);
 #define FLAGCX_P2P_MAX_STEPS 16
 #define FLAGCX_P2P_MAX_OPS                                                     \
   (FLAGCX_P2P_MAX_STEPS * 2) // Maximum number of concurrent P2P operation pairs
-#define FLAGCX_P2P_IPC_HANDLE_SIZE 64
+#define FLAGCX_P2P_IPC_HANDLE_SIZE FLAGCX_IPC_HANDLE_SIZE
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,11 +27,6 @@ struct flagcxP2pRequest {
   size_t size;
   int refcount;
 };
-
-typedef union {
-  char reserved[FLAGCX_P2P_IPC_HANDLE_SIZE]; // Generic 64-byte buffer, may
-                                             // differ on different devices
-} flagcxIpcHandleData;
 
 struct flagcxP2pIpcDesc {
   flagcxIpcHandleData handleData; // Actual IPC handle data

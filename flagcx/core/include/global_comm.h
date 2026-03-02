@@ -37,6 +37,9 @@ struct flagcxComm {
   int *globalRank2HomoRank;
   int *clusterInterRanks;
   bootstrapState *bootstrap;
+  int localRank;        // intra-node rank index (computed from hostHash)
+  int localRanks;       // number of ranks on this node
+  int *localRankToRank; // mapping: local index -> global rank
   flagcxInnerComm_t hostComm;
   flagcxInnerComm_t homoComm;
   flagcxHeteroComm_t heteroComm;
