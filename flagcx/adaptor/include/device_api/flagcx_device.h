@@ -117,13 +117,13 @@ typedef struct flagcxTeam flagcxTeam_t;
 // Section 4: Team Accessor Functions (Inline Wrappers)
 // ============================================================
 #ifdef FLAGCX_DEVICE_API_NCCL
-FLAGCX_DEVICE_INLINE_DECORATOR flagcxTeam_t
-flagcxTeamIntra(const flagcxDeviceComm &devComm) {
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamIntra(const flagcxDeviceComm &devComm) {
   return flagcxTeam_t(ncclTeamLsa(devComm._base));
 }
 #else
-FLAGCX_DEVICE_INLINE_DECORATOR flagcxTeam_t
-flagcxTeamIntra(const flagcxDeviceComm &devComm) {
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamIntra(const flagcxDeviceComm &devComm) {
   flagcxTeam_t team;
   team.nRanks = devComm.getIntraSize();
   team.rank = devComm.getIntraRank();
@@ -219,40 +219,48 @@ struct flagcxIntraBarrierSession {
 // ============================================================
 // Section 7: Pointer Access Functions (Inline Wrappers)
 //
-// These unwrap _base from template wrappers and dispatch to
-// vendor-specific functions. On fallback, they index into
-// peer pointer arrays stored in flagcxDeviceWindow.
+// 3 functions total (see plan Decision 7.8 / 7.9):
+//   flagcxGetPeerPointer(win, off, team, peer) — canonical unicast
+//   flagcxGetLocalPointer(win, off)             — convenience (own buffer)
+//   flagcxGetMulticastPointer(win, off, devComm) — intra-node multicast
+//
+// The team-based flagcxGetPeerPointer subsumes all NCCL unicast
+// pointer variants (ncclGetLsaPointer, ncclGetPeerPointer, etc.).
 // ============================================================
 #ifdef FLAGCX_DEVICE_API_NCCL
 FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetMulticastPointer(const flagcxDeviceWindow &win, size_t offset,
-                          const flagcxDeviceComm &devComm) {
-  return ncclGetLsaMultimemPointer(win._base, offset, devComm._base);
-}
-
-FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetPeerPointer(const flagcxDeviceWindow &win, size_t offset, int peer) {
-  return ncclGetLsaPointer(win._base, offset, peer);
+flagcxGetPeerPointer(const flagcxDeviceWindow &win, size_t offset,
+                     flagcxTeam_t team, int peer) {
+  return ncclGetPeerPointer(win._base, offset, team._base, peer);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetLocalPointer(const flagcxDeviceWindow &win, size_t offset) {
   return ncclGetLocalPointer(win._base, offset);
 }
-#else
+
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetMulticastPointer(const flagcxDeviceWindow &win, size_t offset,
                           const flagcxDeviceComm &devComm) {
-  return (char *)win.basePtr + offset;
+  return ncclGetLsaMultimemPointer(win._base, offset, devComm._base);
 }
-
+#else
 FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetPeerPointer(const flagcxDeviceWindow &win, size_t offset, int peer) {
-  return (char *)win.peerPtrs[peer] + offset;
+flagcxGetPeerPointer(const flagcxDeviceWindow &win, size_t offset,
+                     flagcxTeam_t team, int peer) {
+  // Fallback: team maps peer rank to a flat index into peer pointer array
+  int index = team.rank + (peer - team.rank) * team.stride;
+  return (char *)win.peerPtrs[index] + offset;
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetLocalPointer(const flagcxDeviceWindow &win, size_t offset) {
+  return (char *)win.basePtr + offset;
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR void *
+flagcxGetMulticastPointer(const flagcxDeviceWindow &win, size_t offset,
+                          const flagcxDeviceComm &devComm) {
   return (char *)win.basePtr + offset;
 }
 #endif

@@ -131,11 +131,9 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop, int *idx);
 #ifdef COMPILE_KERNEL
-FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
-                                               uint64_t count,
-                                               uint64_t peerRank,
-                                               uint64_t datatype,
-                                               uint64_t type);
+FLAGCX_DEVICE_DECORATOR
+flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr, uint64_t count,
+                       uint64_t peerRank, uint64_t datatype, uint64_t type);
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
 
@@ -171,10 +169,7 @@ typedef struct {
   int fields[4];
 } flagcxDevCommRequirements;
 
-#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
-  {                                                                            \
-    { 0, 0, 0, 0 }                                                             \
-  }
+#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER {{0, 0, 0, 0}}
 
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend.
@@ -183,13 +178,13 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 // Create a device communicator for custom kernel usage.
 // On NVIDIA backend, internally calls pncclDevCommCreate with the given
 // requirements.  The returned handle must be destroyed with
-// flagcxDevCommDestroy.
+// flagcxDevCommDestroy(comm, devComm).
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
                                    const flagcxDevCommRequirements *reqs,
                                    flagcxDevComm_t *devComm);
 
 // Destroy a device communicator created by flagcxDevCommCreate.
-flagcxResult_t flagcxDevCommDestroy(flagcxDevComm_t devComm);
+flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
 // Intra-node AllReduce using FlagCX Device API (LSA peer pointers + barrier).
 // The caller provides a window-registered buffer (via flagcxMemAlloc +
