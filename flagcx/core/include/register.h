@@ -5,6 +5,12 @@
 #include "device.h"
 #include <list>
 
+#define FLAGCX_IPC_HANDLE_SIZE 64
+
+typedef union {
+  char reserved[FLAGCX_IPC_HANDLE_SIZE];
+} flagcxIpcHandleData;
+
 enum {
   NET_REG_COMPLETE = 0x01,
   NVLS_REG_COMPLETE = 0x02,
@@ -53,6 +59,8 @@ struct flagcxRegItem {
   uintptr_t endAddr = 0;
   int refCount = 1;
   std::list<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
+  void *homoRegHandle = nullptr;          // backend CCL handle (homo path only)
+  flagcxIpcHandleData ipcHandleData = {}; // IPC handle bytes (homo path only)
 };
 
 struct flagcxReg {
