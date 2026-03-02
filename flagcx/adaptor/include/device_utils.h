@@ -1,22 +1,21 @@
 #ifndef FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 #define FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 
-// Temporary device utils macros, to be refactored later.
 #ifdef USE_NVIDIA_ADAPTOR
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+#if defined(__CUDACC__)
+// Compiling with nvcc — full CUDA qualifiers
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
 #define FLAGCX_DEVICE_INLINE_DECORATOR __forceinline__ __device__
 #define FLAGCX_HOST_DEVICE_INLINE __forceinline__ __host__ __device__
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
-#define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
-#define FLAGCX_DEVICE_LAUNCH_KERNEL cudaLaunchKernel
 #define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
-#include <cuda.h>
-#include <cuda_runtime.h>
 
-#if defined(__CUDACC__)
 FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
   int delay = 1 << (iter < 15 ? iter : 15);
 #if __CUDA_ARCH__ >= 700
@@ -27,9 +26,24 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
   }
 #endif
 }
+#else
+// Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE
+#define FLAGCX_DEVICE_SYNC_THREADS
 #endif // __CUDACC__
 
+// CUDA runtime macros — available from both nvcc and host compiler
+#define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+#define FLAGCX_DEVICE_LAUNCH_KERNEL cudaLaunchKernel
+
 #else
+// Non-NVIDIA platform
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR

@@ -6,6 +6,10 @@
  *
  * On NVIDIA (NCCL 2.28+): wraps NCCL device API types and functions.
  * On other platforms: provides fallback implementations.
+ *
+ * This header is safe to include from both .cu files (nvcc) and
+ * .cc files (g++).  Device-only functions (Sections 4-7) are guarded
+ * so they are invisible to g++ on NVIDIA.
  ************************************************************************/
 
 #ifndef FLAGCX_DEVICE_API_H_
@@ -65,6 +69,20 @@ struct flagcxDeviceComm {
 };
 
 // ============================================================
+// Section 1b: flagcxDevCommInternal — Host-Side Opaque Handle
+//
+// Backing struct for flagcxDevComm_t (declared in flagcx_kernel.h).
+// Populated by flagcxDevCommCreate, freed by flagcxDevCommDestroy.
+// ============================================================
+#ifdef FLAGCX_DEVICE_API_NCCL
+struct flagcxDevCommInternal {
+  ncclDevComm ncclDev; // Populated by pncclDevCommCreate
+};
+#else
+struct flagcxDevCommInternal {};
+#endif
+
+// ============================================================
 // Section 2: flagcxDeviceWindow — Device-Side Window
 //
 // Value type passed to kernels (like ncclWindow_t).
@@ -112,6 +130,15 @@ struct flagcxTeam {
 #endif
 };
 typedef struct flagcxTeam flagcxTeam_t;
+
+// ============================================================
+// Sections 4-7: Device-only functions
+//
+// These sections call NCCL device APIs (ncclTeamLsa, ncclGetPeerPointer,
+// ncclLsaBarrierSession, etc.) which are only available under nvcc.
+// On non-NVIDIA platforms the fallback implementations use plain C++.
+// ============================================================
+#if !defined(USE_NVIDIA_ADAPTOR) || defined(__CUDACC__)
 
 // ============================================================
 // Section 4: Team Accessor Functions (Inline Wrappers)
@@ -264,6 +291,8 @@ flagcxGetMulticastPointer(const flagcxDeviceWindow &win, size_t offset,
   return (char *)win.basePtr + offset;
 }
 #endif
+
+#endif // !defined(USE_NVIDIA_ADAPTOR) || defined(__CUDACC__)
 
 // ============================================================
 // Section 8: Constants
