@@ -3,7 +3,7 @@
  *
  * Host-side lifecycle management for flagcxDevComm_t and flagcxDevMem_t.
  *
- * Tier 1 (NCCL 2.28+): calls pncclDevCommCreate/Destroy via dlsym.
+ * Tier 1 (NCCL > 2.28): calls pncclDevCommCreate/Destroy via dlsym.
  *   DevMem supports both window mode and IPC mode at runtime.
  * Tier 2 (fallback):    IPC-based barrier + peer pointer exchange.
  *
@@ -19,6 +19,10 @@
 // Shared: IPC peer pointer exchange (used by both tiers)
 // ==========================================================================
 
+// Forward declaration (defined below buildIpcPeerPointers).
+static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
+                                   int nPeers, void *ownBuff);
+
 // Build IPC peer pointer table for a user buffer.
 // Allocates devPeerPtrs (device array) and hostPeerPtrs (host array).
 // Caller must free both on cleanup.
@@ -32,38 +36,51 @@ static flagcxResult_t buildIpcPeerPointers(flagcxComm_t comm, void *buff,
   int localRanks = comm->localRanks;
   int *localRankToRank = comm->localRankToRank;
 
+  flagcxResult_t res = flagcxSuccess;
+  struct flagcxP2pIpcDesc *allDescs = nullptr;
+  void **hostPeerPtrs = nullptr;
+  void **devPeerPtrs = nullptr;
+
   // Step 1: Get IPC handle for existing user buffer
   struct flagcxP2pIpcDesc myIpcDesc;
   memset(&myIpcDesc, 0, sizeof(myIpcDesc));
   {
     flagcxIpcMemHandle_t handlePtr = nullptr;
     size_t ipcSize = 0;
-    FLAGCXCHECK(deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize));
-    flagcxResult_t res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+    FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize),
+                    res, fail);
+    res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
     if (res != flagcxSuccess) {
       deviceAdaptor->ipcMemHandleFree(handlePtr);
-      return res;
+      goto fail;
     }
-    memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
+    if (ipcSize > sizeof(flagcxIpcHandleData)) {
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      res = flagcxInternalError;
+      goto fail;
+    }
+    memcpy(&myIpcDesc.handleData, handlePtr, ipcSize);
     myIpcDesc.size = size;
     deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
   // Step 2: Exchange IPC handles with all ranks
-  struct flagcxP2pIpcDesc *allDescs = (struct flagcxP2pIpcDesc *)calloc(
-      nRanks, sizeof(struct flagcxP2pIpcDesc));
+  allDescs = (struct flagcxP2pIpcDesc *)calloc(nRanks,
+                                               sizeof(struct flagcxP2pIpcDesc));
   if (allDescs == nullptr) {
-    return flagcxSystemError;
+    res = flagcxSystemError;
+    goto fail;
   }
   memcpy(&allDescs[myRank], &myIpcDesc, sizeof(struct flagcxP2pIpcDesc));
-  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap, allDescs,
-                                 sizeof(struct flagcxP2pIpcDesc)));
+  FLAGCXCHECKGOTO(bootstrapAllGather(comm->bootstrap, allDescs,
+                                     sizeof(struct flagcxP2pIpcDesc)),
+                  res, fail);
 
   // Step 3: Open intra-node peer IPC handles
-  void **hostPeerPtrs = (void **)calloc(localRanks, sizeof(void *));
+  hostPeerPtrs = (void **)calloc(localRanks, sizeof(void *));
   if (hostPeerPtrs == nullptr) {
-    free(allDescs);
-    return flagcxSystemError;
+    res = flagcxSystemError;
+    goto fail;
   }
   for (int lr = 0; lr < localRanks; lr++) {
     int gr = localRankToRank[lr];
@@ -72,25 +89,33 @@ static flagcxResult_t buildIpcPeerPointers(flagcxComm_t comm, void *buff,
     } else {
       flagcxIpcMemHandle_t handlePtr =
           (flagcxIpcMemHandle_t)&allDescs[gr].handleData;
-      FLAGCXCHECK(
-          deviceAdaptor->ipcMemHandleOpen(handlePtr, &hostPeerPtrs[lr]));
+      FLAGCXCHECKGOTO(
+          deviceAdaptor->ipcMemHandleOpen(handlePtr, &hostPeerPtrs[lr]), res,
+          fail);
     }
   }
   free(allDescs);
+  allDescs = nullptr;
 
   // Step 4: Build device peer pointer array
-  void **devPeerPtrs = nullptr;
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&devPeerPtrs,
-                                          localRanks * sizeof(void *),
-                                          flagcxMemDevice, NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      devPeerPtrs, hostPeerPtrs, localRanks * sizeof(void *),
-      flagcxMemcpyHostToDevice, NULL, NULL));
+  FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc((void **)&devPeerPtrs,
+                                              localRanks * sizeof(void *),
+                                              flagcxMemDevice, NULL),
+                  res, fail);
+  FLAGCXCHECKGOTO(deviceAdaptor->deviceMemcpy(
+                      devPeerPtrs, hostPeerPtrs, localRanks * sizeof(void *),
+                      flagcxMemcpyHostToDevice, NULL, NULL),
+                  res, fail);
 
   *outDevPeerPtrs = devPeerPtrs;
   *outHostPeerPtrs = hostPeerPtrs;
   *outNPeers = localRanks;
   return flagcxSuccess;
+
+fail:
+  free(allDescs);
+  cleanupIpcPeerPointers(hostPeerPtrs, devPeerPtrs, localRanks, buff);
+  return res;
 }
 
 // Close IPC peer handles and free arrays.
@@ -115,9 +140,7 @@ static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
 // Tier 1: NCCL > 2.28
 // ==========================================================================
 
-#include "dlsymbols.h"
 #include "nvidia_adaptor.h"
-#include <dlfcn.h>
 
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
                                    const flagcxDevCommRequirements *reqs,
@@ -146,31 +169,11 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   ncclReqs.railGinBarrierCount = reqs->fields[2];
   ncclReqs.ginSignalCount = reqs->fields[3];
 
-  // Load pncclDevCommCreate via dlsym (consistent with nccl_adaptor.cc)
-  using pncclDevCommCreate_t =
-      flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, ncclDevCommRequirements *,
-                           ncclDevComm *>;
-
-  void *libHandle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-  if (!libHandle) {
+  flagcxResult_t ret =
+      ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs, &handle->ncclDev);
+  if (ret != flagcxSuccess) {
     free(handle);
-    return flagcxInternalError;
-  }
-
-  auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-      dlsym(libHandle, "pncclDevCommCreate"));
-  if (!fn) {
-    dlclose(libHandle);
-    free(handle);
-    return flagcxInternalError;
-  }
-
-  ncclResult_t ret = fn(innerComm->base, &ncclReqs, &handle->ncclDev);
-  dlclose(libHandle);
-
-  if (ret != ncclSuccess) {
-    free(handle);
-    return (flagcxResult_t)ret;
+    return ret;
   }
 
   handle->barrierEpoch = 0;
@@ -193,19 +196,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxInternalError;
   }
 
-  // Load pncclDevCommDestroy via dlsym
-  using pncclDevCommDestroy_t =
-      flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, const ncclDevComm *>;
-
-  void *libHandle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-  if (libHandle) {
-    auto fn = reinterpret_cast<pncclDevCommDestroy_t>(
-        dlsym(libHandle, "pncclDevCommDestroy"));
-    if (fn) {
-      fn(innerComm->base, &devComm->ncclDev);
-    }
-    dlclose(libHandle);
-  }
+  ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
 
   free(devComm);
   return flagcxSuccess;

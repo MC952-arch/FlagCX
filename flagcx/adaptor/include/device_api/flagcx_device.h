@@ -4,12 +4,13 @@
  * FlagCX Device API - Template wrappers and inline functions for
  * platform-agnostic device-side communication primitives.
  *
- * On NVIDIA (NCCL 2.28+): wraps NCCL device API types and functions.
+ * On NVIDIA (NCCL > 2.28): wraps NCCL device API types and functions.
  * On other platforms: provides fallback implementations using IPC.
  *
  * This header is safe to include from both .cu files (nvcc) and
  * .cc files (g++).  Device-only functions (Sections 5-8) are guarded
- * so they are invisible to g++ on NVIDIA.
+ * by FLAGCX_DEVICE_COMPILE so they are invisible to host compilers
+ * on all platforms.
  ************************************************************************/
 
 #ifndef FLAGCX_DEVICE_API_H_
@@ -103,13 +104,16 @@ struct flagcxDevMemInternal {
   void *basePtr;       // this rank's buffer pointer (for IPC close check)
 };
 #endif
+#ifndef FLAGCX_DEV_MEM_T_DEFINED
+#define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
+#endif
 
 // ============================================================
 // Section 3: flagcxDevComm — Device Communicator (kernel-facing)
 //
 // Value type passed to kernels by value.
-// On NVIDIA (NCCL 2.28+): wraps ncclDevComm.
+// On NVIDIA (NCCL > 2.28): wraps ncclDevComm.
 // On fallback: carries rank info + barrier peer pointers.
 // Unified constructor from flagcxDevCommInternal enables
 // tier-agnostic host code: flagcxDevComm dc(*devCommHandle);
@@ -220,11 +224,11 @@ typedef struct flagcxTeam flagcxTeam_t;
 // ============================================================
 // Sections 5-8: Device-only functions
 //
-// These sections call NCCL device APIs (ncclTeamLsa, ncclGetPeerPointer,
-// ncclLsaBarrierSession, etc.) which are only available under nvcc.
-// On non-NVIDIA platforms the fallback implementations use plain C++.
+// These sections use device builtins (threadIdx, __syncthreads, atomics)
+// and are only safe under a device compiler (nvcc, hipcc, etc.).
+// FLAGCX_DEVICE_COMPILE is defined in device_utils.h.
 // ============================================================
-#if !defined(USE_NVIDIA_ADAPTOR) || defined(__CUDACC__)
+#ifdef FLAGCX_DEVICE_COMPILE
 
 // ============================================================
 // Section 5: Team Accessor Functions (Inline Wrappers)
@@ -278,7 +282,7 @@ struct flagcxCoopBlock {
 // ============================================================
 // Section 7: flagcxIntraBarrierSession — Intra-Node Barrier
 //
-// On NVIDIA (NCCL 2.28+): wraps ncclLsaBarrierSession.
+// On NVIDIA (NCCL > 2.28): wraps ncclLsaBarrierSession.
 // On fallback: flag-based barrier using IPC-mapped peer memory + atomics.
 // ============================================================
 template <typename Coop>
@@ -425,7 +429,7 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 }
 #endif
 
-#endif // !defined(USE_NVIDIA_ADAPTOR) || defined(__CUDACC__)
+#endif // FLAGCX_DEVICE_COMPILE
 
 // ============================================================
 // Section 9: Constants

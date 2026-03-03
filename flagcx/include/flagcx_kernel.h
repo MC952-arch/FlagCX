@@ -182,7 +182,10 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 // Opaque handle to device memory (host-side lifetime management).
 // Internally wraps ncclWindow_t on NVIDIA backend (Tier 1),
 // or IPC peer pointer table on fallback (Tier 2).
+#ifndef FLAGCX_DEV_MEM_T_DEFINED
+#define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
+#endif
 
 // Device memory mode — distinguishes IPC vs window registration at runtime.
 // Also defined in device_api/flagcx_device.h (with same include guard).
@@ -192,6 +195,15 @@ typedef enum {
   flagcxDevMemIpc = 0,   // IPC peer pointer mode (all NCCL versions)
   flagcxDevMemWindow = 1 // NCCL window mode (NCCL > 2.28 only)
 } flagcxDevMemType;
+#endif
+
+// Kernel launch configuration constants.
+// Also defined in device_api/flagcx_device.h (with same include guard).
+#ifndef FLAGCX_DEVICE_CTA_COUNT
+#define FLAGCX_DEVICE_CTA_COUNT 36
+#endif
+#ifndef FLAGCX_DEVICE_THREADS_PER_CTA
+#define FLAGCX_DEVICE_THREADS_PER_CTA 512
 #endif
 
 // Create a device communicator for custom kernel usage.

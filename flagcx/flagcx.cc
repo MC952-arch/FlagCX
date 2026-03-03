@@ -310,10 +310,20 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Step 1: Register in globalRegPool (both paths)
-  globalRegPool.registerBuffer((void *)comm->homoComm, buff, size);
-  flagcxRegItem *regItem = globalRegPool.getItem((void *)comm->homoComm, buff);
+  // Key: heteroComm if available (p2p/net downstream use it), else homoComm
+  void *regKey =
+      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  globalRegPool.registerBuffer(regKey, buff, size);
+  flagcxRegItem *regItem = globalRegPool.getItem(regKey, buff);
 
   *handle = reinterpret_cast<void *>(regItem);
+
+  // Re-registration: backend handle + IPC handle already set up
+  if (regItem->refCount > 1) {
+    return flagcxSuccess;
+  }
+
+  flagcxResult_t res = flagcxSuccess;
 
   // Step 2a: Homo path — backend CCL registration
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -327,19 +337,36 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   {
     flagcxIpcMemHandle_t handlePtr = nullptr;
     size_t ipcSize = 0;
-    flagcxResult_t r1 = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-    if (r1 != flagcxSuccess)
-      return r1;
-    flagcxResult_t r2 = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
-    if (r2 != flagcxSuccess) {
+    res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    if (res != flagcxSuccess)
+      goto fail;
+    res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+    if (res != flagcxSuccess) {
       deviceAdaptor->ipcMemHandleFree(handlePtr);
-      return r2;
+      goto fail;
     }
-    memcpy(&regItem->ipcHandleData, handlePtr, sizeof(flagcxIpcHandleData));
+    if (ipcSize > sizeof(flagcxIpcHandleData)) {
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      res = flagcxInternalError;
+      goto fail;
+    }
+    memcpy(&regItem->ipcHandleData, handlePtr, ipcSize);
     deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
   return flagcxSuccess;
+
+fail:
+  // Undo Step 2a
+  if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
+    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
+                                                        regItem->homoRegHandle);
+    regItem->homoRegHandle = nullptr;
+  }
+  // Undo Step 1
+  globalRegPool.deregisterBuffer(regKey, regItem);
+  *handle = nullptr;
+  return res;
 }
 
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
@@ -348,14 +375,18 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
     return flagcxSuccess;
   flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
 
-  // Backend-specific deregistration (homo path only)
-  if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
-                                                        regItem->homoRegHandle);
+  // Backend-specific deregistration (homo path only, last ref only)
+  if (regItem->refCount == 1) {
+    if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(
+          comm->homoComm, regItem->homoRegHandle);
+    }
   }
 
   // Clean up globalRegPool (both paths)
-  globalRegPool.deregisterBuffer((void *)comm->homoComm, handle);
+  void *regKey =
+      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  globalRegPool.deregisterBuffer(regKey, handle);
   return flagcxSuccess;
 }
 

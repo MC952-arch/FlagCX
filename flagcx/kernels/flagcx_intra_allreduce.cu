@@ -5,7 +5,7 @@
  * Functionally equivalent to the NCCL reference inPlaceAllReduceKernel,
  * but uses exclusively FlagCX abstractions (zero direct NCCL references).
  *
- * Tier 1 (NCCL 2.28+): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
+ * Tier 1 (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
  * Tier 2 (fallback):    IPC peer pointers + atomics barrier.
  * Same kernel code compiles for both tiers.
  *
@@ -30,8 +30,8 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   flagcxIntraBarrierSession<flagcxCoopBlock> bar{
       flagcxCoopBlock(), devComm, intra, blockIdx.x};
 
-  // Pre-reduce barrier
-  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+  // Pre-reduce barrier (acquire — ensure peer writes are visible)
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderAcquire);
 
   const int rank = devComm.getIntraRank();
   const int nRanks = devComm.getIntraSize();

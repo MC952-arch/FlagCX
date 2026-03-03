@@ -34,6 +34,13 @@ extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
     ncclDevComm &devComm, cudaStream_t stream);
 #endif // COMPILE_KERNEL_HOST
 
+// dlsym wrappers for pncclDevCommCreate / pncclDevCommDestroy
+flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
+                                        ncclDevCommRequirements *reqs,
+                                        ncclDevComm *devComm);
+flagcxResult_t ncclAdaptorDevCommDestroy(ncclComm_t comm,
+                                         const ncclDevComm *devComm);
+
 #else
 
 typedef void *stagedBuffer_t;
