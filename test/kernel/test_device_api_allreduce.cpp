@@ -14,6 +14,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -22,17 +23,20 @@
 
 int main(int argc, char *argv[]) {
   parser args(argc, argv);
-  size_t min_bytes = args.getMinBytes();
-  size_t max_bytes = args.getMaxBytes();
-  int step_factor = args.getStepFactor();
-  int num_warmup_iters = args.getWarmupIters();
-  int num_iters = args.getTestIters();
-  int print_buffer = args.isPrintBuffer();
-  uint64_t split_mask = args.getSplitMask();
-  int local_register = args.getLocalRegister();
+  size_t minBytes = args.getMinBytes();
+  size_t maxBytes = args.getMaxBytes();
+  int stepFactor = args.getStepFactor();
+  int numWarmupIters = args.getWarmupIters();
+  int numIters = args.getTestIters();
+  int printBuffer = args.isPrintBuffer();
+  uint64_t splitMask = args.getSplitMask();
+  int localRegister = args.getLocalRegister();
+
+  assert(stepFactor > 1 && "Step factor must be > 1 to avoid infinite loop "
+                           "when increasing message size");
 
   flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
+  FLAGCXCHECK(flagcxHandleInit(&handler));
   flagcxUniqueId_t &uniqueId = handler->uniqueId;
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
@@ -42,33 +46,33 @@ int main(int argc, char *argv[]) {
   int totalProcs = 1, proc = 0;
   MPI_Comm splitComm;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
-             splitComm, split_mask);
+             splitComm, splitMask);
 
   int nGpu;
   devHandle->getDeviceCount(&nGpu);
   devHandle->setDevice(worldRank % nGpu);
 
   if (proc == 0)
-    flagcxGetUniqueId(&uniqueId);
+    FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
   MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
 
   // Create device communicator for custom kernel usage
   flagcxDevComm_t devComm = nullptr;
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.fields[0] = 36; // lsaBarrierCount = FLAGCX_DEVICE_CTA_COUNT
-  reqs.fields[1] = 0;  // lsaMultimem
-  flagcxDevCommCreate(comm, &reqs, &devComm);
+  reqs.fields[0] = FLAGCX_DEVICE_CTA_COUNT; // lsaBarrierCount
+  reqs.fields[1] = 0;                       // lsaMultimem
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
 
   // Allocate device buffers
   void *sendbuff, *recvbuff;
-  devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
-  devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
+  devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL);
+  devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL);
 
   // Allocate registered buffer + device memory handle
   // -R 1: IPC mode (flagcxCommRegister + flagcxDevMemCreate with win=NULL)
@@ -82,40 +86,40 @@ int main(int argc, char *argv[]) {
   // cudaIpcGetMemHandle.
   // TODO: Add VMM-compatible IPC via cuMemExportToShareableHandle in
   // flagcxMemAlloc workflow.
-  if (local_register == 1) {
-    devHandle->deviceMalloc(&regBuff, max_bytes, flagcxMemDevice, NULL);
+  if (localRegister == 1) {
+    devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL);
   } else {
-    flagcxMemAlloc(&regBuff, max_bytes, comm);
+    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
   }
-  if (local_register == 2) {
+  if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only)
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, max_bytes, &win, 0));
-    flagcxDevMemCreate(comm, regBuff, max_bytes, win, &devMem);
-  } else if (local_register == 1) {
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win, 0));
+    FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
+  } else if (localRegister == 1) {
     // IPC mode (all NCCL versions)
-    flagcxCommRegister(comm, regBuff, max_bytes, &regHandle);
-    flagcxDevMemCreate(comm, regBuff, max_bytes, nullptr, &devMem);
+    FLAGCXCHECK(flagcxCommRegister(comm, regBuff, maxBytes, &regHandle));
+    FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, nullptr, &devMem));
   } else {
-    fprintf(stderr, "Error: -R must be 1 (IPC) or 2 (window)\n");
+    fprintf(stderr, "Error: -R must be 1 (IPC) or 2 (window) in this test\n");
     MPI_Finalize();
     return 1;
   }
 
   // Host buffer for initialization and verification
-  void *hostbuff = malloc(max_bytes);
+  void *hostbuff = malloc(maxBytes);
 
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Intra-node AllReduce Benchmark\n");
     printf("# nRanks: %d, regMode: %s\n", totalProcs,
-           local_register == 2 ? "window" : "ipc");
+           localRegister == 2 ? "window" : "ipc");
     printf("# %-12s %-14s %-14s %-14s %-8s\n", "Size(B)", "Time(us)",
            "AlgBW(GB/s)", "BusBW(GB/s)", "Correct");
   }
 
   // Warmup with max size
   {
-    size_t count = max_bytes / sizeof(float);
-    for (int i = 0; i < num_warmup_iters; i++) {
+    size_t count = maxBytes / sizeof(float);
+    for (int i = 0; i < numWarmupIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
       flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
@@ -126,7 +130,7 @@ int main(int argc, char *argv[]) {
     devHandle->streamSynchronize(stream);
   }
 
-  for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
+  for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
     size_t count = size / sizeof(float);
     if (count == 0)
       count = 1;
@@ -144,7 +148,7 @@ int main(int argc, char *argv[]) {
 
     // Timed iterations
     timer tim;
-    for (int i = 0; i < num_iters; i++) {
+    for (int i = 0; i < numIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
       flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
@@ -153,7 +157,7 @@ int main(int argc, char *argv[]) {
                               flagcxMemcpyDeviceToDevice, stream);
     }
     devHandle->streamSynchronize(stream);
-    double elapsed = tim.elapsed() / num_iters;
+    double elapsed = tim.elapsed() / numIters;
 
     // Reduce elapsed time across ranks for consistent reporting
     MPI_Allreduce(MPI_IN_PLACE, &elapsed, 1, MPI_DOUBLE, MPI_SUM,
@@ -175,7 +179,7 @@ int main(int argc, char *argv[]) {
     for (size_t i = 0; i < count && correct; i++) {
       if (fabsf(hbuf[i] - expected) > 1e-3f) {
         correct = 0;
-        if (print_buffer) {
+        if (printBuffer) {
           printf("rank%d: MISMATCH at [%zu]: got %.4f, expected %.4f\n", proc,
                  i, hbuf[i], expected);
         }
@@ -189,7 +193,7 @@ int main(int argc, char *argv[]) {
              algBW, busFW, correct ? "PASS" : "FAIL");
     }
 
-    if (print_buffer && (proc == 0 || proc == totalProcs - 1)) {
+    if (printBuffer && (proc == 0 || proc == totalProcs - 1)) {
       printf("rank%d result[0..3]:", proc);
       for (size_t i = 0; i < 4 && i < count; i++) {
         printf(" %.2f", hbuf[i]);
@@ -199,25 +203,25 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  flagcxDevMemDestroy(comm, devMem);
-  flagcxDevCommDestroy(comm, devComm);
-  if (local_register == 2) {
+  FLAGCXCHECK(flagcxDevMemDestroy(comm, devMem));
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, win));
-  } else if (local_register == 1) {
-    flagcxCommDeregister(comm, regHandle);
+  } else if (localRegister == 1) {
+    FLAGCXCHECK(flagcxCommDeregister(comm, regHandle));
   }
-  if (local_register == 1) {
+  if (localRegister == 1) {
     devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
   } else {
-    flagcxMemFree(regBuff, comm);
+    FLAGCXCHECK(flagcxMemFree(regBuff, comm));
   }
   devHandle->streamDestroy(stream);
   devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
   devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   free(hostbuff);
 
-  flagcxCommDestroy(comm);
-  flagcxHandleFree(handler);
+  FLAGCXCHECK(flagcxCommDestroy(comm));
+  FLAGCXCHECK(flagcxHandleFree(handler));
 
   MPI_Finalize();
   return 0;

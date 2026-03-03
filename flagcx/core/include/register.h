@@ -60,7 +60,7 @@ struct flagcxRegItem {
   int refCount = 1;
   std::list<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
   void *homoRegHandle = nullptr;          // backend CCL handle (homo path only)
-  flagcxIpcHandleData ipcHandleData = {}; // IPC handle bytes (homo path only)
+  flagcxIpcHandleData ipcHandleData = {}; // IPC handle bytes (both paths)
 };
 
 struct flagcxReg {

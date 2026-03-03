@@ -1,6 +1,12 @@
 #ifndef FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 #define FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 
+// Device compiler detection — defined when any GPU device compiler is active.
+// Extend with __ASCEND_CC__ etc. as new platforms are added.
+#if defined(__CUDACC__) || defined(__HIPCC__)
+#define FLAGCX_DEVICE_COMPILE 1
+#endif
+
 #ifdef USE_NVIDIA_ADAPTOR
 #include <cuda.h>
 #include <cuda_runtime.h>

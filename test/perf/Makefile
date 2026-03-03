@@ -35,9 +35,9 @@ MPI_LINK = -lmpi
 COMPILER = g++
 EXTRA_COMPILER_FLAG = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wl,-rpath,../../build/lib -std=c++11 -g -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX
 
-INCLUDEDIR := $(abspath include)
+INCLUDEDIR := $(abspath ../include)
 JSON_INCLUDE = $(abspath ../../third-party/json/single_include)
-LIBSRCFILES:= $(wildcard *.cc)
+LIBSRCFILES:= ../tools.cc
 
 all: test-sendrecv test-allreduce test-allgather test-reducescatter test-alltoall test-alltoallv test-broadcast test-gather test-scatter test-reduce test-core-sendrecv test-ipc-sendrecv test-put
 

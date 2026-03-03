@@ -99,6 +99,48 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   return res;
 }
 
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
+                                        ncclDevCommRequirements *reqs,
+                                        ncclDevComm *devComm) {
+  using pncclDevCommCreate_t =
+      flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, ncclDevCommRequirements *,
+                           ncclDevComm *>;
+  void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) {
+    return flagcxInternalError;
+  }
+  auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+      dlsym(handle, "pncclDevCommCreate"));
+  if (!fn) {
+    dlclose(handle);
+    return flagcxInternalError;
+  }
+  ncclResult_t ret = fn(comm, reqs, devComm);
+  dlclose(handle);
+  return (flagcxResult_t)ret;
+}
+
+flagcxResult_t ncclAdaptorDevCommDestroy(ncclComm_t comm,
+                                         const ncclDevComm *devComm) {
+  using pncclDevCommDestroy_t =
+      flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, const ncclDevComm *>;
+  void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) {
+    return flagcxInternalError;
+  }
+  auto fn = reinterpret_cast<pncclDevCommDestroy_t>(
+      dlsym(handle, "pncclDevCommDestroy"));
+  if (!fn) {
+    dlclose(handle);
+    return flagcxInternalError;
+  }
+  ncclResult_t ret = fn(comm, devComm);
+  dlclose(handle);
+  return (flagcxResult_t)ret;
+}
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+
 const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -140,19 +182,8 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       reqs.lsaMultimem = checkNvlsSupport();
       reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.ginSignalCount = 1;
-      using pncclDevCommCreate_t =
-          flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t,
-                               ncclDevCommRequirements *, ncclDevComm *>;
-      void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-      if (handle) {
-        auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-            dlsym(handle, "pncclDevCommCreate"));
-        if (fn) {
-          FLAGCXCHECK(
-              (flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
-        }
-        dlclose(handle);
-      }
+      FLAGCXCHECK(
+          ncclAdaptorDevCommCreate((*comm)->base, &reqs, (*comm)->devBase));
       if ((*comm)->devBase == NULL) {
         WARN("ncclDevComm is not initialized succefully");
       }
