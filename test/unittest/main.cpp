@@ -350,11 +350,28 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
+  // Create device communicator for P2P demo
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t devComm = nullptr;
+  flagcxDevCommCreate(comm, &reqs, &devComm);
+
+  // Create raw device memory handles for send/recv buffers
+  flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
+  flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem);
+  flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem);
+
   // Launch P2P kernel demo
-  flagcxResult_t result = flagcxP2pDemo(sendbuff, recvbuff, countPerPeer,
-                                        flagcxFloat, comm, stream);
+  flagcxResult_t result = flagcxInterP2pDemo(sendMem, recvMem, countPerPeer,
+                                             flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
+
+  // Destroy raw device memory handles
+  flagcxDevMemDestroy(NULL, sendMem);
+  flagcxDevMemDestroy(NULL, recvMem);
+
+  // Destroy device communicator
+  flagcxDevCommDestroy(comm, devComm);
 
   // Copy results back
   devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,

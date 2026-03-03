@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
   int local_register = args.getLocalRegister();
 
   flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
+  FLAGCXCHECK(flagcxHandleInit(&handler));
   flagcxUniqueId_t &uniqueId = handler->uniqueId;
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
@@ -35,11 +35,11 @@ int main(int argc, char *argv[]) {
   devHandle->setDevice(worldRank % nGpu);
 
   if (proc == 0)
-    flagcxGetUniqueId(&uniqueId);
+    FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
   MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
 
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
@@ -51,11 +51,11 @@ int main(int argc, char *argv[]) {
 
   if (local_register) {
     // allocate buffer
-    flagcxMemAlloc(&sendbuff, max_bytes);
-    flagcxMemAlloc(&recvbuff, max_bytes);
+    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, max_bytes));
+    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, max_bytes));
     // register buffer
-    flagcxCommRegister(comm, sendbuff, max_bytes, &sendHandle);
-    flagcxCommRegister(comm, recvbuff, max_bytes, &recvHandle);
+    FLAGCXCHECK(flagcxCommRegister(comm, sendbuff, max_bytes, &sendHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvbuff, max_bytes, &recvHandle));
   } else {
     devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
     devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
@@ -63,20 +63,32 @@ int main(int argc, char *argv[]) {
   hello = malloc(max_bytes);
   memset(hello, 0, max_bytes);
 
+  // Create device communicator for P2P demo
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t devComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
+  // Create raw device memory handles for send/recv buffers
+  flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
+  FLAGCXCHECK(flagcxDevMemCreate(NULL, sendbuff, max_bytes, NULL, &sendMem));
+  FLAGCXCHECK(flagcxDevMemCreate(NULL, recvbuff, max_bytes, NULL, &recvMem));
+
   // Warm-up for large size
   // count is per-peer, total buffer = nRanks * count elements
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, max_bytes / sizeof(float) / totalProcs,
-                  DATATYPE, comm, stream);
+    FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem,
+                                   max_bytes / sizeof(float) / totalProcs,
+                                   DATATYPE, devComm, stream));
   }
   devHandle->streamSynchronize(stream);
 
   // Warm-up for small size
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, min_bytes / sizeof(float) / totalProcs,
-                  DATATYPE, comm, stream);
+    FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem,
+                                   min_bytes / sizeof(float) / totalProcs,
+                                   DATATYPE, devComm, stream));
   }
   devHandle->streamSynchronize(stream);
 
@@ -109,7 +121,8 @@ int main(int argc, char *argv[]) {
     tim.reset();
     for (int i = 0; i < num_iters; i++) {
       // launch p2p kernel
-      flagcxP2pDemo(sendbuff, recvbuff, count, DATATYPE, comm, stream);
+      FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem, count, DATATYPE, devComm,
+                                     stream));
     }
     devHandle->streamSynchronize(stream);
 
@@ -147,27 +160,34 @@ int main(int argc, char *argv[]) {
   // Destroy stream first (sync any pending work)
   devHandle->streamDestroy(stream);
 
+  // Destroy raw device memory handles
+  FLAGCXCHECK(flagcxDevMemDestroy(NULL, sendMem));
+  FLAGCXCHECK(flagcxDevMemDestroy(NULL, recvMem));
+
+  // Destroy device communicator before comm destroy
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+
   if (local_register) {
     // deregister buffer (must be done before comm destroy)
-    flagcxCommDeregister(comm, sendHandle);
-    flagcxCommDeregister(comm, recvHandle);
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
   }
 
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
   // The kernel proxy thread holds a CUDA stream that can interfere with
   // deviceFree
-  flagcxCommDestroy(comm);
+  FLAGCXCHECK(flagcxCommDestroy(comm));
 
   if (local_register) {
     // deallocate buffer
-    flagcxMemFree(sendbuff);
-    flagcxMemFree(recvbuff);
+    FLAGCXCHECK(flagcxMemFree(sendbuff));
+    FLAGCXCHECK(flagcxMemFree(recvbuff));
   } else {
     devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }
   free(hello);
-  flagcxHandleFree(handler);
+  FLAGCXCHECK(flagcxHandleFree(handler));
 
   MPI_Finalize();
   return 0;

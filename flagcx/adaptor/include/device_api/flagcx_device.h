@@ -42,6 +42,7 @@
 struct flagcxDevCommInternal {
   ncclDevComm ncclDev;   // Populated by pncclDevCommCreate
   uint32_t barrierEpoch; // Unused in NCCL path, present for unified host code
+  void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
 };
 #else
 struct flagcxDevCommInternal {
@@ -53,6 +54,7 @@ struct flagcxDevCommInternal {
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
   uint32_t *localBarrierFlags; // this rank's barrier memory (CTA_COUNT entries)
   uint32_t barrierEpoch; // monotonically increasing, set by host before launch
+  void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   // Host-side cleanup bookkeeping (not passed to kernel)
   void **peerBarrierPtrs; // host array of IPC-mapped pointers (for close)
   int *localRankToRank;   // intra-node rank mapping (for IPC exchange)
@@ -69,8 +71,9 @@ struct flagcxDevCommInternal {
 #ifndef FLAGCX_DEV_MEM_TYPE_DEFINED
 #define FLAGCX_DEV_MEM_TYPE_DEFINED
 typedef enum {
-  flagcxDevMemIpc = 0,   // IPC peer pointer mode (all NCCL versions)
-  flagcxDevMemWindow = 1 // NCCL window mode (NCCL > 2.28 only)
+  flagcxDevMemIpc = 0,    // IPC peer pointer mode (all NCCL versions)
+  flagcxDevMemWindow = 1, // NCCL window mode (NCCL > 2.28 only)
+  flagcxDevMemRaw = 2     // Raw pointer wrap (no IPC, no peer access)
 } flagcxDevMemType;
 #endif
 
@@ -86,22 +89,25 @@ typedef enum {
 // ============================================================
 #ifdef FLAGCX_DEVICE_API_NCCL
 struct flagcxDevMemInternal {
-  flagcxDevMemType mode; // flagcxDevMemIpc or flagcxDevMemWindow
-  void **devPeerPtrs;    // device array: [localRank] -> peer buffer (always)
+  flagcxDevMemType
+      mode;           // flagcxDevMemIpc, flagcxDevMemWindow, or flagcxDevMemRaw
+  void **devPeerPtrs; // device array: [localRank] -> peer buffer (IPC/window)
   int nPeers;
   int intraRank;        // this rank's local rank index (for IPC local pointer)
   void **hostPeerPtrs;  // host array: for ipcMemHandleClose cleanup
   ncclWindow_t ncclWin; // from win->base (window mode only)
   void *winHandle;      // flagcxWindow_t stored as void* (window mode only)
+  void *rawPtr;         // raw device pointer (raw mode only)
 };
 #else
 struct flagcxDevMemInternal {
-  flagcxDevMemType mode; // always flagcxDevMemIpc on Tier 2
-  void **devPeerPtrs;    // device array: [localRank] -> peer buffer ptr
+  flagcxDevMemType mode; // flagcxDevMemIpc or flagcxDevMemRaw on Tier 2
+  void **devPeerPtrs;    // device array: [localRank] -> peer buffer ptr (IPC)
   int nPeers;
   int intraRank;       // this rank's local rank index (for IPC local pointer)
   void **hostPeerPtrs; // host array: for ipcMemHandleClose cleanup
   void *basePtr;       // this rank's buffer pointer (for IPC close check)
+  void *rawPtr;        // raw device pointer (raw mode only)
 };
 #endif
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
@@ -121,13 +127,14 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 struct flagcxDevComm {
 #ifdef FLAGCX_DEVICE_API_NCCL
   ncclDevComm _base;
+  void *_fifoBuffer; // FIFO for device Send/Recv (from heteroComm, may be null)
 
-  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm() : _base() {}
+  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm() : _base(), _fifoBuffer(nullptr) {}
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const ncclDevComm &base)
-      : _base(base) {}
+      : _base(base), _fifoBuffer(nullptr) {}
   // Unified constructor from host handle
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
-      : _base(di.ncclDev) {}
+      : _base(di.ncclDev), _fifoBuffer(di.fifoBuffer) {}
 
   // Intra-node (LSA) accessors
   FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
@@ -140,25 +147,36 @@ struct flagcxDevComm {
   // Global accessors
   FLAGCX_DEVICE_INLINE_DECORATOR int getRank() const { return _base.rank; }
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const { return _base.nRanks; }
+
+  // FIFO accessor for device Send/Recv
+  FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
+    return _fifoBuffer;
+  }
 #else
   int _rank, _nRanks;
   int _intraRank, _intraSize;
   uint32_t **_barrierPeers;
   uint32_t _barrierEpoch;
+  void *_fifoBuffer; // FIFO for device Send/Recv (from heteroComm, may be null)
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
-        _barrierPeers(nullptr), _barrierEpoch(0) {}
+        _barrierPeers(nullptr), _barrierEpoch(0), _fifoBuffer(nullptr) {}
   // Unified constructor from host handle
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _rank(di.rank), _nRanks(di.nRanks), _intraRank(di.intraRank),
         _intraSize(di.intraSize), _barrierPeers(di.barrierPeers),
-        _barrierEpoch(di.barrierEpoch) {}
+        _barrierEpoch(di.barrierEpoch), _fifoBuffer(di.fifoBuffer) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const { return _intraRank; }
   FLAGCX_DEVICE_INLINE_DECORATOR int getIntraSize() const { return _intraSize; }
   FLAGCX_DEVICE_INLINE_DECORATOR int getRank() const { return _rank; }
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const { return _nRanks; }
+
+  // FIFO accessor for device Send/Recv
+  FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
+    return _fifoBuffer;
+  }
 #endif
 };
 
@@ -173,25 +191,30 @@ struct flagcxDevComm {
 // tier-agnostic host code: flagcxDevMem dm(*devMemHandle);
 // ============================================================
 struct flagcxDevMem {
-  flagcxDevMemType mode; // flagcxDevMemIpc or flagcxDevMemWindow
-  void **peerPtrs;       // IPC mode: device array [localRank] -> peer buffer
-  int intraRank; // local rank index (for flagcxGetLocalPointer in IPC mode)
+  flagcxDevMemType
+      mode;        // flagcxDevMemIpc, flagcxDevMemWindow, or flagcxDevMemRaw
+  void **peerPtrs; // IPC mode: device array [localRank] -> peer buffer
+  int intraRank;   // local rank index (for flagcxGetLocalPointer in IPC mode)
+  void *rawPtr;    // raw device pointer (raw mode only)
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   ncclWindow_t _base; // used when mode == flagcxDevMemWindow
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem()
-      : mode(flagcxDevMemIpc), peerPtrs(nullptr), intraRank(0), _base() {}
+      : mode(flagcxDevMemIpc), peerPtrs(nullptr), intraRank(0), rawPtr(nullptr),
+        _base() {}
   // Unified constructor from host handle
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di)
       : mode(di.mode), peerPtrs(di.devPeerPtrs), intraRank(di.intraRank),
-        _base(di.ncclWin) {}
+        rawPtr(di.rawPtr), _base(di.ncclWin) {}
 #else
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem()
-      : mode(flagcxDevMemIpc), peerPtrs(nullptr), intraRank(0) {}
+      : mode(flagcxDevMemIpc), peerPtrs(nullptr), intraRank(0),
+        rawPtr(nullptr) {}
   // Unified constructor from host handle
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di)
-      : mode(di.mode), peerPtrs(di.devPeerPtrs), intraRank(di.intraRank) {}
+      : mode(di.mode), peerPtrs(di.devPeerPtrs), intraRank(di.intraRank),
+        rawPtr(di.rawPtr) {}
 #endif
 };
 
@@ -382,15 +405,20 @@ flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam_t team,
                      int peer) {
   if (mem.mode == flagcxDevMemWindow) {
     return ncclGetPeerPointer(mem._base, offset, team._base, peer);
-  } else {
+  } else if (mem.mode == flagcxDevMemIpc) {
     int index = team.rank + (peer - team.rank) * team.stride;
     return (char *)mem.peerPtrs[index] + offset;
+  } else {
+    // Raw mode: no peer access
+    return nullptr;
   }
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
-  if (mem.mode == flagcxDevMemWindow) {
+  if (mem.mode == flagcxDevMemRaw) {
+    return (char *)mem.rawPtr + offset;
+  } else if (mem.mode == flagcxDevMemWindow) {
     return ncclGetLocalPointer(mem._base, offset);
   } else {
     return (char *)mem.peerPtrs[mem.intraRank] + offset;
@@ -403,7 +431,7 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
   if (mem.mode == flagcxDevMemWindow) {
     return ncclGetLsaMultimemPointer(mem._base, offset, devComm._base);
   } else {
-    // IPC mode: multicast not available, return nullptr
+    // IPC/raw mode: multicast not available, return nullptr
     return nullptr;
   }
 }
@@ -411,13 +439,20 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam_t team,
                      int peer) {
-  // Tier 2: always IPC — team maps peer rank to flat index
+  if (mem.mode == flagcxDevMemRaw) {
+    // Raw mode: no peer access
+    return nullptr;
+  }
+  // Tier 2: IPC — team maps peer rank to flat index
   int index = team.rank + (peer - team.rank) * team.stride;
   return (char *)mem.peerPtrs[index] + offset;
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
+  if (mem.mode == flagcxDevMemRaw) {
+    return (char *)mem.rawPtr + offset;
+  }
   return (char *)mem.peerPtrs[mem.intraRank] + offset;
 }
 

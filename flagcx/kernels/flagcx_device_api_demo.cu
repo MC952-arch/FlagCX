@@ -1,13 +1,15 @@
 /*************************************************************************
  * Copyright (c) 2025 BAAI. All rights reserved.
  *
- * FlagCX Intra-node AllReduce kernel using FlagCX Device API.
- * Functionally equivalent to the NCCL reference inPlaceAllReduceKernel,
- * but uses exclusively FlagCX abstractions (zero direct NCCL references).
+ * FlagCX Device API demo kernels.
  *
- * Tier 1 (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
- * Tier 2 (fallback):    IPC peer pointers + atomics barrier.
- * Same kernel code compiles for both tiers.
+ * 1. Intra-node AllReduce — peer pointer + barrier based.
+ *    Tier 1 (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
+ *    Tier 2 (fallback):    IPC peer pointers + atomics barrier.
+ *    Same kernel code compiles for both tiers.
+ *
+ * 2. Inter-node P2P — FIFO-based device Send/Recv.
+ *    Uses flagcxDeviceSend/Recv/Term/Wait via devComm FIFO.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
@@ -17,6 +19,10 @@
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
+
+// ==========================================================================
+// 1. Intra-node AllReduce
+// ==========================================================================
 
 // Intra-node AllReduce: each block reads from all peers via team-based
 // flagcxGetPeerPointer, reduces (sum), and writes result back to all peers.
@@ -77,17 +83,8 @@ template cudaError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
                                                         flagcxDevMem, size_t,
                                                         size_t, cudaStream_t);
 
-// ==========================================================================
 // Host-side demo function — launches the kernel using caller-provided
 // registered buffer and device communicator.
-// The caller is responsible for:
-//   1. flagcxDevCommCreate to create devComm
-//   2. flagcxMemAlloc / flagcxDevMemCreate to create buff + devMem
-//   3. Copying sendbuff into buff before calling this function
-//   4. Copying the result out of buff after this function returns
-//   5. flagcxDevMemDestroy / flagcxMemFree for cleanup
-//   6. flagcxDevCommDestroy to destroy devComm
-// ==========================================================================
 flagcxResult_t flagcxIntraAllReduceDemo(void *buff, flagcxDevMem_t devMem,
                                         size_t count, flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
@@ -120,4 +117,76 @@ flagcxResult_t flagcxIntraAllReduceDemo(void *buff, flagcxDevMem_t devMem,
   devComm->barrierEpoch += 2;
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+// ==========================================================================
+// 2. Inter-node P2P
+// ==========================================================================
+
+#define NBLOCKS 1
+#define NTHREADS_PER_BLOCK 32
+
+// P2P kernel implementing alltoall pattern (one thread per peer)
+// Each thread handles all communication with its assigned peer
+// This preserves send/recv ordering per-peer for correct P2P matching
+// Note: Uses single block so __syncthreads() can synchronize all threads
+// Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size count
+// sendMem: data at offset peerRank * count is sent to peerRank
+// recvMem: data from peerRank is stored at offset peerRank * count
+FLAGCX_GLOBAL_DECORATOR void flagcxInterP2pKernel(
+    flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm devComm) {
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
+  int nRanks = devComm.getSize();
+
+  // Each thread handles one peer (tid = peer index)
+  if (tid < nRanks) {
+    int peerRank = tid;
+
+    // Calculate offsets for this peer's send and receive buffers
+    size_t offset = peerRank * count * elementSize;
+    const void *peerSendBuff = flagcxGetLocalPointer(sendMem, offset);
+    void *peerRecvBuff = flagcxGetLocalPointer(recvMem, offset);
+
+    // Trigger P2P operations
+    flagcxDeviceSend(peerSendBuff, count, datatype, peerRank, devComm);
+    flagcxDeviceRecv(peerRecvBuff, count, datatype, peerRank, devComm);
+  }
+
+  // Ensure all threads finish enqueuing before termination
+  FLAGCX_DEVICE_SYNC_THREADS();
+
+  // Only thread 0 sends termination and waits
+  if (tid == 0) {
+    flagcxDeviceTerm(devComm);
+    flagcxDeviceWait(devComm);
+  }
+}
+
+// Alltoall demo: each rank sends different data to each peer and receives from
+// all. sendMem/recvMem: size = nRanks * count elements (data for/from peer i
+// at offset i * count)
+flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                                  size_t count, flagcxDataType_t datatype,
+                                  flagcxDevComm_t devComm,
+                                  flagcxStream_t stream) {
+  if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr) {
+    return flagcxInternalError;
+  }
+
+  // Unified constructors — work for both Tier 1 and Tier 2
+  flagcxDevComm devCommKernel(*devComm);
+  flagcxDevMem sendMemKernel(*sendMem);
+  flagcxDevMem recvMemKernel(*recvMem);
+
+  // Launch kernel with (NBLOCKS, NTHREADS_PER_BLOCK) (one thread per potential
+  // peer) Single block ensures __syncthreads() synchronizes all threads before
+  // Term/Wait Each thread handles communication with one peer, preserving
+  // ordering
+  flagcxInterP2pKernel<<<NBLOCKS, NTHREADS_PER_BLOCK, 0,
+                         *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
+      sendMemKernel, recvMemKernel, count, datatype, devCommKernel);
+
+  return flagcxSuccess;
 }

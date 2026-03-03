@@ -1,12 +1,12 @@
 /*************************************************************************
- * Benchmark for FlagCX Intra-node AllReduce using FlagCX Device API.
+ * Intra-node kernel tests using FlagCX Device API.
  *
- * Tests correctness: each rank fills its buffer with (rank+1), then
+ * Currently tests AllReduce: each rank fills its buffer with (rank+1), then
  * AllReduce(sum) produces nRanks*(nRanks+1)/2 on every element.
  *
  * Tests performance: warmup + timed iterations over multiple message sizes.
  *
- * Usage: mpirun -np <nGPUs> ./test_device_api_allreduce [options]
+ * Usage: mpirun -np <nGPUs> ./test_intranode_kernel [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  *   -w <warmup>    -n <iters>     -p <printbuffer 0/1>
  ************************************************************************/

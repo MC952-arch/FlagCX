@@ -131,6 +131,9 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop, int *idx);
 #ifdef COMPILE_KERNEL
+// Forward declaration for device-side Send/Recv/Term/Wait
+struct flagcxDevComm;
+
 FLAGCX_DEVICE_DECORATOR
 flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr, uint64_t count,
                        uint64_t peerRank, uint64_t datatype, uint64_t type);
@@ -142,18 +145,17 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
 
 FLAGCX_DEVICE_DECORATOR flagcxResult_t
 flagcxDeviceSend(const void *sendbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, void *fifoBuffer);
+                 int peer, const flagcxDevComm &devComm);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t
-flagcxDeviceRecv(void *sendbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, void *fifoBuffer);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceTerm(void *fifoBuffer);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
+flagcxDeviceRecv(void *recvbuff, size_t count, flagcxDataType_t datatype,
+                 int peer, const flagcxDevComm &devComm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceTerm(const flagcxDevComm &devComm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceWait(const flagcxDevComm &devComm);
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
-flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                             flagcxDataType_t datatype, flagcxComm_t comm,
-                             flagcxStream_t stream);
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
                                   size_t nblocks, flagcxStream_t stream);
 
@@ -169,10 +171,7 @@ typedef struct {
   int fields[4];
 } flagcxDevCommRequirements;
 
-#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
-  {                                                                            \
-    { 0, 0, 0, 0 }                                                             \
-  }
+#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER {{0, 0, 0, 0}}
 
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Tier 1),
@@ -187,13 +186,20 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
+flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem,
+                                  flagcxDevMem_t recvMem, size_t count,
+                                  flagcxDataType_t datatype,
+                                  flagcxDevComm_t devComm,
+                                  flagcxStream_t stream);
+
 // Device memory mode — distinguishes IPC vs window registration at runtime.
 // Also defined in device_api/flagcx_device.h (with same include guard).
 #ifndef FLAGCX_DEV_MEM_TYPE_DEFINED
 #define FLAGCX_DEV_MEM_TYPE_DEFINED
 typedef enum {
-  flagcxDevMemIpc = 0,   // IPC peer pointer mode (all NCCL versions)
-  flagcxDevMemWindow = 1 // NCCL window mode (NCCL > 2.28 only)
+  flagcxDevMemIpc = 0,    // IPC peer pointer mode (all NCCL versions)
+  flagcxDevMemWindow = 1, // NCCL window mode (NCCL > 2.28 only)
+  flagcxDevMemRaw = 2     // Raw pointer wrap (no IPC, no peer access)
 } flagcxDevMemType;
 #endif
 

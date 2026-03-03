@@ -1,7 +1,7 @@
 #include "comm.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "atomic_device.h"
+#include "device_api/flagcx_device.h"
 
 FLAGCX_DEVICE_DECORATOR size_t
 getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
@@ -52,35 +52,39 @@ flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
 
 FLAGCX_DEVICE_DECORATOR flagcxResult_t
 flagcxDeviceSend(const void *sendbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, void *fifoBuffer) {
-  enqueue(fifoBuffer, (uint64_t)((uintptr_t)sendbuff), count, peer, datatype,
-          flagcxDevicePrimSend);
+                 int peer, const flagcxDevComm &devComm) {
+  enqueue(devComm.getFifoBuffer(), (uint64_t)((uintptr_t)sendbuff), count, peer,
+          datatype, flagcxDevicePrimSend);
   return flagcxSuccess;
 }
 
 FLAGCX_DEVICE_DECORATOR flagcxResult_t
 flagcxDeviceRecv(void *recvbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, void *fifoBuffer) {
-  enqueue(fifoBuffer, (uint64_t)((uintptr_t)recvbuff), count, peer, datatype,
-          flagcxDevicePrimRecv);
+                 int peer, const flagcxDevComm &devComm) {
+  enqueue(devComm.getFifoBuffer(), (uint64_t)((uintptr_t)recvbuff), count, peer,
+          datatype, flagcxDevicePrimRecv);
   return flagcxSuccess;
 }
 
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceTerm(void *fifoBuffer) {
-  enqueue(fifoBuffer, 0, 0, 0, 0, flagcxDevicePrimTerm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceTerm(const flagcxDevComm &devComm) {
+  enqueue(devComm.getFifoBuffer(), 0, 0, 0, 0, flagcxDevicePrimTerm);
   return flagcxSuccess;
 }
 
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer) {
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceWait(const flagcxDevComm &devComm) {
   // Enqueue WAIT primitive so host knows to synchronize
-  enqueue(fifoBuffer, 0, 0, 0, 0, flagcxDevicePrimWait);
+  enqueue(devComm.getFifoBuffer(), 0, 0, 0, 0, flagcxDevicePrimWait);
 
-  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  uint64_t *buffer = (uint64_t *)devComm.getFifoBuffer();
 
   // Wait until all items are consumed (consumed catches up to produced)
   int iter = 0;
-  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced], flagcxDeviceMemoryOrderAcquire) >
-         flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire)) {
+  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced],
+                                 flagcxDeviceMemoryOrderAcquire) >
+         flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed],
+                                 flagcxDeviceMemoryOrderAcquire)) {
     spinBackoff(iter++);
   }
   return flagcxSuccess;

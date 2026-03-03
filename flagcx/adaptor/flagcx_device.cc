@@ -177,6 +177,12 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   }
 
   handle->barrierEpoch = 0;
+
+  // Store FIFO pointer for device Send/Recv (may be null if heteroComm not
+  // initialized, e.g. pure homoComm mode)
+  handle->fifoBuffer =
+      (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
+
   *devComm = handle;
   return flagcxSuccess;
 }
@@ -202,11 +208,11 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-// ---------- DevMem: Tier 1 (window + IPC dual mode) ----------
+// ---------- DevMem: Tier 1 (window + IPC + raw modes) ----------
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem) {
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
+  if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
 
@@ -216,6 +222,14 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevMemInternal));
+
+  // Raw mode: comm == NULL — just wrap the pointer, no IPC exchange
+  if (comm == nullptr) {
+    handle->mode = flagcxDevMemRaw;
+    handle->rawPtr = buff;
+    *devMem = handle;
+    return flagcxSuccess;
+  }
 
   // Store local rank index for IPC pointer access
   handle->intraRank = comm->localRank;
@@ -245,6 +259,13 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
   if (devMem == nullptr) {
     return flagcxSuccess;
   }
+
+  // Raw mode: no IPC cleanup needed
+  if (devMem->mode == flagcxDevMemRaw) {
+    free(devMem);
+    return flagcxSuccess;
+  }
+
   if (comm == nullptr) {
     return flagcxInvalidArgument;
   }
@@ -359,6 +380,11 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   handle->barrierEpoch = 0;
 
+  // Store FIFO pointer for device Send/Recv (may be null if heteroComm not
+  // initialized, e.g. pure homoComm mode)
+  handle->fifoBuffer =
+      (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
+
   *devComm = handle;
   return flagcxSuccess;
 }
@@ -396,16 +422,12 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-// ---------- DevMem: Tier 2 (IPC-only, win param ignored) ----------
+// ---------- DevMem: Tier 2 (IPC + raw modes, win param ignored) ----------
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem) {
-  (void)win; // Tier 2: window mode not available, always IPC
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
-    return flagcxInvalidArgument;
-  }
-  if (win != nullptr) {
-    // Window mode requires NCCL > 2.28 (Tier 1)
+  (void)win; // Tier 2: window mode not available
+  if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
 
@@ -415,6 +437,20 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevMemInternal));
+
+  // Raw mode: comm == NULL — just wrap the pointer, no IPC exchange
+  if (comm == nullptr) {
+    handle->mode = flagcxDevMemRaw;
+    handle->rawPtr = buff;
+    *devMem = handle;
+    return flagcxSuccess;
+  }
+
+  if (win != nullptr) {
+    // Window mode requires NCCL > 2.28 (Tier 1)
+    free(handle);
+    return flagcxInvalidArgument;
+  }
 
   handle->mode = flagcxDevMemIpc;
   handle->basePtr = buff;
@@ -436,6 +472,12 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
   if (devMem == nullptr) {
+    return flagcxSuccess;
+  }
+
+  // Raw mode: no IPC cleanup needed
+  if (devMem->mode == flagcxDevMemRaw) {
+    free(devMem);
     return flagcxSuccess;
   }
 
