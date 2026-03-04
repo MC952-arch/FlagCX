@@ -190,3 +190,57 @@ flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem
 
   return flagcxSuccess;
 }
+
+// ==========================================================================
+// 3. GIN AlltoAll (Tier 1 only — requires FLAGCX_DEVICE_API_NCCL)
+// ==========================================================================
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+template <typename T>
+FLAGCX_GLOBAL_DECORATOR void flagcxGinAlltoAllKernel(
+    flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
+    flagcxDevComm devComm) {
+  flagcxDevNet net(devComm, 0);
+  uint64_t signalValue = net.readSignal(0);
+
+  flagcxBarrierSession<flagcxCoopBlock> bar(flagcxCoopBlock(),
+                                            flagcxTeamTagWorld{}, net,
+                                            blockIdx.x);
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+  int myRank = devComm.getRank();
+  int nRanks = devComm.getSize();
+  size_t size = count * sizeof(T);
+
+  for (int r = tid; r < nRanks; r += nthreads) {
+    net.put(flagcxTeamWorld(devComm), r, recvMem, myRank * size, sendMem,
+            r * size, size, flagcxDevNet_SignalInc{0});
+  }
+
+  net.waitSignal(flagcxCoopBlock(), 0, signalValue + nRanks);
+  net.flush(flagcxCoopBlock());
+}
+#endif // FLAGCX_DEVICE_API_NCCL
+
+flagcxResult_t flagcxGinAlltoAllDemo(flagcxDevMem_t sendMem,
+                                     flagcxDevMem_t recvMem, size_t count,
+                                     flagcxDataType_t datatype,
+                                     flagcxDevComm_t devComm,
+                                     flagcxStream_t stream) {
+#ifdef FLAGCX_DEVICE_API_NCCL
+  if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr) {
+    return flagcxInternalError;
+  }
+
+  flagcxDevComm dc(*devComm);
+  flagcxDevMem sm(*sendMem), rm(*recvMem);
+  flagcxGinAlltoAllKernel<float>
+      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+         *(cudaStream_t *)stream>>>(sm, rm, count, dc);
+  return flagcxSuccess;
+#else
+  return flagcxInternalError; // GIN not available on Tier 2
+#endif
+}

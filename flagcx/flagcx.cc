@@ -66,26 +66,38 @@ flagcxResult_t wrapper_deviceMemcpy(void *dst, void *src, size_t size,
   return deviceAdaptor->deviceMemcpy(dst, src, size, type, stream, NULL);
 }
 
-static struct flagcxDeviceHandle globalDeviceHandle {
-  // Basic functions
-  deviceAdaptor->deviceSynchronize, wrapper_deviceMemcpy,
-      deviceAdaptor->deviceMemset, deviceAdaptor->deviceMalloc,
-      deviceAdaptor->deviceFree, deviceAdaptor->setDevice,
-      deviceAdaptor->getDevice, deviceAdaptor->getDeviceCount,
-      deviceAdaptor->getVendor, deviceAdaptor->hostGetDevicePointer,
-      // Stream functions
-      deviceAdaptor->streamCreate, deviceAdaptor->streamDestroy,
-      deviceAdaptor->streamCopy, deviceAdaptor->streamFree,
-      deviceAdaptor->streamSynchronize, deviceAdaptor->streamQuery,
-      deviceAdaptor->streamWaitEvent,
-      // Event functions
-      deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
-      deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
-      deviceAdaptor->eventQuery,
-      // IpcMemHandle functions
-      deviceAdaptor->ipcMemHandleCreate, deviceAdaptor->ipcMemHandleGet,
-      deviceAdaptor->ipcMemHandleOpen, deviceAdaptor->ipcMemHandleClose,
-      deviceAdaptor->ipcMemHandleFree,
+static struct flagcxDeviceHandle globalDeviceHandle{
+    // Basic functions
+    deviceAdaptor->deviceSynchronize,
+    wrapper_deviceMemcpy,
+    deviceAdaptor->deviceMemset,
+    deviceAdaptor->deviceMalloc,
+    deviceAdaptor->deviceFree,
+    deviceAdaptor->setDevice,
+    deviceAdaptor->getDevice,
+    deviceAdaptor->getDeviceCount,
+    deviceAdaptor->getVendor,
+    deviceAdaptor->hostGetDevicePointer,
+    // Stream functions
+    deviceAdaptor->streamCreate,
+    deviceAdaptor->streamDestroy,
+    deviceAdaptor->streamCopy,
+    deviceAdaptor->streamFree,
+    deviceAdaptor->streamSynchronize,
+    deviceAdaptor->streamQuery,
+    deviceAdaptor->streamWaitEvent,
+    // Event functions
+    deviceAdaptor->eventCreate,
+    deviceAdaptor->eventDestroy,
+    deviceAdaptor->eventRecord,
+    deviceAdaptor->eventSynchronize,
+    deviceAdaptor->eventQuery,
+    // IpcMemHandle functions
+    deviceAdaptor->ipcMemHandleCreate,
+    deviceAdaptor->ipcMemHandleGet,
+    deviceAdaptor->ipcMemHandleOpen,
+    deviceAdaptor->ipcMemHandleClose,
+    deviceAdaptor->ipcMemHandleFree,
 };
 
 flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
@@ -145,8 +157,8 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
 
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
   if (ptr == NULL || size == 0) {
-    WARN("Invalid pointer(!=NULL) or size(0) for allocation.");
-    return flagcxSuccess;
+    WARN("Invalid ptr(NULL) or size(0) for allocation.");
+    return flagcxInvalidArgument;
   }
   if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
     if (comm == NULL) {

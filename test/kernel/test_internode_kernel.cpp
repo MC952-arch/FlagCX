@@ -44,19 +44,23 @@ int main(int argc, char *argv[]) {
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
 
-  void *sendbuff, *recvbuff, *hello;
-  void *sendHandle, *recvHandle;
+  void *sendbuff = nullptr, *recvbuff = nullptr, *hello;
+  void *sendHandle = nullptr, *recvHandle = nullptr;
   size_t count;
   timer tim;
 
-  if (local_register) {
-    // allocate buffer
+  if (local_register == 2) {
+    // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
+    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, max_bytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, max_bytes, comm));
+  } else if (local_register == 1) {
+    // Zero-copy: alloc + register for NIC RDMA access
     FLAGCXCHECK(flagcxMemAlloc(&sendbuff, max_bytes));
     FLAGCXCHECK(flagcxMemAlloc(&recvbuff, max_bytes));
-    // register buffer
     FLAGCXCHECK(flagcxCommRegister(comm, sendbuff, max_bytes, &sendHandle));
     FLAGCXCHECK(flagcxCommRegister(comm, recvbuff, max_bytes, &recvHandle));
   } else {
+    // Unregistered
     devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
     devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
   }
@@ -157,6 +161,104 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // ==========================================================================
+  // GIN AlltoAll test (requires -R 2 for window registration)
+  // ==========================================================================
+  if (local_register == 2) {
+    if (proc == 0 && color == 0) {
+      printf("\n# GIN AlltoAll test (window-mode devNet)\n");
+    }
+
+    // Register windows for GIN
+    flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
+    FLAGCXCHECK(
+        flagcxCommWindowRegister(comm, sendbuff, max_bytes, &sendWin, 0));
+    FLAGCXCHECK(
+        flagcxCommWindowRegister(comm, recvbuff, max_bytes, &recvWin, 0));
+
+    // Create device communicator with GIN barrier + signal requirements
+    flagcxDevCommRequirements ginReqs =
+        FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+    ginReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // ginBarrierCount
+    ginReqs.fields[3] = 1;                       // ginSignalCount
+    flagcxDevComm_t ginDevComm = nullptr;
+    FLAGCXCHECK(flagcxDevCommCreate(comm, &ginReqs, &ginDevComm));
+
+    // Create window-mode device memory handles
+    flagcxDevMem_t ginSendMem = nullptr, ginRecvMem = nullptr;
+    FLAGCXCHECK(
+        flagcxDevMemCreate(comm, sendbuff, max_bytes, sendWin, &ginSendMem));
+    FLAGCXCHECK(
+        flagcxDevMemCreate(comm, recvbuff, max_bytes, recvWin, &ginRecvMem));
+
+    for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
+      count = size / sizeof(float) / totalProcs;
+
+      // Initialize sendbuff: sendbuff[r * count + i] = proc * 1000 + r * 100 +
+      // i After alltoall: recvbuff[src * count + i] = src * 1000 + proc * 100 +
+      // i
+      float *helloFloat = (float *)hello;
+      for (int r = 0; r < totalProcs; r++) {
+        for (size_t i = 0; i < count; i++) {
+          helloFloat[r * count + i] = (float)(proc * 1000 + r * 100 + (int)i);
+        }
+      }
+      devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
+                              NULL);
+      memset(hello, 0, size);
+      devHandle->deviceMemcpy(recvbuff, hello, size, flagcxMemcpyHostToDevice,
+                              NULL);
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      tim.reset();
+      for (int i = 0; i < num_iters; i++) {
+        FLAGCXCHECK(flagcxGinAlltoAllDemo(ginSendMem, ginRecvMem, count,
+                                          DATATYPE, ginDevComm, stream));
+      }
+      devHandle->streamSynchronize(stream);
+      double elapsed_time = tim.elapsed() / num_iters;
+
+      // Verify correctness
+      memset(hello, 0, size);
+      devHandle->deviceMemcpy(hello, recvbuff, size, flagcxMemcpyDeviceToHost,
+                              NULL);
+      helloFloat = (float *)hello;
+      bool correct = true;
+      for (int src = 0; src < totalProcs && correct; src++) {
+        for (size_t i = 0; i < count && correct; i++) {
+          float expected = (float)(src * 1000 + proc * 100 + (int)i);
+          if (helloFloat[src * count + i] != expected) {
+            correct = false;
+            if (proc == 0) {
+              printf("  MISMATCH at recvbuff[%d*%zu+%zu]: got %.0f expected "
+                     "%.0f\n",
+                     src, count, i, helloFloat[src * count + i], expected);
+            }
+          }
+        }
+      }
+
+      MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
+                    MPI_COMM_WORLD);
+      elapsed_time /= worldSize;
+      double bw = (double)(size) / 1.0E9 / elapsed_time;
+
+      if (proc == 0 && color == 0) {
+        printf("GIN AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n", size,
+               elapsed_time * 1e6, bw, correct ? "PASS" : "FAIL");
+      }
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    // Cleanup GIN resources
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, ginSendMem));
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, ginRecvMem));
+    FLAGCXCHECK(flagcxDevCommDestroy(comm, ginDevComm));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+  }
+
   // Destroy stream first (sync any pending work)
   devHandle->streamDestroy(stream);
 
@@ -167,10 +269,17 @@ int main(int argc, char *argv[]) {
   // Destroy device communicator before comm destroy
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
-  if (local_register) {
+  if (local_register == 1) {
     // deregister buffer (must be done before comm destroy)
     FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
     FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+  }
+
+  // Free -R 2 (VMM) buffers before comm destroy (flagcxMemFree needs comm
+  // alive)
+  if (local_register == 2) {
+    FLAGCXCHECK(flagcxMemFree(sendbuff, comm));
+    FLAGCXCHECK(flagcxMemFree(recvbuff, comm));
   }
 
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
@@ -178,11 +287,10 @@ int main(int argc, char *argv[]) {
   // deviceFree
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
-  if (local_register) {
-    // deallocate buffer
+  if (local_register == 1) {
     FLAGCXCHECK(flagcxMemFree(sendbuff));
     FLAGCXCHECK(flagcxMemFree(recvbuff));
-  } else {
+  } else if (local_register == 0) {
     devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }

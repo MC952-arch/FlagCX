@@ -18,6 +18,7 @@
 
 #include "atomic_device.h"
 #include "device_utils.h"
+#include "flagcx.h"
 
 // ============================================================
 // NVIDIA backend: include NCCL device headers
@@ -244,6 +245,11 @@ struct flagcxTeam {
 };
 typedef struct flagcxTeam flagcxTeam_t;
 
+// Team tag types for barrier session constructors
+struct flagcxTeamTagWorld {};
+struct flagcxTeamTagIntra {};
+struct flagcxTeamTagInter {};
+
 // ============================================================
 // Sections 5-8: Device-only functions
 //
@@ -261,6 +267,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR
 flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
   return flagcxTeam_t(ncclTeamLsa(devComm._base));
 }
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamWorld(const flagcxDevComm &devComm) {
+  return flagcxTeam_t(ncclTeamWorld(devComm._base));
+}
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
+  return flagcxTeam_t(ncclTeamRail(devComm._base));
+}
 #else
 FLAGCX_DEVICE_INLINE_DECORATOR
 flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
@@ -268,6 +282,22 @@ flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
   team.nRanks = devComm.getIntraSize();
   team.rank = devComm.getIntraRank();
   team.stride = 1;
+  return team;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamWorld(const flagcxDevComm &devComm) {
+  flagcxTeam_t team;
+  team.nRanks = devComm.getSize();
+  team.rank = devComm.getRank();
+  team.stride = 1;
+  return team;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR
+flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
+  flagcxTeam_t team;
+  team.nRanks = devComm.getSize() / devComm.getIntraSize();
+  team.rank = devComm.getRank() / devComm.getIntraSize();
+  team.stride = devComm.getIntraSize();
   return team;
 }
 #endif
@@ -475,5 +505,278 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 #ifndef FLAGCX_DEVICE_THREADS_PER_CTA
 #define FLAGCX_DEVICE_THREADS_PER_CTA 512
 #endif
+
+// ============================================================
+// Sections 9b-12: flagcxDevNet + Barriers (device-only)
+// ============================================================
+#ifdef FLAGCX_DEVICE_COMPILE
+
+// Forward declarations of device-side FIFO functions (defined in
+// flagcx_kernel_device.cu, declared in flagcx_kernel.h). Needed by
+// flagcxDevNet::send/recv/term/wait and Tier 2 flagcxBarrierSession::sync.
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceSend(const void *sendbuff, size_t count, flagcxDataType_t datatype,
+                 int peer, const flagcxDevComm &devComm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceRecv(void *recvbuff, size_t count, flagcxDataType_t datatype,
+                 int peer, const flagcxDevComm &devComm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceTerm(const flagcxDevComm &devComm);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceWait(const flagcxDevComm &devComm);
+
+// ============================================================
+// Section 9b: GIN Types (Tier 1 only)
+// ============================================================
+// Fence level enum — available on all tiers for unified barrier API
+enum class flagcxGinFenceLevel { Relaxed };
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+typedef uint32_t flagcxDevNetSignal_t;
+typedef uint32_t flagcxDevNetCounter_t;
+
+struct flagcxDevNet_None {};
+struct flagcxDevNet_SignalInc {
+  flagcxDevNetSignal_t signal;
+};
+struct flagcxDevNet_SignalAdd {
+  flagcxDevNetSignal_t signal;
+  uint64_t value;
+};
+struct flagcxDevNet_CounterInc {
+  flagcxDevNetCounter_t counter;
+};
+
+// Action type mapping helpers (flagcx -> nccl)
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGin_None toNccl(flagcxDevNet_None) {
+  return {};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGin_SignalInc
+toNccl(flagcxDevNet_SignalInc a) {
+  return {a.signal};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGin_SignalAdd
+toNccl(flagcxDevNet_SignalAdd a) {
+  return {a.signal, a.value};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGin_CounterInc
+toNccl(flagcxDevNet_CounterInc a) {
+  return {a.counter};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopCta toNccl(flagcxCoopBlock) {
+  return {};
+}
+#endif // FLAGCX_DEVICE_API_NCCL
+
+// ============================================================
+// Section 10: flagcxDevNet — Device Network (all tiers)
+// ============================================================
+struct flagcxDevNet {
+  const flagcxDevComm &_devComm; // for barrier + Send/Recv on all tiers
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+  ncclGin _gin; // GIN backend (Tier 1 only)
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0)
+      : _devComm(dc), _gin(dc._base, contextIndex) {}
+#else
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0) : _devComm(dc) {}
+#endif
+
+  // ---- Two-sided operations (all tiers, via FIFO) ----
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t send(const void *buff,
+                                                     size_t count,
+                                                     flagcxDataType_t datatype,
+                                                     int peer) const {
+    return flagcxDeviceSend(buff, count, datatype, peer, _devComm);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t recv(void *buff, size_t count,
+                                                     flagcxDataType_t datatype,
+                                                     int peer) const {
+    return flagcxDeviceRecv(buff, count, datatype, peer, _devComm);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term() const {
+    return flagcxDeviceTerm(_devComm);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait() const {
+    return flagcxDeviceWait(_devComm);
+  }
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+  // ---- GIN one-sided operations (Tier 1 only) ----
+
+  template <typename RemoteAction = flagcxDevNet_None,
+            typename Coop = flagcxCoopBlock>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  put(flagcxTeam_t team, int peer, const flagcxDevMem &dstMem, size_t dstOffset,
+      const flagcxDevMem &srcMem, size_t srcOffset, size_t bytes,
+      RemoteAction remoteAction = flagcxDevNet_None{},
+      Coop coop = flagcxCoopBlock{}) const {
+    _gin.put(team._base, peer, dstMem._base, dstOffset, srcMem._base, srcOffset,
+             bytes, toNccl(remoteAction), ncclGin_None{}, toNccl(coop));
+  }
+
+  template <typename RemoteAction, typename Coop = flagcxCoopBlock>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  signal(flagcxTeam_t team, int peer, RemoteAction remoteAction,
+         Coop coop = flagcxCoopBlock{}) const {
+    _gin.signal(team._base, peer, toNccl(remoteAction), toNccl(coop));
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void flush(
+      Coop coop,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    _gin.flush(toNccl(coop), flagcxDeviceMemoryOrderMap[order]);
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
+      Coop coop, flagcxDevNetSignal_t signal, uint64_t least,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    _gin.waitSignal(toNccl(coop), signal, least, 64,
+                    flagcxDeviceMemoryOrderMap[order]);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
+      flagcxDevNetSignal_t signal,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    return _gin.readSignal(signal, 64, flagcxDeviceMemoryOrderMap[order]);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  resetSignal(flagcxDevNetSignal_t signal) const {
+    _gin.resetSignal(signal);
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
+      Coop coop, flagcxDevNetCounter_t counter, uint64_t least,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    _gin.waitCounter(toNccl(coop), counter, least, 56,
+                     flagcxDeviceMemoryOrderMap[order]);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
+      flagcxDevNetCounter_t counter,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    return _gin.readCounter(counter, 56, flagcxDeviceMemoryOrderMap[order]);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  resetCounter(flagcxDevNetCounter_t counter) const {
+    _gin.resetCounter(counter);
+  }
+#endif // FLAGCX_DEVICE_API_NCCL
+};
+
+// ============================================================
+// Section 11: flagcxInterBarrierSession — GIN Barrier (Tier 1 only)
+// ============================================================
+#ifdef FLAGCX_DEVICE_API_NCCL
+template <typename Coop>
+struct flagcxInterBarrierSession {
+  ncclGinBarrierSession<ncclCoopCta> _impl;
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
+                            flagcxTeam_t team, uint32_t index)
+      : _impl(ncclCoopCta(), net._gin, team._base, net._gin.comm.railGinBarrier,
+              index) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+               ncclGinFenceLevel::Relaxed);
+  }
+};
+#endif
+
+// ============================================================
+// Section 12: flagcxBarrierSession — Unified Barrier (both tiers)
+// ============================================================
+#ifdef FLAGCX_DEVICE_API_NCCL
+template <typename Coop>
+struct flagcxBarrierSession {
+  ncclBarrierSession<ncclCoopCta> _impl;
+
+  // World barrier (intra + inter)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
+                       uint32_t index)
+      : _impl(ncclCoopCta(), ncclTeamTagWorld(), net._gin, index) {}
+
+  // Intra-only barrier
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
+                       const flagcxDevComm &devComm, uint32_t index)
+      : _impl(ncclCoopCta(), ncclTeamTagLsa(), devComm._base, index) {}
+
+  // Inter-only barrier
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxBarrierSession(Coop coop, flagcxTeamTagInter, const flagcxDevNet &net,
+                       uint32_t index)
+      : _impl(ncclCoopCta(), ncclTeamTagRail(), net._gin, index) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+               ncclGinFenceLevel::Relaxed);
+  }
+};
+#else
+// Tier 2/3: World barrier uses Term/Wait (FIFO-based, covers both intra +
+// inter)
+//           Intra barrier uses flagcxIntraBarrierSession (IPC-based, multi-CTA)
+//           Inter barrier not available standalone (use World instead)
+template <typename Coop>
+struct flagcxBarrierSession {
+  bool _useTermWait;                      // true=World (Term/Wait), false=Intra
+  flagcxDevComm _devCommCopy;             // copy for Term/Wait in World mode
+  flagcxIntraBarrierSession<Coop> _intra; // used in Intra mode
+
+  // World barrier: Term + Wait via FIFO (single-CTA constraint)
+  // flagcxDeviceTerm signals host proxy to execute all pending ops,
+  // flagcxDeviceWait spins until all FIFO items consumed — full global barrier.
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
+                       uint32_t index)
+      : _useTermWait(true), _devCommCopy(net._devComm),
+        _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index) {}
+
+  // Intra-only barrier: IPC-based (multi-CTA)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
+                       const flagcxDevComm &devComm, uint32_t index)
+      : _useTermWait(false), _devCommCopy(),
+        _intra(coop, devComm, flagcxTeamIntra(devComm), index) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    if (_useTermWait) {
+      // World barrier: Term + Wait (all threads must sync before thread 0 acts)
+      FLAGCX_DEVICE_SYNC_THREADS();
+      if (threadIdx.x == 0) {
+        flagcxDeviceTerm(_devCommCopy);
+        flagcxDeviceWait(_devCommCopy);
+      }
+      FLAGCX_DEVICE_SYNC_THREADS();
+    } else {
+      // Intra-only barrier: IPC-based
+      _intra.sync(coop, order);
+    }
+  }
+};
+#endif
+
+#endif // FLAGCX_DEVICE_COMPILE (Sections 9b-12)
 
 #endif // FLAGCX_DEVICE_API_H_

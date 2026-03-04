@@ -192,6 +192,14 @@ flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem,
                                   flagcxDevComm_t devComm,
                                   flagcxStream_t stream);
 
+// GIN AlltoAll using one-sided put + signal via flagcxDevNet (Tier 1 only).
+// Returns flagcxInternalError on Tier 2 (GIN not available).
+flagcxResult_t flagcxGinAlltoAllDemo(flagcxDevMem_t sendMem,
+                                     flagcxDevMem_t recvMem, size_t count,
+                                     flagcxDataType_t datatype,
+                                     flagcxDevComm_t devComm,
+                                     flagcxStream_t stream);
+
 // Device memory mode — distinguishes IPC vs window registration at runtime.
 // Also defined in device_api/flagcx_device.h (with same include guard).
 #ifndef FLAGCX_DEV_MEM_TYPE_DEFINED
