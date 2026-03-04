@@ -421,13 +421,12 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     if (res == flagcxSuccess) {
       return flagcxSuccess;
     }
-    WARN("flagcxCommWindowRegister: backend returned %d, window not available",
+    WARN("flagcxCommWindowRegister: backend returned %d, window not available, "
+         "falling back",
          res);
-    *win = nullptr;
-    return flagcxNotSupported;
   }
   *win = nullptr;
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,

@@ -163,33 +163,55 @@ int main(int argc, char *argv[]) {
 
   // ==========================================================================
   // GIN AlltoAll test (requires -R 2 for window registration)
+  // Falls back to FIFO AlltoAll on Tier 2/3 when window not available
   // ==========================================================================
   if (local_register == 2) {
-    if (proc == 0 && color == 0) {
-      printf("\n# GIN AlltoAll test (window-mode devNet)\n");
-    }
-
-    // Register windows for GIN
+    // Register windows for GIN (returns nullptr on Tier 2/3)
     flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
     FLAGCXCHECK(
         flagcxCommWindowRegister(comm, sendbuff, max_bytes, &sendWin, 0));
     FLAGCXCHECK(
         flagcxCommWindowRegister(comm, recvbuff, max_bytes, &recvWin, 0));
 
-    // Create device communicator with GIN barrier + signal requirements
-    flagcxDevCommRequirements ginReqs =
-        FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    ginReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // ginBarrierCount
-    ginReqs.fields[3] = 1;                       // ginSignalCount
-    flagcxDevComm_t ginDevComm = nullptr;
-    FLAGCXCHECK(flagcxDevCommCreate(comm, &ginReqs, &ginDevComm));
+    // Shared pointers for whichever path we take
+    flagcxDevComm_t a2aDevComm = nullptr;
+    flagcxDevMem_t a2aSendMem = nullptr, a2aRecvMem = nullptr;
+    bool useGin = (sendWin != nullptr && recvWin != nullptr);
 
-    // Create window-mode device memory handles
-    flagcxDevMem_t ginSendMem = nullptr, ginRecvMem = nullptr;
-    FLAGCXCHECK(
-        flagcxDevMemCreate(comm, sendbuff, max_bytes, sendWin, &ginSendMem));
-    FLAGCXCHECK(
-        flagcxDevMemCreate(comm, recvbuff, max_bytes, recvWin, &ginRecvMem));
+    if (useGin) {
+      // Tier 1: GIN AlltoAll path
+      if (proc == 0 && color == 0) {
+        printf("\n# GIN AlltoAll test (window-mode devNet)\n");
+      }
+
+      // Create device communicator with GIN barrier + signal requirements
+      flagcxDevCommRequirements ginReqs =
+          FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      ginReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // ginBarrierCount
+      ginReqs.fields[3] = 1;                       // ginSignalCount
+      FLAGCXCHECK(flagcxDevCommCreate(comm, &ginReqs, &a2aDevComm));
+
+      // Create window-mode device memory handles
+      FLAGCXCHECK(
+          flagcxDevMemCreate(comm, sendbuff, max_bytes, sendWin, &a2aSendMem));
+      FLAGCXCHECK(
+          flagcxDevMemCreate(comm, recvbuff, max_bytes, recvWin, &a2aRecvMem));
+    } else {
+      // Tier 2: fallback to FIFO AlltoAll — create proper devComm and devMem
+      if (proc == 0 && color == 0) {
+        printf("\n# GIN AlltoAll test (fallback to FIFO, window not "
+               "available)\n");
+      }
+
+      flagcxDevCommRequirements fallbackReqs =
+          FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      FLAGCXCHECK(flagcxDevCommCreate(comm, &fallbackReqs, &a2aDevComm));
+
+      FLAGCXCHECK(
+          flagcxDevMemCreate(comm, sendbuff, max_bytes, NULL, &a2aSendMem));
+      FLAGCXCHECK(
+          flagcxDevMemCreate(comm, recvbuff, max_bytes, NULL, &a2aRecvMem));
+    }
 
     for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
       count = size / sizeof(float) / totalProcs;
@@ -213,8 +235,13 @@ int main(int argc, char *argv[]) {
 
       tim.reset();
       for (int i = 0; i < num_iters; i++) {
-        FLAGCXCHECK(flagcxGinAlltoAllDemo(ginSendMem, ginRecvMem, count,
-                                          DATATYPE, ginDevComm, stream));
+        if (useGin) {
+          FLAGCXCHECK(flagcxGinAlltoAllDemo(a2aSendMem, a2aRecvMem, count,
+                                            DATATYPE, a2aDevComm, stream));
+        } else {
+          FLAGCXCHECK(flagcxInterP2pDemo(a2aSendMem, a2aRecvMem, count,
+                                         DATATYPE, a2aDevComm, stream));
+        }
       }
       devHandle->streamSynchronize(stream);
       double elapsed_time = tim.elapsed() / num_iters;
@@ -245,16 +272,17 @@ int main(int argc, char *argv[]) {
       double bw = (double)(size) / 1.0E9 / elapsed_time;
 
       if (proc == 0 && color == 0) {
-        printf("GIN AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n", size,
-               elapsed_time * 1e6, bw, correct ? "PASS" : "FAIL");
+        printf("%s AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n",
+               useGin ? "GIN" : "FIFO", size, elapsed_time * 1e6, bw,
+               correct ? "PASS" : "FAIL");
       }
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    // Cleanup GIN resources
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, ginSendMem));
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, ginRecvMem));
-    FLAGCXCHECK(flagcxDevCommDestroy(comm, ginDevComm));
+    // Cleanup
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, a2aSendMem));
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, a2aRecvMem));
+    FLAGCXCHECK(flagcxDevCommDestroy(comm, a2aDevComm));
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
   }

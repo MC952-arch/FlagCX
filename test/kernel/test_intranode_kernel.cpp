@@ -75,34 +75,31 @@ int main(int argc, char *argv[]) {
   devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL);
 
   // Allocate registered buffer + device memory handle
-  // -R 1: IPC mode (flagcxCommRegister + flagcxDevMemCreate with win=NULL)
-  // -R 2: Window mode (flagcxCommWindowRegister + flagcxDevMemCreate with win)
+  // -R 0: Raw (cudaMalloc + implicit IPC via flagcxDevMemCreate)
+  // -R 1: IPC (cudaMalloc + flagcxCommRegister + flagcxDevMemCreate)
+  // -R 2: Window (VMM + flagcxCommWindowRegister + flagcxDevMemCreate)
   void *regBuff = nullptr;
   void *regHandle = nullptr;
   flagcxWindow_t win = nullptr;
   flagcxDevMem_t devMem = nullptr;
-  // IPC mode requires cudaMalloc memory (Decision 7.23):
-  // flagcxMemAlloc uses VMM (cuMemCreate) which is incompatible with
-  // cudaIpcGetMemHandle.
-  // TODO: Add VMM-compatible IPC via cuMemExportToShareableHandle in
-  // flagcxMemAlloc workflow.
-  if (localRegister == 1) {
+  // -R 0 and -R 1 use cudaMalloc (IPC-compatible).
+  // -R 2 uses flagcxMemAlloc (VMM/cuMemCreate, for window registration).
+  if (localRegister <= 1) {
     devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL);
   } else {
     FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
   }
   if (localRegister == 2) {
-    // Window mode (NCCL > 2.28 only)
+    // Window mode (NCCL > 2.28 only; graceful fallback on Tier 2/3)
     FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win, 0));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
   } else if (localRegister == 1) {
-    // IPC mode (all NCCL versions)
+    // IPC mode: explicit NIC registration + implicit IPC peer exchange
     FLAGCXCHECK(flagcxCommRegister(comm, regBuff, maxBytes, &regHandle));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, nullptr, &devMem));
   } else {
-    fprintf(stderr, "Error: -R must be 1 (IPC) or 2 (window) in this test\n");
-    MPI_Finalize();
-    return 1;
+    // Raw mode: no explicit registration, implicit IPC via flagcxDevMemCreate
+    FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, nullptr, &devMem));
   }
 
   // Host buffer for initialization and verification
@@ -111,7 +108,9 @@ int main(int argc, char *argv[]) {
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Intra-node AllReduce Benchmark\n");
     printf("# nRanks: %d, regMode: %s\n", totalProcs,
-           localRegister == 2 ? "window" : "ipc");
+           localRegister == 2   ? "window"
+           : localRegister == 1 ? "ipc"
+                                : "raw (implicit IPC)");
     printf("# %-12s %-14s %-14s %-14s %-8s\n", "Size(B)", "Time(us)",
            "AlgBW(GB/s)", "BusBW(GB/s)", "Correct");
   }
@@ -210,7 +209,7 @@ int main(int argc, char *argv[]) {
   } else if (localRegister == 1) {
     FLAGCXCHECK(flagcxCommDeregister(comm, regHandle));
   }
-  if (localRegister == 1) {
+  if (localRegister <= 1) {
     devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
   } else {
     FLAGCXCHECK(flagcxMemFree(regBuff, comm));

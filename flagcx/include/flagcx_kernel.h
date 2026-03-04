@@ -200,17 +200,6 @@ flagcxResult_t flagcxGinAlltoAllDemo(flagcxDevMem_t sendMem,
                                      flagcxDevComm_t devComm,
                                      flagcxStream_t stream);
 
-// Device memory mode — distinguishes IPC vs window registration at runtime.
-// Also defined in device_api/flagcx_device.h (with same include guard).
-#ifndef FLAGCX_DEV_MEM_TYPE_DEFINED
-#define FLAGCX_DEV_MEM_TYPE_DEFINED
-typedef enum {
-  flagcxDevMemIpc = 0,    // IPC peer pointer mode (all NCCL versions)
-  flagcxDevMemWindow = 1, // NCCL window mode (NCCL > 2.28 only)
-  flagcxDevMemRaw = 2     // Raw pointer wrap (no IPC, no peer access)
-} flagcxDevMemType;
-#endif
-
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
 #ifndef FLAGCX_DEVICE_CTA_COUNT
