@@ -317,8 +317,12 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
   if (*win == NULL) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
   }
-  return (flagcxResult_t)ncclCommWindowRegister(comm->base, buff, size,
-                                                &(*win)->base, winFlags);
+  flagcxResult_t res = (flagcxResult_t)ncclCommWindowRegister(
+      comm->base, buff, size, &(*win)->base, winFlags);
+  if (res == flagcxSuccess) {
+    (*win)->winFlags = winFlags;
+  }
+  return res;
 #else
   return flagcxNotSupported;
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)

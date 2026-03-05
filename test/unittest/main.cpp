@@ -353,16 +353,18 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
   // Create device communicator for P2P demo
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   flagcxDevComm_t devComm = nullptr;
-  flagcxDevCommCreate(comm, &reqs, &devComm);
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
   // Create raw device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem);
-  flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem);
+  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem),
+            flagcxSuccess);
 
-  // Launch P2P kernel demo
-  flagcxResult_t result = flagcxInterP2pDemo(sendMem, recvMem, countPerPeer,
-                                             flagcxFloat, devComm, stream);
+  // Launch AlltoAll kernel demo
+  flagcxResult_t result = flagcxInterAlltoAllDemo(
+      sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
 

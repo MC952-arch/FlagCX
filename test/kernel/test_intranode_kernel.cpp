@@ -91,7 +91,8 @@ int main(int argc, char *argv[]) {
   }
   if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only; graceful fallback on Tier 2/3)
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win, 0));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
+                                         FLAGCX_WIN_DEFAULT));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
   } else if (localRegister == 1) {
     // IPC mode: explicit NIC registration + implicit IPC peer exchange
@@ -121,8 +122,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numWarmupIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
-                               stream);
+      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
+                                           devComm, stream));
       devHandle->deviceMemcpy(recvbuff, regBuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
     }
@@ -150,8 +151,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
-                               stream);
+      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
+                                           devComm, stream));
       devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
     }

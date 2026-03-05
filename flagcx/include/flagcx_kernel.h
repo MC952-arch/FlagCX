@@ -131,28 +131,12 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop, int *idx);
 #ifdef COMPILE_KERNEL
-// Forward declaration for device-side Send/Recv/Term/Wait
-struct flagcxDevComm;
-
-FLAGCX_DEVICE_DECORATOR
-flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr, uint64_t count,
-                       uint64_t peerRank, uint64_t datatype, uint64_t type);
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
 
 FLAGCX_DEVICE_DECORATOR size_t
 getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
 
-FLAGCX_DEVICE_DECORATOR flagcxResult_t
-flagcxDeviceSend(const void *sendbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, const flagcxDevComm &devComm);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t
-flagcxDeviceRecv(void *recvbuff, size_t count, flagcxDataType_t datatype,
-                 int peer, const flagcxDevComm &devComm);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t
-flagcxDeviceTerm(const flagcxDevComm &devComm);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t
-flagcxDeviceWait(const flagcxDevComm &devComm);
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
@@ -186,19 +170,14 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem,
-                                  flagcxDevMem_t recvMem, size_t count,
-                                  flagcxDataType_t datatype,
-                                  flagcxDevComm_t devComm,
-                                  flagcxStream_t stream);
-
-// GIN AlltoAll using one-sided put + signal via flagcxDevNet (Tier 1 only).
-// Returns flagcxInternalError on Tier 2 (GIN not available).
-flagcxResult_t flagcxGinAlltoAllDemo(flagcxDevMem_t sendMem,
-                                     flagcxDevMem_t recvMem, size_t count,
-                                     flagcxDataType_t datatype,
-                                     flagcxDevComm_t devComm,
-                                     flagcxStream_t stream);
+// Unified inter-node AlltoAll demo.
+// Runtime dispatch: one-sided (put + signal) if window available (Tier 1 -R 2),
+// two-sided (send/recv + FIFO) otherwise (all tiers, all -R modes).
+flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
+                                       flagcxDevMem_t recvMem, size_t count,
+                                       flagcxDataType_t datatype,
+                                       flagcxDevComm_t devComm,
+                                       flagcxStream_t stream);
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
