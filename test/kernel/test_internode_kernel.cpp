@@ -1,6 +1,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 
@@ -8,14 +9,14 @@
 
 int main(int argc, char *argv[]) {
   parser args(argc, argv);
-  size_t min_bytes = args.getMinBytes();
-  size_t max_bytes = args.getMaxBytes();
-  int step_factor = args.getStepFactor();
-  int num_warmup_iters = args.getWarmupIters();
-  int num_iters = args.getTestIters();
-  int print_buffer = args.isPrintBuffer();
-  uint64_t split_mask = args.getSplitMask();
-  int local_register = args.getLocalRegister();
+  size_t minBytes = args.getMinBytes();
+  size_t maxBytes = args.getMaxBytes();
+  int stepFactor = args.getStepFactor();
+  int numWarmupIters = args.getWarmupIters();
+  int numIters = args.getTestIters();
+  int printBuffer = args.isPrintBuffer();
+  uint64_t splitMask = args.getSplitMask();
+  int localRegister = args.getLocalRegister();
 
   flagcxHandlerGroup_t handler;
   FLAGCXCHECK(flagcxHandleInit(&handler));
@@ -28,7 +29,7 @@ int main(int argc, char *argv[]) {
   int totalProcs = 1, proc = 0;
   MPI_Comm splitComm;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
-             splitComm, split_mask);
+             splitComm, splitMask);
 
   int nGpu;
   devHandle->getDeviceCount(&nGpu);
@@ -49,70 +50,75 @@ int main(int argc, char *argv[]) {
   size_t count;
   timer tim;
 
-  if (local_register == 2) {
+  if (localRegister == 2) {
     // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
-    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, max_bytes, comm));
-    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, max_bytes, comm));
-  } else if (local_register == 1) {
+    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, maxBytes, comm));
+  } else if (localRegister == 1) {
     // Zero-copy: alloc + register for NIC RDMA access
-    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, max_bytes));
-    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, max_bytes));
-    FLAGCXCHECK(flagcxCommRegister(comm, sendbuff, max_bytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvbuff, max_bytes, &recvHandle));
+    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendbuff, maxBytes, &sendHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvbuff, maxBytes, &recvHandle));
   } else {
     // Unregistered
-    devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
-    devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
+    devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL);
+    devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL);
   }
-  hello = malloc(max_bytes);
-  memset(hello, 0, max_bytes);
+  hello = malloc(maxBytes);
+  memset(hello, 0, maxBytes);
 
-  // Create device communicator for P2P demo
+  // Create device communicator for AlltoAll demo
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   // Create raw device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  FLAGCXCHECK(flagcxDevMemCreate(NULL, sendbuff, max_bytes, NULL, &sendMem));
-  FLAGCXCHECK(flagcxDevMemCreate(NULL, recvbuff, max_bytes, NULL, &recvMem));
+  FLAGCXCHECK(flagcxDevMemCreate(NULL, sendbuff, maxBytes, NULL, &sendMem));
+  FLAGCXCHECK(flagcxDevMemCreate(NULL, recvbuff, maxBytes, NULL, &recvMem));
 
-  // Warm-up for large size
-  // count is per-peer, total buffer = nRanks * count elements
-  for (int i = 0; i < num_warmup_iters; i++) {
-    // launch p2p kernel
-    FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem,
-                                   max_bytes / sizeof(float) / totalProcs,
-                                   DATATYPE, devComm, stream));
+  if (proc == 0 && color == 0) {
+    printf("\n# FIFO AlltoAll test (two-sided send/recv, -R %d)\n",
+           localRegister);
+  }
+
+  // Warm-up
+  for (int i = 0; i < numWarmupIters; i++) {
+    FLAGCXCHECK(flagcxInterAlltoAllDemo(
+        sendMem, recvMem,
+        std::max((size_t)1, maxBytes / sizeof(float) / totalProcs), DATATYPE,
+        devComm, stream));
+  }
+  devHandle->streamSynchronize(stream);
+  for (int i = 0; i < numWarmupIters; i++) {
+    FLAGCXCHECK(flagcxInterAlltoAllDemo(
+        sendMem, recvMem,
+        std::max((size_t)1, minBytes / sizeof(float) / totalProcs), DATATYPE,
+        devComm, stream));
   }
   devHandle->streamSynchronize(stream);
 
-  // Warm-up for small size
-  for (int i = 0; i < num_warmup_iters; i++) {
-    // launch p2p kernel
-    FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem,
-                                   min_bytes / sizeof(float) / totalProcs,
-                                   DATATYPE, devComm, stream));
-  }
-  devHandle->streamSynchronize(stream);
-
-  for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
-    // count is per-peer elements; total buffer = nRanks * count
+  for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
     count = size / sizeof(float) / totalProcs;
+    if (count == 0)
+      count = 1;
 
-    // Initialize sendbuff: all elements = proc (my rank)
-    // After alltoall, recvbuff[p] should contain p's rank value
+    // Initialize sendbuff: sendbuff[r * count + i] = proc * 1000 + r * 100 + i
+    // After alltoall: recvbuff[src * count + i] = src * 1000 + proc * 100 + i
     float *helloFloat = (float *)hello;
-    size_t totalElements = size / sizeof(float);
-    for (size_t i = 0; i < totalElements; i++) {
-      helloFloat[i] = (float)proc;
+    for (int r = 0; r < totalProcs; r++) {
+      for (size_t i = 0; i < count; i++) {
+        helloFloat[r * count + i] = (float)(proc * 1000 + r * 100 + (int)i);
+      }
     }
-
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
                             NULL);
+    memset(hello, 0, size);
+    devHandle->deviceMemcpy(recvbuff, hello, size, flagcxMemcpyHostToDevice,
+                            NULL);
 
-    // Print sendbuff from rank 0 and last rank
-    if (color == 0 && print_buffer && (proc == 0 || proc == totalProcs - 1)) {
+    if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
       printf("rank%d sendbuff:", proc);
       for (int p = 0; p < totalProcs; p++) {
         printf(" %.0f", helloFloat[p * count]);
@@ -123,84 +129,93 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     tim.reset();
-    for (int i = 0; i < num_iters; i++) {
-      // launch p2p kernel
-      FLAGCXCHECK(flagcxInterP2pDemo(sendMem, recvMem, count, DATATYPE, devComm,
-                                     stream));
+    for (int i = 0; i < numIters; i++) {
+      FLAGCXCHECK(flagcxInterAlltoAllDemo(sendMem, recvMem, count, DATATYPE,
+                                          devComm, stream));
     }
     devHandle->streamSynchronize(stream);
+    double elapsedTime = tim.elapsed() / numIters;
 
-    double elapsed_time = tim.elapsed() / num_iters;
-    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
-                  MPI_COMM_WORLD);
-    elapsed_time /= worldSize;
-
-    double base_bw = (double)(size) / 1.0E9 / elapsed_time;
-    double alg_bw = base_bw;
-    double factor = 1;
-    double bus_bw = base_bw * factor;
-    if (proc == 0 && color == 0) {
-      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: %lf "
-             "GB/s; Bus bandwidth: %lf GB/s\n",
-             size, elapsed_time, alg_bw, bus_bw);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
+    // Verify correctness
     memset(hello, 0, size);
     devHandle->deviceMemcpy(hello, recvbuff, size, flagcxMemcpyDeviceToHost,
                             NULL);
-    // Print recvbuff from rank 0 and last rank
-    // Expected: 0 1 2 3 ... nRanks-1 (one value per peer)
-    if (color == 0 && print_buffer && (proc == 0 || proc == totalProcs - 1)) {
+    helloFloat = (float *)hello;
+    bool correct = true;
+    for (int src = 0; src < totalProcs && correct; src++) {
+      for (size_t i = 0; i < count && correct; i++) {
+        float expected = (float)(src * 1000 + proc * 100 + (int)i);
+        if (helloFloat[src * count + i] != expected) {
+          correct = false;
+          if (proc == 0) {
+            printf("  MISMATCH at recvbuff[%d*%zu+%zu]: got %.0f expected "
+                   "%.0f\n",
+                   src, count, i, helloFloat[src * count + i], expected);
+          }
+        }
+      }
+    }
+
+    if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
       printf("rank%d recvbuff:", proc);
       for (int p = 0; p < totalProcs; p++) {
         printf(" %.0f", helloFloat[p * count]);
       }
       printf("\n");
     }
+
+    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+    elapsedTime /= worldSize;
+    double bw = (double)(size) / 1.0E9 / elapsedTime;
+
+    if (proc == 0 && color == 0) {
+      printf("FIFO AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n", size,
+             elapsedTime * 1e6, bw, correct ? "PASS" : "FAIL");
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
   }
 
   // ==========================================================================
-  // GIN AlltoAll test (requires -R 2 for window registration)
+  // Window AlltoAll test (requires -R 2 for window registration)
   // Falls back to FIFO AlltoAll on Tier 2/3 when window not available
   // ==========================================================================
-  if (local_register == 2) {
-    // Register windows for GIN (returns nullptr on Tier 2/3)
+  if (localRegister == 2) {
+    // Register windows (returns nullptr on Tier 2/3)
     flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-    FLAGCXCHECK(
-        flagcxCommWindowRegister(comm, sendbuff, max_bytes, &sendWin, 0));
-    FLAGCXCHECK(
-        flagcxCommWindowRegister(comm, recvbuff, max_bytes, &recvWin, 0));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendbuff, maxBytes, &sendWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvbuff, maxBytes, &recvWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC));
 
     // Shared pointers for whichever path we take
     flagcxDevComm_t a2aDevComm = nullptr;
     flagcxDevMem_t a2aSendMem = nullptr, a2aRecvMem = nullptr;
-    bool useGin = (sendWin != nullptr && recvWin != nullptr);
+    bool useWindow = (sendWin != nullptr && recvWin != nullptr);
 
-    if (useGin) {
-      // Tier 1: GIN AlltoAll path
+    if (useWindow) {
+      // Tier 1: Window AlltoAll path (one-sided put + signal)
       if (proc == 0 && color == 0) {
-        printf("\n# GIN AlltoAll test (window-mode devNet)\n");
+        printf("\n# Window AlltoAll test (one-sided devNet)\n");
       }
 
-      // Create device communicator with GIN barrier + signal requirements
-      flagcxDevCommRequirements ginReqs =
+      // Create device communicator with barrier + signal requirements
+      flagcxDevCommRequirements interReqs =
           FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      ginReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // ginBarrierCount
-      ginReqs.fields[3] = 1;                       // ginSignalCount
-      FLAGCXCHECK(flagcxDevCommCreate(comm, &ginReqs, &a2aDevComm));
+      interReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // barrierCount
+      interReqs.fields[3] = 1;                       // signalCount
+      FLAGCXCHECK(flagcxDevCommCreate(comm, &interReqs, &a2aDevComm));
 
       // Create window-mode device memory handles
       FLAGCXCHECK(
-          flagcxDevMemCreate(comm, sendbuff, max_bytes, sendWin, &a2aSendMem));
+          flagcxDevMemCreate(comm, sendbuff, maxBytes, sendWin, &a2aSendMem));
       FLAGCXCHECK(
-          flagcxDevMemCreate(comm, recvbuff, max_bytes, recvWin, &a2aRecvMem));
+          flagcxDevMemCreate(comm, recvbuff, maxBytes, recvWin, &a2aRecvMem));
     } else {
-      // Tier 2: fallback to FIFO AlltoAll — create proper devComm and devMem
+      // Tier 2/3: fallback to FIFO AlltoAll (two-sided send/recv)
       if (proc == 0 && color == 0) {
-        printf("\n# GIN AlltoAll test (fallback to FIFO, window not "
-               "available)\n");
+        printf("\n# FIFO AlltoAll test (window not available, two-sided "
+               "fallback)\n");
       }
 
       flagcxDevCommRequirements fallbackReqs =
@@ -208,13 +223,15 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(flagcxDevCommCreate(comm, &fallbackReqs, &a2aDevComm));
 
       FLAGCXCHECK(
-          flagcxDevMemCreate(comm, sendbuff, max_bytes, NULL, &a2aSendMem));
+          flagcxDevMemCreate(comm, sendbuff, maxBytes, NULL, &a2aSendMem));
       FLAGCXCHECK(
-          flagcxDevMemCreate(comm, recvbuff, max_bytes, NULL, &a2aRecvMem));
+          flagcxDevMemCreate(comm, recvbuff, maxBytes, NULL, &a2aRecvMem));
     }
 
-    for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
+    for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
       count = size / sizeof(float) / totalProcs;
+      if (count == 0)
+        count = 1;
 
       // Initialize sendbuff: sendbuff[r * count + i] = proc * 1000 + r * 100 +
       // i After alltoall: recvbuff[src * count + i] = src * 1000 + proc * 100 +
@@ -231,20 +248,23 @@ int main(int argc, char *argv[]) {
       devHandle->deviceMemcpy(recvbuff, hello, size, flagcxMemcpyHostToDevice,
                               NULL);
 
+      if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
+        printf("rank%d sendbuff:", proc);
+        for (int p = 0; p < totalProcs; p++) {
+          printf(" %.0f", helloFloat[p * count]);
+        }
+        printf("\n");
+      }
+
       MPI_Barrier(MPI_COMM_WORLD);
 
       tim.reset();
-      for (int i = 0; i < num_iters; i++) {
-        if (useGin) {
-          FLAGCXCHECK(flagcxGinAlltoAllDemo(a2aSendMem, a2aRecvMem, count,
+      for (int i = 0; i < numIters; i++) {
+        FLAGCXCHECK(flagcxInterAlltoAllDemo(a2aSendMem, a2aRecvMem, count,
                                             DATATYPE, a2aDevComm, stream));
-        } else {
-          FLAGCXCHECK(flagcxInterP2pDemo(a2aSendMem, a2aRecvMem, count,
-                                         DATATYPE, a2aDevComm, stream));
-        }
       }
       devHandle->streamSynchronize(stream);
-      double elapsed_time = tim.elapsed() / num_iters;
+      double elapsedTime = tim.elapsed() / numIters;
 
       // Verify correctness
       memset(hello, 0, size);
@@ -266,14 +286,22 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
+      if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
+        printf("rank%d recvbuff:", proc);
+        for (int p = 0; p < totalProcs; p++) {
+          printf(" %.0f", helloFloat[p * count]);
+        }
+        printf("\n");
+      }
+
+      MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
                     MPI_COMM_WORLD);
-      elapsed_time /= worldSize;
-      double bw = (double)(size) / 1.0E9 / elapsed_time;
+      elapsedTime /= worldSize;
+      double bw = (double)(size) / 1.0E9 / elapsedTime;
 
       if (proc == 0 && color == 0) {
         printf("%s AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n",
-               useGin ? "GIN" : "FIFO", size, elapsed_time * 1e6, bw,
+               useWindow ? "Window" : "FIFO", size, elapsedTime * 1e6, bw,
                correct ? "PASS" : "FAIL");
       }
       MPI_Barrier(MPI_COMM_WORLD);
@@ -297,28 +325,22 @@ int main(int argc, char *argv[]) {
   // Destroy device communicator before comm destroy
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
-  if (local_register == 1) {
+  if (localRegister == 1) {
     // deregister buffer (must be done before comm destroy)
     FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
     FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
   }
 
-  // Free -R 2 (VMM) buffers before comm destroy (flagcxMemFree needs comm
-  // alive)
-  if (local_register == 2) {
+  // Free -R 1/-R 2 buffers before comm destroy (flagcxMemFree needs comm alive)
+  if (localRegister >= 1) {
     FLAGCXCHECK(flagcxMemFree(sendbuff, comm));
     FLAGCXCHECK(flagcxMemFree(recvbuff, comm));
   }
 
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
-  // The kernel proxy thread holds a CUDA stream that can interfere with
-  // deviceFree
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
-  if (local_register == 1) {
-    FLAGCXCHECK(flagcxMemFree(sendbuff));
-    FLAGCXCHECK(flagcxMemFree(recvbuff));
-  } else if (local_register == 0) {
+  if (localRegister == 0) {
     devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }

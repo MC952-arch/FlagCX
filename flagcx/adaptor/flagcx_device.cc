@@ -240,6 +240,13 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->fifoBuffer =
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
+  // ---- Grid sync counter (for multi-block two-sided kernels) ----
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->gridDoneCounter,
+                                          sizeof(unsigned int), flagcxMemDevice,
+                                          NULL));
+  deviceAdaptor->deviceMemset(handle->gridDoneCounter, 0, sizeof(unsigned int),
+                              flagcxMemDevice, NULL);
+
   // ---- IPC barrier layer: if barriers requested ----
   if (reqs->fields[0] > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, handle);
@@ -276,14 +283,9 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 #endif
 
   *devComm = handle;
-#ifdef FLAGCX_DEVICE_API_NCCL
   INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s",
        handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
        handle->hasNcclDev ? " + ncclDevComm" : "");
-#else
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s",
-       handle->rank, handle->barrierPeers ? " + IPC barriers" : "");
-#endif
   return flagcxSuccess;
 }
 
@@ -319,6 +321,9 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (devComm->localBarrierFlags) {
     deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
                               NULL);
+  }
+  if (devComm->gridDoneCounter) {
+    deviceAdaptor->deviceFree(devComm->gridDoneCounter, flagcxMemDevice, NULL);
   }
 
   free(devComm->localRankToRank);
@@ -366,25 +371,23 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       }
     }
 
-#ifdef FLAGCX_DEVICE_API_NCCL
     // ---- Window layer: if win provided and valid ----
     if (win != nullptr) {
+      handle->hasWindow = true;
+#ifdef FLAGCX_DEVICE_API_NCCL
+      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
       handle->ncclWin = win->base;
       handle->winHandle = (void *)win;
-      handle->hasWindow = true;
-    }
 #endif
+    }
   }
 
   *devMem = handle;
-#ifdef FLAGCX_DEVICE_API_NCCL
   INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
        handle->devPeerPtrs ? " + IPC peerPtrs" : "",
-       handle->hasWindow ? " + ncclWindow" : "");
-#else
-  INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s", buff,
-       handle->devPeerPtrs ? " + IPC peerPtrs" : "");
-#endif
+       handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
+                                                : " + Window (basic)")
+                         : "");
   return flagcxSuccess;
 }
 

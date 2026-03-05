@@ -8,8 +8,10 @@
  *    Tier 2 (fallback):    IPC peer pointers + atomics barrier.
  *    Same kernel code compiles for both tiers.
  *
- * 2. Inter-node P2P — FIFO-based device Send/Recv.
- *    Uses flagcxDeviceSend/Recv/Term/Wait via devComm FIFO.
+ * 2. Inter-node AlltoAll — unified kernel with runtime dispatch.
+ *    One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
+ *    Two-sided path (all tiers):       send/recv + FIFO via flagcxDevNet,
+ *      with atomic last-block grid sync using flagcxDeviceAtomicFetchAdd.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
@@ -30,11 +32,20 @@ template <typename T>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxIntraAllReduceKernel(flagcxDevComm devComm, flagcxDevMem mem,
                                size_t offset, size_t count) {
+  // AllReduce requires peer pointer access (window or IPC)
+  if (!mem._hasWindow && mem.peerPtrs == nullptr) {
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("flagcxIntraAllReduceKernel: no peer access (no window, no IPC), "
+             "skipping\n");
+    }
+    return;
+  }
+
   flagcxTeam_t intra = flagcxTeamIntra(devComm);
 
   // Create barrier session using simplified FlagCX API (4 params).
   flagcxIntraBarrierSession<flagcxCoopBlock> bar{
-      flagcxCoopBlock(), devComm, intra, blockIdx.x};
+      flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X};
 
   // Pre-reduce barrier (acquire — ensure peer writes are visible)
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderAcquire);
@@ -42,8 +53,8 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   const int rank = devComm.getIntraRank();
   const int nRanks = devComm.getIntraSize();
   const int globalTid =
-      threadIdx.x + blockDim.x * (rank + blockIdx.x * nRanks);
-  const int globalNthreads = blockDim.x * gridDim.x * nRanks;
+      FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_DIM_X * (rank + FLAGCX_BLOCK_IDX_X * nRanks);
+  const int globalNthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X * nRanks;
 
   // Phase 1: Reduce — sum data from all intra-node peers
   // Phase 2: Write — store result to all intra-node peers
@@ -120,127 +131,106 @@ flagcxResult_t flagcxIntraAllReduceDemo(void *buff, flagcxDevMem_t devMem,
 }
 
 // ==========================================================================
-// 2. Inter-node P2P
+// 2. Inter-node AlltoAll — Unified kernel with runtime dispatch
+//
+// One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
+// Two-sided path (all tiers): send/recv via FIFO + atomic last-block grid sync.
+//
+// Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
+// sendMem: data at offset peerRank * count * elementSize is sent to peerRank
+// recvMem: data from peerRank is stored at offset peerRank * count * elementSize
 // ==========================================================================
 
-#define NBLOCKS 1
-#define NTHREADS_PER_BLOCK 32
+FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
+    flagcxInterAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+                              size_t count, flagcxDataType_t datatype,
+                              flagcxDevComm devComm,
+                              unsigned int *gridDoneCounter) {
 
-// P2P kernel implementing alltoall pattern (one thread per peer)
-// Each thread handles all communication with its assigned peer
-// This preserves send/recv ordering per-peer for correct P2P matching
-// Note: Uses single block so __syncthreads() can synchronize all threads
-// Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size count
-// sendMem: data at offset peerRank * count is sent to peerRank
-// recvMem: data from peerRank is stored at offset peerRank * count
-FLAGCX_GLOBAL_DECORATOR void flagcxInterP2pKernel(
-    flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
-    flagcxDataType_t datatype, flagcxDevComm devComm) {
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
-  int nRanks = devComm.getSize();
+  if (devComm._hasBase && sendMem._isSymmetric) {
+    // ======== One-sided path (Tier 1 with windows) ========
+    flagcxDevNet net(devComm, 0);
+    uint64_t signalValue = net.readSignal(0);
 
-  // Each thread handles one peer (tid = peer index)
-  if (tid < nRanks) {
-    int peerRank = tid;
+    flagcxBarrierSession<flagcxCoopBlock> bar(flagcxCoopBlock(),
+                                              flagcxTeamTagWorld{}, net,
+                                              FLAGCX_BLOCK_IDX_X);
+    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-    // Calculate offsets for this peer's send and receive buffers
-    size_t offset = peerRank * count * elementSize;
-    const void *peerSendBuff = flagcxGetLocalPointer(sendMem, offset);
-    void *peerRecvBuff = flagcxGetLocalPointer(recvMem, offset);
+    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+    int myRank = devComm.getRank();
+    int nRanks = devComm.getSize();
+    size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
-    // Trigger P2P operations
-    flagcxDeviceSend(peerSendBuff, count, datatype, peerRank, devComm);
-    flagcxDeviceRecv(peerRecvBuff, count, datatype, peerRank, devComm);
-  }
+    for (int r = tid; r < nRanks; r += nthreads) {
+      net.put(flagcxTeamWorld(devComm), r, recvMem, myRank * size, sendMem,
+              r * size, size, flagcxDevNet_SignalInc{0});
+    }
 
-  // Ensure all threads finish enqueuing before termination
-  FLAGCX_DEVICE_SYNC_THREADS();
+    net.waitSignal(flagcxCoopBlock(), 0, signalValue + nRanks);
+    net.flush(flagcxCoopBlock());
 
-  // Only thread 0 sends termination and waits
-  if (tid == 0) {
-    flagcxDeviceTerm(devComm);
-    flagcxDeviceWait(devComm);
+  } else {
+    // ======== Two-sided path (all tiers, send/recv + FIFO) ========
+    flagcxDevNet net(devComm);
+    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+    size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
+    int nRanks = devComm.getSize();
+
+    // Each thread handles one or more peers (grid-stride loop)
+    for (int peerRank = tid; peerRank < nRanks; peerRank += nthreads) {
+      size_t offset = peerRank * count * elementSize;
+      net.send(sendMem, offset, count, datatype, peerRank);
+      net.recv(recvMem, offset, count, datatype, peerRank);
+    }
+
+    // Grid sync: atomic last-block pattern
+    // All threads in this block sync first, then thread 0 atomically
+    // increments the counter. The last block to arrive calls term() + wait().
+    FLAGCX_DEVICE_SYNC_THREADS();
+
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      // AcqRel ordering provides threadfence semantics — ensures all
+      // FIFO writes from this block are visible before last block acts
+      unsigned int arrived =
+          flagcxDeviceAtomicFetchAdd<unsigned int, flagcxDeviceScopeDevice>(
+              gridDoneCounter, 1u, flagcxDeviceMemoryOrderAcqRel);
+
+      if (arrived == FLAGCX_GRID_DIM_X - 1) {
+        // Last block: send termination and wait for all FIFO entries
+        net.term();
+        net.wait();
+
+        // Reset counter for next kernel launch
+        flagcxDeviceAtomicStore<unsigned int, flagcxDeviceScopeDevice>(
+            gridDoneCounter, 0u, flagcxDeviceMemoryOrderRelaxed);
+      }
+    }
   }
 }
 
-// Alltoall demo: each rank sends different data to each peer and receives from
-// all. sendMem/recvMem: size = nRanks * count elements (data for/from peer i
-// at offset i * count)
-flagcxResult_t flagcxInterP2pDemo(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
-                                  size_t count, flagcxDataType_t datatype,
-                                  flagcxDevComm_t devComm,
-                                  flagcxStream_t stream) {
-  if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr) {
-    return flagcxInternalError;
-  }
-
-  // Unified constructors — work for both Tier 1 and Tier 2
-  flagcxDevComm devCommKernel(*devComm);
-  flagcxDevMem sendMemKernel(*sendMem);
-  flagcxDevMem recvMemKernel(*recvMem);
-
-  // Launch kernel with (NBLOCKS, NTHREADS_PER_BLOCK) (one thread per potential
-  // peer) Single block ensures __syncthreads() synchronizes all threads before
-  // Term/Wait Each thread handles communication with one peer, preserving
-  // ordering
-  flagcxInterP2pKernel<<<NBLOCKS, NTHREADS_PER_BLOCK, 0,
-                         *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      sendMemKernel, recvMemKernel, count, datatype, devCommKernel);
-
-  return flagcxSuccess;
-}
-
-// ==========================================================================
-// 3. GIN AlltoAll (Tier 1 only — requires FLAGCX_DEVICE_API_NCCL)
-// ==========================================================================
-
-#ifdef FLAGCX_DEVICE_API_NCCL
-template <typename T>
-FLAGCX_GLOBAL_DECORATOR void flagcxGinAlltoAllKernel(
-    flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
-    flagcxDevComm devComm) {
-  flagcxDevNet net(devComm, 0);
-  uint64_t signalValue = net.readSignal(0);
-
-  flagcxBarrierSession<flagcxCoopBlock> bar(flagcxCoopBlock(),
-                                            flagcxTeamTagWorld{}, net,
-                                            blockIdx.x);
-  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  int nthreads = blockDim.x * gridDim.x;
-  int myRank = devComm.getRank();
-  int nRanks = devComm.getSize();
-  size_t size = count * sizeof(T);
-
-  for (int r = tid; r < nRanks; r += nthreads) {
-    net.put(flagcxTeamWorld(devComm), r, recvMem, myRank * size, sendMem,
-            r * size, size, flagcxDevNet_SignalInc{0});
-  }
-
-  net.waitSignal(flagcxCoopBlock(), 0, signalValue + nRanks);
-  net.flush(flagcxCoopBlock());
-}
-#endif // FLAGCX_DEVICE_API_NCCL
-
-flagcxResult_t flagcxGinAlltoAllDemo(flagcxDevMem_t sendMem,
-                                     flagcxDevMem_t recvMem, size_t count,
-                                     flagcxDataType_t datatype,
-                                     flagcxDevComm_t devComm,
-                                     flagcxStream_t stream) {
-#ifdef FLAGCX_DEVICE_API_NCCL
+// Host-side unified alltoall demo function.
+// Runtime dispatch: one-sided (put) if window available, two-sided (send/recv)
+// otherwise. Uses same launch config for both paths.
+flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
+                                       flagcxDevMem_t recvMem, size_t count,
+                                       flagcxDataType_t datatype,
+                                       flagcxDevComm_t devComm,
+                                       flagcxStream_t stream) {
   if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr) {
     return flagcxInternalError;
   }
 
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxGinAlltoAllKernel<float>
+
+  flagcxInterAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, dc);
-  return flagcxSuccess;
-#else
-  return flagcxInternalError; // GIN not available on Tier 2
-#endif
+         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc,
+                                    devComm->gridDoneCounter);
+
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

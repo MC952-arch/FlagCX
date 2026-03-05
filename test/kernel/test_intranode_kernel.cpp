@@ -82,16 +82,17 @@ int main(int argc, char *argv[]) {
   void *regHandle = nullptr;
   flagcxWindow_t win = nullptr;
   flagcxDevMem_t devMem = nullptr;
-  // -R 0 and -R 1 use cudaMalloc (IPC-compatible).
-  // -R 2 uses flagcxMemAlloc (VMM/cuMemCreate, for window registration).
-  if (localRegister <= 1) {
+  // -R 0 uses cudaMalloc (IPC-compatible).
+  // -R 1/-R 2 use flagcxMemAlloc with comm.
+  if (localRegister == 0) {
     devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL);
   } else {
     FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
   }
   if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only; graceful fallback on Tier 2/3)
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win, 0));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
+                                         FLAGCX_WIN_DEFAULT));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
   } else if (localRegister == 1) {
     // IPC mode: explicit NIC registration + implicit IPC peer exchange
@@ -121,8 +122,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numWarmupIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
-                               stream);
+      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
+                                           devComm, stream));
       devHandle->deviceMemcpy(recvbuff, regBuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
     }
@@ -150,8 +151,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE, devComm,
-                               stream);
+      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
+                                           devComm, stream));
       devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
     }
@@ -209,17 +210,16 @@ int main(int argc, char *argv[]) {
   } else if (localRegister == 1) {
     FLAGCXCHECK(flagcxCommDeregister(comm, regHandle));
   }
-  if (localRegister <= 1) {
+  if (localRegister == 0) {
     devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
   } else {
     FLAGCXCHECK(flagcxMemFree(regBuff, comm));
   }
+  FLAGCXCHECK(flagcxCommDestroy(comm));
   devHandle->streamDestroy(stream);
   devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
   devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   free(hostbuff);
-
-  FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxHandleFree(handler));
 
   MPI_Finalize();
