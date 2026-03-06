@@ -220,8 +220,8 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 // already containing the input data.  The kernel runs an in-place
 // AllReduce across all intra-node GPUs.
 // devComm must be created via flagcxDevCommCreate beforehand.
-flagcxResult_t flagcxIntraAllReduceDemo(void *buff, flagcxDevMem_t devMem,
-                                        size_t count, flagcxDataType_t datatype,
+flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
+                                        flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
                                         flagcxStream_t stream);
 #endif

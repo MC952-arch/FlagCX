@@ -49,8 +49,8 @@ int main(int argc, char *argv[]) {
              splitComm, splitMask);
 
   int nGpu;
-  devHandle->getDeviceCount(&nGpu);
-  devHandle->setDevice(worldRank % nGpu);
+  FLAGCXCHECK(devHandle->getDeviceCount(&nGpu));
+  FLAGCXCHECK(devHandle->setDevice(worldRank % nGpu));
 
   if (proc == 0)
     FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
@@ -67,12 +67,14 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   flagcxStream_t stream;
-  devHandle->streamCreate(&stream);
+  FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   // Allocate device buffers
   void *sendbuff, *recvbuff;
-  devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL);
-  devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL);
+  FLAGCXCHECK(
+      devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL));
+  FLAGCXCHECK(
+      devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL));
 
   // Allocate registered buffer + device memory handle
   // -R 0: Raw (cudaMalloc + implicit IPC via flagcxDevMemCreate)
@@ -85,7 +87,8 @@ int main(int argc, char *argv[]) {
   // -R 0 uses cudaMalloc (IPC-compatible).
   // -R 1/-R 2 use flagcxMemAlloc with comm.
   if (localRegister == 0) {
-    devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL);
+    FLAGCXCHECK(
+        devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL));
   } else {
     FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
   }
@@ -120,14 +123,16 @@ int main(int argc, char *argv[]) {
   {
     size_t count = maxBytes / sizeof(float);
     for (int i = 0; i < numWarmupIters; i++) {
-      devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
-                              flagcxMemcpyDeviceToDevice, stream);
-      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
-                                           devComm, stream));
-      devHandle->deviceMemcpy(recvbuff, regBuff, count * sizeof(float),
-                              flagcxMemcpyDeviceToDevice, stream);
+      FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, sendbuff,
+                                          count * sizeof(float),
+                                          flagcxMemcpyDeviceToDevice, stream));
+      FLAGCXCHECK(
+          flagcxIntraAllReduceDemo(devMem, count, DATATYPE, devComm, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, regBuff,
+                                          count * sizeof(float),
+                                          flagcxMemcpyDeviceToDevice, stream));
     }
-    devHandle->streamSynchronize(stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
   }
 
   for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
@@ -141,22 +146,22 @@ int main(int argc, char *argv[]) {
     for (size_t i = 0; i < count; i++) {
       hbuf[i] = (float)(proc + 1);
     }
-    devHandle->deviceMemcpy(sendbuff, hostbuff, bytes, flagcxMemcpyHostToDevice,
-                            NULL);
+    FLAGCXCHECK(devHandle->deviceMemcpy(sendbuff, hostbuff, bytes,
+                                        flagcxMemcpyHostToDevice, NULL));
 
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Timed iterations
     timer tim;
     for (int i = 0; i < numIters; i++) {
-      devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
-                              flagcxMemcpyDeviceToDevice, stream);
-      FLAGCXCHECK(flagcxIntraAllReduceDemo(regBuff, devMem, count, DATATYPE,
-                                           devComm, stream));
-      devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
-                              flagcxMemcpyDeviceToDevice, stream);
+      FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
+                                          flagcxMemcpyDeviceToDevice, stream));
+      FLAGCXCHECK(
+          flagcxIntraAllReduceDemo(devMem, count, DATATYPE, devComm, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
+                                          flagcxMemcpyDeviceToDevice, stream));
     }
-    devHandle->streamSynchronize(stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
     double elapsed = tim.elapsed() / numIters;
 
     // Reduce elapsed time across ranks for consistent reporting
@@ -171,8 +176,8 @@ int main(int argc, char *argv[]) {
 
     // Verify correctness: expected value = sum(1..nRanks) = nRanks*(nRanks+1)/2
     memset(hostbuff, 0, bytes);
-    devHandle->deviceMemcpy(hostbuff, recvbuff, bytes, flagcxMemcpyDeviceToHost,
-                            NULL);
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostbuff, recvbuff, bytes,
+                                        flagcxMemcpyDeviceToHost, NULL));
 
     float expected = (float)(totalProcs * (totalProcs + 1)) / 2.0f;
     int correct = 1;
@@ -211,14 +216,14 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxCommDeregister(comm, regHandle));
   }
   if (localRegister == 0) {
-    devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
+    FLAGCXCHECK(devHandle->deviceFree(regBuff, flagcxMemDevice, NULL));
   } else {
     FLAGCXCHECK(flagcxMemFree(regBuff, comm));
   }
+  FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
-  devHandle->streamDestroy(stream);
-  devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
+  FLAGCXCHECK(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL));
   free(hostbuff);
   FLAGCXCHECK(flagcxHandleFree(handler));
 

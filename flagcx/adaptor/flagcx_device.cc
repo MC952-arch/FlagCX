@@ -167,8 +167,8 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
 
   // Zero barrier flags
-  deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0, barrierSize,
-                              flagcxMemDevice, NULL);
+  FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
+                                          barrierSize, flagcxMemDevice, NULL));
 
   // Step 2: Exchange barrier IPC handles with all ranks
   struct flagcxP2pIpcDesc *allBarrierDescs = (struct flagcxP2pIpcDesc *)calloc(
@@ -244,17 +244,19 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->gridDoneCounter,
                                           sizeof(unsigned int), flagcxMemDevice,
                                           NULL));
-  deviceAdaptor->deviceMemset(handle->gridDoneCounter, 0, sizeof(unsigned int),
-                              flagcxMemDevice, NULL);
+  FLAGCXCHECK(deviceAdaptor->deviceMemset(
+      handle->gridDoneCounter, 0, sizeof(unsigned int), flagcxMemDevice, NULL));
 
   // ---- IPC barrier layer: if barriers requested ----
   if (reqs->fields[0] > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, handle);
     if (res != flagcxSuccess) {
       WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
-           "falling back to FIFO-only barriers",
+           "barriers unavailable",
            res);
-      // barrierPeers stays nullptr — FIFO-only mode
+      deviceAdaptor->deviceFree(handle->gridDoneCounter, flagcxMemDevice, NULL);
+      free(handle);
+      return res;
     }
   }
 
@@ -356,6 +358,14 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;
+
+#ifndef FLAGCX_DEVICE_API_NCCL
+    if (win != nullptr) {
+      WARN("flagcxDevMemCreate: window provided but NCCL device API "
+           "unavailable, falling back to IPC");
+      win = nullptr;
+    }
+#endif
 
     // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
     if (win == nullptr) {

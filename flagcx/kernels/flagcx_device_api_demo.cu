@@ -96,8 +96,8 @@ template cudaError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
 
 // Host-side demo function — launches the kernel using caller-provided
 // registered buffer and device communicator.
-flagcxResult_t flagcxIntraAllReduceDemo(void *buff, flagcxDevMem_t devMem,
-                                        size_t count, flagcxDataType_t datatype,
+flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
+                                        flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
                                         flagcxStream_t stream) {
   if (devComm == nullptr || devMem == nullptr) {
