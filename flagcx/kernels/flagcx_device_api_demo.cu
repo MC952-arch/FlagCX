@@ -8,10 +8,11 @@
  *    Tier 2 (fallback):    IPC peer pointers + atomics barrier.
  *    Same kernel code compiles for both tiers.
  *
- * 2. Inter-node AlltoAll — unified kernel with runtime dispatch.
- *    One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
- *    Two-sided path (all tiers):       per-CTA channels with
- *      flagcxBarrierSession (term + wait via per-CTA FIFO).
+ * 2. Inter-node AlltoAll — unified kernel, same structure for both paths.
+ *    Thread 0 block-stride loop dispatches communication ops.
+ *    One-sided path (Tier 1 + window): put + waitSignal + flush.
+ *    Two-sided path (all tiers):       send + recv via FIFO.
+ *    Both paths wrapped by bar.sync() pre/post barriers.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
@@ -131,11 +132,10 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
 }
 
 // ==========================================================================
-// 2. Inter-node AlltoAll — Unified kernel with runtime dispatch
+// 2. Inter-node AlltoAll — Unified kernel
 //
-// One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
-// Two-sided path (all tiers):       per-CTA channels with
-//   flagcxBarrierSession (term + wait via per-CTA FIFO).
+// Both one-sided (put) and two-sided (send/recv) paths share the same
+// structure: thread-0 block-stride loop over peers, wrapped by bar.sync().
 //
 // Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
 // sendMem: data at offset peerRank * count * elementSize is sent to peerRank
@@ -147,60 +147,46 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
                               size_t count, flagcxDataType_t datatype,
                               flagcxDevComm devComm) {
 
-  if (devComm._hasBase && sendMem._isSymmetric) {
-    // ======== One-sided path (Tier 1 with windows) ========
-    flagcxDevNet net(devComm, 0);
-    uint64_t signalValue = net.readSignal(0);
+  flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
+  flagcxBarrierSession<flagcxCoopBlock> bar(
+      flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
 
-    flagcxBarrierSession<flagcxCoopBlock> bar(flagcxCoopBlock(),
-                                              flagcxTeamTagWorld{}, net,
-                                              FLAGCX_BLOCK_IDX_X);
-    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+  // Pre-communication barrier
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  int nRanks = devComm.getSize();
+  size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+  bool oneSided = devComm._hasBase && sendMem._isSymmetric;
+
+  // Thread 0 dispatches all communication ops (block-stride over peers).
+  // Both put() and send()/recv() are control-plane descriptors — NIC or
+  // proxy does the actual data movement.
+  if (FLAGCX_THREAD_IDX_X == 0) {
     int myRank = devComm.getRank();
-    int nRanks = devComm.getSize();
-    size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+    uint64_t signalValue = 0;
+    if (oneSided) signalValue = net.readSignal(0);
 
-    for (int r = tid; r < nRanks; r += nthreads) {
-      net.put(flagcxTeamWorld(devComm), r, recvMem, myRank * size, sendMem,
-              r * size, size, flagcxDevNet_SignalInc{0});
-    }
-
-    net.waitSignal(flagcxCoopBlock(), 0, signalValue + nRanks);
-    net.flush(flagcxCoopBlock());
-
-  } else {
-    // ======== Two-sided path (all tiers, per-CTA channels) ========
-    // Each CTA uses its own FIFO channel (indexed by FLAGCX_BLOCK_IDX_X).
-    // flagcxBarrierSession::sync() calls term()+wait() on the per-CTA channel.
-    flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
-    flagcxBarrierSession<flagcxCoopBlock> bar(
-        flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-
-    // Pre-communication barrier
-    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-
-    int nRanks = devComm.getSize();
-    size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
-
-    // Each CTA handles a subset of peers (block-stride loop).
-    // Only thread 0 enqueues FIFO triggers — send/recv are control-plane
-    // operations (one descriptor per op), unlike put() which is per-thread
-    // data movement.
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
-           peer += FLAGCX_GRID_DIM_X) {
-        size_t offset = peer * count * elementSize;
+    for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
+         peer += FLAGCX_GRID_DIM_X) {
+      if (oneSided) {
+        net.put(flagcxTeamWorld(devComm), peer, recvMem, myRank * size,
+                sendMem, peer * size, size, flagcxDevNet_SignalInc{0},
+                flagcxDevNet_None{}, flagcxCoopThread{});
+      } else {
+        size_t offset = peer * size;
         net.send(sendMem, offset, count, datatype, peer);
         net.recv(recvMem, offset, count, datatype, peer);
       }
     }
 
-    // Post-communication barrier (term + wait via per-CTA FIFO channel)
-    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+    if (oneSided) {
+      net.waitSignal(flagcxCoopThread{}, 0, signalValue + nRanks);
+      net.flush(flagcxCoopThread{});
+    }
   }
+
+  // Post-communication barrier
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 }
 
 // Host-side unified alltoall demo function.

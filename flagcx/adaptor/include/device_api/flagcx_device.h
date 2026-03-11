@@ -323,6 +323,18 @@ struct flagcxCoopBlock {
 };
 
 // ============================================================
+// Section 6b: flagcxCoopThread — Single-Thread Cooperative Group
+//
+// On NVIDIA: wraps ncclCoopThread.
+// Used for thread-0-only control-plane ops (put, waitSignal, flush).
+// ============================================================
+struct flagcxCoopThread {
+  FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
+};
+
+// ============================================================
 // Section 7: flagcxIntraBarrierSession — Intra-Node Barrier
 //
 // On NVIDIA (NCCL > 2.28): wraps ncclLsaBarrierSession.
@@ -624,6 +636,9 @@ toNccl(flagcxDevNet_CounterInc a) {
   return {a.counter};
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopCta toNccl(flagcxCoopBlock) {
+  return {};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopThread toNccl(flagcxCoopThread) {
   return {};
 }
 #endif // FLAGCX_DEVICE_API_NCCL
