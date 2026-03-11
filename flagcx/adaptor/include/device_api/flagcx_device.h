@@ -47,9 +47,6 @@ struct flagcxDevCommInternal {
   void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   bool hasNcclDev;  // true if NCCL device comm layer is available (Tier 1)
 
-  // ---- Grid sync counter (for multi-block two-sided kernels) ----
-  unsigned int *gridDoneCounter; // device-allocated atomic counter
-
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
   uint32_t *
@@ -1012,9 +1009,10 @@ struct flagcxBarrierSession {
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
     if (_useTermWait) {
-      // World barrier: Wait drains FIFO (all threads sync before thread 0 acts)
+      // World barrier: term + wait via FIFO (global grid barrier)
       coop.sync();
       if (threadIdx.x == 0) {
+        flagcxDevNet(_devCommCopy).term();
         flagcxDevNet(_devCommCopy).wait();
       }
       coop.sync();

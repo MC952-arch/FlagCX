@@ -8,6 +8,7 @@
 #include "adaptor.h"
 #include "comm.h"
 #include "flagcx_hetero.h"
+#include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
 #include "ib_common.h"
 #include "info.h"
 #include "net.h"
@@ -1037,6 +1038,7 @@ out:
 
 void *flagcxProxyKernelService(void *args) {
   int groupCount = 0;
+  int termCount = 0;
   flagcxDeviceTrigger_t ptr = NULL;
   flagcxFifo_t fifo = NULL;
   struct flagcxHeteroComm *comm = (struct flagcxHeteroComm *)args;
@@ -1144,14 +1146,19 @@ void *flagcxProxyKernelService(void *args) {
         break;
       case flagcxDevicePrimTerm:
         TRACE(FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimTerm called by proxyKernelService.",
-              comm->rank);
-        if (groupCount > 0) {
-          res = flagcxHeteroGroupEnd();
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
-                comm->rank);
-          groupCount--;
+              "rank=%d flagcxDevicePrimTerm called by proxyKernelService "
+              "termCount=%d/%d.",
+              comm->rank, termCount + 1, FLAGCX_DEVICE_CTA_COUNT);
+        termCount++;
+        if (termCount == FLAGCX_DEVICE_CTA_COUNT) {
+          if (groupCount > 0) {
+            res = flagcxHeteroGroupEnd();
+            TRACE(FLAGCX_P2P,
+                  "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
+                  comm->rank);
+            groupCount--;
+          }
+          termCount = 0;
         }
         break;
       case flagcxDevicePrimPut: {

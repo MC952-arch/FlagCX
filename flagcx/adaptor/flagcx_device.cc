@@ -240,13 +240,6 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->fifoBuffer =
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
-  // ---- Grid sync counter (for multi-block two-sided kernels) ----
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->gridDoneCounter,
-                                          sizeof(unsigned int), flagcxMemDevice,
-                                          NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemset(
-      handle->gridDoneCounter, 0, sizeof(unsigned int), flagcxMemDevice, NULL));
-
   // ---- IPC barrier layer: if barriers requested ----
   if (reqs->fields[0] > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, handle);
@@ -254,7 +247,6 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
            "barriers unavailable",
            res);
-      deviceAdaptor->deviceFree(handle->gridDoneCounter, flagcxMemDevice, NULL);
       free(handle);
       return res;
     }
@@ -324,10 +316,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
                               NULL);
   }
-  if (devComm->gridDoneCounter) {
-    deviceAdaptor->deviceFree(devComm->gridDoneCounter, flagcxMemDevice, NULL);
-  }
-
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;
