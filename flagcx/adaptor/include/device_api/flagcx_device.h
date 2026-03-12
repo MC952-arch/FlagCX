@@ -996,47 +996,31 @@ struct flagcxBarrierSession {
   }
 };
 #else
-// Tier 2: World barrier uses Term/Wait (FIFO-based, covers both intra +
-// inter)
-//           Intra barrier uses flagcxIntraBarrierSession (IPC-based, multi-CTA)
-//           Inter barrier not available standalone (use World instead)
+// Tier 2: Both World and Intra barriers use signal-based intra barrier.
+//         Data communication completion (term+wait) is handled explicitly
+//         in the kernel, not by the barrier session.
 template <typename Coop>
 struct flagcxBarrierSession {
-  bool _useTermWait;                      // true=World (Term/Wait), false=Intra
-  flagcxDevComm _devCommCopy;             // copy for Term/Wait in World mode
-  flagcxIntraBarrierSession<Coop> _intra; // used in Intra mode
+  flagcxIntraBarrierSession<Coop> _intra; // signal-based intra barrier
 
-  // World barrier: Wait via FIFO (single-CTA constraint)
-  // flagcxDevNet::wait() drains FIFO — spins until all items consumed.
+  // World barrier: signal-based intra barrier
+  // Data sync (inter-node) is handled by explicit term()+wait() in kernel.
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
                        uint32_t index)
-      : _useTermWait(true), _devCommCopy(net._devComm),
-        _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index) {}
+      : _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index) {}
 
   // Intra-only barrier: IPC-based (multi-CTA)
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
                        const flagcxDevComm &devComm, uint32_t index)
-      : _useTermWait(false), _devCommCopy(),
-        _intra(coop, devComm, flagcxTeamIntra(devComm), index) {}
+      : _intra(coop, devComm, flagcxTeamIntra(devComm), index) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_useTermWait) {
-      // World barrier: term + wait via FIFO (global grid barrier)
-      coop.sync();
-      if (threadIdx.x == 0) {
-        flagcxDevNet(_devCommCopy).term();
-        flagcxDevNet(_devCommCopy).wait();
-      }
-      coop.sync();
-    } else {
-      // Intra-only barrier: IPC-based
-      _intra.sync(coop, order);
-    }
+    _intra.sync(coop, order);
   }
 };
 #endif

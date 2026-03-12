@@ -182,6 +182,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     if (oneSided) {
       net.waitSignal(flagcxCoopThread{}, 0, signalValue + nRanks);
       net.flush(flagcxCoopThread{});
+    } else {
+      // Two-sided: tell proxy this CTA's data comm is done, wait completion
+      net.term();
+      net.wait();
     }
   }
 
@@ -209,5 +213,9 @@ flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
+
+  // Advance barrier epoch (2 syncs per kernel, each += intraSize-1)
+  devComm->barrierEpoch += 2 * (devComm->intraSize - 1);
+
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
