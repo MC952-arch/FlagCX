@@ -7,6 +7,7 @@
 #include "proxy.h"
 #include "adaptor.h"
 #include "comm.h"
+#include "device_api/flagcx_device.h" // flagcxDevCommInternal, signalDevComm
 #include "flagcx_hetero.h"
 #include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
 #include "ib_common.h"
@@ -1195,6 +1196,41 @@ void *flagcxProxyKernelService(void *args) {
               comm->rank);
         deviceAdaptor->streamSynchronize(stream);
         break;
+      case flagcxDevicePrimBarrierSignal: {
+        // Inter-node signal relay: fan out isend to all inter-node peers.
+        // The ctaIndex is encoded in the addr field of the trigger.
+        flagcxDevComm_t dc = comm->signalDevComm;
+        if (dc && dc->nInterPeers > 0) {
+          uint32_t ctaIdx = (uint32_t)ptr->getAddr();
+          struct flagcxNetAdaptor *net =
+              (struct flagcxNetAdaptor *)dc->netAdaptorPtr;
+          // Signal message: {ctaIndex(4B), reserved(4B)} = 8 bytes
+          const int signalMsgSize = 8;
+          TRACE(FLAGCX_P2P,
+                "rank=%d flagcxDevicePrimBarrierSignal cta=%u nInterPeers=%d.",
+                comm->rank, ctaIdx, dc->nInterPeers);
+          if (dc->nInterPeers > FLAGCX_MAX_INTER_PEERS) {
+            WARN("nInterPeers (%d) exceeds FLAGCX_MAX_INTER_PEERS (%d)",
+                 dc->nInterPeers, FLAGCX_MAX_INTER_PEERS);
+            break;
+          }
+          for (int p = 0; p < dc->nInterPeers; p++) {
+            uint32_t msg[2] = {ctaIdx, 0};
+            memcpy(&dc->signalSendBufs[p * signalMsgSize], msg, signalMsgSize);
+            void *req = nullptr;
+            while (req == nullptr) {
+              net->isend(dc->signalSendComms[p],
+                         &dc->signalSendBufs[p * signalMsgSize], signalMsgSize,
+                         0, dc->signalSendMr, nullptr, &req);
+            }
+            int done = 0;
+            while (!done) {
+              net->test(req, &done, nullptr);
+            }
+          }
+        }
+        break;
+      }
       default:
         break;
     }

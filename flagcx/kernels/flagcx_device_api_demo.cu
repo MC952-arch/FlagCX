@@ -214,8 +214,16 @@ flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
 
   cudaError_t err = cudaGetLastError();
 
-  // Advance barrier epoch (2 syncs per kernel, each += intraSize-1)
-  devComm->barrierEpoch += 2 * (devComm->intraSize - 1);
+  // Advance barrier epoch:
+  // - Single-node: 2 syncs × 1 intra arrive × (intraSize-1) = 2*(intraSize-1)
+  // - Multi-node:  2 syncs × 2 intra arrives × (intraSize-1) = 4*(intraSize-1)
+  int intraArrivesPerSync = (devComm->nInterPeers > 0) ? 2 : 1;
+  devComm->barrierEpoch +=
+      2 * intraArrivesPerSync * (devComm->intraSize - 1);
+
+  // Advance inter-node barrier epoch (2 syncs per kernel, each += nInterPeers)
+  // Only meaningful on leader, but safe to advance on all ranks.
+  devComm->interBarrierEpoch += 2 * devComm->nInterPeers;
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
