@@ -183,7 +183,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
       net.waitSignal(flagcxCoopThread{}, 0, signalValue + nRanks);
       net.flush(flagcxCoopThread{});
     } else {
-      // Two-sided: tell proxy this CTA's data comm is done, wait completion
+      // Two-sided: all CTAs must enqueue term/wait, even idle ones
+      // (blockIdx >= nRanks), because the proxy counts term entries from all
+      // CTA_COUNT channels to trigger groupEnd. Idle CTAs' term/wait are
+      // benign — no data was enqueued so wait completes instantly.
       net.term();
       net.wait();
     }

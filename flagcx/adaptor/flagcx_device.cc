@@ -14,8 +14,10 @@
 
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel.h"
-#include "net.h" // flagcxNetHandle_t
-#include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include "net.h"     // flagcxNetHandle_t
+#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include <algorithm> // std::min, std::max
+#include <unistd.h>  // usleep
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -160,15 +162,19 @@ static void *flagcxSignalRecvThread(void *arg) {
 
   // Per-peer outstanding request
   void **requests = (void **)calloc(nPeers, sizeof(void *));
+  if (requests == nullptr)
+    return nullptr;
 
-  while (!dc->signalRecvStop) {
+  int idleIters = 0;
+  while (!__atomic_load_n(&dc->signalRecvStop, __ATOMIC_ACQUIRE)) {
+    bool progress = false;
     for (int p = 0; p < nPeers; p++) {
       // Post irecv if no outstanding request
       if (requests[p] == nullptr) {
         void *data = &dc->signalRecvBufs[p * sizeof(flagcxSignalMessage)];
         size_t sizes[1] = {sizeof(flagcxSignalMessage)};
         int tags[1] = {0};
-        void *mhandles[1] = {dc->signalRecvMr};
+        void *mhandles[1] = {dc->signalRecvMrs[p]};
         void *phandles[1] = {nullptr};
         net->irecv(dc->signalRecvComms[p], 1, &data, sizes, tags, mhandles,
                    phandles, &requests[p]);
@@ -190,10 +196,19 @@ static void *flagcxSignalRecvThread(void *arg) {
             ((volatile uint64_t *)dc->interSignalFlagsHost)[ctaIdx]++;
           }
           requests[p] = nullptr; // will re-post on next iteration
+          progress = true;
         }
       }
     }
-    sched_yield();
+    if (progress) {
+      idleIters = 0;
+    } else {
+      idleIters++;
+      if (idleIters < 64)
+        sched_yield();
+      else
+        usleep(1); // adaptive backoff: reduce CPU when idle
+    }
   }
 
   free(requests);
@@ -300,10 +315,16 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     struct bootstrapState *bootstrap = comm->bootstrap;
     int netDev = hetero->netDev;
     struct flagcxNetAdaptor *net = hetero->netAdaptor;
-    const int signalTag = 2001; // unique tag for signal connections
+    // Use a deterministic tag based on both ranks so that the tag is
+    // symmetric: rank A sending to rank B uses the same tag as rank B
+    // sending to rank A.  signalTag + min(myRank, peer) * nRanks +
+    // max(myRank, peer) is unique per pair and order-independent.
+    const int signalTagBase = 2001;
 
     for (int p = 0; p < nInterPeers; p++) {
       int peer = interPeerRanks[p];
+      int pairTag = signalTagBase + std::min(myRank, peer) * nRanks +
+                    std::max(myRank, peer);
 
       // Listen for incoming connection from this peer
       flagcxNetHandle_t listenHandle = {};
@@ -313,10 +334,10 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
       // Exchange listen handles via bootstrap
       flagcxNetHandle_t peerHandle = {};
-      FLAGCXCHECKGOTO(bootstrapSend(bootstrap, peer, signalTag + p,
-                                    &listenHandle, sizeof(flagcxNetHandle_t)),
+      FLAGCXCHECKGOTO(bootstrapSend(bootstrap, peer, pairTag, &listenHandle,
+                                    sizeof(flagcxNetHandle_t)),
                       res, fail);
-      FLAGCXCHECKGOTO(bootstrapRecv(bootstrap, peer, signalTag + p, &peerHandle,
+      FLAGCXCHECKGOTO(bootstrapRecv(bootstrap, peer, pairTag, &peerHandle,
                                     sizeof(flagcxNetHandle_t)),
                       res, fail);
 
@@ -346,24 +367,32 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     }
   }
 
-  // Step 4: Register MR for staging buffers
-  if (handle->signalSendComms[0]) {
-    FLAGCXCHECKGOTO(hetero->netAdaptor->regMr(
-                        handle->signalSendComms[0], handle->signalSendBufs,
-                        nInterPeers * sizeof(flagcxSignalMessage),
-                        FLAGCX_PTR_HOST, &handle->signalSendMr),
-                    res, fail);
+  // Step 4: Register MR per-peer (each IB connection may have a different PD)
+  handle->signalSendMrs = (void **)calloc(nInterPeers, sizeof(void *));
+  handle->signalRecvMrs = (void **)calloc(nInterPeers, sizeof(void *));
+  if (!handle->signalSendMrs || !handle->signalRecvMrs) {
+    res = flagcxSystemError;
+    goto fail;
   }
-  if (handle->signalRecvComms[0]) {
-    FLAGCXCHECKGOTO(hetero->netAdaptor->regMr(
-                        handle->signalRecvComms[0], handle->signalRecvBufs,
-                        nInterPeers * sizeof(flagcxSignalMessage),
-                        FLAGCX_PTR_HOST, &handle->signalRecvMr),
-                    res, fail);
+  for (int p = 0; p < nInterPeers; p++) {
+    FLAGCXCHECKGOTO(
+        hetero->netAdaptor->regMr(
+            handle->signalSendComms[p],
+            &handle->signalSendBufs[p * sizeof(flagcxSignalMessage)],
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            &handle->signalSendMrs[p]),
+        res, fail);
+    FLAGCXCHECKGOTO(
+        hetero->netAdaptor->regMr(
+            handle->signalRecvComms[p],
+            &handle->signalRecvBufs[p * sizeof(flagcxSignalMessage)],
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            &handle->signalRecvMrs[p]),
+        res, fail);
   }
 
   // Step 5: Start receiver thread
-  handle->signalRecvStop = 0;
+  __atomic_store_n(&handle->signalRecvStop, 0, __ATOMIC_RELEASE);
   {
     int err = pthread_create(&handle->signalRecvThread, nullptr,
                              flagcxSignalRecvThread, handle);
@@ -402,19 +431,29 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
       (struct flagcxNetAdaptor *)handle->netAdaptorPtr;
 
   // Stop recv thread
-  handle->signalRecvStop = 1;
+  __atomic_store_n(&handle->signalRecvStop, 1, __ATOMIC_RELEASE);
   if (handle->signalRecvThread) {
     pthread_join(handle->signalRecvThread, nullptr);
   }
 
-  // Deregister MR
-  if (handle->signalSendMr && handle->signalSendComms &&
-      handle->signalSendComms[0]) {
-    net->deregMr(handle->signalSendComms[0], handle->signalSendMr);
+  // Deregister MR per-peer
+  if (handle->signalSendMrs) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalSendMrs[p] && handle->signalSendComms &&
+          handle->signalSendComms[p]) {
+        net->deregMr(handle->signalSendComms[p], handle->signalSendMrs[p]);
+      }
+    }
+    free(handle->signalSendMrs);
   }
-  if (handle->signalRecvMr && handle->signalRecvComms &&
-      handle->signalRecvComms[0]) {
-    net->deregMr(handle->signalRecvComms[0], handle->signalRecvMr);
+  if (handle->signalRecvMrs) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalRecvMrs[p] && handle->signalRecvComms &&
+          handle->signalRecvComms[p]) {
+        net->deregMr(handle->signalRecvComms[p], handle->signalRecvMrs[p]);
+      }
+    }
+    free(handle->signalRecvMrs);
   }
 
   // Close connections
@@ -570,9 +609,12 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   {
     flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
     if (res != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d)",
+      WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
+           "falling back to single-node mode",
            res);
-      // Non-fatal: inter-node barriers won't work but intra-node still can
+      // Reset so kernel uses single-node barrier path (no inter barrier)
+      handle->nInterPeers = 0;
+      handle->isInterLeader = false;
     }
   }
 

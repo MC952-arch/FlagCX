@@ -35,6 +35,8 @@
 // ============================================================
 // Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
 //
+#define FLAGCX_MAX_INTER_PEERS 256
+
 // Backing struct for flagcxDevComm_t (declared in flagcx_kernel.h).
 // Populated by flagcxDevCommCreate, freed by flagcxDevCommDestroy.
 // Unified capability-based design: baseline always populated,
@@ -70,10 +72,10 @@ struct flagcxDevCommInternal {
   void **signalRecvComms; // [nInterPeers] netAdaptor recvComm
   // Signal recv thread
   pthread_t signalRecvThread;
-  volatile int signalRecvStop;
-  // MR + staging buffers
-  void *signalSendMr;
-  void *signalRecvMr;
+  int signalRecvStop;
+  // MR + staging buffers (per-peer for IB PD safety)
+  void **signalSendMrs;
+  void **signalRecvMrs;
   char *signalSendBufs; // [nInterPeers * 8]
   char *signalRecvBufs; // [nInterPeers * 8]
   // netAdaptor pointer (cached for recv thread)
@@ -1097,7 +1099,7 @@ struct flagcxBarrierSession {
 };
 #else
 // Tier 2: Composes intra (IPC atomicAdd) + inter (FIFO Signal relay).
-//         Two-phase pattern for multi-node:
+//         Three-phase pattern for multi-node:
 //           Phase 1: intra sync (all local ranks ensure data visible)
 //           Phase 2: leader inter signal+wait (non-leaders skip)
 //           Phase 3: intra sync (broadcasts inter completion)

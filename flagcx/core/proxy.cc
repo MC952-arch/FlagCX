@@ -1209,23 +1209,27 @@ void *flagcxProxyKernelService(void *args) {
           TRACE(FLAGCX_P2P,
                 "rank=%d flagcxDevicePrimBarrierSignal cta=%u nInterPeers=%d.",
                 comm->rank, ctaIdx, dc->nInterPeers);
+          // Post all isends first (pipelined), then poll completions
           if (dc->nInterPeers > FLAGCX_MAX_INTER_PEERS) {
             WARN("nInterPeers (%d) exceeds FLAGCX_MAX_INTER_PEERS (%d)",
                  dc->nInterPeers, FLAGCX_MAX_INTER_PEERS);
             break;
           }
+          void *signalReqs[FLAGCX_MAX_INTER_PEERS];
           for (int p = 0; p < dc->nInterPeers; p++) {
             uint32_t msg[2] = {ctaIdx, 0};
             memcpy(&dc->signalSendBufs[p * signalMsgSize], msg, signalMsgSize);
-            void *req = nullptr;
-            while (req == nullptr) {
+            signalReqs[p] = nullptr;
+            while (signalReqs[p] == nullptr) {
               net->isend(dc->signalSendComms[p],
                          &dc->signalSendBufs[p * signalMsgSize], signalMsgSize,
-                         0, dc->signalSendMr, nullptr, &req);
+                         0, dc->signalSendMrs[p], nullptr, &signalReqs[p]);
             }
+          }
+          for (int p = 0; p < dc->nInterPeers; p++) {
             int done = 0;
             while (!done) {
-              net->test(req, &done, nullptr);
+              net->test(signalReqs[p], &done, nullptr);
             }
           }
         }
