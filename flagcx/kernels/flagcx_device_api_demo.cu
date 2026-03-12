@@ -125,8 +125,8 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
     return flagcxInvalidArgument;
   }
 
-  // Advance barrier epoch for next launch (2 syncs per kernel invocation)
-  devComm->barrierEpoch += 2;
+  // Advance barrier epoch for next launch (2 syncs, each += nLocalRanks-1)
+  devComm->barrierEpoch += 2 * (devComm->intraSize - 1);
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

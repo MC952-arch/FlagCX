@@ -49,10 +49,10 @@ struct flagcxDevCommInternal {
 
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
-  uint32_t *
+  uint64_t *
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
-  uint32_t *localBarrierFlags; // this rank's barrier memory (CTA_COUNT entries)
-  uint32_t barrierEpoch; // monotonically increasing, set by host before launch
+  uint64_t *localBarrierFlags; // this rank's signal array (CTA_COUNT entries)
+  uint64_t barrierEpoch; // monotonically increasing, set by host before launch
   // Host-side cleanup bookkeeping (not passed to kernel)
   void **peerBarrierPtrs; // host array of IPC-mapped pointers (for close)
   int *localRankToRank;   // intra-node rank mapping (for IPC exchange)
@@ -117,8 +117,8 @@ struct flagcxDevComm {
   bool _hasBase;     // true if NCCL device comm layer is available (Tier 1)
 
   // ---- IPC layer (may be nullptr if IPC barrier not set up) ----
-  uint32_t **_barrierPeers;
-  uint32_t _barrierEpoch;
+  uint64_t **_barrierPeers;
+  uint64_t _barrierEpoch;
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- NCCL layer (valid only if _hasBase is true) ----
@@ -128,7 +128,7 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
         _fifoBuffer(nullptr), _hasBase(false), _barrierPeers(nullptr),
-        _barrierEpoch(0)
+        _barrierEpoch(0ULL)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base()
@@ -369,17 +369,18 @@ struct flagcxIntraBarrierSession {
     _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
   }
 #else
-  // Fallback: flag-based barrier using IPC-mapped peer memory + atomics
-  uint32_t **_peerBarriers;
+  // Fallback: epoch-based barrier using IPC-mapped peer signals + atomics.
+  // NCCL-style: atomicAdd fan-out to peers + wait on own signal.
+  uint64_t **_peerSignals;
   int _nRanks, _myRank;
   uint32_t _ctaIndex;
-  uint32_t _phase;
+  uint64_t _epoch;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
                             flagcxTeam_t team, uint32_t index)
-      : _peerBarriers(devComm._barrierPeers), _nRanks(team.nRanks),
-        _myRank(team.rank), _ctaIndex(index), _phase(devComm._barrierEpoch) {}
+      : _peerSignals(devComm._barrierPeers), _nRanks(team.nRanks),
+        _myRank(team.rank), _ctaIndex(index), _epoch(devComm._barrierEpoch) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
@@ -396,22 +397,23 @@ struct flagcxIntraBarrierSession {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _phase++;
+    // Advance epoch: each peer will atomicAdd(1) to our signal
+    _epoch += _nRanks - 1;
     coop.sync();
-    if (threadIdx.x == 0) {
-      // Signal: write my counter with release ordering
-      flagcxDeviceAtomicStore(&_peerBarriers[_myRank][_ctaIndex], _phase,
-                              flagcxDeviceMemoryOrderRelease);
-      // Wait: spin until all peers reach this phase
-      for (int p = 0; p < _nRanks; p++) {
-        if (p == _myRank)
-          continue;
-        int iter = 0;
-        while (flagcxDeviceAtomicLoad(&_peerBarriers[p][_ctaIndex],
-                                      flagcxDeviceMemoryOrderAcquire) <
-               _phase) {
-          spinBackoff(iter++);
-        }
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      // Fan-out: signal all peers (release — our writes visible before signal)
+      for (int i = 0; i < _nRanks - 1; i++) {
+        int peer = 1 + _myRank + i;
+        if (peer >= _nRanks)
+          peer -= _nRanks;
+        flagcxDeviceAtomicFetchAdd(&_peerSignals[peer][_ctaIndex], (uint64_t)1,
+                                   flagcxDeviceMemoryOrderRelease);
+      }
+      // Wait: spin on own signal reaching epoch (acquire — peer writes visible)
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_peerSignals[_myRank][_ctaIndex],
+                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
+        spinBackoff(iter++);
       }
     }
     coop.sync();
