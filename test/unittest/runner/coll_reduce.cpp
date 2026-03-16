@@ -2,7 +2,6 @@
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include <cstring>
-#include <iostream>
 #include <vector>
 
 TEST_F(FlagCXCollTest, Reduce) {
@@ -10,7 +9,7 @@ TEST_F(FlagCXCollTest, Reduce) {
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
-    ((float *)hostsendbuff)[i] = i % 10;
+    ((float *)hostsendbuff)[i] = rank * 1000.0f + (i % 10);
   }
 
   devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
@@ -28,10 +27,12 @@ TEST_F(FlagCXCollTest, Reduce) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   if (rank == 0) {
-    // Reduce with Sum to root=0: result[i] = sendbuff[i] * nranks
+    // Reduce with Sum to root=0: result[i] = sum over all ranks of (rank *
+    // 1000.0f + (i % 10))
     std::vector<float> expected(count);
     for (size_t i = 0; i < count; i++) {
-      expected[i] = static_cast<float>(i % 10) * nranks;
+      expected[i] =
+          nranks * (nranks - 1) / 2.0f * 1000.0f + nranks * (float)(i % 10);
     }
     EXPECT_TRUE(verifyBuffer(static_cast<float *>(hostrecvbuff),
                              expected.data(), count));

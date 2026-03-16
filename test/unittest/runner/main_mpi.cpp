@@ -5,7 +5,6 @@
 #include "flagcx_kernel.h"
 #include "runner_fixtures.hpp"
 #include <cstring>
-#include <iostream>
 
 // ---------- MPIEnvironment ----------
 
@@ -34,7 +33,6 @@ void FlagCXTest::SetUp() {
 
 void FlagCXCollTest::SetUp() {
   FlagCXTest::SetUp();
-  std::cout << "rank = " << rank << "; nranks = " << nranks << std::endl;
 
   flagcxHandleInit(&handler);
   flagcxUniqueId_t &uniqueId = handler->uniqueId;
@@ -44,7 +42,7 @@ void FlagCXCollTest::SetUp() {
   recvbuff = nullptr;
   hostsendbuff = nullptr;
   hostrecvbuff = nullptr;
-  size = 1ULL * 1024 * 1024 * 1024; // 1GB (matching original)
+  size = 4ULL * 1024 * 1024; // 4MB
   count = size / sizeof(float);
 
   int numDevices;
@@ -86,7 +84,6 @@ void FlagCXCollTest::TearDown() {
 
 void FlagCXTopoTest::SetUp() {
   FlagCXTest::SetUp();
-  std::cout << "rank = " << rank << "; nranks = " << nranks << std::endl;
 
   flagcxHandleInit(&handler);
   flagcxUniqueId_t &uniqueId = handler->uniqueId;

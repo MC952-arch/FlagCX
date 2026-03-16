@@ -2,10 +2,7 @@
 #include "runner_fixtures.hpp"
 #include <iostream>
 
-// DISABLED: flagcxCommInitRank returns flagcxUnhandledDeviceError (1) when run
-// after many comm init/destroy cycles. Comm init is already validated by every
-// FlagCXCollTest. Pre-existing issue, not caused by test restructuring.
-TEST_F(FlagCXTopoTest, DISABLED_TopoDetection) {
+TEST_F(FlagCXTopoTest, TopoDetection) {
   flagcxComm_t &comm = handler->comm;
   flagcxUniqueId_t &uniqueId = handler->uniqueId;
 

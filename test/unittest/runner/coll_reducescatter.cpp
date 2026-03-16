@@ -2,7 +2,6 @@
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include <cstring>
-#include <iostream>
 #include <vector>
 
 TEST_F(FlagCXCollTest, ReduceScatter) {
@@ -10,7 +9,7 @@ TEST_F(FlagCXCollTest, ReduceScatter) {
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
-    ((float *)hostsendbuff)[i] = i % 10;
+    ((float *)hostsendbuff)[i] = rank * 1000.0f + (i % 10);
   }
 
   devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
@@ -28,12 +27,14 @@ TEST_F(FlagCXCollTest, ReduceScatter) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // ReduceScatter with Sum: each rank gets chunk[rank] of the sum.
-  // All ranks sent the same data, so result = sendbuff[chunk] * nranks.
+  // result[i] = sum over all ranks of (rank * 1000.0f + ((chunkStart + i) %
+  // 10))
   size_t chunkCount = count / nranks;
   size_t chunkStart = rank * chunkCount;
   std::vector<float> expected(chunkCount);
   for (size_t i = 0; i < chunkCount; i++) {
-    expected[i] = static_cast<float>((chunkStart + i) % 10) * nranks;
+    expected[i] = nranks * (nranks - 1) / 2.0f * 1000.0f +
+                  nranks * (float)((chunkStart + i) % 10);
   }
 
   EXPECT_TRUE(verifyBuffer(static_cast<float *>(hostrecvbuff), expected.data(),

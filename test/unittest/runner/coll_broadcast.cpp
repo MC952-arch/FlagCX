@@ -2,14 +2,18 @@
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include <cstring>
-#include <iostream>
+#include <vector>
 
 TEST_F(FlagCXCollTest, Broadcast) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  for (size_t i = 0; i < count; i++) {
-    ((float *)hostsendbuff)[i] = i % 10;
+  // Only root (rank 0) initializes sendbuff; other ranks leave it zeroed
+  // so stale data would be detected if broadcast fails.
+  if (rank == 0) {
+    for (size_t i = 0; i < count; i++) {
+      ((float *)hostsendbuff)[i] = 42.0f + (i % 10);
+    }
   }
   devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
                           flagcxMemcpyHostToDevice, stream);
@@ -25,6 +29,10 @@ TEST_F(FlagCXCollTest, Broadcast) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Broadcast from root=0: all ranks should receive root's data.
-  EXPECT_TRUE(verifyBuffer(static_cast<float *>(hostrecvbuff),
-                           static_cast<float *>(hostsendbuff), count));
+  std::vector<float> expected(count);
+  for (size_t i = 0; i < count; i++) {
+    expected[i] = 42.0f + (i % 10);
+  }
+  EXPECT_TRUE(
+      verifyBuffer(static_cast<float *>(hostrecvbuff), expected.data(), count));
 }

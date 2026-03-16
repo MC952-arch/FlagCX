@@ -114,6 +114,10 @@ void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
 
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
                        PerfBwFactorFn bwFactorFn, PerfDataInitFn dataInitFn) {
+  if (ctx.stepFactor <= 1) {
+    fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
+    return;
+  }
   for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
        size *= ctx.stepFactor) {
     size_t count = size / sizeof(float);
