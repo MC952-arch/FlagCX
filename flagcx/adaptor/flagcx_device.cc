@@ -379,14 +379,14 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
         hetero->netAdaptor->regMr(
             handle->signalSendComms[p],
             &handle->signalSendBufs[p * sizeof(flagcxSignalMessage)],
-            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST, 0,
             &handle->signalSendMrs[p]),
         res, fail);
     FLAGCXCHECKGOTO(
         hetero->netAdaptor->regMr(
             handle->signalRecvComms[p],
             &handle->signalRecvBufs[p * sizeof(flagcxSignalMessage)],
-            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST, 0,
             &handle->signalRecvMrs[p]),
         res, fail);
   }
@@ -566,7 +566,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 // ==========================================================================
 // Unified DevComm: Additive capability layers
 //   Baseline: rank info + fifoBuffer (always)
-//   IPC layer: barrier pointers (if reqs->fields[0] > 0)
+//   IPC layer: barrier pointers (if intraBarrierCount > 0)
 //   NCCL layer: ncclDevComm (if NCCL > 2.28)
 // ==========================================================================
 
@@ -594,7 +594,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
   // ---- IPC barrier layer: if barriers requested ----
-  if (reqs->fields[0] > 0) {
+  if (reqs->intraBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, handle);
     if (res != flagcxSuccess) {
       WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
@@ -624,10 +624,16 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     flagcxInnerComm_t innerComm = comm->homoComm;
     if (innerComm != nullptr) {
       ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      ncclReqs.lsaBarrierCount = reqs->fields[0];
-      ncclReqs.lsaMultimem = reqs->fields[1];
-      ncclReqs.railGinBarrierCount = reqs->fields[2];
-      ncclReqs.ginSignalCount = reqs->fields[3];
+      ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
+      ncclReqs.lsaMultimem = reqs->intraMulticast;
+      ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
+      ncclReqs.ginSignalCount = reqs->interSignalCount;
+      ncclReqs.barrierCount = reqs->barrierCount;
+      ncclReqs.ginForceEnable = reqs->interForceEnable;
+      ncclReqs.ginContextCount = reqs->interContextCount;
+      ncclReqs.ginCounterCount = reqs->interCounterCount;
+      ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
+      ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
 
       flagcxResult_t ret = ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs,
                                                     &handle->ncclDev);
@@ -772,4 +778,61 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
 
   free(devMem);
   return flagcxSuccess;
+}
+
+// ==========================================================================
+// Communicator property query
+// ==========================================================================
+
+flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
+                                         flagcxCommProperties_t *props) {
+  if (comm == nullptr || props == nullptr) {
+    return flagcxInvalidArgument;
+  }
+  memset(props, 0, sizeof(*props));
+
+  // Baseline fields (always available)
+  props->rank = comm->rank;
+  props->nRanks = comm->nranks;
+  props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
+
+  // NCCL-specific fields: fill from NCCL if available
+#ifdef FLAGCX_DEVICE_API_NCCL
+  flagcxInnerComm_t innerComm = comm->homoComm;
+  if (innerComm != nullptr && innerComm->base != nullptr) {
+    props->deviceApiSupport = true; // NCCL > 2.28 available
+    // ncclCommQueryProperties not yet wired through adaptor — set defaults.
+    // Full delegation will be added when the adaptor wrapper is available.
+    props->multicastSupport = false;
+    props->netType = flagcxNetTypeNone;
+  }
+#endif
+
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Barrier requirement stubs (resource-handle model not yet implemented)
+// ==========================================================================
+
+flagcxResult_t
+flagcxIntraBarrierCreateRequirement(flagcxTeam_t team, int nBarriers,
+                                    flagcxIntraBarrierHandle_t *outHandle,
+                                    flagcxDevCommRequirements *outReq) {
+  (void)team;
+  (void)nBarriers;
+  (void)outHandle;
+  (void)outReq;
+  return flagcxNotSupported;
+}
+
+flagcxResult_t flagcxInterBarrierCreateRequirement(
+    flagcxComm_t comm, flagcxTeam_t team, int nBarriers,
+    flagcxInterBarrierHandle_t *outHandle, flagcxDevCommRequirements *outReq) {
+  (void)comm;
+  (void)team;
+  (void)nBarriers;
+  (void)outHandle;
+  (void)outReq;
+  return flagcxNotSupported;
 }

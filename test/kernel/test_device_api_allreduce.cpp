@@ -62,8 +62,7 @@ int main(int argc, char *argv[]) {
   // Create device communicator for custom kernel usage
   flagcxDevComm_t devComm = nullptr;
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.fields[0] = FLAGCX_DEVICE_CTA_COUNT; // lsaBarrierCount
-  reqs.fields[1] = 0;                       // lsaMultimem
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   flagcxStream_t stream;

@@ -581,18 +581,18 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
                 resources->buffSizes[0], 0));
             FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
                 resources->netSendComm, resources->buffers[0],
-                resources->buffSizes[0], 2, 0ULL, dmabuf_fd,
+                resources->buffSizes[0], 2, 0ULL, dmabuf_fd, 0,
                 &resources->mhandles[0]));
             (void)close(dmabuf_fd);
           } else {
             if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netSendComm, resources->buffers[0],
-                  resources->buffSizes[0], 2, &resources->mhandles[0]));
+                  resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
             } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netSendComm, resources->buffers[0],
-                  resources->buffSizes[0], 1, &resources->mhandles[0]));
+                  resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
             }
           }
           done = 1;
@@ -613,18 +613,18 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
                 resources->buffSizes[0], 0));
             FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
                 resources->netRecvComm, resources->buffers[0],
-                resources->buffSizes[0], 2, 0ULL, dmabuf_fd,
+                resources->buffSizes[0], 2, 0ULL, dmabuf_fd, 0,
                 &resources->mhandles[0]));
             (void)close(dmabuf_fd);
           } else {
             if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netRecvComm, resources->buffers[0],
-                  resources->buffSizes[0], 2, &resources->mhandles[0]));
+                  resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
             } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netRecvComm, resources->buffers[0],
-                  resources->buffSizes[0], 1, &resources->mhandles[0]));
+                  resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
             }
           }
           done = 1;
@@ -653,12 +653,12 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
               (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
           FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
               resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
-              dmabuf_fd, &handle));
+              dmabuf_fd, 0, &handle));
           (void)close(dmabuf_fd);
         } else {
           FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
                                                    (void *)info->buffer,
-                                                   info->size, 2, &handle));
+                                                   info->size, 2, 0, &handle));
         }
       } else {
         // recv side
@@ -670,12 +670,12 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
               (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
           FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
               resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
-              dmabuf_fd, &handle));
+              dmabuf_fd, 0, &handle));
           (void)close(dmabuf_fd);
         } else {
           FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
                                                    (void *)info->buffer,
-                                                   info->size, 2, &handle));
+                                                   info->size, 2, 0, &handle));
         }
       }
       memcpy(op->respBuff, (void *)&handle, sizeof(void *));
@@ -1187,7 +1187,9 @@ void *flagcxProxyKernelService(void *args) {
         if (res != flagcxSuccess)
           break;
         size_t dstOffset = (size_t)ptr->getDstOffset();
-        res = flagcxHeteroPutSignal(comm, peerRank, dstOffset);
+        // TODO: integrate with flagcxDevicePrimPut for chained posting
+        // For now, signal-only mode (size=0)
+        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset);
         break;
       }
       case flagcxDevicePrimWait:

@@ -162,17 +162,78 @@ void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
 // ==========================================================================
 
 // Requirements for creating a device communicator.
-// Fixed 16-byte opaque blob — field interpretation is platform-specific.
-// On NVIDIA: fields[0]=lsaBarrierCount, fields[1]=lsaMultimem,
-//            fields[2]=ginBarrierCount,  fields[3]=ginSignalCount
-typedef struct {
-  int fields[4];
-} flagcxDevCommRequirements;
+// Named fields map to NCCL ncclDevCommRequirements (Tier 1).
+// Naming: NCCL "lsa" → FlagCX "intra", "gin" → "inter", "multimem" →
+// "multicast".
+struct flagcxDevCommRequirements {
+  bool intraMulticast; // → ncclReqs.lsaMultimem
+
+  int barrierCount;      // → ncclReqs.barrierCount (world barrier)
+  int intraBarrierCount; // → ncclReqs.lsaBarrierCount
+  int interBarrierCount; // → ncclReqs.railGinBarrierCount
+
+  int intraLLA2ABlockCount; // → ncclReqs.lsaLLA2ABlockCount
+  int intraLLA2ASlotCount;  // → ncclReqs.lsaLLA2ASlotCount
+
+  bool interForceEnable; // → ncclReqs.ginForceEnable
+  int interContextCount; // → ncclReqs.ginContextCount (hint, default 4)
+  int interSignalCount;  // → ncclReqs.ginSignalCount (start at id=0)
+  int interCounterCount; // → ncclReqs.ginCounterCount (start at id=0)
+};
 
 #define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
   {                                                                            \
-    { 0, 0, 0, 0 }                                                             \
+      false,       /* intraMulticast */                                        \
+      0,     0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */    \
+      0,     0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */             \
+      false, 4, 0,                                                             \
+      0 /* interForceEnable, interContextCount,                                \
+           interSignalCount, interCounterCount */                              \
   }
+
+// Network type enumeration (maps to ncclGinType_t on NVIDIA backend).
+typedef enum {
+  flagcxNetTypeNone = 0,  // → NCCL_GIN_TYPE_NONE
+  flagcxNetTypeProxy = 2, // → NCCL_GIN_TYPE_PROXY
+  flagcxNetTypeGdaki = 3, // → NCCL_GIN_TYPE_GDAKI
+} flagcxNetType_t;
+
+// Communicator properties — host-side queryable attributes.
+struct flagcxCommProperties {
+  int rank;
+  int nRanks;
+  int deviceId;            // → ncclCommProperties.cudaDev (platform-neutral)
+  bool deviceApiSupport;   // → ncclCommProperties.deviceApiSupport
+  bool multicastSupport;   // → ncclCommProperties.multimemSupport
+  flagcxNetType_t netType; // → ncclCommProperties.ginType
+};
+typedef struct flagcxCommProperties flagcxCommProperties_t;
+
+// Query communicator properties (Tier 1: delegates to ncclCommQueryProperties).
+flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
+                                         flagcxCommProperties_t *props);
+
+// Forward declarations for types defined in flagcx_device.h.
+struct flagcxTeam;
+typedef struct flagcxTeam flagcxTeam_t;
+struct flagcxDevCommRequirements;
+struct flagcxIntraBarrierHandle;
+typedef struct flagcxIntraBarrierHandle flagcxIntraBarrierHandle_t;
+struct flagcxInterBarrierHandle;
+typedef struct flagcxInterBarrierHandle flagcxInterBarrierHandle_t;
+
+// Create barrier requirement handles (stub — returns flagcxNotSupported).
+// FlagCX currently uses intraBarrierCount in DevCommCreate directly;
+// the resource-handle model will be implemented when needed.
+flagcxResult_t
+flagcxIntraBarrierCreateRequirement(flagcxTeam_t team, int nBarriers,
+                                    flagcxIntraBarrierHandle_t *outHandle,
+                                    flagcxDevCommRequirements *outReq);
+
+flagcxResult_t flagcxInterBarrierCreateRequirement(
+    flagcxComm_t comm, flagcxTeam_t team, int nBarriers,
+    flagcxInterBarrierHandle_t *outHandle, flagcxDevCommRequirements *outReq);
+
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Tier 1),
 // or IPC barrier state on fallback (Tier 2).

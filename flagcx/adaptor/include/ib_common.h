@@ -126,10 +126,14 @@ struct flagcxIbGlobalHandleInfo {
   uintptr_t *baseVas;
   uint32_t *rkeys;
   uint32_t *lkeys;
+  void *localMrHandle; // local rank's MR handle for iflush
+  void *localRecvComm; // local recvComm for iflush (gpuFlush QP)
 };
 
-// Global variable for one-sided operation handles
+// Global variable for one-sided data handles
 extern struct flagcxIbGlobalHandleInfo *globalOneSideHandles;
+// Global variable for one-sided signal handles (separate MR, NCCL-style)
+extern struct flagcxIbGlobalHandleInfo *globalOneSideSignalHandles;
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
 #define FLAGCX_NET_IB_REQ_SEND 1
@@ -312,6 +316,7 @@ struct flagcxIbRemSizesFifo {
 struct flagcxIbSendCommDev {
   struct flagcxIbNetCommDevBase base;
   struct ibv_mr *fifoMr;
+  struct ibv_mr *putSignalScratchpadMr;
 
   struct flagcxIbCtrlQp ctrlQp;
   struct ibv_mr *ackMr;
@@ -343,6 +348,7 @@ struct flagcxIbSendComm {
   alignas(32) struct ibv_send_wr wrs[FLAGCX_NET_IB_MAX_RECVS + 1];
   struct flagcxIbRemSizesFifo remSizesFifo;
   uint64_t fifoHead;
+  uint64_t putSignalScratchpad;
   int ar;
 
   struct flagcxIbRetransState retrans;

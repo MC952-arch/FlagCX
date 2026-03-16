@@ -450,63 +450,92 @@ flagcxResult_t cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-struct flagcxDeviceAdaptor cudaAdaptor {
-  "CUDA",
-      // Basic functions
-      cudaAdaptorDeviceSynchronize, cudaAdaptorDeviceMemcpy,
-      cudaAdaptorDeviceMemset, cudaAdaptorDeviceMalloc, cudaAdaptorDeviceFree,
-      cudaAdaptorSetDevice, cudaAdaptorGetDevice, cudaAdaptorGetDeviceCount,
-      cudaAdaptorGetVendor, cudaAdaptorHostGetDevicePointer,
-      // GDR functions
-      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-      cudaAdaptorGdrMemAlloc, cudaAdaptorGdrMemFree,
-      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-            // *memHandle);
-      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-            // sz);
-      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-      // Stream functions
-      cudaAdaptorStreamCreate, cudaAdaptorStreamDestroy, cudaAdaptorStreamCopy,
-      cudaAdaptorStreamFree, cudaAdaptorStreamSynchronize,
-      cudaAdaptorStreamQuery, cudaAdaptorStreamWaitEvent,
-      // Event functions
-      cudaAdaptorEventCreate, cudaAdaptorEventDestroy, cudaAdaptorEventRecord,
-      cudaAdaptorEventSynchronize, cudaAdaptorEventQuery,
-      // IpcMemHandle functions
-      cudaAdaptorIpcMemHandleCreate, cudaAdaptorIpcMemHandleGet,
-      cudaAdaptorIpcMemHandleOpen, cudaAdaptorIpcMemHandleClose,
-      cudaAdaptorIpcMemHandleFree,
-      // Kernel launch
-      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-            // share_mem, void *stream, void *memHandle);
-      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-      cudaAdaptorLaunchDeviceFunc, // flagcxResult_t
-                                   // (*launchDeviceFunc)(flagcxStream_t stream,
-                                   // void *args);
-      // Others
-      cudaAdaptorGetDeviceProperties, // flagcxResult_t
-                                      // (*getDeviceProperties)(struct
-                                      // flagcxDevProps *props, int dev);
-      cudaAdaptorGetDevicePciBusId, // flagcxResult_t (*getDevicePciBusId)(char
+static flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream,
+                                                   void *addr, uint64_t value,
+                                                   int flags) {
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+  CUstream cuStream = (CUstream)(stream->base);
+  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
+                                     CU_STREAM_WAIT_VALUE_GEQ);
+  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+struct flagcxDeviceAdaptor cudaAdaptor{
+    "CUDA",
+    // Basic functions
+    cudaAdaptorDeviceSynchronize,
+    cudaAdaptorDeviceMemcpy,
+    cudaAdaptorDeviceMemset,
+    cudaAdaptorDeviceMalloc,
+    cudaAdaptorDeviceFree,
+    cudaAdaptorSetDevice,
+    cudaAdaptorGetDevice,
+    cudaAdaptorGetDeviceCount,
+    cudaAdaptorGetVendor,
+    cudaAdaptorHostGetDevicePointer,
+    // GDR functions
+    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+    cudaAdaptorGdrMemAlloc,
+    cudaAdaptorGdrMemFree,
+    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+          // *memHandle);
+    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+          // sz);
+    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+    // Stream functions
+    cudaAdaptorStreamCreate,
+    cudaAdaptorStreamDestroy,
+    cudaAdaptorStreamCopy,
+    cudaAdaptorStreamFree,
+    cudaAdaptorStreamSynchronize,
+    cudaAdaptorStreamQuery,
+    cudaAdaptorStreamWaitEvent,
+    // Event functions
+    cudaAdaptorEventCreate,
+    cudaAdaptorEventDestroy,
+    cudaAdaptorEventRecord,
+    cudaAdaptorEventSynchronize,
+    cudaAdaptorEventQuery,
+    // IpcMemHandle functions
+    cudaAdaptorIpcMemHandleCreate,
+    cudaAdaptorIpcMemHandleGet,
+    cudaAdaptorIpcMemHandleOpen,
+    cudaAdaptorIpcMemHandleClose,
+    cudaAdaptorIpcMemHandleFree,
+    // Kernel launch
+    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+          // share_mem, void *stream, void *memHandle);
+    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+    cudaAdaptorLaunchDeviceFunc, // flagcxResult_t
+                                 // (*launchDeviceFunc)(flagcxStream_t stream,
+                                 // void *args);
+    // Others
+    cudaAdaptorGetDeviceProperties, // flagcxResult_t
+                                    // (*getDeviceProperties)(struct
+                                    // flagcxDevProps *props, int dev);
+    cudaAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
                                     // *pciBusId, int len, int dev);
-      cudaAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                      // (*getDeviceByPciBusId)(int
-                                      // *dev, const char *pciBusId);
-      cudaAdaptorLaunchHostFunc,
-      // DMA buffer
-      cudaAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool
-                             // *dmaBufferSupport);
-      cudaAdaptorMemGetHandleForAddressRange, // flagcxResult_t
-                                              // (*memGetHandleForAddressRange)(void
-                                              // *handleOut, void *buffer,
-                                              // size_t size, unsigned long long
-                                              // flags);
-      cudaAdaptorEventElapsedTime, // flagcxResult_t
+    cudaAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                    // (*getDeviceByPciBusId)(int
+                                    // *dev, const char *pciBusId);
+    cudaAdaptorLaunchHostFunc,
+    // DMA buffer
+    cudaAdaptorDmaSupport,                  // flagcxResult_t (*dmaSupport)(bool
+                                            // *dmaBufferSupport);
+    cudaAdaptorMemGetHandleForAddressRange, // flagcxResult_t
+                                            // (*memGetHandleForAddressRange)(void
+                                            // *handleOut, void *buffer,
+                                            // size_t size, unsigned long long
+                                            // flags);
+    cudaAdaptorEventElapsedTime, // flagcxResult_t
+    // Stream memory operations (one-sided signal polling)
+    cudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

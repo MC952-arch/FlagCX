@@ -313,66 +313,87 @@ flagcxResult_t hipAdaptorMemGetHandleForAddressRange(void *handleOut,
   return flagcxNotSupported;
 }
 
-struct flagcxDeviceAdaptor hipAdaptor {
-  "HIP",
-      // Basic functions
-      hipAdaptorDeviceSynchronize, hipAdaptorDeviceMemcpy,
-      hipAdaptorDeviceMemset, hipAdaptorDeviceMalloc, hipAdaptorDeviceFree,
-      hipAdaptorSetDevice, hipAdaptorGetDevice, hipAdaptorGetDeviceCount,
-      hipAdaptorGetVendor,
-      NULL, // flagcxResult_t (*hostGetDevicePointer)(void **pDevice, void
-            // *pHost);
-      // GDR functions
-      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-      hipAdaptorGdrMemAlloc, hipAdaptorGdrMemFree,
-      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-            // *memHandle);
-      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-            // sz);
-      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-      // Stream functions
-      hipAdaptorStreamCreate, hipAdaptorStreamDestroy, hipAdaptorStreamCopy,
-      hipAdaptorStreamFree, hipAdaptorStreamSynchronize, hipAdaptorStreamQuery,
-      hipAdaptorStreamWaitEvent,
-      // Event functions
-      hipAdaptorEventCreate, hipAdaptorEventDestroy, hipAdaptorEventRecord,
-      hipAdaptorEventSynchronize, hipAdaptorEventQuery,
-      // IpcMemHandle functions
-      hipAdaptorIpcMemHandleCreate, hipAdaptorIpcMemHandleGet,
-      hipAdaptorIpcMemHandleOpen, hipAdaptorIpcMemHandleClose,
-      hipAdaptorIpcMemHandleFree,
-      // Kernel launch
-      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-            // share_mem, void *stream, void *memHandle);
-      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-      hipAdaptorLaunchDeviceFunc, // flagcxResult_t
-                                  // (*launchDeviceFunc)(flagcxStream_t stream,
-                                  // void *args);
-      // Others
-      hipAdaptorGetDeviceProperties, // flagcxResult_t
-                                     // (*getDeviceProperties)(struct
-                                     // flagcxDevProps *props, int dev);
-      hipAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
-                                     // *pciBusId, int len, int dev);
-      hipAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                     // (*getDeviceByPciBusId)(int
-                                     // *dev, const char *pciBusId);
-      hipAdaptorLaunchHostFunc,
-      // DMA buffer
-      hipAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool
-                            // *dmaBufferSupport);
-      hipAdaptorMemGetHandleForAddressRange, // flagcxResult_t
-                                             // (*memGetHandleForAddressRange)(void
-                                             // *handleOut, void *buffer,
-                                             // size_t size, unsigned long long
-                                             // flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
+static flagcxResult_t hipAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                  uint64_t, int) {
+  return flagcxNotSupported;
+}
+
+struct flagcxDeviceAdaptor hipAdaptor{
+    "HIP",
+    // Basic functions
+    hipAdaptorDeviceSynchronize,
+    hipAdaptorDeviceMemcpy,
+    hipAdaptorDeviceMemset,
+    hipAdaptorDeviceMalloc,
+    hipAdaptorDeviceFree,
+    hipAdaptorSetDevice,
+    hipAdaptorGetDevice,
+    hipAdaptorGetDeviceCount,
+    hipAdaptorGetVendor,
+    NULL, // flagcxResult_t (*hostGetDevicePointer)(void **pDevice, void
+          // *pHost);
+    // GDR functions
+    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+    hipAdaptorGdrMemAlloc,
+    hipAdaptorGdrMemFree,
+    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+          // *memHandle);
+    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+          // sz);
+    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+    // Stream functions
+    hipAdaptorStreamCreate,
+    hipAdaptorStreamDestroy,
+    hipAdaptorStreamCopy,
+    hipAdaptorStreamFree,
+    hipAdaptorStreamSynchronize,
+    hipAdaptorStreamQuery,
+    hipAdaptorStreamWaitEvent,
+    // Event functions
+    hipAdaptorEventCreate,
+    hipAdaptorEventDestroy,
+    hipAdaptorEventRecord,
+    hipAdaptorEventSynchronize,
+    hipAdaptorEventQuery,
+    // IpcMemHandle functions
+    hipAdaptorIpcMemHandleCreate,
+    hipAdaptorIpcMemHandleGet,
+    hipAdaptorIpcMemHandleOpen,
+    hipAdaptorIpcMemHandleClose,
+    hipAdaptorIpcMemHandleFree,
+    // Kernel launch
+    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+          // share_mem, void *stream, void *memHandle);
+    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+    hipAdaptorLaunchDeviceFunc, // flagcxResult_t
+                                // (*launchDeviceFunc)(flagcxStream_t stream,
+                                // void *args);
+    // Others
+    hipAdaptorGetDeviceProperties, // flagcxResult_t
+                                   // (*getDeviceProperties)(struct
+                                   // flagcxDevProps *props, int dev);
+    hipAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
+                                   // *pciBusId, int len, int dev);
+    hipAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                   // (*getDeviceByPciBusId)(int
+                                   // *dev, const char *pciBusId);
+    hipAdaptorLaunchHostFunc,
+    // DMA buffer
+    hipAdaptorDmaSupport,                  // flagcxResult_t (*dmaSupport)(bool
+                                           // *dmaBufferSupport);
+    hipAdaptorMemGetHandleForAddressRange, // flagcxResult_t
+                                           // (*memGetHandleForAddressRange)(void
+                                           // *handleOut, void *buffer,
+                                           // size_t size, unsigned long long
+                                           // flags);
+    NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
+          // start, flagcxEvent_t end);
+    hipAdaptorStreamWaitValue64,
 };
 
 #endif // USE_AMD_ADAPTOR

@@ -1491,7 +1491,7 @@ flagcxResult_t flagcxIbucGetRequest(struct flagcxIbNetCommBase *base,
 flagcxResult_t flagcxIbucRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                              void *data, size_t size, int type,
                                              uint64_t offset, int fd,
-                                             ibv_mr **mhandle) {
+                                             int mrFlags, ibv_mr **mhandle) {
   static __thread uintptr_t pageSize = 0;
   if (pageSize == 0)
     pageSize = sysconf(_SC_PAGESIZE);
@@ -1512,7 +1512,8 @@ flagcxResult_t flagcxIbucRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
       struct ibv_mr *mr;
       unsigned int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
                            IBV_ACCESS_REMOTE_READ;
-      if (flagcxIbRelaxedOrderingEnabled)
+      if (flagcxIbRelaxedOrderingEnabled &&
+          !(mrFlags & FLAGCX_NET_MR_FLAG_FORCE_SO))
         flags |= IBV_ACCESS_RELAXED_ORDERING;
       if (fd != -1) {
         /* DMA-BUF support */
@@ -1525,7 +1526,8 @@ flagcxResult_t flagcxIbucRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
         if (deviceAdaptor->gdrPtrMmap && deviceAdaptor->gdrPtrMunmap) {
           deviceAdaptor->gdrPtrMmap(&cpuptr, (void *)addr, pages * pageSize);
         }
-        if (flagcxIbRelaxedOrderingEnabled) {
+        if (flagcxIbRelaxedOrderingEnabled &&
+            !(mrFlags & FLAGCX_NET_MR_FLAG_FORCE_SO)) {
           // Use IBVERBS_1.8 API - needed for IBV_ACCESS_RELAXED_ORDERING
           // support
           FLAGCXCHECKGOTO(
@@ -1587,7 +1589,7 @@ flagcxIbucGetNetCommDevBase(flagcxIbNetCommBase *base, int devIndex) {
 /* DMA-BUF support */
 flagcxResult_t flagcxIbucRegMrDmaBuf(void *comm, void *data, size_t size,
                                      int type, uint64_t offset, int fd,
-                                     void **mhandle) {
+                                     int mrFlags, void **mhandle) {
   assert(size > 0);
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
   struct flagcxIbMrHandle *mhandleWrapper =
@@ -1596,15 +1598,17 @@ flagcxResult_t flagcxIbucRegMrDmaBuf(void *comm, void *data, size_t size,
     struct flagcxIbNetCommDevBase *devComm =
         flagcxIbucGetNetCommDevBase(base, i);
     FLAGCXCHECK(flagcxIbucRegMrDmaBufInternal(devComm, data, size, type, offset,
-                                              fd, mhandleWrapper->mrs + i));
+                                              fd, mrFlags,
+                                              mhandleWrapper->mrs + i));
   }
   *mhandle = (void *)mhandleWrapper;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxIbucRegMr(void *comm, void *data, size_t size, int type,
-                               void **mhandle) {
-  return flagcxIbucRegMrDmaBuf(comm, data, size, type, 0ULL, -1, mhandle);
+                               int mrFlags, void **mhandle) {
+  return flagcxIbucRegMrDmaBuf(comm, data, size, type, 0ULL, -1, mrFlags,
+                               mhandle);
 }
 
 flagcxResult_t flagcxIbucDeregMrInternal(flagcxIbNetCommDevBase *base,
@@ -2242,6 +2246,17 @@ flagcxResult_t flagcxIbucGetProperties(int dev, void *props) {
   return flagcxSuccess;
 }
 
+// One-sided stubs (not supported by IBUC adaptor)
+static flagcxResult_t flagcxIbucIput(void *, uint64_t, uint64_t, size_t, int,
+                                     int, void **, void **) {
+  return flagcxNotSupported;
+}
+static flagcxResult_t flagcxIbucIputSignal(void *, uint64_t, uint64_t, size_t,
+                                           int, int, void **, uint64_t, void **,
+                                           void **) {
+  return flagcxNotSupported;
+}
+
 // Adapter wrapper functions
 
 struct flagcxNetAdaptor flagcxNetIbuc = {
@@ -2262,7 +2277,7 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     flagcxIbucIsend, flagcxIbucIrecv, flagcxIbucIflush, flagcxIbucTest,
 
     // One-sided functions
-    NULL, NULL, NULL, // put, putSignal, waitValue
+    flagcxIbucIput, flagcxIbucIputSignal,
 
     // Device name lookup
     flagcxIbucGetDevFromName};

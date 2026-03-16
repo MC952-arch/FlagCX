@@ -36,6 +36,33 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
   }
 #endif
 }
+// SIMT lockstep width (32 lanes on NVIDIA/CUDA)
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED __shared__
+
+// SIMT intrinsic wrappers
+FLAGCX_DEVICE_INLINE_DECORATOR int flagcxLane() {
+  int lane;
+  asm("mov.u32 %0, %%laneid;" : "=r"(lane));
+  return lane;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint32_t flagcxLanemaskLt() {
+  uint32_t mask;
+  asm("mov.u32 %0, %%lanemask_lt;" : "=r"(mask));
+  return mask;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint32_t flagcxActivemask() {
+  return __activemask();
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxSyncwarp(uint32_t mask = 0xffffffffu) {
+  __syncwarp(mask);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR int flagcxPopc(uint32_t x) { return __popc(x); }
+FLAGCX_DEVICE_INLINE_DECORATOR void flagcxNamedBarrierSync(int id,
+                                                           int nThreads) {
+  __barrier_sync_count(id, nThreads);
+}
 #else
 // Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
 #define FLAGCX_HOST_DECORATOR
@@ -50,6 +77,18 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
+
+// SIMT width (same as device, for template instantiation)
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED static
+
+// Host stubs for SIMT intrinsics (allow template instantiation)
+inline int flagcxLane() { return 0; }
+inline uint32_t flagcxLanemaskLt() { return 0; }
+inline uint32_t flagcxActivemask() { return 1; }
+inline void flagcxSyncwarp(uint32_t mask = 0xffffffffu) {}
+inline int flagcxPopc(uint32_t x) { return 0; }
+inline void flagcxNamedBarrierSync(int id, int nThreads) {}
 #endif // __CUDACC__
 
 // CUDA runtime macros — available from both nvcc and host compiler

@@ -15,7 +15,8 @@ typedef enum {
 typedef enum {
   flagcxDeviceScopeSystem = 0,
   flagcxDeviceScopeDevice = 1,
-  flagcxDeviceScopeBlock = 2
+  flagcxDeviceScopeBlock = 2,
+  flagcxDeviceScopeThread = 3
 } flagcxDeviceScope_t;
 
 #if defined(USE_NVIDIA_ADAPTOR)
@@ -27,6 +28,11 @@ static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::memory_order
         cuda::memory_order_relaxed, cuda::memory_order_acquire,
         cuda::memory_order_release, cuda::memory_order_acq_rel,
         cuda::memory_order_seq_cst};
+
+static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::thread_scope
+    flagcxDeviceScopeMap[] = {
+        cuda::thread_scope_system, cuda::thread_scope_device,
+        cuda::thread_scope_block, cuda::thread_scope_thread};
 
 // Helper to dispatch based on scope at compile time
 template <typename T, flagcxDeviceScope_t Scope>
@@ -45,6 +51,11 @@ struct flagcxAtomicHelper<T, flagcxDeviceScopeDevice> {
 template <typename T>
 struct flagcxAtomicHelper<T, flagcxDeviceScopeBlock> {
   using atomic_ref_t = cuda::atomic_ref<T, cuda::thread_scope_block>;
+};
+
+template <typename T>
+struct flagcxAtomicHelper<T, flagcxDeviceScopeThread> {
+  using atomic_ref_t = cuda::atomic_ref<T, cuda::thread_scope_thread>;
 };
 
 template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>

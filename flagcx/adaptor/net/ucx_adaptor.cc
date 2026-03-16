@@ -38,7 +38,9 @@
 // Additional global variables
 static pthread_mutex_t flagcx_p2p_lock = PTHREAD_MUTEX_INITIALIZER;
 static int flagcxIbGdrModuleLoaded = 0;
-static struct { pthread_once_t once; } onces[MAX_IB_DEVS];
+static struct {
+  pthread_once_t once;
+} onces[MAX_IB_DEVS];
 
 flagcxResult_t flagcxIbMakeVDeviceInternal(int *d,
                                            flagcxNetVDeviceProps_t *props,
@@ -1023,7 +1025,7 @@ flagcxUcxAcceptCheck:
 
 #define REG_ALIGN (4096)
 flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
-                              void **mhandle) {
+                              int mrFlags, void **mhandle) {
   flagcxUcxCtx_t *ctx = (flagcxUcxCtx_t *)comm;
   uint64_t addr = (uint64_t)data;
   ucp_mem_map_params_t mmap_params;
@@ -1074,8 +1076,8 @@ flagcxResult_t flagcxUcxDeregMr(void *comm, void *mhandle) {
 
 flagcxResult_t flagcxUcxRegMrDmaBuf(void *comm, void *data, size_t size,
                                     int type, uint64_t offset, int fd,
-                                    void **mhandle) {
-  return flagcxUcxRegMr(comm, data, size, type, mhandle);
+                                    int mrFlags, void **mhandle) {
+  return flagcxUcxRegMr(comm, data, size, type, mrFlags, mhandle);
 }
 
 static flagcxUcxRequest_t *flagcxUcxRequestGet(flagcxUcxComm_t *comm) {
@@ -1481,6 +1483,17 @@ flagcxResult_t flagcxUcxGetDevFromName(char *name, int *dev) {
   }
   return flagcxSystemError;
 }
+// One-sided stubs (not supported by UCX adaptor)
+static flagcxResult_t flagcxUcxIput(void *, uint64_t, uint64_t, size_t, int,
+                                    int, void **, void **) {
+  return flagcxNotSupported;
+}
+static flagcxResult_t flagcxUcxIputSignal(void *, uint64_t, uint64_t, size_t,
+                                          int, int, void **, uint64_t, void **,
+                                          void **) {
+  return flagcxNotSupported;
+}
+
 // UCX network adaptor structure
 struct flagcxNetAdaptor flagcxNetUcx = {
     // Basic functions
@@ -1509,7 +1522,7 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     flagcxUcxTest,   // test
 
     // One-sided functions
-    NULL, NULL, NULL, // put, putSignal, waitValue
+    flagcxUcxIput, flagcxUcxIputSignal,
 
     // Device name lookup
     flagcxUcxGetDevFromName // getDevFromName

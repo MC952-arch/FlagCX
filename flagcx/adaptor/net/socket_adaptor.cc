@@ -595,7 +595,7 @@ flagcxResult_t flagcxNetSocketTest(void *request, int *done, int *size) {
 }
 
 flagcxResult_t flagcxNetSocketRegMr(void *comm, void *data, size_t size,
-                                    int type, void **mhandle) {
+                                    int type, int mrFlags, void **mhandle) {
   return (type != FLAGCX_PTR_HOST) ? flagcxInternalError : flagcxSuccess;
 }
 
@@ -673,16 +673,30 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxNetSocketIput(void *, uint64_t, uint64_t, size_t,
+                                          int, int, void **, void **) {
+  return flagcxNotSupported;
+}
+static flagcxResult_t flagcxNetSocketIputSignal(void *, uint64_t, uint64_t,
+                                                size_t, int, int, void **,
+                                                uint64_t, void **, void **) {
+  return flagcxNotSupported;
+}
+
 flagcxNetAdaptor flagcxNetSocket = {
     // Basic functions
-    "Socket", flagcxNetSocketInit, flagcxNetSocketDevices,
+    "Socket",
+    flagcxNetSocketInit,
+    flagcxNetSocketDevices,
     flagcxNetSocketGetProperties,
     NULL, // reduceSupport - not implemented
     NULL, // getDeviceMr - not implemented
     NULL, // irecvConsumed - not implemented
 
     // Setup functions
-    flagcxNetSocketListen, flagcxNetSocketConnect, flagcxNetSocketAccept,
+    flagcxNetSocketListen,
+    flagcxNetSocketConnect,
+    flagcxNetSocketAccept,
     flagcxNetSocketClose, // closeSend
     flagcxNetSocketClose, // closeRecv (same as closeSend for socket)
     flagcxNetSocketCloseListen,
@@ -693,11 +707,14 @@ flagcxNetAdaptor flagcxNetSocket = {
     flagcxNetSocketDeregMr,
 
     // Two-sided functions
-    flagcxNetSocketIsend, flagcxNetSocketIrecv, flagcxNetSocketIflush,
+    flagcxNetSocketIsend,
+    flagcxNetSocketIrecv,
+    flagcxNetSocketIflush,
     flagcxNetSocketTest,
 
     // One-sided functions
-    NULL, NULL, NULL, // put, putSignal, waitValue
+    flagcxNetSocketIput,
+    flagcxNetSocketIputSignal,
 
     // Device name lookup
     NULL, // getDevFromName

@@ -40,7 +40,20 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size);
 
+// Data + signal combined (chained WRITE + ATOMIC in IB backend)
+// When size == 0, only signal ATOMIC is posted (signal-only mode)
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
-                                     size_t dstOffset);
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, size_t signalOffset);
+
+flagcxResult_t flagcxWaitValueLocal(void **gHandles, int rank, uint64_t offset,
+                                    uint64_t expected);
+
+flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
+                                 size_t size, void *gHandleInfo);
+
+flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
+                                      size_t signalOffset, uint64_t expected,
+                                      flagcxStream_t stream);
 
 #endif

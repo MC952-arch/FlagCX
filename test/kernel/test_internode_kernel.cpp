@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
   // Create device communicator for AlltoAll demo
   // Request IPC barriers — bar.sync() uses signal-based intra barrier
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.fields[0] = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
@@ -206,8 +206,8 @@ int main(int argc, char *argv[]) {
       // Create device communicator with barrier + signal requirements
       flagcxDevCommRequirements interReqs =
           FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      interReqs.fields[2] = FLAGCX_DEVICE_CTA_COUNT; // barrierCount
-      interReqs.fields[3] = 1;                       // signalCount
+      interReqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+      interReqs.interSignalCount = 1;
       FLAGCXCHECK(flagcxDevCommCreate(comm, &interReqs, &a2aDevComm));
 
       // Create window-mode device memory handles
@@ -224,7 +224,7 @@ int main(int argc, char *argv[]) {
 
       flagcxDevCommRequirements fallbackReqs =
           FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      fallbackReqs.fields[0] = FLAGCX_DEVICE_CTA_COUNT;
+      fallbackReqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
       FLAGCXCHECK(flagcxDevCommCreate(comm, &fallbackReqs, &a2aDevComm));
 
       FLAGCXCHECK(

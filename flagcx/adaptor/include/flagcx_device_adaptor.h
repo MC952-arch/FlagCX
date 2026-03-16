@@ -102,6 +102,10 @@ struct flagcxDeviceAdaptor {
   // Event elapsed time
   flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t start,
                                      flagcxEvent_t end);
+
+  // Stream memory operations (one-sided signal polling)
+  flagcxResult_t (*streamWaitValue64)(flagcxStream_t stream, void *addr,
+                                      uint64_t value, int flags);
 };
 
 // Device adaptor plugin API version (independent of CCL/Net versions)
