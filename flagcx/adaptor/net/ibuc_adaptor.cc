@@ -2247,16 +2247,6 @@ flagcxResult_t flagcxIbucGetProperties(int dev, void *props) {
 }
 
 // One-sided stubs (not supported by IBUC adaptor)
-static flagcxResult_t flagcxIbucIput(void *, uint64_t, uint64_t, size_t, int,
-                                     int, void **, void **) {
-  return flagcxNotSupported;
-}
-static flagcxResult_t flagcxIbucIputSignal(void *, uint64_t, uint64_t, size_t,
-                                           int, int, void **, uint64_t, void **,
-                                           void **) {
-  return flagcxNotSupported;
-}
-
 // Adapter wrapper functions
 
 struct flagcxNetAdaptor flagcxNetIbuc = {
@@ -2277,7 +2267,8 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     flagcxIbucIsend, flagcxIbucIrecv, flagcxIbucIflush, flagcxIbucTest,
 
     // One-sided functions
-    flagcxIbucIput, flagcxIbucIputSignal,
+    NULL, // iput - not supported on IBUC
+    NULL, // iputSignal - not supported on IBUC
 
     // Device name lookup
     flagcxIbucGetDevFromName};

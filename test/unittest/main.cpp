@@ -353,7 +353,7 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
   // Create device communicator for P2P demo
   // Request IPC barriers — needed by flagcxBarrierSession in the kernel
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.fields[0] = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 

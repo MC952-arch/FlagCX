@@ -16,6 +16,8 @@
 #ifndef FLAGCX_DEVICE_API_H_
 #define FLAGCX_DEVICE_API_H_
 
+#include <cstddef> // ptrdiff_t, size_t
+
 #include "atomic_device.h"
 #include "device_utils.h"
 #include "flagcx.h"
@@ -381,8 +383,8 @@ flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
 FLAGCX_HOST_DEVICE_INLINE bool
 flagcxTeamRankIsMember(flagcxTeam_t a, flagcxTeam_t b, int bPeer) {
   int wrank = (bPeer - b.rank) * b.stride;
-  uint32_t adelta = wrank / a.stride;
-  uint32_t amod = wrank % a.stride;
+  int adelta = wrank / a.stride;
+  int amod = wrank % a.stride;
   int arank = a.rank + adelta;
   return 0 <= arank && arank < a.nRanks && amod == 0;
 }
@@ -391,7 +393,7 @@ flagcxTeamRankIsMember(flagcxTeam_t a, flagcxTeam_t b, int bPeer) {
 FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankToTeam(flagcxTeam_t a,
                                                    flagcxTeam_t b, int bPeer) {
   int wrank = (bPeer - b.rank) * b.stride;
-  uint32_t adelta = wrank / a.stride;
+  int adelta = wrank / a.stride;
   int arank = a.rank + adelta;
   return arank;
 }
@@ -680,12 +682,15 @@ struct flagcxCoopAny {
   Storage storage;
   VTable const *vtable;
 
-  flagcxCoopAny() = default;
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny()
+      : storage{}, vtable(get_vtable<flagcxCoopThread>()) {}
   flagcxCoopAny(flagcxCoopAny const &) = default;
 
   template <typename Impl>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(Impl impl) {
-    ::new (&this->storage) Impl(impl);
+    char const *src = reinterpret_cast<char const *>(&impl);
+    for (unsigned i = 0; i < sizeof(Impl); ++i)
+      this->storage.space[i] = src[i];
     this->vtable = get_vtable<Impl>();
   }
 
@@ -962,20 +967,18 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 
 // ---- Additional pointer functions (Step 2c) ----
 
-// World-rank peer pointer (no team parameter).
-// Tier 1: window-based. Tier 2: IPC peerPtrs with world→local index mapping.
+// Peer pointer without team parameter.
+// Tier 1: delegates to NCCL (peer interpreted by NCCL runtime).
+// Tier 2: peer is an intra-node rank index into peerPtrs[] (same as
+// flagcxGetIntraPointer). Without a team, world→local mapping is not possible.
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
 #ifdef FLAGCX_DEVICE_API_NCCL
   if (mem._hasWindow)
     return ncclGetPeerPointer(mem._base, offset, peer);
 #endif
-  if (mem.peerPtrs != nullptr) {
-    // Map world rank to local peer index: localIdx = intraRank + (peer -
-    // worldRank) Note: caller must ensure peer is on the same node. Without
-    // devComm, we use the mem's intraRank as the base index offset.
-    return (char *)mem.peerPtrs[mem.intraRank + peer] + offset;
-  }
+  if (mem.peerPtrs != nullptr)
+    return (char *)mem.peerPtrs[peer] + offset;
   return nullptr;
 }
 
@@ -1068,54 +1071,54 @@ struct flagcxSymPtr {
     return (T *)flagcxGetMulticastPointer(mem, offset, mmHandle);
   }
 
-  // Type-aware pointer arithmetic (reinterpret_cast pattern matches NCCL)
+  // Type-aware pointer arithmetic (integer math, no UB)
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(int d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(unsigned int d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(unsigned long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(long long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator+=(unsigned long long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) + d);
+    offset += d * sizeof(T);
     return *this;
   }
 
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(int d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(unsigned int d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(unsigned long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(long long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
   FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> &operator-=(unsigned long long d) {
-    offset = reinterpret_cast<size_t>(reinterpret_cast<T *>(offset) - d);
+    offset -= d * sizeof(T);
     return *this;
   }
 };
@@ -1132,7 +1135,7 @@ FLAGCX_HOST_DEVICE_INLINE flagcxSymPtr<T> operator-(flagcxSymPtr<T> p, Int d) {
 template <typename T>
 FLAGCX_HOST_DEVICE_INLINE ptrdiff_t operator-(flagcxSymPtr<T> a,
                                               flagcxSymPtr<T> b) {
-  return reinterpret_cast<T *>(a.offset) - reinterpret_cast<T *>(b.offset);
+  return ((ptrdiff_t)a.offset - (ptrdiff_t)b.offset) / (ptrdiff_t)sizeof(T);
 }
 template <typename T>
 FLAGCX_HOST_DEVICE_INLINE bool operator==(flagcxSymPtr<T> a,

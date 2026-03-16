@@ -187,8 +187,8 @@ struct flagcxDevCommRequirements {
       0,     0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */    \
       0,     0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */             \
       false, 4, 0,                                                             \
-      0 /* interForceEnable, interContextCount,                                \
-           interSignalCount, interCounterCount */                              \
+      0 /* interForceEnable, interContextCount, interSignalCount,              \
+           interCounterCount */                                                \
   }
 
 // Network type enumeration (maps to ncclGinType_t on NVIDIA backend).
@@ -209,7 +209,9 @@ struct flagcxCommProperties {
 };
 typedef struct flagcxCommProperties flagcxCommProperties_t;
 
-// Query communicator properties (Tier 1: delegates to ncclCommQueryProperties).
+// Query communicator properties.
+// Currently returns placeholder defaults; will delegate to backend
+// (e.g. ncclCommQueryProperties) when wired through the adaptor layer.
 flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
                                          flagcxCommProperties_t *props);
 
@@ -288,6 +290,22 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
 // Destroy a device memory handle created by flagcxDevMemCreate.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
+
+// One-sided data buffer registration.
+// Must be called after flagcxCommInitRank and before one-sided operations.
+// Note: also called internally via flagcxCommRegister when
+// FLAGCX_ENABLE_ONE_SIDE_REGISTER=1.
+flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
+                                     size_t size);
+// Release data buffer resources (MR, network connections, handle arrays).
+flagcxResult_t flagcxOneSideDeregister(const flagcxComm_t comm);
+
+// One-sided signal buffer registration (GPU memory with FORCE_SO).
+// Must be called after flagcxCommInitRank and before one-sided operations.
+flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
+                                           size_t size);
+// Release signal buffer resources (MR, network connections, handle arrays).
+flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm);
 
 // Intra-node AllReduce using FlagCX Device API.
 // The caller provides a registered buffer (via flagcxDevMemCreate)

@@ -65,6 +65,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxNamedBarrierSync(int id,
 }
 #else
 // Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
+#include <cassert>
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR
@@ -83,12 +84,28 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxNamedBarrierSync(int id,
 #define FLAGCX_SHARED static
 
 // Host stubs for SIMT intrinsics (allow template instantiation)
-inline int flagcxLane() { return 0; }
-inline uint32_t flagcxLanemaskLt() { return 0; }
-inline uint32_t flagcxActivemask() { return 1; }
-inline void flagcxSyncwarp(uint32_t mask = 0xffffffffu) {}
-inline int flagcxPopc(uint32_t x) { return 0; }
-inline void flagcxNamedBarrierSync(int id, int nThreads) {}
+inline int flagcxLane() {
+  assert(false && "flagcxLane called on host");
+  return 0;
+}
+inline uint32_t flagcxLanemaskLt() {
+  assert(false && "flagcxLanemaskLt called on host");
+  return 0;
+}
+inline uint32_t flagcxActivemask() {
+  assert(false && "flagcxActivemask called on host");
+  return 1;
+}
+inline void flagcxSyncwarp(uint32_t mask = 0xffffffffu) {
+  assert(false && "flagcxSyncwarp called on host");
+}
+inline int flagcxPopc(uint32_t x) {
+  assert(false && "flagcxPopc called on host");
+  return 0;
+}
+inline void flagcxNamedBarrierSync(int id, int nThreads) {
+  assert(false && "flagcxNamedBarrierSync called on host");
+}
 #endif // __CUDACC__
 
 // CUDA runtime macros — available from both nvcc and host compiler

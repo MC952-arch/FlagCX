@@ -315,76 +315,60 @@ static flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t, void *,
   return flagcxNotSupported;
 }
 
-struct flagcxDeviceAdaptor musaAdaptor{
-    "MUSA",
-    // Basic functions
-    musaAdaptorDeviceSynchronize,
-    musaAdaptorDeviceMemcpy,
-    musaAdaptorDeviceMemset,
-    musaAdaptorDeviceMalloc,
-    musaAdaptorDeviceFree,
-    musaAdaptorSetDevice,
-    musaAdaptorGetDevice,
-    musaAdaptorGetDeviceCount,
-    musaAdaptorGetVendor,
-    NULL,
-    // GDR functions
-    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-    musaAdaptorGdrMemAlloc,
-    musaAdaptorGdrMemFree,
-    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-          // *memHandle);
-    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-          // sz);
-    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-    // Stream functions
-    musaAdaptorStreamCreate,
-    musaAdaptorStreamDestroy,
-    musaAdaptorStreamCopy,
-    musaAdaptorStreamFree,
-    musaAdaptorStreamSynchronize,
-    musaAdaptorStreamQuery,
-    musaAdaptorStreamWaitEvent,
-    // Event functions
-    musaAdaptorEventCreate,
-    musaAdaptorEventDestroy,
-    musaAdaptorEventRecord,
-    musaAdaptorEventSynchronize,
-    musaAdaptorEventQuery,
-    // IpcMemHandle functions
-    musaAdaptorIpcMemHandleCreate,
-    musaAdaptorIpcMemHandleGet,
-    musaAdaptorIpcMemHandleOpen,
-    musaAdaptorIpcMemHandleClose,
-    musaAdaptorIpcMemHandleFree,
-    // Kernel launch
-    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-          // share_mem, void *stream, void *memHandle);
-    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-    NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream, void
-          // *args);
-    // Others
-    musaAdaptorGetDeviceProperties, // flagcxResult_t
-                                    // (*getDeviceProperties)(struct
-                                    // flagcxDevProps *props, int dev);
-    musaAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
+struct flagcxDeviceAdaptor musaAdaptor {
+  "MUSA",
+      // Basic functions
+      musaAdaptorDeviceSynchronize, musaAdaptorDeviceMemcpy,
+      musaAdaptorDeviceMemset, musaAdaptorDeviceMalloc, musaAdaptorDeviceFree,
+      musaAdaptorSetDevice, musaAdaptorGetDevice, musaAdaptorGetDeviceCount,
+      musaAdaptorGetVendor, NULL,
+      // GDR functions
+      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      musaAdaptorGdrMemAlloc, musaAdaptorGdrMemFree,
+      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+            // *memHandle);
+      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+            // sz);
+      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+      // Stream functions
+      musaAdaptorStreamCreate, musaAdaptorStreamDestroy, musaAdaptorStreamCopy,
+      musaAdaptorStreamFree, musaAdaptorStreamSynchronize,
+      musaAdaptorStreamQuery, musaAdaptorStreamWaitEvent,
+      // Event functions
+      musaAdaptorEventCreate, musaAdaptorEventDestroy, musaAdaptorEventRecord,
+      musaAdaptorEventSynchronize, musaAdaptorEventQuery,
+      // IpcMemHandle functions
+      musaAdaptorIpcMemHandleCreate, musaAdaptorIpcMemHandleGet,
+      musaAdaptorIpcMemHandleOpen, musaAdaptorIpcMemHandleClose,
+      musaAdaptorIpcMemHandleFree,
+      // Kernel launch
+      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+            // share_mem, void *stream, void *memHandle);
+      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream, void
+            // *args);
+      // Others
+      musaAdaptorGetDeviceProperties, // flagcxResult_t
+                                      // (*getDeviceProperties)(struct
+                                      // flagcxDevProps *props, int dev);
+      musaAdaptorGetDevicePciBusId, // flagcxResult_t (*getDevicePciBusId)(char
                                     // *pciBusId, int len, int dev);
-    musaAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                    // (*getDeviceByPciBusId)(int
-                                    // *dev, const char *pciBusId);
-    musaAdaptorLaunchHostFunc,
-    // DMA buffer
-    NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-    NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-          // void *buffer, size_t size, unsigned long long flags);
-    NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-          // start, flagcxEvent_t end);
-    musaAdaptorStreamWaitValue64,
+      musaAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                      // (*getDeviceByPciBusId)(int
+                                      // *dev, const char *pciBusId);
+      musaAdaptorLaunchHostFunc,
+      // DMA buffer
+      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
+      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
+            // void *buffer, size_t size, unsigned long long flags);
+      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
+            // start, flagcxEvent_t end);
+      musaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_MUSA_ADAPTOR

@@ -378,80 +378,64 @@ static flagcxResult_t topsAdaptorStreamWaitValue64(flagcxStream_t, void *,
   return flagcxNotSupported;
 }
 
-struct flagcxDeviceAdaptor topsAdaptor{
-    "TOPS",
-    // Basic functions
-    topsAdaptorDeviceSynchronize,
-    topsAdaptorDeviceMemcpy,
-    topsAdaptorDeviceMemset,
-    topsAdaptorDeviceMalloc,
-    topsAdaptorDeviceFree,
-    topsAdaptorSetDevice,
-    topsAdaptorGetDevice,
-    topsAdaptorGetDeviceCount,
-    topsAdaptorGetVendor,
-    topsAdaptorHostGetDevicePointer,
-    // GDR functions
-    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-    topsAdaptorGdrMemAlloc,
-    topsAdaptorGdrMemFree,
-    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-          // *memHandle);
-    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-          // sz);
-    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-    // Stream functions
-    topsAdaptorStreamCreate,
-    topsAdaptorStreamDestroy,
-    topsAdaptorStreamCopy,
-    topsAdaptorStreamFree,
-    topsAdaptorStreamSynchronize,
-    topsAdaptorStreamQuery,
-    topsAdaptorStreamWaitEvent,
-    // Event functions
-    topsAdaptorEventCreate,
-    topsAdaptorEventDestroy,
-    topsAdaptorEventRecord,
-    topsAdaptorEventSynchronize,
-    topsAdaptorEventQuery,
-    // IpcMemHandle functions
-    topsAdaptorIpcMemHandleCreate,
-    topsAdaptorIpcMemHandleGet,
-    topsAdaptorIpcMemHandleOpen,
-    topsAdaptorIpcMemHandleClose,
-    topsAdaptorIpcMemHandleFree,
-    // Kernel launch
-    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-          // share_mem, void *stream, void *memHandle);
-    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-    topsAdaptorLaunchDeviceFunc, // flagcxResult_t
-                                 // (*launchDeviceFunc)(flagcxStream_t stream,
-                                 // void *args);
-    // Others
-    topsAdaptorGetDeviceProperties, // flagcxResult_t
-                                    // (*getDeviceProperties)(struct
-                                    // flagcxDevProps *props, int dev);
-    topsAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
+struct flagcxDeviceAdaptor topsAdaptor {
+  "TOPS",
+      // Basic functions
+      topsAdaptorDeviceSynchronize, topsAdaptorDeviceMemcpy,
+      topsAdaptorDeviceMemset, topsAdaptorDeviceMalloc, topsAdaptorDeviceFree,
+      topsAdaptorSetDevice, topsAdaptorGetDevice, topsAdaptorGetDeviceCount,
+      topsAdaptorGetVendor, topsAdaptorHostGetDevicePointer,
+      // GDR functions
+      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      topsAdaptorGdrMemAlloc, topsAdaptorGdrMemFree,
+      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+            // *memHandle);
+      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+            // sz);
+      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+      // Stream functions
+      topsAdaptorStreamCreate, topsAdaptorStreamDestroy, topsAdaptorStreamCopy,
+      topsAdaptorStreamFree, topsAdaptorStreamSynchronize,
+      topsAdaptorStreamQuery, topsAdaptorStreamWaitEvent,
+      // Event functions
+      topsAdaptorEventCreate, topsAdaptorEventDestroy, topsAdaptorEventRecord,
+      topsAdaptorEventSynchronize, topsAdaptorEventQuery,
+      // IpcMemHandle functions
+      topsAdaptorIpcMemHandleCreate, topsAdaptorIpcMemHandleGet,
+      topsAdaptorIpcMemHandleOpen, topsAdaptorIpcMemHandleClose,
+      topsAdaptorIpcMemHandleFree,
+      // Kernel launch
+      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+            // share_mem, void *stream, void *memHandle);
+      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      topsAdaptorLaunchDeviceFunc, // flagcxResult_t
+                                   // (*launchDeviceFunc)(flagcxStream_t stream,
+                                   // void *args);
+      // Others
+      topsAdaptorGetDeviceProperties, // flagcxResult_t
+                                      // (*getDeviceProperties)(struct
+                                      // flagcxDevProps *props, int dev);
+      topsAdaptorGetDevicePciBusId, // flagcxResult_t (*getDevicePciBusId)(char
                                     // *pciBusId, int len, int dev);
-    topsAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                    // (*getDeviceByPciBusId)(int
-                                    // *dev, const char *pciBusId);
-    topsAdaptorLaunchHostFunc,
-    // DMA buffer
-    topsAdaptorDmaSupport,                  // flagcxResult_t (*dmaSupport)(bool
-                                            // *dmaBufferSupport);
-    topsAdaptorMemGetHandleForAddressRange, // flagcxResult_t
-                                            // (*memGetHandleForAddressRange)(void
-                                            // *handleOut, void *buffer,
-                                            // size_t size, unsigned long long
-                                            // flags);
-    topsAdaptorEventElapsedTime, // flagcxResult_t
-    topsAdaptorStreamWaitValue64,
+      topsAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                      // (*getDeviceByPciBusId)(int
+                                      // *dev, const char *pciBusId);
+      topsAdaptorLaunchHostFunc,
+      // DMA buffer
+      topsAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool
+                             // *dmaBufferSupport);
+      topsAdaptorMemGetHandleForAddressRange, // flagcxResult_t
+                                              // (*memGetHandleForAddressRange)(void
+                                              // *handleOut, void *buffer,
+                                              // size_t size, unsigned long long
+                                              // flags);
+      topsAdaptorEventElapsedTime, // flagcxResult_t
+      topsAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

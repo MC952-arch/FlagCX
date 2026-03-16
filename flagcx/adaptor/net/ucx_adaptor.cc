@@ -1026,6 +1026,7 @@ flagcxUcxAcceptCheck:
 #define REG_ALIGN (4096)
 flagcxResult_t flagcxUcxRegMr(void *comm, void *data, size_t size, int type,
                               int mrFlags, void **mhandle) {
+  (void)mrFlags;
   flagcxUcxCtx_t *ctx = (flagcxUcxCtx_t *)comm;
   uint64_t addr = (uint64_t)data;
   ucp_mem_map_params_t mmap_params;
@@ -1483,16 +1484,6 @@ flagcxResult_t flagcxUcxGetDevFromName(char *name, int *dev) {
   }
   return flagcxSystemError;
 }
-// One-sided stubs (not supported by UCX adaptor)
-static flagcxResult_t flagcxUcxIput(void *, uint64_t, uint64_t, size_t, int,
-                                    int, void **, void **) {
-  return flagcxNotSupported;
-}
-static flagcxResult_t flagcxUcxIputSignal(void *, uint64_t, uint64_t, size_t,
-                                          int, int, void **, uint64_t, void **,
-                                          void **) {
-  return flagcxNotSupported;
-}
 
 // UCX network adaptor structure
 struct flagcxNetAdaptor flagcxNetUcx = {
@@ -1522,7 +1513,8 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     flagcxUcxTest,   // test
 
     // One-sided functions
-    flagcxUcxIput, flagcxUcxIputSignal,
+    NULL, // iput - not supported on UCX
+    NULL, // iputSignal - not supported on UCX
 
     // Device name lookup
     flagcxUcxGetDevFromName // getDevFromName

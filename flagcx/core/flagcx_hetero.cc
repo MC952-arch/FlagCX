@@ -95,6 +95,10 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
     uint64_t srcOff = srcOffset;
     uint64_t dstOff = dstOffset;
     void **gHandles = (void **)globalOneSideHandles;
+    if (gHandles == NULL) {
+      WARN("flagcxHeteroPut: globalOneSideHandles not initialized");
+      return flagcxInternalError;
+    }
     void *request = NULL;
     FLAGCXCHECK(comm->netAdaptor->iput(sendComm, srcOff, dstOff, size, srcRank,
                                        dstRank, gHandles, &request));
@@ -134,6 +138,15 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
 
     void **dataHandles = (void **)globalOneSideHandles;
     void **signalHandles = (void **)globalOneSideSignalHandles;
+    if (signalHandles == NULL) {
+      WARN("flagcxHeteroPutSignal: globalOneSideSignalHandles not initialized");
+      return flagcxInternalError;
+    }
+    if (size > 0 && dataHandles == NULL) {
+      WARN("flagcxHeteroPutSignal: globalOneSideHandles not initialized for "
+           "data transfer");
+      return flagcxInternalError;
+    }
     void *request = NULL;
     FLAGCXCHECK(comm->netAdaptor->iputSignal(
         sendComm, (uint64_t)srcOffset, (uint64_t)dstOffset, size, srcRank,
@@ -148,21 +161,6 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
     return flagcxSuccess;
   }
   return flagcxNotSupported;
-}
-
-flagcxResult_t flagcxWaitValueLocal(void **gHandles, int rank, uint64_t offset,
-                                    uint64_t expected) {
-  struct flagcxIbGlobalHandleInfo *info =
-      (struct flagcxIbGlobalHandleInfo *)gHandles;
-  if (info == NULL || info->baseVas == NULL)
-    return flagcxNotSupported;
-  volatile uint64_t *addr = (volatile uint64_t *)(info->baseVas[rank] + offset);
-
-  while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) < expected) {
-    sched_yield();
-  }
-
-  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
@@ -193,6 +191,7 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,
                                       flagcxStream_t stream) {
+  (void)peer;
   struct flagcxIbGlobalHandleInfo *info =
       (struct flagcxIbGlobalHandleInfo *)globalOneSideSignalHandles;
   if (info == NULL || info->baseVas == NULL)
@@ -201,27 +200,12 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   int myRank = comm->rank;
   void *signalAddr = (void *)(info->baseVas[myRank] + signalOffset);
 
-  // Try device-side wait (streamWaitValue64) for GPU signal buffer
-  if (stream != NULL) {
-    flagcxResult_t res =
-        deviceAdaptor->streamWaitValue64(stream, signalAddr, expected, 0);
-    if (res == flagcxSuccess)
-      return flagcxSuccess;
-    // Fall through to host poll if flagcxNotSupported or error
-  }
+  // Device-side wait (streamWaitValue64) for GPU signal buffer.
+  // RMA signal buffers are GPU memory (flagcxMemAlloc) — host-side volatile
+  // polling would segfault. Non-CUDA platforms return flagcxNotSupported.
+  // No flush needed: FORCE_SO on signal MR guarantees PCIe ordering.
+  if (stream == NULL)
+    return flagcxInternalError;
 
-  // Host fallback: volatile poll
-  volatile uint64_t *addr = (volatile uint64_t *)signalAddr;
-  while (__atomic_load_n(addr, __ATOMIC_ACQUIRE) < expected) {
-    sched_yield();
-  }
-
-  // Flush data buffer after host-side signal confirmation
-  struct flagcxIbGlobalHandleInfo *dataInfo =
-      (struct flagcxIbGlobalHandleInfo *)globalOneSideHandles;
-  if (dataInfo != NULL) {
-    flagcxHeteroFlush(comm, (void *)dataInfo->baseVas[myRank], 1,
-                      (void *)dataInfo);
-  }
-  return flagcxSuccess;
+  return deviceAdaptor->streamWaitValue64(stream, signalAddr, expected, 0);
 }

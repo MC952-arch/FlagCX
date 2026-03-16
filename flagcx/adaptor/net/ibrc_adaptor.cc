@@ -1681,19 +1681,6 @@ flagcxResult_t flagcxIbRegMr(void *comm, void *data, size_t size, int type,
                              int mrFlags, void **mhandle) {
   return flagcxIbRegMrDmaBuf(comm, data, size, type, 0ULL, -1, mrFlags,
                              mhandle);
-
-  assert(size > 0);
-  struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
-  struct flagcxIbMrHandle *mhandleWrapper =
-      (struct flagcxIbMrHandle *)malloc(sizeof(struct flagcxIbMrHandle));
-  for (int i = 0; i < base->ndevs; i++) {
-    struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    unsigned int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                         IBV_ACCESS_REMOTE_READ;
-    flagcxWrapIbvRegMr(&mhandleWrapper->mrs[i], devComm->pd, data, size, flags);
-  }
-  *mhandle = mhandleWrapper;
-  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
@@ -2468,8 +2455,13 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   wr.num_sge = 1;
 
   sge.addr = (uintptr_t)srcPtr; // Local buffer address
-  sge.length = size;            // Size of the transfer
-  sge.lkey = lkey;              // Local key
+  sge.length = (uint32_t)size;  // ibv_sge::length is 32-bit
+  if ((size_t)sge.length != size) {
+    WARN("flagcxIbIput: transfer size %zu exceeds ibv_sge 32-bit limit", size);
+    flagcxIbFreeRequest(req);
+    return flagcxInternalError;
+  }
+  sge.lkey = lkey; // Local key
 
   struct ibv_send_wr *bad_wr;
   FLAGCXCHECK(flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr));
@@ -2489,6 +2481,10 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
       (struct flagcxIbGlobalHandleInfo *)dataHandles;
   struct flagcxIbGlobalHandleInfo *signalInfo =
       (struct flagcxIbGlobalHandleInfo *)signalHandles;
+  if (signalInfo == NULL || signalInfo->baseVas == NULL) {
+    WARN("flagcxIbIputSignal: signalHandles is NULL or uninitialized");
+    return flagcxInternalError;
+  }
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   int devIndex = qp->devIndex;
@@ -2522,7 +2518,13 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
     wr[0].num_sge = 1;
 
     sge[0].addr = (uintptr_t)srcPtr;
-    sge[0].length = size;
+    sge[0].length = (uint32_t)size;
+    if ((size_t)sge[0].length != size) {
+      WARN("flagcxIbIputSignal: transfer size %zu exceeds ibv_sge 32-bit limit",
+           size);
+      flagcxIbFreeRequest(req);
+      return flagcxInternalError;
+    }
     sge[0].lkey = lkey;
   }
 
@@ -2546,8 +2548,9 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
 
   // Post chained (data+signal) or signal-only
   struct ibv_send_wr *bad_wr;
+  bool chainData = (size > 0 && dataInfo != NULL);
   FLAGCXCHECK(
-      flagcxWrapIbvPostSend(qp->qp, size > 0 ? &wr[0] : &wr[1], &bad_wr));
+      flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr));
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;

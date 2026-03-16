@@ -128,6 +128,7 @@ struct flagcxIbGlobalHandleInfo {
   uint32_t *lkeys;
   void *localMrHandle; // local rank's MR handle for iflush
   void *localRecvComm; // local recvComm for iflush (gpuFlush QP)
+  void *localSendComm; // local sendComm for cleanup
 };
 
 // Global variable for one-sided data handles

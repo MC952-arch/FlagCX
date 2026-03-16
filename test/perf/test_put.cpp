@@ -8,6 +8,7 @@
 #include "device.h"
 #include "flagcx/adaptor/include/adaptor.h"
 #include "flagcx/core/include/flagcx_hetero.h"
+#include "flagcx_kernel.h"
 #include "flagcx_net.h"
 #include "global_comm.h"
 #include "net.h"
@@ -21,10 +22,6 @@
 #include <cstring>
 #include <sched.h>
 #include <unistd.h>
-
-// Forward declaration — defined in flagcx.cc
-extern flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm,
-                                                  void *buff, size_t size);
 
 namespace {
 
@@ -313,6 +310,8 @@ int main(int argc, char *argv[]) {
   res = flagcxCommDeregister(comm, dataHandle);
   fatal(res, "flagcxCommDeregister failed", proc);
 
+  flagcxOneSideDeregister(comm);
+  flagcxOneSideSignalDeregister(comm);
   flagcxMemFree(dataWindow, comm);
   flagcxMemFree(signalWindow, comm);
   free(hostStaging);

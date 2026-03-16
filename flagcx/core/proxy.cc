@@ -1189,6 +1189,12 @@ void *flagcxProxyKernelService(void *args) {
         size_t dstOffset = (size_t)ptr->getDstOffset();
         // TODO: integrate with flagcxDevicePrimPut for chained posting
         // For now, signal-only mode (size=0)
+        if (globalOneSideSignalHandles == NULL) {
+          WARN("flagcxDevicePrimSignal: globalOneSideSignalHandles not "
+               "initialized");
+          res = flagcxInternalError;
+          break;
+        }
         res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset);
         break;
       }

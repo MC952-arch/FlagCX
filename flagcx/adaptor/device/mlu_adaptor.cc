@@ -289,76 +289,60 @@ static flagcxResult_t mluAdaptorStreamWaitValue64(flagcxStream_t, void *,
   return flagcxNotSupported;
 }
 
-struct flagcxDeviceAdaptor mluAdaptor{
-    "MLU",
-    // Basic functions
-    mluAdaptorDeviceSynchronize,
-    mluAdaptorDeviceMemcpy,
-    mluAdaptorDeviceMemset,
-    mluAdaptorDeviceMalloc,
-    mluAdaptorDeviceFree,
-    mluAdaptorSetDevice,
-    mluAdaptorGetDevice,
-    mluAdaptorGetDeviceCount,
-    mluAdaptorGetVendor,
-    NULL,
-    // GDR functions
-    NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-    NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-    mluAdaptorGdrMemAlloc,
-    mluAdaptorGdrMemFree,
-    NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
-          // *memHandle);
-    NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
-    NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
-          // sz);
-    NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
-    // Stream functions
-    mluAdaptorStreamCreate,
-    mluAdaptorStreamDestroy,
-    mluAdaptorStreamCopy,
-    mluAdaptorStreamFree,
-    mluAdaptorStreamSynchronize,
-    mluAdaptorStreamQuery,
-    mluAdaptorStreamWaitEvent,
-    // Event functions
-    mluAdaptorEventCreate,
-    mluAdaptorEventDestroy,
-    mluAdaptorEventRecord,
-    mluAdaptorEventSynchronize,
-    mluAdaptorEventQuery,
-    // IpcMemHandle functions
-    mluAdaptorIpcMemHandleCreate,
-    mluAdaptorIpcMemHandleGet,
-    mluAdaptorIpcMemHandleOpen,
-    mluAdaptorIpcMemHandleClose,
-    mluAdaptorIpcMemHandleFree,
-    // Kernel launch
-    NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-          // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-          // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-          // share_mem, void *stream, void *memHandle);
-    NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-    NULL, // flagcxResult_t (*copyArgsFree)(void *args);
-    NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream,
-          // void *args);
-    // Others
-    mluAdaptorGetDeviceProperties, // flagcxResult_t
-                                   // (*getDeviceProperties)(struct
-                                   // flagcxDevProps *props, int dev);
-    mluAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
-                                   // *pciBusId, int len, int dev);
-    mluAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                   // (*getDeviceByPciBusId)(int
-                                   // *dev, const char *pciBusId);
-    mluAdaptorLaunchHostFunc,
-    // DMA buffer
-    NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-    NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-          // void *buffer, size_t size, unsigned long long flags);
-    NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-          // start, flagcxEvent_t end);
-    mluAdaptorStreamWaitValue64,
+struct flagcxDeviceAdaptor mluAdaptor {
+  "MLU",
+      // Basic functions
+      mluAdaptorDeviceSynchronize, mluAdaptorDeviceMemcpy,
+      mluAdaptorDeviceMemset, mluAdaptorDeviceMalloc, mluAdaptorDeviceFree,
+      mluAdaptorSetDevice, mluAdaptorGetDevice, mluAdaptorGetDeviceCount,
+      mluAdaptorGetVendor, NULL,
+      // GDR functions
+      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      mluAdaptorGdrMemAlloc, mluAdaptorGdrMemFree,
+      NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
+            // *memHandle);
+      NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
+      NULL, // flagcxResult_t (*gdrPtrMmap)(void **pcpuptr, void *devptr, size_t
+            // sz);
+      NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
+      // Stream functions
+      mluAdaptorStreamCreate, mluAdaptorStreamDestroy, mluAdaptorStreamCopy,
+      mluAdaptorStreamFree, mluAdaptorStreamSynchronize, mluAdaptorStreamQuery,
+      mluAdaptorStreamWaitEvent,
+      // Event functions
+      mluAdaptorEventCreate, mluAdaptorEventDestroy, mluAdaptorEventRecord,
+      mluAdaptorEventSynchronize, mluAdaptorEventQuery,
+      // IpcMemHandle functions
+      mluAdaptorIpcMemHandleCreate, mluAdaptorIpcMemHandleGet,
+      mluAdaptorIpcMemHandleOpen, mluAdaptorIpcMemHandleClose,
+      mluAdaptorIpcMemHandleFree,
+      // Kernel launch
+      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
+            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
+            // share_mem, void *stream, void *memHandle);
+      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream,
+            // void *args);
+      // Others
+      mluAdaptorGetDeviceProperties, // flagcxResult_t
+                                     // (*getDeviceProperties)(struct
+                                     // flagcxDevProps *props, int dev);
+      mluAdaptorGetDevicePciBusId,   // flagcxResult_t (*getDevicePciBusId)(char
+                                     // *pciBusId, int len, int dev);
+      mluAdaptorGetDeviceByPciBusId, // flagcxResult_t
+                                     // (*getDeviceByPciBusId)(int
+                                     // *dev, const char *pciBusId);
+      mluAdaptorLaunchHostFunc,
+      // DMA buffer
+      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
+      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
+            // void *buffer, size_t size, unsigned long long flags);
+      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
+            // start, flagcxEvent_t end);
+      mluAdaptorStreamWaitValue64,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR
