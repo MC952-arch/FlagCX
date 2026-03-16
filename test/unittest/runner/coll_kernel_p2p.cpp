@@ -4,9 +4,12 @@
 #include <cstring>
 #include <iostream>
 
-// DISABLED: flagcxInterAlltoAllDemo returns flagcxSuccess but does not
-// transfer data (all received buffers are zero). Pre-existing issue in the
-// kernel demo API, not caused by test restructuring.
+// DISABLED: GPU-initiated networking (flagcxDevNet) requires proper FIFO +
+// network connection setup via flagcxDevCommCreate with appropriate
+// requirements. Current test creates flagcxDevMem_t without window/comm
+// registration, so the kernel has no network path to transfer data. Fix: Update
+// test to pass proper flagcxDevCommRequirements and register buffers with comm
+// (flagcxDevMemCreate with non-NULL comm).
 TEST_F(FlagCXKernelTest, DISABLED_P2pDemo) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;

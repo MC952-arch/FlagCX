@@ -7,7 +7,7 @@ BINS := $(SRCS:test_%.cpp=$(BINDIR)/perf_%)
 # Shared source files compiled into every binary
 TOOLS_SRC      := $(PROJECT_ROOT)/test/tools.cc
 PERF_COMMON_SRC := $(PROJECT_ROOT)/test/perf_common.cc
-COMMON_SRCS    := $(TOOLS_SRC)
+COMMON_SRCS    := $(TOOLS_SRC) $(PERF_COMMON_SRC)
 
 # Includes: flagcx (all subdirs), perf common headers, MPI, JSON
 # Some tests (core_sendrecv, ipc_sendrecv, put) include internal headers

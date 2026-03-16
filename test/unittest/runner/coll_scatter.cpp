@@ -5,11 +5,7 @@
 #include <iostream>
 #include <vector>
 
-// DISABLED: flagcxScatter does not transfer data (all ranks receive zeros).
-// The original test masked this with strcmp on float buffers (strcmp stops at
-// first zero byte of float 0.0, always returning 0). Proper float verification
-// reveals the pre-existing library bug.
-TEST_F(FlagCXCollTest, DISABLED_Scatter) {
+TEST_F(FlagCXCollTest, Scatter) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
