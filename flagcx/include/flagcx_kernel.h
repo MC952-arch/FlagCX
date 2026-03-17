@@ -247,14 +247,19 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-// Unified inter-node AlltoAll.
-// Runtime dispatch: one-sided (put + signal) if window available (Tier 1 -R 2),
-// two-sided (send/recv + FIFO) otherwise (all tiers, all -R modes).
-flagcxResult_t flagcxInterAlltoAll(flagcxDevMem_t sendMem,
-                                   flagcxDevMem_t recvMem, size_t count,
-                                   flagcxDataType_t datatype,
-                                   flagcxDevComm_t devComm,
-                                   flagcxStream_t stream);
+// Inter-node one-sided AlltoAll (put + waitSignal + flush).
+flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream);
+
+// Inter-node two-sided AlltoAll (send/recv + term/wait via FIFO).
+flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream);
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
@@ -313,9 +318,4 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                     flagcxDevComm_t devComm,
                                     flagcxStream_t stream);
 
-void flagcxOnesidedSend(size_t srcOffset, size_t dstOffset, size_t signalOffset,
-                        size_t count, flagcxDataType_t datatype, int peer,
-                        flagcxDevComm_t devComm, flagcxStream_t stream);
-void flagcxOnesidedRecv(int signalId, uint64_t expected,
-                        flagcxDevComm_t devComm, flagcxStream_t stream);
 #endif

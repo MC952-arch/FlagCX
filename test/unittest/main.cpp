@@ -426,8 +426,8 @@ TEST_F(FlagCXKernelTest, InterAlltoAll) {
             flagcxSuccess);
 
   // Launch AlltoAll kernel
-  flagcxResult_t result = flagcxInterAlltoAll(sendMem, recvMem, countPerPeer,
-                                              flagcxFloat, devComm, stream);
+  flagcxResult_t result = flagcxInterTwoSidedAlltoAll(
+      sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
 
@@ -461,81 +461,71 @@ TEST_F(FlagCXKernelTest, InterAlltoAll) {
 }
 
 // ---------------------------------------------------------------------------
-// One-sided put + signal + waitSignal (requires >= 2 ranks)
+// Inter-node one-sided AlltoAll: put + waitSignal + flush
 // ---------------------------------------------------------------------------
-TEST_F(FlagCXKernelTest, OnesidedPutSignal) {
-  if (nranks < 2) {
-    GTEST_SKIP() << "OnesidedPutSignal requires at least 2 ranks";
-  }
-
+TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  const int senderRank = 0;
-  const int receiverRank = 1;
-  bool isSender = (rank == senderRank);
-  bool isReceiver = (rank == receiverRank);
+  size_t countPerPeer = count / nranks;
 
-  // Allocate and register window buffer for one-sided data
-  size_t windowBytes = size;
-  void *window = nullptr;
-  ASSERT_EQ(posix_memalign(&window, 64, windowBytes), 0);
-  ASSERT_NE(window, nullptr);
-  std::memset(window, 0, windowBytes);
+  // Initialize sendbuff: all elements = rank
+  for (size_t i = 0; i < count; i++) {
+    ((float *)hostsendbuff)[i] = (float)rank;
+  }
+  devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
+                          flagcxMemcpyHostToDevice, NULL);
 
-  void *windowHandle = nullptr;
-  ASSERT_EQ(flagcxCommRegister(comm, window, windowBytes, &windowHandle),
-            flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
 
-  // Create device communicator with 1 signal
+  // Create device communicator with inter-node barrier + signal
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interSignalCount = 1;
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
-  // Fill sender's window with known pattern, receiver stays zero
-  if (isSender) {
-    std::memset(window, 0xAB, windowBytes);
-    devHandle->deviceMemcpy(sendbuff, window, size, flagcxMemcpyHostToDevice,
-                            NULL);
-  }
+  // Create device memory handles
+  flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem),
+            flagcxSuccess);
 
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  // One-sided operation: sender puts data + signals, receiver waits
-  if (isSender) {
-    flagcxOnesidedSend(0, 0, 0, count, flagcxFloat, receiverRank, devComm,
-                       stream);
-  } else if (isReceiver) {
-    flagcxOnesidedRecv(0, 1, devComm, stream);
-  }
+  // Launch one-sided AlltoAll
+  flagcxResult_t result = flagcxInterOneSidedAlltoAll(
+      sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
+  EXPECT_EQ(result, flagcxSuccess);
+
+  // Destroy device memory handles
+  flagcxDevMemDestroy(NULL, sendMem);
+  flagcxDevMemDestroy(NULL, recvMem);
+
+  // Destroy device communicator
+  flagcxDevCommDestroy(comm, devComm);
+
+  // Copy results back
+  devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
+                          flagcxMemcpyDeviceToHost, NULL);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Verify receiver got the data
-  if (isReceiver) {
-    bool success = true;
-    unsigned char *winBytes = (unsigned char *)window;
-    for (size_t i = 0; i < size && success; i++) {
-      if (winBytes[i] != 0xAB) {
-        success = false;
-        if (rank == receiverRank) {
-          std::cout << "OnesidedPutSignal MISMATCH at byte [" << i
-                    << "]: got 0x" << std::hex << (int)winBytes[i]
-                    << ", expected 0xAB" << std::dec << std::endl;
-        }
+  // Verify: recvbuff[p*countPerPeer] should equal p for all p
+  bool success = true;
+  for (int p = 0; p < nranks; p++) {
+    float expected = (float)p;
+    float actual = ((float *)hostrecvbuff)[p * countPerPeer];
+    if (actual != expected) {
+      success = false;
+      if (rank == 0) {
+        std::cout << "InterOneSidedAlltoAll mismatch at peer " << p
+                  << ": expected " << expected << ", got " << actual
+                  << std::endl;
       }
     }
-    EXPECT_TRUE(success);
   }
-
-  // Cleanup
-  flagcxDevCommDestroy(comm, devComm);
-  if (windowHandle != nullptr) {
-    flagcxCommDeregister(comm, windowHandle);
-  }
-  free(window);
+  EXPECT_TRUE(success);
 }
 
 int main(int argc, char *argv[]) {

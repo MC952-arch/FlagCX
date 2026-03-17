@@ -777,17 +777,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
 flagcxCoopIsThread(flagcxCoopTile<N>) {
   return N == 1;
 }
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopIsThread(flagcxCoopBlock) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopBlock) {
   return false;
 }
 #ifdef FLAGCX_SIMT_WIDTH
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopIsThread(flagcxCoopLanes) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopLanes) {
   return false;
 }
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopIsThread(flagcxCoopTileSpan) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopTileSpan) {
   return false;
 }
 #endif // FLAGCX_SIMT_WIDTH
@@ -798,17 +795,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
 flagcxCoopWithinTile(flagcxCoopTile<N>) {
   return true;
 }
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopWithinTile(flagcxCoopBlock) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopBlock) {
   return false;
 }
 #ifdef FLAGCX_SIMT_WIDTH
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopWithinTile(flagcxCoopLanes) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopLanes) {
   return true;
 }
-FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-flagcxCoopWithinTile(flagcxCoopTileSpan) {
+FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopTileSpan) {
   return false;
 }
 #endif // FLAGCX_SIMT_WIDTH
@@ -876,6 +870,12 @@ struct flagcxIntraBarrierSession {
   int _nRanks, _myRank;
   uint32_t _ctaIndex;
   uint64_t _epoch;
+
+  // Default constructor (no-op, for inter-only barrier composition)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxIntraBarrierSession()
+      : _peerSignals(nullptr), _nRanks(0), _myRank(0), _ctaIndex(0), _epoch(0) {
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
@@ -1852,19 +1852,24 @@ struct flagcxDevNet {
 template <typename Coop>
 struct flagcxInterBarrierSession {
   ncclGinBarrierSession<ncclCoopCta> _impl;
+  int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
                             flagcxTeam_t team, uint32_t index)
       : _impl(ncclCoopCta(), net._gin, team._base, net._gin.comm.railGinBarrier,
-              index) {}
+              index),
+        _nInterPeers(net._devComm._nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
-               ncclGinFenceLevel::Relaxed);
+    if (_nInterPeers > 0) {
+      _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+                 ncclGinFenceLevel::Relaxed);
+    }
+    // else: no-op (same-node, no inter peers to sync with)
   }
 };
 #else
@@ -1889,6 +1894,17 @@ struct flagcxInterBarrierSession {
         _fifoBuffer(devComm.getFifoBuffer()),
         _nInterPeers(devComm._nInterPeers), _isLeader(devComm._isInterLeader),
         _ctaIndex(index), _epoch(devComm._interBarrierEpoch) {}
+
+  // Overload matching Tier 1 signature (coop, net, team, index)
+  // Used by kernels that want inter-only barrier directly.
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
+                            flagcxTeam_t team, uint32_t index)
+      : _interSignals(net._devComm._interSignalFlags),
+        _fifoBuffer(net._devComm.getFifoBuffer()),
+        _nInterPeers(net._devComm._nInterPeers),
+        _isLeader(net._devComm._isInterLeader), _ctaIndex(index),
+        _epoch(net._devComm._interBarrierEpoch) {}
 
   // Default constructor (intra-only, all operations are no-ops)
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1952,12 +1968,6 @@ struct flagcxBarrierSession {
                        bool multimem = false)
       : _impl(ncclCoopCta(), ncclTeamTagLsa(), devComm._base, index, multimem) {
   }
-
-  // Inter-only barrier
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxBarrierSession(Coop coop, flagcxTeamTagInter, const flagcxDevNet &net,
-                       uint32_t index)
-      : _impl(ncclCoopCta(), ncclTeamTagRail(), net._gin, index) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,

@@ -71,9 +71,9 @@ int main(int argc, char *argv[]) {
   memset(hello, 0, maxBytes);
 
   // Create device communicator for AlltoAll demo
-  // Request IPC barriers — bar.sync() uses signal-based intra barrier
+  // Inter-only barrier needs inter barrier resources (GIN/FIFO Signal)
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
@@ -89,14 +89,14 @@ int main(int argc, char *argv[]) {
 
   // Warm-up
   for (int i = 0; i < numWarmupIters; i++) {
-    FLAGCXCHECK(flagcxInterAlltoAll(
+    FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(
         sendMem, recvMem,
         std::max((size_t)1, maxBytes / sizeof(float) / totalProcs), DATATYPE,
         devComm, stream));
   }
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
   for (int i = 0; i < numWarmupIters; i++) {
-    FLAGCXCHECK(flagcxInterAlltoAll(
+    FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(
         sendMem, recvMem,
         std::max((size_t)1, minBytes / sizeof(float) / totalProcs), DATATYPE,
         devComm, stream));
@@ -134,8 +134,8 @@ int main(int argc, char *argv[]) {
 
     tim.reset();
     for (int i = 0; i < numIters; i++) {
-      FLAGCXCHECK(flagcxInterAlltoAll(sendMem, recvMem, count, DATATYPE,
-                                      devComm, stream));
+      FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(sendMem, recvMem, count, DATATYPE,
+                                              devComm, stream));
     }
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     double elapsedTime = tim.elapsed() / numIters;
@@ -192,46 +192,22 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvbuff, maxBytes, &recvWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));
 
-    // Shared pointers for whichever path we take
     flagcxDevComm_t a2aDevComm = nullptr;
     flagcxDevMem_t a2aSendMem = nullptr, a2aRecvMem = nullptr;
-    bool useWindow = (sendWin != nullptr && recvWin != nullptr);
 
-    if (useWindow) {
-      // Tier 1: Window AlltoAll path (one-sided put + signal)
-      if (proc == 0 && color == 0) {
-        printf("\n# Window AlltoAll test (one-sided devNet)\n");
-      }
-
-      // Create device communicator with barrier + signal requirements
-      flagcxDevCommRequirements interReqs =
-          FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      interReqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-      interReqs.interSignalCount = 1;
-      FLAGCXCHECK(flagcxDevCommCreate(comm, &interReqs, &a2aDevComm));
-
-      // Create window-mode device memory handles
-      FLAGCXCHECK(
-          flagcxDevMemCreate(comm, sendbuff, maxBytes, sendWin, &a2aSendMem));
-      FLAGCXCHECK(
-          flagcxDevMemCreate(comm, recvbuff, maxBytes, recvWin, &a2aRecvMem));
-    } else {
-      // Tier 2/3: fallback to FIFO AlltoAll (two-sided send/recv)
-      if (proc == 0 && color == 0) {
-        printf("\n# FIFO AlltoAll test (window not available, two-sided "
-               "fallback)\n");
-      }
-
-      flagcxDevCommRequirements fallbackReqs =
-          FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      fallbackReqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-      FLAGCXCHECK(flagcxDevCommCreate(comm, &fallbackReqs, &a2aDevComm));
-
-      FLAGCXCHECK(
-          flagcxDevMemCreate(comm, sendbuff, maxBytes, NULL, &a2aSendMem));
-      FLAGCXCHECK(
-          flagcxDevMemCreate(comm, recvbuff, maxBytes, NULL, &a2aRecvMem));
+    if (proc == 0 && color == 0) {
+      printf("\n# Window AlltoAll test (two-sided send/recv, -R 2)\n");
     }
+
+    flagcxDevCommRequirements a2aReqs =
+        FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+    a2aReqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+    FLAGCXCHECK(flagcxDevCommCreate(comm, &a2aReqs, &a2aDevComm));
+
+    FLAGCXCHECK(
+        flagcxDevMemCreate(comm, sendbuff, maxBytes, sendWin, &a2aSendMem));
+    FLAGCXCHECK(
+        flagcxDevMemCreate(comm, recvbuff, maxBytes, recvWin, &a2aRecvMem));
 
     for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
       count = size / sizeof(float) / totalProcs;
@@ -265,8 +241,8 @@ int main(int argc, char *argv[]) {
 
       tim.reset();
       for (int i = 0; i < numIters; i++) {
-        FLAGCXCHECK(flagcxInterAlltoAll(a2aSendMem, a2aRecvMem, count, DATATYPE,
-                                        a2aDevComm, stream));
+        FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(a2aSendMem, a2aRecvMem, count,
+                                                DATATYPE, a2aDevComm, stream));
       }
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       double elapsedTime = tim.elapsed() / numIters;
@@ -305,9 +281,8 @@ int main(int argc, char *argv[]) {
       double bw = (double)(size) / 1.0E9 / elapsedTime;
 
       if (proc == 0 && color == 0) {
-        printf("%s AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n",
-               useWindow ? "Window" : "FIFO", size, elapsedTime * 1e6, bw,
-               correct ? "PASS" : "FAIL");
+        printf("Window AlltoAll %zu bytes; %.3lf us; %.3lf GB/s; %s\n", size,
+               elapsedTime * 1e6, bw, correct ? "PASS" : "FAIL");
       }
       MPI_Barrier(MPI_COMM_WORLD);
     }

@@ -608,6 +608,9 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   flagcxResult_t res = flagcxSuccess;
 
   // Step 2a: Homo path — backend CCL registration
+  // NCCL handles IPC/VMM internally via ncclCommRegister, so skip Step 2b
+  // (cudaIpcGetMemHandle is incompatible with ncclMemAlloc VMM buffers)
+  // and Step 3 (one-sided MR registration, hetero-only).
   if (useHomoComm(comm) && !useHeteroComm()) {
     void *homoHandle = nullptr;
     res = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
@@ -615,9 +618,10 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     if (res != flagcxSuccess)
       goto fail;
     regItem->homoRegHandle = homoHandle;
+    return flagcxSuccess;
   }
 
-  // Step 2b: Create IPC handle for the buffer (both paths)
+  // Step 2b: Create IPC handle for the buffer (hetero path only)
   {
     flagcxIpcMemHandle_t handlePtr = nullptr;
     size_t ipcSize = 0;
@@ -638,10 +642,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
-  // TODO: Step 2b (IPC) and Step 3 (one-sided MR) are currently eager.
-  // NCCL's ncclCommRegister is purely lazy bookkeeping — defer to first use.
-
-  // Step 3: One-sided MR registration (hetero path)
+  // Step 3: One-sided MR registration (hetero path only)
   {
     flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
     if (regRes != flagcxSuccess) {

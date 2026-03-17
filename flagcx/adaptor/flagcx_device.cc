@@ -14,10 +14,11 @@
 
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel.h"
-#include "net.h"     // flagcxNetHandle_t
-#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
-#include <algorithm> // std::min, std::max
-#include <unistd.h>  // usleep
+#include "ib_common.h" // globalOneSideHandles
+#include "net.h"       // flagcxNetHandle_t
+#include "p2p.h"       // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include <algorithm>   // std::min, std::max
+#include <unistd.h>    // usleep
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -664,6 +665,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
          "flagcxDevCommCreate: one-sided Tier 2 buffers allocated "
          "(signals=%d, counters=%d)",
          handle->signalCount, handle->counterCount);
+  }
+
+  // ---- dataBufferBase: set from globalOneSideHandles if available ----
+  // Enables Tier 2 _toDataOffset() to compute MR-relative offsets for put().
+  if (globalOneSideHandles != NULL && globalOneSideHandles->baseVas != NULL) {
+    handle->dataBufferBase = globalOneSideHandles->baseVas[comm->rank];
+    INFO(FLAGCX_INIT, "flagcxDevCommCreate: dataBufferBase = 0x%lx",
+         (unsigned long)handle->dataBufferBase);
   }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
