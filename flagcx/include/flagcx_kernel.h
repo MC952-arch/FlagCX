@@ -14,7 +14,9 @@ typedef enum {
   flagcxDevicePrimWait = 3,
   flagcxDevicePrimPut = 4,
   flagcxDevicePrimSignal = 5,
-  flagcxDevicePrimBarrierSignal = 6
+  flagcxDevicePrimBarrierSignal = 6,
+  flagcxDevicePrimWaitSignal = 7,
+  flagcxDevicePrimPutValue = 8
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
@@ -151,9 +153,6 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
-void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                   flagcxDataType_t datatype, int sendPeer, int recvPeer,
-                   flagcxComm_t comm, flagcxStream_t stream);
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
                                   size_t nblocks, flagcxStream_t stream);
 
@@ -248,14 +247,14 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-// Unified inter-node AlltoAll demo.
+// Unified inter-node AlltoAll.
 // Runtime dispatch: one-sided (put + signal) if window available (Tier 1 -R 2),
 // two-sided (send/recv + FIFO) otherwise (all tiers, all -R modes).
-flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
-                                       flagcxDevMem_t recvMem, size_t count,
-                                       flagcxDataType_t datatype,
-                                       flagcxDevComm_t devComm,
-                                       flagcxStream_t stream);
+flagcxResult_t flagcxInterAlltoAll(flagcxDevMem_t sendMem,
+                                   flagcxDevMem_t recvMem, size_t count,
+                                   flagcxDataType_t datatype,
+                                   flagcxDevComm_t devComm,
+                                   flagcxStream_t stream);
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
@@ -309,16 +308,14 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm);
 // already containing the input data.  The kernel runs an in-place
 // AllReduce across all intra-node GPUs.
 // devComm must be created via flagcxDevCommCreate beforehand.
-flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxDevComm_t devComm,
-                                        flagcxStream_t stream);
+flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
+                                    flagcxDataType_t datatype,
+                                    flagcxDevComm_t devComm,
+                                    flagcxStream_t stream);
 
-void flagcxOnesidedSendDemo(size_t srcOffset, size_t dstOffset,
-                            size_t signalOffset, size_t count,
-                            flagcxDataType_t datatype, int peer,
-                            flagcxDevComm_t devComm, flagcxStream_t stream);
-void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
-                            volatile int *errorFlag, flagcxDevComm_t devComm,
-                            flagcxStream_t stream);
+void flagcxOnesidedSend(size_t srcOffset, size_t dstOffset, size_t signalOffset,
+                        size_t count, flagcxDataType_t datatype, int peer,
+                        flagcxDevComm_t devComm, flagcxStream_t stream);
+void flagcxOnesidedRecv(int signalId, uint64_t expected,
+                        flagcxDevComm_t devComm, flagcxStream_t stream);
 #endif

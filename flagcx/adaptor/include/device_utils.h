@@ -7,6 +7,9 @@
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
+// Suppress unused-variable warnings for static arrays in headers
+#define FLAGCX_MAYBE_UNUSED __attribute__((unused))
+
 #ifdef USE_NVIDIA_ADAPTOR
 #include <cuda.h>
 #include <cuda_runtime.h>

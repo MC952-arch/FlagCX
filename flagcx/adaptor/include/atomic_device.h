@@ -23,13 +23,13 @@ typedef enum {
 #include <cuda/atomic>
 
 // Mapping arrays from flagcx enums to CUDA types
-static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::memory_order
+FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::memory_order
     flagcxDeviceMemoryOrderMap[] = {
         cuda::memory_order_relaxed, cuda::memory_order_acquire,
         cuda::memory_order_release, cuda::memory_order_acq_rel,
         cuda::memory_order_seq_cst};
 
-static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::thread_scope
+FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR cuda::thread_scope
     flagcxDeviceScopeMap[] = {
         cuda::thread_scope_system, cuda::thread_scope_device,
         cuda::thread_scope_block, cuda::thread_scope_thread};

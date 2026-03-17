@@ -638,6 +638,18 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
+  // TODO: Step 2b (IPC) and Step 3 (one-sided MR) are currently eager.
+  // NCCL's ncclCommRegister is purely lazy bookkeeping — defer to first use.
+
+  // Step 3: One-sided MR registration (hetero path)
+  {
+    flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
+    if (regRes != flagcxSuccess) {
+      INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
+           regRes);
+    }
+  }
+
   return flagcxSuccess;
 
 fail:

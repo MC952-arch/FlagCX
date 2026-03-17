@@ -214,3 +214,36 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
 
   return deviceAdaptor->streamWaitValue64(stream, signalAddr, expected, 0);
 }
+
+flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
+                                    size_t dstOffset, void *stagingBuffer,
+                                    size_t size) {
+  if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
+    return flagcxNotSupported;
+
+  int channelId = 0;
+  int connIndex = 0;
+  struct flagcxConnector *conn =
+      &comm->channels[channelId].peers[peer]->send[connIndex];
+  if (conn->connected == 0 ||
+      conn->proxyConn.connection->transport != TRANSPORT_NET) {
+    return flagcxNotSupported;
+  }
+  void **gHandles = (void **)globalOneSideHandles;
+  if (gHandles == NULL) {
+    WARN("flagcxHeteroPutValue: globalOneSideHandles not initialized");
+    return flagcxInternalError;
+  }
+
+  // stagingBuffer is host-pinned; compute its offset relative to data base VA.
+  // For PutValue, we use a special staging iput: the staging buffer MR is
+  // separate from the data MR. We reuse iput with the staging buffer's
+  // offset within the data region.
+  // TODO: Phase 2 enhancement — register staging buffer as separate MR
+  // For now, use iput with staging source offset = 0 (staging buffer is
+  // at a known registered address).
+  (void)stagingBuffer;
+  (void)size;
+  WARN("flagcxHeteroPutValue: not yet fully implemented (needs staging MR)");
+  return flagcxNotSupported;
+}

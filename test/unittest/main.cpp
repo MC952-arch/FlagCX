@@ -1,6 +1,7 @@
 #include "flagcx_coll_test.hpp"
 #include "flagcx_kernel_test.hpp"
 #include "flagcx_topo_test.hpp"
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -333,7 +334,67 @@ TEST_F(FlagCXTopoTest, TopoDetection) {
   EXPECT_EQ(result, flagcxSuccess);
 }
 
-TEST_F(FlagCXKernelTest, P2pDemo) {
+// ---------------------------------------------------------------------------
+// Intra-node AllReduce: each rank fills with (rank+1), verify sum
+// ---------------------------------------------------------------------------
+TEST_F(FlagCXKernelTest, IntraAllReduce) {
+  flagcxComm_t &comm = handler->comm;
+  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+
+  // Initialize sendbuff: each rank fills with (rank + 1)
+  for (size_t i = 0; i < count; i++) {
+    ((float *)hostsendbuff)[i] = (float)(rank + 1);
+  }
+  devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
+                          flagcxMemcpyHostToDevice, NULL);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Create device communicator with intra barriers
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
+
+  // Create device memory handle (raw IPC mode)
+  flagcxDevMem_t devMem = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &devMem),
+            flagcxSuccess);
+
+  // Run AllReduce
+  flagcxResult_t result =
+      flagcxIntraAllReduce(devMem, count, flagcxFloat, devComm, stream);
+  devHandle->streamSynchronize(stream);
+  EXPECT_EQ(result, flagcxSuccess);
+
+  // Copy results back
+  devHandle->deviceMemcpy(hostrecvbuff, sendbuff, size,
+                          flagcxMemcpyDeviceToHost, NULL);
+
+  // Verify: expected = nranks*(nranks+1)/2
+  float expected = (float)(nranks * (nranks + 1)) / 2.0f;
+  bool success = true;
+  for (size_t i = 0; i < count && success; i++) {
+    if (fabsf(((float *)hostrecvbuff)[i] - expected) > 1e-3f) {
+      success = false;
+      if (rank == 0) {
+        std::cout << "IntraAllReduce MISMATCH at [" << i << "]: got "
+                  << ((float *)hostrecvbuff)[i] << ", expected " << expected
+                  << std::endl;
+      }
+    }
+  }
+  EXPECT_TRUE(success);
+
+  // Cleanup
+  flagcxDevMemDestroy(NULL, devMem);
+  flagcxDevCommDestroy(comm, devComm);
+}
+
+// ---------------------------------------------------------------------------
+// Inter-node AlltoAll: two-sided send/recv via FIFO
+// ---------------------------------------------------------------------------
+TEST_F(FlagCXKernelTest, InterAlltoAll) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
@@ -350,7 +411,7 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Create device communicator for P2P demo
+  // Create device communicator
   // Request IPC barriers — needed by flagcxBarrierSession in the kernel
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
@@ -364,9 +425,9 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
   ASSERT_EQ(flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem),
             flagcxSuccess);
 
-  // Launch AlltoAll kernel demo
-  flagcxResult_t result = flagcxInterAlltoAllDemo(
-      sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
+  // Launch AlltoAll kernel
+  flagcxResult_t result = flagcxInterAlltoAll(sendMem, recvMem, countPerPeer,
+                                              flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
 
@@ -397,6 +458,84 @@ TEST_F(FlagCXKernelTest, P2pDemo) {
     }
   }
   EXPECT_TRUE(success);
+}
+
+// ---------------------------------------------------------------------------
+// One-sided put + signal + waitSignal (requires >= 2 ranks)
+// ---------------------------------------------------------------------------
+TEST_F(FlagCXKernelTest, OnesidedPutSignal) {
+  if (nranks < 2) {
+    GTEST_SKIP() << "OnesidedPutSignal requires at least 2 ranks";
+  }
+
+  flagcxComm_t &comm = handler->comm;
+  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+
+  const int senderRank = 0;
+  const int receiverRank = 1;
+  bool isSender = (rank == senderRank);
+  bool isReceiver = (rank == receiverRank);
+
+  // Allocate and register window buffer for one-sided data
+  size_t windowBytes = size;
+  void *window = nullptr;
+  ASSERT_EQ(posix_memalign(&window, 64, windowBytes), 0);
+  ASSERT_NE(window, nullptr);
+  std::memset(window, 0, windowBytes);
+
+  void *windowHandle = nullptr;
+  ASSERT_EQ(flagcxCommRegister(comm, window, windowBytes, &windowHandle),
+            flagcxSuccess);
+
+  // Create device communicator with 1 signal
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interSignalCount = 1;
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
+
+  // Fill sender's window with known pattern, receiver stays zero
+  if (isSender) {
+    std::memset(window, 0xAB, windowBytes);
+    devHandle->deviceMemcpy(sendbuff, window, size, flagcxMemcpyHostToDevice,
+                            NULL);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // One-sided operation: sender puts data + signals, receiver waits
+  if (isSender) {
+    flagcxOnesidedSend(0, 0, 0, count, flagcxFloat, receiverRank, devComm,
+                       stream);
+  } else if (isReceiver) {
+    flagcxOnesidedRecv(0, 1, devComm, stream);
+  }
+  devHandle->streamSynchronize(stream);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Verify receiver got the data
+  if (isReceiver) {
+    bool success = true;
+    unsigned char *winBytes = (unsigned char *)window;
+    for (size_t i = 0; i < size && success; i++) {
+      if (winBytes[i] != 0xAB) {
+        success = false;
+        if (rank == receiverRank) {
+          std::cout << "OnesidedPutSignal MISMATCH at byte [" << i
+                    << "]: got 0x" << std::hex << (int)winBytes[i]
+                    << ", expected 0xAB" << std::dec << std::endl;
+        }
+      }
+    }
+    EXPECT_TRUE(success);
+  }
+
+  // Cleanup
+  flagcxDevCommDestroy(comm, devComm);
+  if (windowHandle != nullptr) {
+    flagcxCommDeregister(comm, windowHandle);
+  }
+  free(window);
 }
 
 int main(int argc, char *argv[]) {
