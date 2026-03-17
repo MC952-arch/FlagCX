@@ -129,9 +129,6 @@ int main(int argc, char *argv[]) {
 
   flagcxResult_t res;
 
-  // Enable one-sided register to set up globalOneSideHandles
-  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
-
   size_t signalBytes = sizeof(uint64_t);
   size_t total_iters_per_size = num_warmup_iters + num_iters;
   size_t max_data_iters = std::max(num_warmup_iters, num_iters);
@@ -159,13 +156,16 @@ int main(int argc, char *argv[]) {
   devHandle->deviceMemset(signalWindow, 0, signal_total_bytes, flagcxMemDevice,
                           NULL);
 
-  // Register data buffer via flagcxCommRegister → globalOneSideHandles
+  // Register data buffer in global reg pool
   void *dataHandle = nullptr;
   res = flagcxCommRegister(comm, dataWindow, data_bytes, &dataHandle);
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
-  // Register signal buffer via flagcxOneSideSignalRegister →
-  // globalOneSideSignalHandles
+  // Register data buffer for one-sided operations
+  res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
+  fatal(res, "flagcxOneSideRegister (data) failed", proc);
+
+  // Register signal buffer for one-sided operations
   res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes);
   fatal(res, "flagcxOneSideSignalRegister failed", proc);
 

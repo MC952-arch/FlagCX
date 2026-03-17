@@ -57,7 +57,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_KERNEL_FIFO_CAPACITY` | Default | Kernel FIFO capacity |
 | `FLAGCX_REDUCE_FIFO_CAPACITY` | Default | Reduce operation FIFO capacity |
 | `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
-| `FLAGCX_ENABLE_ONE_SIDE_REGISTER` | 0 | When set to 1, enables one-sided memory registration |
+
 
 ---
 

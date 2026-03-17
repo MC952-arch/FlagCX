@@ -1191,7 +1191,7 @@ void *flagcxProxyKernelService(void *args) {
         // For now, signal-only mode (size=0)
         if (globalOneSideSignalHandles == NULL) {
           WARN("flagcxDevicePrimSignal: globalOneSideSignalHandles not "
-               "initialized");
+               "initialized — call flagcxOneSideSignalRegister() before use");
           res = flagcxInternalError;
           break;
         }

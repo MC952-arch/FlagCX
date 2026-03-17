@@ -676,18 +676,14 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
 
 flagcxNetAdaptor flagcxNetSocket = {
     // Basic functions
-    "Socket",
-    flagcxNetSocketInit,
-    flagcxNetSocketDevices,
+    "Socket", flagcxNetSocketInit, flagcxNetSocketDevices,
     flagcxNetSocketGetProperties,
     NULL, // reduceSupport - not implemented
     NULL, // getDeviceMr - not implemented
     NULL, // irecvConsumed - not implemented
 
     // Setup functions
-    flagcxNetSocketListen,
-    flagcxNetSocketConnect,
-    flagcxNetSocketAccept,
+    flagcxNetSocketListen, flagcxNetSocketConnect, flagcxNetSocketAccept,
     flagcxNetSocketClose, // closeSend
     flagcxNetSocketClose, // closeRecv (same as closeSend for socket)
     flagcxNetSocketCloseListen,
@@ -698,9 +694,7 @@ flagcxNetAdaptor flagcxNetSocket = {
     flagcxNetSocketDeregMr,
 
     // Two-sided functions
-    flagcxNetSocketIsend,
-    flagcxNetSocketIrecv,
-    flagcxNetSocketIflush,
+    flagcxNetSocketIsend, flagcxNetSocketIrecv, flagcxNetSocketIflush,
     flagcxNetSocketTest,
 
     // One-sided functions

@@ -67,38 +67,26 @@ flagcxResult_t wrapper_deviceMemcpy(void *dst, void *src, size_t size,
   return deviceAdaptor->deviceMemcpy(dst, src, size, type, stream, NULL);
 }
 
-static struct flagcxDeviceHandle globalDeviceHandle{
-    // Basic functions
-    deviceAdaptor->deviceSynchronize,
-    wrapper_deviceMemcpy,
-    deviceAdaptor->deviceMemset,
-    deviceAdaptor->deviceMalloc,
-    deviceAdaptor->deviceFree,
-    deviceAdaptor->setDevice,
-    deviceAdaptor->getDevice,
-    deviceAdaptor->getDeviceCount,
-    deviceAdaptor->getVendor,
-    deviceAdaptor->hostGetDevicePointer,
-    // Stream functions
-    deviceAdaptor->streamCreate,
-    deviceAdaptor->streamDestroy,
-    deviceAdaptor->streamCopy,
-    deviceAdaptor->streamFree,
-    deviceAdaptor->streamSynchronize,
-    deviceAdaptor->streamQuery,
-    deviceAdaptor->streamWaitEvent,
-    // Event functions
-    deviceAdaptor->eventCreate,
-    deviceAdaptor->eventDestroy,
-    deviceAdaptor->eventRecord,
-    deviceAdaptor->eventSynchronize,
-    deviceAdaptor->eventQuery,
-    // IpcMemHandle functions
-    deviceAdaptor->ipcMemHandleCreate,
-    deviceAdaptor->ipcMemHandleGet,
-    deviceAdaptor->ipcMemHandleOpen,
-    deviceAdaptor->ipcMemHandleClose,
-    deviceAdaptor->ipcMemHandleFree,
+static struct flagcxDeviceHandle globalDeviceHandle {
+  // Basic functions
+  deviceAdaptor->deviceSynchronize, wrapper_deviceMemcpy,
+      deviceAdaptor->deviceMemset, deviceAdaptor->deviceMalloc,
+      deviceAdaptor->deviceFree, deviceAdaptor->setDevice,
+      deviceAdaptor->getDevice, deviceAdaptor->getDeviceCount,
+      deviceAdaptor->getVendor, deviceAdaptor->hostGetDevicePointer,
+      // Stream functions
+      deviceAdaptor->streamCreate, deviceAdaptor->streamDestroy,
+      deviceAdaptor->streamCopy, deviceAdaptor->streamFree,
+      deviceAdaptor->streamSynchronize, deviceAdaptor->streamQuery,
+      deviceAdaptor->streamWaitEvent,
+      // Event functions
+      deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
+      deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
+      deviceAdaptor->eventQuery,
+      // IpcMemHandle functions
+      deviceAdaptor->ipcMemHandleCreate, deviceAdaptor->ipcMemHandleGet,
+      deviceAdaptor->ipcMemHandleOpen, deviceAdaptor->ipcMemHandleClose,
+      deviceAdaptor->ipcMemHandleFree,
 };
 
 flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
@@ -204,8 +192,13 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  if (globalOneSideHandles != NULL)
+  if (globalOneSideHandles != NULL) {
+    if (globalOneSideHandles->baseVas != NULL &&
+        globalOneSideHandles->baseVas[comm->rank] != (uintptr_t)buff) {
+      WARN("flagcxOneSideRegister: already registered with a different buffer");
+    }
     return flagcxSuccess;
+  }
 
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
@@ -399,8 +392,14 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  if (globalOneSideSignalHandles != NULL)
+  if (globalOneSideSignalHandles != NULL) {
+    if (globalOneSideSignalHandles->baseVas != NULL &&
+        globalOneSideSignalHandles->baseVas[comm->rank] != (uintptr_t)buff) {
+      WARN("flagcxOneSideSignalRegister: already registered with a different "
+           "buffer");
+    }
     return flagcxSuccess;
+  }
 
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
@@ -586,11 +585,6 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  const char *enableOneSideReg =
-      flagcxGetEnv("FLAGCX_ENABLE_ONE_SIDE_REGISTER");
-  if (enableOneSideReg && strcmp(enableOneSideReg, "1") == 0) {
-    flagcxOneSideRegister(comm, buff, size);
-  }
 
   if (buff == NULL || size == 0) {
     WARN("Invalid buffer or size for buffer registration.");

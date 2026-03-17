@@ -6,6 +6,7 @@
 #include "transport.h"
 #include "type.h"
 
+#include <climits>
 #include <sched.h>
 
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
@@ -173,6 +174,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
 
+  if (size > (size_t)INT_MAX) {
+    WARN("flagcxHeteroFlush: size %zu exceeds int limit", size);
+    return flagcxInternalError;
+  }
   void *data_arr[1] = {gpuAddr};
   int sizes_arr[1] = {(int)size};
   void *mh_arr[1] = {info->localMrHandle};

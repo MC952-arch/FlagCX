@@ -724,8 +724,8 @@ struct flagcxCoopAny {
 // flagcxCoopGetLaneMask: get the active lane bitmask for a cooperative group
 #ifdef FLAGCX_SIMT_WIDTH
 template <int N>
-FLAGCX_DEVICE_INLINE_DECORATOR
-    uint32_t flagcxCoopGetLaneMask(flagcxCoopTile<N> coop) {
+FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+flagcxCoopGetLaneMask(flagcxCoopTile<N> coop) {
   return coop.laneMask();
 }
 FLAGCX_DEVICE_INLINE_DECORATOR uint32_t flagcxCoopGetLaneMask(flagcxCoopBlock) {

@@ -39,9 +39,6 @@ int main(int argc, char *argv[]) {
   MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Enable one-sided register (must be set before communicator initialization)
-  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
-
   flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
 
   if (totalProcs < 2) {
@@ -64,12 +61,13 @@ int main(int argc, char *argv[]) {
   bool isSender = (proc == senderRank);
   bool isReceiver = (proc == receiverRank);
 
-  // Allocate and register window buffer for one-sided operations
+  // Allocate data and signal buffers for one-sided operations
   size_t signalBytes = sizeof(uint64_t);
   size_t max_iterations = std::max(num_warmup_iters, num_iters);
-  size_t window_bytes =
-      max_bytes * max_iterations + signalBytes * max_iterations;
+  size_t window_bytes = max_bytes * max_iterations;
+  size_t signal_total_bytes = signalBytes * max_iterations;
 
+  // Data buffer: host memory for RDMA data transfers
   void *window = nullptr;
   if (posix_memalign(&window, 64, window_bytes) != 0 || window == nullptr) {
     fprintf(stderr,
@@ -79,9 +77,25 @@ int main(int argc, char *argv[]) {
   }
   std::memset(window, 0, window_bytes);
 
-  // Register window buffer - this will automatically set up one-sided handles
+  // Signal buffer: GPU memory for RDMA atomic signal writes (FORCE_SO MR)
+  void *signalWindow = nullptr;
+  flagcxResult_t res = flagcxMemAlloc(&signalWindow, signal_total_bytes, comm);
+  if (res != flagcxSuccess || signalWindow == nullptr) {
+    fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
+            proc, signal_total_bytes);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  devHandle->deviceMemset(signalWindow, 0, signal_total_bytes, flagcxMemDevice,
+                          NULL);
+
+  // Register data buffer in global reg pool and for one-sided operations
   void *windowHandle = nullptr;
   flagcxCommRegister(comm, window, window_bytes, &windowHandle);
+  FLAGCXCHECK(flagcxOneSideRegister(comm, window, window_bytes));
+
+  // Register signal buffer for one-sided operations
+  FLAGCXCHECK(
+      flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes));
 
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
@@ -104,11 +118,9 @@ int main(int argc, char *argv[]) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  size_t baseSignalOffset = max_bytes * max_iterations;
-
   // Warm-up iterations
   for (int i = 0; i < num_warmup_iters; ++i) {
-    size_t signalOffset = baseSignalOffset + i * signalBytes;
+    size_t signalOffset = i * signalBytes;
     size_t current_send_offset = i * max_bytes;
     size_t current_recv_offset = i * max_bytes;
 
@@ -125,7 +137,7 @@ int main(int argc, char *argv[]) {
                              devComm, stream);
     } else if (isReceiver) {
       volatile uint64_t *signalAddr =
-          (volatile uint64_t *)((char *)window + signalOffset);
+          (volatile uint64_t *)((char *)signalWindow + signalOffset);
       hostErrorFlag = 0;
       devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
                               flagcxMemcpyHostToDevice, NULL);
@@ -167,7 +179,7 @@ int main(int argc, char *argv[]) {
 
     tim.reset();
     for (int i = 0; i < num_iters; ++i) {
-      size_t signalOffset = baseSignalOffset + i * signalBytes;
+      size_t signalOffset = i * signalBytes;
       size_t current_send_offset = i * size;
       size_t current_recv_offset = i * size;
 
@@ -183,7 +195,7 @@ int main(int argc, char *argv[]) {
                                DATATYPE, receiverRank, devComm, stream);
       } else if (isReceiver) {
         volatile uint64_t *signalAddr =
-            (volatile uint64_t *)((char *)window + signalOffset);
+            (volatile uint64_t *)((char *)signalWindow + signalOffset);
         hostErrorFlag = 0;
         devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
                                 flagcxMemcpyHostToDevice, NULL);
@@ -238,10 +250,14 @@ int main(int argc, char *argv[]) {
   devHandle->deviceFree(srcbuff, flagcxMemDevice, NULL);
   free(hello);
 
+  flagcxOneSideDeregister(comm);
+  flagcxOneSideSignalDeregister(comm);
+
   if (windowHandle != nullptr) {
     flagcxCommDeregister(comm, windowHandle);
   }
   free(window);
+  flagcxMemFree(signalWindow, comm);
 
   devHandle->streamDestroy(stream);
   flagcxCommDestroy(comm);
