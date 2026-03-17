@@ -137,13 +137,13 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
     ctx.devHandle->streamSynchronize(ctx.stream);
 
     // Compute average elapsed time across all ranks
-    double elapsed_time = ctx.tim.elapsed() / ctx.numIters;
-    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
+    double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
+    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
                   MPI_COMM_WORLD);
-    elapsed_time /= ctx.worldSize;
+    elapsedTime /= ctx.worldSize;
 
     // Bandwidth calculation
-    double baseBw = (double)(size) / 1.0E9 / elapsed_time;
+    double baseBw = (double)(size) / 1.0E9 / elapsedTime;
     double algBw = baseBw;
     double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
     double busBw = baseBw * factor;
@@ -151,7 +151,7 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
     if (ctx.proc == 0 && ctx.color == 0) {
       printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
              "%lf GB/s; Bus bandwidth: %lf GB/s\n",
-             size, elapsed_time, algBw, busBw);
+             size, elapsedTime, algBw, busBw);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);

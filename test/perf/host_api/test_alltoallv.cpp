@@ -7,14 +7,14 @@
 
 int main(int argc, char *argv[]) {
   parser args(argc, argv);
-  size_t min_bytes = args.getMinBytes();
-  size_t max_bytes = args.getMaxBytes();
-  int step_factor = args.getStepFactor();
-  int num_warmup_iters = args.getWarmupIters();
-  int num_iters = args.getTestIters();
-  int print_buffer = args.isPrintBuffer();
-  uint64_t split_mask = args.getSplitMask();
-  int local_register = args.getLocalRegister();
+  size_t minBytes = args.getMinBytes();
+  size_t maxBytes = args.getMaxBytes();
+  int stepFactor = args.getStepFactor();
+  int numWarmupIters = args.getWarmupIters();
+  int numIters = args.getTestIters();
+  int printBuffer = args.isPrintBuffer();
+  uint64_t splitMask = args.getSplitMask();
+  int localRegister = args.getLocalRegister();
 
   flagcxHandlerGroup_t handler;
   flagcxHandleInit(&handler);
@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
   int totalProcs = 1, proc = 0;
   MPI_Comm splitComm;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
-             splitComm, split_mask);
+             splitComm, splitMask);
 
   int nGpu;
   devHandle->getDeviceCount(&nGpu);
@@ -48,127 +48,127 @@ int main(int argc, char *argv[]) {
   void *hello = nullptr;
   void *sendHandle = nullptr;
   void *recvHandle = nullptr;
-  size_t *h_sendcounts, *h_recvcounts, *h_sdispls, *h_rdispls;
+  size_t *hSendcounts, *hRecvcounts, *hSdispls, *hRdispls;
   size_t count, sdis, rdis;
   timer tim;
 
-  if (local_register) {
+  if (localRegister) {
     // allocate buffer
-    flagcxMemAlloc(&sendbuff, max_bytes);
-    flagcxMemAlloc(&recvbuff, max_bytes);
+    flagcxMemAlloc(&sendbuff, maxBytes);
+    flagcxMemAlloc(&recvbuff, maxBytes);
     // register buffer
-    flagcxCommRegister(comm, sendbuff, max_bytes, &sendHandle);
-    flagcxCommRegister(comm, recvbuff, max_bytes, &recvHandle);
+    flagcxCommRegister(comm, sendbuff, maxBytes, &sendHandle);
+    flagcxCommRegister(comm, recvbuff, maxBytes, &recvHandle);
   } else {
-    devHandle->deviceMalloc(&sendbuff, max_bytes, flagcxMemDevice, NULL);
-    devHandle->deviceMalloc(&recvbuff, max_bytes, flagcxMemDevice, NULL);
+    devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL);
+    devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL);
   }
-  hello = malloc(max_bytes);
-  memset(hello, 0, max_bytes);
-  h_sendcounts = (size_t *)malloc(totalProcs * sizeof(size_t));
-  h_recvcounts = (size_t *)malloc(totalProcs * sizeof(size_t));
-  h_sdispls = (size_t *)malloc(totalProcs * sizeof(size_t));
-  h_rdispls = (size_t *)malloc(totalProcs * sizeof(size_t));
+  hello = malloc(maxBytes);
+  memset(hello, 0, maxBytes);
+  hSendcounts = (size_t *)malloc(totalProcs * sizeof(size_t));
+  hRecvcounts = (size_t *)malloc(totalProcs * sizeof(size_t));
+  hSdispls = (size_t *)malloc(totalProcs * sizeof(size_t));
+  hRdispls = (size_t *)malloc(totalProcs * sizeof(size_t));
 
   // Warm-up for large size
   sdis = 0;
   rdis = 0;
-  count = (max_bytes / sizeof(float)) / totalProcs;
+  count = (maxBytes / sizeof(float)) / totalProcs;
   for (int i = 0; i < totalProcs; i++) {
     if (proc % 2 == 0) {
       if (i % 2 == 0) {
-        h_sendcounts[i] = 2 * count;
-        h_recvcounts[i] = 2 * count;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 2 * count;
+        hRecvcounts[i] = 2 * count;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
         if (i == proc) {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
         }
         sdis += 2 * count;
         rdis += 2 * count;
       } else {
-        h_sendcounts[i] = 0;
-        h_recvcounts[i] = 0;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 0;
+        hRecvcounts[i] = 0;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
       }
     } else {
       if (i % 2 == 1) {
-        h_sendcounts[i] = 2 * count;
-        h_recvcounts[i] = 2 * count;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 2 * count;
+        hRecvcounts[i] = 2 * count;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
         if (i == proc) {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
         }
         sdis += 2 * count;
         rdis += 2 * count;
       } else {
-        h_sendcounts[i] = 0;
-        h_recvcounts[i] = 0;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 0;
+        hRecvcounts[i] = 0;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
       }
     }
   }
-  for (int i = 0; i < num_warmup_iters; i++) {
-    flagcxAlltoAllv(sendbuff, h_sendcounts, h_sdispls, recvbuff, h_recvcounts,
-                    h_rdispls, DATATYPE, comm, stream);
+  for (int i = 0; i < numWarmupIters; i++) {
+    flagcxAlltoAllv(sendbuff, hSendcounts, hSdispls, recvbuff, hRecvcounts,
+                    hRdispls, DATATYPE, comm, stream);
   }
   devHandle->streamSynchronize(stream);
 
   // Warm-up for small size
   sdis = 0;
   rdis = 0;
-  count = (min_bytes / sizeof(float)) / totalProcs;
+  count = (minBytes / sizeof(float)) / totalProcs;
   for (int i = 0; i < totalProcs; i++) {
     if (proc % 2 == 0) {
       if (i % 2 == 0) {
-        h_sendcounts[i] = 2 * count;
-        h_recvcounts[i] = 2 * count;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 2 * count;
+        hRecvcounts[i] = 2 * count;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
         if (i == proc) {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
         }
         sdis += 2 * count;
         rdis += 2 * count;
       } else {
-        h_sendcounts[i] = 0;
-        h_recvcounts[i] = 0;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 0;
+        hRecvcounts[i] = 0;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
       }
     } else {
       if (i % 2 == 1) {
-        h_sendcounts[i] = 2 * count;
-        h_recvcounts[i] = 2 * count;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 2 * count;
+        hRecvcounts[i] = 2 * count;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
         if (i == proc) {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
         }
         sdis += 2 * count;
         rdis += 2 * count;
       } else {
-        h_sendcounts[i] = 0;
-        h_recvcounts[i] = 0;
-        h_sdispls[i] = sdis;
-        h_rdispls[i] = rdis;
+        hSendcounts[i] = 0;
+        hRecvcounts[i] = 0;
+        hSdispls[i] = sdis;
+        hRdispls[i] = rdis;
       }
     }
   }
-  for (int i = 0; i < num_warmup_iters; i++) {
-    flagcxAlltoAllv(sendbuff, h_sendcounts, h_sdispls, recvbuff, h_recvcounts,
-                    h_rdispls, DATATYPE, comm, stream);
+  for (int i = 0; i < numWarmupIters; i++) {
+    flagcxAlltoAllv(sendbuff, hSendcounts, hSdispls, recvbuff, hRecvcounts,
+                    hRdispls, DATATYPE, comm, stream);
   }
   devHandle->streamSynchronize(stream);
 
-  for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
+  for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
     sdis = 0;
     rdis = 0;
     count = (size / sizeof(float)) / totalProcs;
@@ -180,7 +180,7 @@ int main(int argc, char *argv[]) {
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
                             NULL);
 
-    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && print_buffer) {
+    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && printBuffer) {
       printf("sendbuff = ");
       for (int i = 0; i < totalProcs; i++) {
         printf("%f ", ((float *)hello)[i * count]);
@@ -191,62 +191,62 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < totalProcs; i++) {
       if (proc % 2 == 0) {
         if (i % 2 == 0) {
-          h_sendcounts[i] = 2 * count;
-          h_recvcounts[i] = 2 * count;
-          h_sdispls[i] = sdis;
-          h_rdispls[i] = rdis;
+          hSendcounts[i] = 2 * count;
+          hRecvcounts[i] = 2 * count;
+          hSdispls[i] = sdis;
+          hRdispls[i] = rdis;
           if (i == proc) {
-            h_sendcounts[i] = 0;
-            h_recvcounts[i] = 0;
+            hSendcounts[i] = 0;
+            hRecvcounts[i] = 0;
           }
           sdis += 2 * count;
           rdis += 2 * count;
         } else {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
-          h_sdispls[i] = sdis;
-          h_rdispls[i] = rdis;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
+          hSdispls[i] = sdis;
+          hRdispls[i] = rdis;
         }
       } else {
         if (i % 2 == 1) {
-          h_sendcounts[i] = 2 * count;
-          h_recvcounts[i] = 2 * count;
-          h_sdispls[i] = sdis;
-          h_rdispls[i] = rdis;
+          hSendcounts[i] = 2 * count;
+          hRecvcounts[i] = 2 * count;
+          hSdispls[i] = sdis;
+          hRdispls[i] = rdis;
           if (i == proc) {
-            h_sendcounts[i] = 0;
-            h_recvcounts[i] = 0;
+            hSendcounts[i] = 0;
+            hRecvcounts[i] = 0;
           }
           sdis += 2 * count;
           rdis += 2 * count;
         } else {
-          h_sendcounts[i] = 0;
-          h_recvcounts[i] = 0;
-          h_sdispls[i] = sdis;
-          h_rdispls[i] = rdis;
+          hSendcounts[i] = 0;
+          hRecvcounts[i] = 0;
+          hSdispls[i] = sdis;
+          hRdispls[i] = rdis;
         }
       }
     }
 
-    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && print_buffer) {
-      printf("h_sendcounts = ");
+    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && printBuffer) {
+      printf("hSendcounts = ");
       for (int i = 0; i < totalProcs; i++) {
-        printf("%ld ", h_sendcounts[i]);
+        printf("%ld ", hSendcounts[i]);
       }
       printf("\n");
-      printf("h_recvcounts = ");
+      printf("hRecvcounts = ");
       for (int i = 0; i < totalProcs; i++) {
-        printf("%ld ", h_recvcounts[i]);
+        printf("%ld ", hRecvcounts[i]);
       }
       printf("\n");
-      printf("h_sdispls = ");
+      printf("hSdispls = ");
       for (int i = 0; i < totalProcs; i++) {
-        printf("%ld ", h_sdispls[i]);
+        printf("%ld ", hSdispls[i]);
       }
       printf("\n");
-      printf("h_rdispls = ");
+      printf("hRdispls = ");
       for (int i = 0; i < totalProcs; i++) {
-        printf("%ld ", h_rdispls[i]);
+        printf("%ld ", hRdispls[i]);
       }
       printf("\n");
     }
@@ -254,25 +254,25 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     tim.reset();
-    for (int i = 0; i < num_iters; i++) {
-      flagcxAlltoAllv(sendbuff, h_sendcounts, h_sdispls, recvbuff, h_recvcounts,
-                      h_rdispls, DATATYPE, comm, stream);
+    for (int i = 0; i < numIters; i++) {
+      flagcxAlltoAllv(sendbuff, hSendcounts, hSdispls, recvbuff, hRecvcounts,
+                      hRdispls, DATATYPE, comm, stream);
     }
     devHandle->streamSynchronize(stream);
 
-    double elapsed_time = tim.elapsed() / num_iters;
-    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
+    double elapsedTime = tim.elapsed() / numIters;
+    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
                   MPI_COMM_WORLD);
-    elapsed_time /= worldSize;
+    elapsedTime /= worldSize;
 
-    double base_bw = (double)(size) / 1.0E9 / elapsed_time;
-    double alg_bw = base_bw;
+    double baseBw = (double)(size) / 1.0E9 / elapsedTime;
+    double algBw = baseBw;
     double factor = ((double)(totalProcs - 1)) / ((double)(totalProcs));
-    double bus_bw = base_bw * factor;
+    double busBw = baseBw * factor;
     if (proc == 0 && color == 0) {
       printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: %lf "
              "GB/s; Bus bandwidth: %lf GB/s\n",
-             size, elapsed_time, alg_bw, bus_bw);
+             size, elapsedTime, algBw, busBw);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -280,7 +280,7 @@ int main(int argc, char *argv[]) {
     memset(hello, 0, size);
     devHandle->deviceMemcpy(hello, recvbuff, size, flagcxMemcpyDeviceToHost,
                             NULL);
-    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && print_buffer) {
+    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && printBuffer) {
       printf("recvbuff = ");
       for (int i = 0; i < totalProcs; i++) {
         printf("%f ", ((float *)hello)[i * count]);
@@ -289,7 +289,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (local_register) {
+  if (localRegister) {
     // deregister buffer
     flagcxCommDeregister(comm, sendHandle);
     flagcxCommDeregister(comm, recvHandle);
@@ -301,10 +301,10 @@ int main(int argc, char *argv[]) {
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }
   free(hello);
-  free(h_sendcounts);
-  free(h_recvcounts);
-  free(h_sdispls);
-  free(h_rdispls);
+  free(hSendcounts);
+  free(hRecvcounts);
+  free(hSdispls);
+  free(hRdispls);
   flagcxCommDestroy(comm);
   devHandle->streamDestroy(stream);
   flagcxHandleFree(handler);
