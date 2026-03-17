@@ -7,7 +7,7 @@
 #include "proxy.h"
 #include "adaptor.h"
 #include "comm.h"
-#include "device_api/flagcx_device.h" // flagcxDevCommInternal, signalDevComm
+#include "device_api/flagcx_device.h" // flagcxDevCommInternal, devComm
 #include "flagcx_hetero.h"
 #include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
 #include "ib_common.h"
@@ -1198,6 +1198,59 @@ void *flagcxProxyKernelService(void *args) {
         res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset);
         break;
       }
+      case flagcxDevicePrimWaitSignal: {
+        TRACE(
+            FLAGCX_P2P,
+            "rank=%d flagcxDevicePrimWaitSignal called by proxyKernelService.",
+            comm->rank);
+        // fst encoding: [63:32]=expected, [31:0]=signalOffset
+        uint32_t wsExpected = (uint32_t)ptr->getSrcOffset();
+        size_t wsSignalOff = (size_t)ptr->getDstOffset();
+        uint64_t wsBufType = ptr->getDatatype(); // 0=signal, 1=counter
+        flagcxDevComm_t dc = comm->devComm;
+        if (dc == NULL) {
+          WARN("flagcxDevicePrimWaitSignal: devComm not initialized");
+          res = flagcxInternalError;
+          break;
+        }
+        // Select target buffer based on datatype field
+        uint64_t *targetBuffer =
+            (wsBufType == 0) ? dc->signalBuffer : dc->counterBuffer;
+        if (targetBuffer == NULL) {
+          WARN("flagcxDevicePrimWaitSignal: %s buffer not allocated",
+               wsBufType == 0 ? "signal" : "counter");
+          res = flagcxInternalError;
+          break;
+        }
+        void *waitAddr = (void *)((char *)targetBuffer + wsSignalOff);
+        res = deviceAdaptor->streamWaitValue64(stream, waitAddr,
+                                               (uint64_t)wsExpected, 0);
+        break;
+      }
+      case flagcxDevicePrimPutValue: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimPutValue called by proxyKernelService.",
+              comm->rank);
+        int pvPeerRank = (int)ptr->getPeerRank();
+        res = validateOneSidedPeer(comm, pvPeerRank);
+        if (res != flagcxSuccess)
+          break;
+        // fst = full 64-bit value; count field repurposed as dstOffset
+        uint64_t pvValue = ptr->getAddr();
+        size_t pvDstOffset = (size_t)ptr->getCount();
+        flagcxDevComm_t pvDc = comm->devComm;
+        if (pvDc == NULL || pvDc->putValueStagingBuffer == NULL) {
+          WARN("flagcxDevicePrimPutValue: staging buffer not initialized");
+          res = flagcxInternalError;
+          break;
+        }
+        // Copy value to staging buffer
+        memcpy(pvDc->putValueStagingBuffer, &pvValue, sizeof(uint64_t));
+        res =
+            flagcxHeteroPutValue(comm, pvPeerRank, pvDstOffset,
+                                 pvDc->putValueStagingBuffer, sizeof(uint64_t));
+        break;
+      }
       case flagcxDevicePrimWait:
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
@@ -1207,7 +1260,7 @@ void *flagcxProxyKernelService(void *args) {
       case flagcxDevicePrimBarrierSignal: {
         // Inter-node signal relay: fan out isend to all inter-node peers.
         // The ctaIndex is encoded in the addr field of the trigger.
-        flagcxDevComm_t dc = comm->signalDevComm;
+        flagcxDevComm_t dc = comm->devComm;
         if (dc && dc->nInterPeers > 0) {
           uint32_t ctaIdx = (uint32_t)ptr->getAddr();
           struct flagcxNetAdaptor *net =

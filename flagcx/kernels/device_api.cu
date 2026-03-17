@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2025 BAAI. All rights reserved.
  *
- * FlagCX Device API demo kernels.
+ * FlagCX Device API kernels.
  *
  * 1. Intra-node AllReduce — peer pointer + barrier based.
  *    Tier 1 (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
@@ -13,6 +13,8 @@
  *    One-sided path (Tier 1 + window): put + waitSignal + flush.
  *    Two-sided path (all tiers):       send + recv via FIFO.
  *    Both paths wrapped by bar.sync() pre/post barriers.
+ *
+ * 3. One-sided Send/Recv — point-to-point put + signal + waitSignal.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
@@ -95,9 +97,9 @@ template cudaError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
                                                         flagcxDevMem, size_t,
                                                         size_t, cudaStream_t);
 
-// Host-side demo function — launches the kernel using caller-provided
+// Host-side function — launches the kernel using caller-provided
 // registered buffer and device communicator.
-flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
+flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                         flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
                                         flagcxStream_t stream) {
@@ -196,10 +198,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 }
 
-// Host-side unified alltoall demo function.
+// Host-side unified alltoall function.
 // Runtime dispatch: one-sided (put) if window available, two-sided (send/recv)
 // otherwise. Uses same launch config for both paths.
-flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
+flagcxResult_t flagcxInterAlltoAll(flagcxDevMem_t sendMem,
                                        flagcxDevMem_t recvMem, size_t count,
                                        flagcxDataType_t datatype,
                                        flagcxDevComm_t devComm,
@@ -229,4 +231,52 @@ flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
   devComm->interBarrierEpoch += 2 * devComm->nInterPeers;
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+// ==========================================================================
+// 3. One-sided Send/Recv — point-to-point put + signal + waitSignal
+// ==========================================================================
+
+FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(size_t srcOffset,
+                                                      size_t dstOffset,
+                                                      size_t signalOffset,
+                                                      size_t count,
+                                                      flagcxDataType_t datatype,
+                                                      int peer,
+                                                      flagcxDevComm devComm) {
+  int tid = threadIdx.x;
+  if (tid == 0) {
+    flagcxDevNet net(devComm);
+    net.put(srcOffset, dstOffset, count, datatype, peer);
+    net.signal(signalOffset, peer);
+    net.term();
+    net.wait();
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(
+    int signalId, uint64_t expected, flagcxDevComm devComm) {
+  int tid = threadIdx.x;
+  if (tid == 0) {
+    flagcxDevNet net(devComm);
+    net.waitSignal(flagcxCoopBlock{}, signalId, expected);
+    net.term();
+    net.wait();
+  }
+}
+
+void flagcxOnesidedSend(size_t srcOffset, size_t dstOffset,
+                            size_t signalOffset, size_t count,
+                            flagcxDataType_t datatype, int peer,
+                            flagcxDevComm_t devComm, flagcxStream_t stream) {
+  flagcxDevComm dc(*devComm);
+  flagcxOnesidedSendKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
+      srcOffset, dstOffset, signalOffset, count, datatype, peer, dc);
+}
+
+void flagcxOnesidedRecv(int signalId, uint64_t expected,
+                            flagcxDevComm_t devComm, flagcxStream_t stream) {
+  flagcxDevComm dc(*devComm);
+  flagcxOnesidedRecvKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
+      signalId, expected, dc);
 }

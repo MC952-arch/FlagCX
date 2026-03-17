@@ -53,4 +53,10 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,
                                       flagcxStream_t stream);
 
+// Put a 64-bit value to remote peer's buffer at dstOffset.
+// Uses stagingBuffer (host-pinned, pre-registered MR) as RDMA source.
+flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
+                                    size_t dstOffset, void *stagingBuffer,
+                                    size_t size);
+
 #endif

@@ -28,6 +28,9 @@ void FlagCXKernelTest::SetUp() {
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  // Enable one-sided register (harmless for tests that don't use it)
+  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
+
   // Create comm and stream
   flagcxCommInitRank(&comm, nranks, uniqueId, rank);
   devHandle->streamCreate(&stream);

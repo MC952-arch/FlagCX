@@ -403,7 +403,7 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   }
 
   // Publish to heteroComm so proxy can access signal connections
-  hetero->signalDevComm = handle;
+  // (devComm is also set at end of flagcxDevCommCreate for all ranks)
 
   INFO(FLAGCX_INIT,
        "setupInterNodeSignalRelay: rank %d (leader), nInterPeers %d, recv "
@@ -484,7 +484,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
 
   // Clear heteroComm reference
   if (comm && comm->heteroComm) {
-    comm->heteroComm->signalDevComm = nullptr;
+    comm->heteroComm->devComm = nullptr;
   }
 }
 
@@ -618,6 +618,54 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     }
   }
 
+  // ---- One-sided Tier 2 layer: if signals or counters requested ----
+  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+    // Allocate signal buffer (GPU, SYNC_MEMOPS via flagcxMemAlloc)
+    if (reqs->interSignalCount > 0) {
+      handle->signalCount = reqs->interSignalCount;
+      size_t sigSize = handle->signalCount * sizeof(uint64_t);
+      FLAGCXCHECK(
+          flagcxMemAlloc((void **)&handle->signalBuffer, sigSize, comm));
+      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
+                                              flagcxMemDevice, NULL));
+      // Shadow buffer (local GPU memory, no MR needed)
+      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer,
+                                              sigSize, flagcxMemDevice, NULL));
+      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
+                                              flagcxMemDevice, NULL));
+    }
+    // Allocate counter buffer (GPU, SYNC_MEMOPS via flagcxMemAlloc)
+    if (reqs->interCounterCount > 0) {
+      handle->counterCount = reqs->interCounterCount;
+      size_t cntSize = handle->counterCount * sizeof(uint64_t);
+      FLAGCXCHECK(
+          flagcxMemAlloc((void **)&handle->counterBuffer, cntSize, comm));
+      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->counterBuffer, 0, cntSize,
+                                              flagcxMemDevice, NULL));
+    }
+    // PutValue staging buffer (8 bytes host-pinned)
+    FLAGCXCHECK(
+        deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
+                                    sizeof(uint64_t), flagcxMemHost, NULL));
+    memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
+
+    // Auto-register signal buffer for RDMA one-sided access
+    if (handle->signalBuffer) {
+      flagcxResult_t regRes = flagcxOneSideSignalRegister(
+          comm, handle->signalBuffer, handle->signalCount * sizeof(uint64_t));
+      if (regRes != flagcxSuccess) {
+        INFO(FLAGCX_INIT,
+             "flagcxDevCommCreate: signal buffer registration skipped (%d)",
+             regRes);
+      }
+    }
+
+    INFO(FLAGCX_INIT,
+         "flagcxDevCommCreate: one-sided Tier 2 buffers allocated "
+         "(signals=%d, counters=%d)",
+         handle->signalCount, handle->counterCount);
+  }
+
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- NCCL layer: try ncclDevCommCreate ----
   {
@@ -649,9 +697,19 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 #endif
 
   *devComm = handle;
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s",
+
+  // Publish to heteroComm so proxy thread can access this DevComm
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (hetero != nullptr) {
+    hetero->devComm = handle;
+  }
+
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s",
        handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
+       (handle->signalCount > 0 || handle->counterCount > 0)
+           ? " + one-sided Tier 2"
+           : "",
        handle->hasNcclDev ? " + ncclDevComm" : "");
   return flagcxSuccess;
 }
@@ -692,6 +750,31 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
                               NULL);
   }
+
+  // Clear heteroComm->devComm + deregister signal buffer
+  if (comm != nullptr && comm->heteroComm != nullptr &&
+      comm->heteroComm->devComm == devComm) {
+    if (devComm->signalBuffer) {
+      flagcxOneSideSignalDeregister(comm);
+    }
+    comm->heteroComm->devComm = nullptr;
+  }
+
+  // One-sided Tier 2 cleanup
+  if (devComm->signalBuffer) {
+    flagcxMemFree(devComm->signalBuffer);
+  }
+  if (devComm->shadowBuffer) {
+    deviceAdaptor->deviceFree(devComm->shadowBuffer, flagcxMemDevice, NULL);
+  }
+  if (devComm->counterBuffer) {
+    flagcxMemFree(devComm->counterBuffer);
+  }
+  if (devComm->putValueStagingBuffer) {
+    deviceAdaptor->deviceFree(devComm->putValueStagingBuffer, flagcxMemHost,
+                              NULL);
+  }
+
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;
