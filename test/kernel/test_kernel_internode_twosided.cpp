@@ -187,10 +187,10 @@ int main(int argc, char *argv[]) {
 
   // ==========================================================================
   // Window AlltoAll test (requires -R 2 for window registration)
-  // Falls back to FIFO AlltoAll on Tier 2/3 when window not available
+  // Falls back to FIFO AlltoAll on Fallback when window not available
   // ==========================================================================
   if (localRegister == 2) {
-    // Register windows (returns nullptr on Tier 2/3)
+    // Register windows (returns nullptr on Fallback)
     flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));

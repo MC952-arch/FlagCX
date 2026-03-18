@@ -92,7 +92,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
   }
   if (localRegister == 2) {
-    // Window mode (NCCL > 2.28 only; graceful fallback on Tier 2/3)
+    // Window mode (NCCL > 2.28 only; graceful fallback on Fallback)
     FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
                                          FLAGCX_WIN_DEFAULT));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));

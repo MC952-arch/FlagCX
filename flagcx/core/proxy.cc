@@ -1047,26 +1047,16 @@ void *flagcxProxyKernelService(void *args) {
 
   auto validateOneSidedPeer = [](struct flagcxHeteroComm *comm,
                                  int peerRank) -> flagcxResult_t {
-    if (globalOneSideHandles == NULL)
+    if (globalOneSideHandleCount == 0 || globalOneSideHandles == NULL)
       return flagcxNotSupported;
     if (peerRank < 0 || peerRank >= comm->nRanks)
       return flagcxInvalidArgument;
 
-    // globalOneSideHandles proves registration happened, but the per-peer NET
-    // transport connection still needs to be established.
-    struct flagcxConnector *conn = &comm->channels[0].peers[peerRank]->send[0];
-    if (conn == NULL || conn->connected == 0 ||
-        conn->proxyConn.connection == NULL ||
-        conn->proxyConn.connection->transport != TRANSPORT_NET) {
-      return flagcxNotSupported;
-    }
-
-    // Validate the specific peer has gathered one-sided handles.
+    // Check full-mesh connection exists for this peer (including self-loopback)
     struct flagcxIbGlobalHandleInfo *handles =
         (struct flagcxIbGlobalHandleInfo *)globalOneSideHandles;
-    if (handles == NULL || handles->baseVas == NULL || handles->rkeys == NULL)
-      return flagcxNotSupported;
-    if (handles->baseVas[peerRank] == 0 || handles->rkeys[peerRank] == 0)
+    if (handles->fullSendComms == NULL ||
+        handles->fullSendComms[peerRank] == NULL)
       return flagcxNotSupported;
 
     return flagcxSuccess;
@@ -1105,9 +1095,7 @@ void *flagcxProxyKernelService(void *args) {
       break;
     dequeue(fifo->buffer, ptr);
     if ((ptr->getType() == flagcxDevicePrimSend ||
-         ptr->getType() == flagcxDevicePrimRecv ||
-         ptr->getType() == flagcxDevicePrimPut ||
-         ptr->getType() == flagcxDevicePrimSignal) &&
+         ptr->getType() == flagcxDevicePrimRecv) &&
         ptr->getAddr() == 0) {
       sched_yield();
       continue;
@@ -1170,12 +1158,17 @@ void *flagcxProxyKernelService(void *args) {
         res = validateOneSidedPeer(comm, peerRank);
         if (res != flagcxSuccess)
           break;
+        // For Put, datatype field encodes MR indices: (srcMrIdx << 2) |
+        // dstMrIdx
+        int dtField = (int)ptr->getDatatype();
+        int srcMrIdx = dtField >> 2;
+        int dstMrIdx = dtField & 3;
         size_t srcOffset = (size_t)ptr->getSrcOffset();
         size_t dstOffset = (size_t)ptr->getDstOffset();
         size_t size =
-            ptr->getCount() *
-            getFlagcxDataTypeSize((flagcxDataType_t)ptr->getDatatype());
-        res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size);
+            (size_t)ptr->getCount(); // raw bytes (no datatypeSize mult)
+        res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size,
+                              srcMrIdx, dstMrIdx);
         break;
       }
       case flagcxDevicePrimSignal: {
@@ -1195,7 +1188,7 @@ void *flagcxProxyKernelService(void *args) {
           res = flagcxInternalError;
           break;
         }
-        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset);
+        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset, 0, 0);
         break;
       }
       case flagcxDevicePrimWaitSignal: {

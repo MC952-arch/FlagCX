@@ -161,7 +161,7 @@ void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
 // ==========================================================================
 
 // Requirements for creating a device communicator.
-// Named fields map to NCCL ncclDevCommRequirements (Tier 1).
+// Named fields map to NCCL ncclDevCommRequirements (Vendor-specific).
 // Naming: NCCL "lsa" → FlagCX "intra", "gin" → "inter", "multimem" →
 // "multicast".
 struct flagcxDevCommRequirements {
@@ -235,13 +235,13 @@ flagcxResult_t flagcxInterBarrierCreateRequirement(
     flagcxInterBarrierHandle_t *outHandle, flagcxDevCommRequirements *outReq);
 
 // Opaque handle to a device communicator (host-side lifetime management).
-// Internally wraps ncclDevComm on NVIDIA backend (Tier 1),
-// or IPC barrier state on fallback (Tier 2).
+// Internally wraps ncclDevComm on NVIDIA backend (Vendor-specific),
+// or IPC barrier state on fallback (Fallback).
 typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 
 // Opaque handle to device memory (host-side lifetime management).
-// Internally wraps ncclWindow_t on NVIDIA backend (Tier 1),
-// or IPC peer pointer table on fallback (Tier 2).
+// Internally wraps ncclWindow_t on NVIDIA backend (Vendor-specific),
+// or IPC peer pointer table on fallback (Fallback).
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
@@ -271,8 +271,8 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 #endif
 
 // Create a device communicator for custom kernel usage.
-// On NVIDIA backend (Tier 1), internally calls pncclDevCommCreate.
-// On fallback (Tier 2), sets up IPC-based barrier across intra-node peers.
+// On NVIDIA backend (Vendor-specific), internally calls pncclDevCommCreate.
+// On fallback (Fallback), sets up IPC-based barrier across intra-node peers.
 // The returned handle must be destroyed with flagcxDevCommDestroy(comm,
 // devComm).
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,

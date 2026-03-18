@@ -233,7 +233,7 @@ int main(int argc, char *argv[]) {
 
         res = flagcxHeteroPutSignal(comm->heteroComm, receiverRank,
                                     current_send_offset, current_recv_offset,
-                                    size, signalOffset);
+                                    size, signalOffset, 0, 0);
         fatal(res, "flagcxHeteroPutSignal warmup failed", proc);
       } else if (isReceiver) {
         res = flagcxHeteroWaitSignal(hetero, senderRank, signalOffset, 1,
@@ -261,7 +261,7 @@ int main(int argc, char *argv[]) {
 
         res = flagcxHeteroPutSignal(comm->heteroComm, receiverRank,
                                     current_send_offset, current_recv_offset,
-                                    size, signalOffset);
+                                    size, signalOffset, 0, 0);
         fatal(res, "flagcxHeteroPutSignal failed", proc);
       } else if (isReceiver) {
         res = flagcxHeteroWaitSignal(hetero, senderRank, signalOffset, 1,

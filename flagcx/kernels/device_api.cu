@@ -4,9 +4,9 @@
  * FlagCX Device API kernels.
  *
  * 1. Intra-node AllReduce — peer pointer + barrier based.
- *    Tier 1 (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
- *    Tier 2 (fallback):    IPC peer pointers + atomics barrier.
- *    Same kernel code compiles for both tiers.
+ *    Vendor-specific (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
+ *    Fallback:    IPC peer pointers + atomics barrier.
+ *    Same kernel code compiles for both paths.
  *
  * 2. Inter-node AlltoAll — two separate kernels:
  *    a) One-sided (put): thread-stride loop, put + waitSignal + flush.
@@ -106,7 +106,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 
   cudaStream_t cudaStream = *(cudaStream_t *)stream;
 
-  // Unified constructors — work for both Tier 1 and Tier 2
+  // Unified constructors — work for both Vendor-specific and Fallback
   flagcxDevComm devCommKernel(*devComm);
   flagcxDevMem devMemKernel(*devMem);
 
@@ -134,7 +134,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 // 2a. Inter-node One-sided AlltoAll
 //
 // Thread-stride loop: each thread dispatches put ops to different peers.
-// put() posts FIFO descriptor (Tier 2) or GIN descriptor (Tier 1).
+// put() posts FIFO descriptor (Fallback) or GIN descriptor (Vendor-specific).
 // After all puts, waitSignal + flush ensure completion.
 //
 // Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
@@ -159,28 +159,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d, nRanks=%d, size=%lu, hasBase=%d, hasGin=%d, nInterPeers=%d\n",
-           myRank, nRanks, (unsigned long)size,
-           (int)devComm._hasBase, (int)devComm._hasGin, devComm._nInterPeers);
-  }
-
   // Pre-communication barrier
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d pre-barrier enter\n", myRank);
-  }
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d pre-barrier done\n", myRank);
-  }
 
-  // One-sided put/waitSignal/flush — works for both Tier 1 (GIN) and Tier 2 (FIFO proxy).
+  // One-sided put/waitSignal/flush — works for both Vendor-specific (GIN) and Fallback (FIFO proxy).
   uint64_t signalValue = net.readSignal(0);
-
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d signalValue=%llu, putting to %d peers\n",
-           myRank, (unsigned long long)signalValue, nRanks);
-  }
 
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
@@ -190,26 +173,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
             flagcxDevNet_None{}, flagcxCoopThread{});
   }
 
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d put loop done, waiting signal %llu\n",
-           myRank, (unsigned long long)(signalValue + nRanks));
-  }
-
   net.waitSignal(flagcxCoopBlock{}, 0, signalValue + nRanks);
   net.flush(flagcxCoopBlock{});
 
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d waitSignal+flush done\n", myRank);
-  }
-
   // Post-communication barrier
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d post-barrier enter\n", myRank);
-  }
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d post-barrier done\n", myRank);
-  }
 }
 
 // ==========================================================================
@@ -229,7 +197,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
   // Inter-only barrier: matches one-sided kernel pattern.
   // Same-node (nInterPeers == 0): no-op (FIFO term/wait handles completion).
-  // Multi-node: GIN barrier (Tier 1) or FIFO Signal relay (Tier 2).
+  // Multi-node: GIN barrier (Vendor-specific) or FIFO Signal relay (Fallback).
   flagcxInterBarrierSession<flagcxCoopBlock> bar(
       flagcxCoopBlock(), net, flagcxTeamWorld(devComm), FLAGCX_BLOCK_IDX_X);
 
@@ -237,26 +205,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("TwoSided: rank=%d, nRanks=%d, size=%lu, hasBase=%d, nInterPeers=%d, intraSize=%d\n",
-           myRank, nRanks, (unsigned long)size,
-           (int)devComm._hasBase, devComm._nInterPeers, devComm.getIntraSize());
-  }
-
   // Pre-communication barrier
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("TwoSided: rank=%d pre-barrier enter\n", myRank);
-  }
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("TwoSided: rank=%d pre-barrier done\n", myRank);
-  }
 
   // Thread 0 dispatches all communication ops (block-stride over peers).
   if (FLAGCX_THREAD_IDX_X == 0) {
-    if (FLAGCX_BLOCK_IDX_X == 0) {
-      printf("TwoSided: rank=%d send/recv loop start\n", myRank);
-    }
     for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
          peer += FLAGCX_GRID_DIM_X) {
       size_t offset = peer * size;
@@ -270,19 +223,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     // benign — no data was enqueued so wait completes instantly.
     net.term();
     net.wait();
-    if (FLAGCX_BLOCK_IDX_X == 0) {
-      printf("TwoSided: rank=%d term/wait done\n", myRank);
-    }
   }
 
   // Post-communication barrier
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("TwoSided: rank=%d post-barrier enter\n", myRank);
-  }
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
-  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("TwoSided: rank=%d post-barrier done\n", myRank);
-  }
 }
 
 // Host-side one-sided AlltoAll function.

@@ -494,7 +494,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
 #endif
 
 // ==========================================================================
-// IPC barrier setup helper (extracted from old Tier 2 DevCommCreate)
+// IPC barrier setup helper (extracted from old Fallback DevCommCreate)
 //
 // Allocates IPC-shareable barrier flags, exchanges handles with all ranks,
 // and builds a device-side pointer array. On failure, partially-allocated
@@ -619,7 +619,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     }
   }
 
-  // ---- One-sided Tier 2 layer: if signals or counters requested ----
+  // ---- One-sided Fallback layer: if signals or counters requested ----
   if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
     // Allocate signal buffer (GPU, SYNC_MEMOPS via flagcxMemAlloc)
     if (reqs->interSignalCount > 0) {
@@ -662,17 +662,9 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     }
 
     INFO(FLAGCX_INIT,
-         "flagcxDevCommCreate: one-sided Tier 2 buffers allocated "
+         "flagcxDevCommCreate: one-sided Fallback buffers allocated "
          "(signals=%d, counters=%d)",
          handle->signalCount, handle->counterCount);
-  }
-
-  // ---- dataBufferBase: set from globalOneSideHandles if available ----
-  // Enables Tier 2 _toDataOffset() to compute MR-relative offsets for put().
-  if (globalOneSideHandles != NULL && globalOneSideHandles->baseVas != NULL) {
-    handle->dataBufferBase = globalOneSideHandles->baseVas[comm->rank];
-    INFO(FLAGCX_INIT, "flagcxDevCommCreate: dataBufferBase = 0x%lx",
-         (unsigned long)handle->dataBufferBase);
   }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
@@ -695,8 +687,8 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       flagcxResult_t ret = ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs,
                                                     &handle->ncclDev);
       if (ret == flagcxSuccess) {
-        handle->hasNcclDev = true;
-        handle->hasGin = (handle->ncclDev.ginContextCount > 0);
+        handle->hasVendorComm = true;
+        handle->hasVendorNet = (handle->ncclDev.ginContextCount > 0);
       } else {
         WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d), "
              "NCCL device layer not available",
@@ -718,10 +710,10 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
        handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
-           ? " + one-sided Tier 2"
+           ? " + one-sided Fallback"
            : "",
-       handle->hasNcclDev ? " + ncclDevComm" : "",
-       handle->hasGin ? " + GIN" : "");
+       handle->hasVendorComm ? " + ncclDevComm" : "",
+       handle->hasVendorNet ? " + GIN" : "");
   return flagcxSuccess;
 }
 
@@ -733,7 +725,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // NCCL layer cleanup
-  if (devComm->hasNcclDev && comm != nullptr) {
+  if (devComm->hasVendorComm && comm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
     if (innerComm != nullptr) {
       ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
@@ -771,7 +763,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     comm->heteroComm->devCommHandle = nullptr;
   }
 
-  // One-sided Tier 2 cleanup
+  // One-sided Fallback cleanup
   if (devComm->signalBuffer) {
     flagcxMemFree(devComm->signalBuffer);
   }
@@ -795,7 +787,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: ncclWindow_t (if win provided, Tier 1 only)
+//   Window layer: ncclWindow_t (if win provided, Vendor-specific only)
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
@@ -813,6 +805,27 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
   // ---- Baseline: always ----
   handle->rawPtr = buff;
+
+  // ---- Per-window MR layer: lookup buff in globalOneSideHandleTable ----
+  handle->mrIndex = -1;
+  handle->mrBase = 0;
+  if (comm != nullptr) {
+    for (int i = 0; i < globalOneSideHandleCount; i++) {
+      struct flagcxIbGlobalHandleInfo *info = globalOneSideHandleTable[i];
+      if (info != NULL && info->baseVas != NULL) {
+        uintptr_t base = info->baseVas[comm->rank];
+        if ((uintptr_t)buff == base) {
+          handle->mrIndex = i;
+          handle->mrBase = base;
+          INFO(FLAGCX_INIT,
+               "flagcxDevMemCreate: buff %p matched handleTable[%d], "
+               "mrBase=0x%lx",
+               buff, i, (unsigned long)base);
+          break;
+        }
+      }
+    }
+  }
 
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;

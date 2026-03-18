@@ -2422,16 +2422,19 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
 }
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
-                            void **gHandles, void **request) {
+                            void **srcHandles, void **dstHandles,
+                            void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  struct flagcxIbGlobalHandleInfo *info =
-      (struct flagcxIbGlobalHandleInfo *)gHandles;
+  struct flagcxIbGlobalHandleInfo *srcInfo =
+      (struct flagcxIbGlobalHandleInfo *)srcHandles;
+  struct flagcxIbGlobalHandleInfo *dstInfo =
+      (struct flagcxIbGlobalHandleInfo *)dstHandles;
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
-  void *srcPtr = (void *)(info->baseVas[srcRank] + srcOff);
-  void *dstPtr = (void *)(info->baseVas[dstRank] + dstOff);
-  int lkey = info->lkeys[srcRank];
-  int rkey = info->rkeys[dstRank];
+  void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
+  void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
+  int lkey = srcInfo->lkeys[srcRank];
+  int rkey = dstInfo->rkeys[dstRank];
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
   req->type = FLAGCX_NET_IB_REQ_IPUT;

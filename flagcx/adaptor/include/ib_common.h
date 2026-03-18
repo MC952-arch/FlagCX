@@ -126,13 +126,24 @@ struct flagcxIbGlobalHandleInfo {
   uintptr_t *baseVas;
   uint32_t *rkeys;
   uint32_t *lkeys;
-  void *localMrHandle; // local rank's MR handle for iflush
-  void *localRecvComm; // local recvComm for iflush (gpuFlush QP)
-  void *localSendComm; // local sendComm for cleanup
+  void *localMrHandle; // local rank's MR handle for deregMr
+  void *localRecvComm; // recvComm used for MR registration (PD match)
+  // Full-mesh IB connections (including self loopback, aligned with NCCL GIN)
+  void **fullSendComms; // [nRanks] per-peer sendComm (NULL if not owner)
+  void **fullRecvComms; // [nRanks] per-peer recvComm (NULL if not owner)
+  int nRanks;           // number of ranks (for cleanup iteration)
 };
 
-// Global variable for one-sided data handles
-extern struct flagcxIbGlobalHandleInfo *globalOneSideHandles;
+// Handle table for per-window MR addressing (aligned with NCCL GIN per-window
+// MR)
+#define FLAGCX_MAX_ONE_SIDE_HANDLES 8
+extern struct flagcxIbGlobalHandleInfo
+    *globalOneSideHandleTable[FLAGCX_MAX_ONE_SIDE_HANDLES];
+extern int globalOneSideHandleCount;
+
+// Backward compatibility: globalOneSideHandles = first entry in handle table
+#define globalOneSideHandles globalOneSideHandleTable[0]
+
 // Global variable for one-sided signal handles (separate MR, NCCL-style)
 extern struct flagcxIbGlobalHandleInfo *globalOneSideSignalHandles;
 
