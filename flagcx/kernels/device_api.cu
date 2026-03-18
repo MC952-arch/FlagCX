@@ -160,9 +160,9 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    printf("OneSided: rank=%d, nRanks=%d, size=%lu, hasBase=%d, nInterPeers=%d\n",
+    printf("OneSided: rank=%d, nRanks=%d, size=%lu, hasBase=%d, hasGin=%d, nInterPeers=%d\n",
            myRank, nRanks, (unsigned long)size,
-           (int)devComm._hasBase, devComm._nInterPeers);
+           (int)devComm._hasBase, (int)devComm._hasGin, devComm._nInterPeers);
   }
 
   // Pre-communication barrier
@@ -174,7 +174,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     printf("OneSided: rank=%d pre-barrier done\n", myRank);
   }
 
-  // Read initial signal value before issuing puts
+  // One-sided put/waitSignal/flush — works for both Tier 1 (GIN) and Tier 2 (FIFO proxy).
   uint64_t signalValue = net.readSignal(0);
 
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
@@ -182,8 +182,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
            myRank, (unsigned long long)signalValue, nRanks);
   }
 
-  // Thread-stride loop: all threads dispatch put ops to different peers.
-  // put() is a control-plane descriptor — NIC or proxy does actual data movement.
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -197,7 +195,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
            myRank, (unsigned long long)(signalValue + nRanks));
   }
 
-  // Wait for all remote puts to complete using signal-based synchronization
   net.waitSignal(flagcxCoopBlock{}, 0, signalValue + nRanks);
   net.flush(flagcxCoopBlock{});
 

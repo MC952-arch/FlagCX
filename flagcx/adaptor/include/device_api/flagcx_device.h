@@ -50,6 +50,7 @@ struct flagcxDevCommInternal {
   int intraRank, intraSize;
   void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   bool hasNcclDev;  // true if NCCL device comm layer is available (Tier 1)
+  bool hasGin;      // true if NCCL GIN is activated (ginContextCount > 0)
 
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
@@ -157,6 +158,7 @@ struct flagcxDevComm {
   int _intraRank, _intraSize;
   void *_fifoBuffer; // FIFO for device Send/Recv (from heteroComm, may be null)
   bool _hasBase;     // true if NCCL device comm layer is available (Tier 1)
+  bool _hasGin;      // true if NCCL GIN is activated (ginContextCount > 0)
 
   // ---- IPC layer (may be nullptr if IPC barrier not set up) ----
   uint64_t **_barrierPeers;
@@ -183,11 +185,11 @@ struct flagcxDevComm {
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
-        _fifoBuffer(nullptr), _hasBase(false), _barrierPeers(nullptr),
-        _barrierEpoch(0ULL), _interSignalFlags(nullptr), _nInterPeers(0),
-        _isInterLeader(false), _interBarrierEpoch(0ULL), _dataBufferBase(0),
-        _signalBuffer(nullptr), _shadowBuffer(nullptr), _counterBuffer(nullptr),
-        _signalCount(0), _counterCount(0)
+        _fifoBuffer(nullptr), _hasBase(false), _hasGin(false),
+        _barrierPeers(nullptr), _barrierEpoch(0ULL), _interSignalFlags(nullptr),
+        _nInterPeers(0), _isInterLeader(false), _interBarrierEpoch(0ULL),
+        _dataBufferBase(0), _signalBuffer(nullptr), _shadowBuffer(nullptr),
+        _counterBuffer(nullptr), _signalCount(0), _counterCount(0)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base()
@@ -199,9 +201,10 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _rank(di.rank), _nRanks(di.nRanks), _intraRank(di.intraRank),
         _intraSize(di.intraSize), _fifoBuffer(di.fifoBuffer),
-        _hasBase(di.hasNcclDev), _barrierPeers(di.barrierPeers),
-        _barrierEpoch(di.barrierEpoch), _interSignalFlags(di.interSignalFlags),
-        _nInterPeers(di.nInterPeers), _isInterLeader(di.isInterLeader),
+        _hasBase(di.hasNcclDev), _hasGin(di.hasGin),
+        _barrierPeers(di.barrierPeers), _barrierEpoch(di.barrierEpoch),
+        _interSignalFlags(di.interSignalFlags), _nInterPeers(di.nInterPeers),
+        _isInterLeader(di.isInterLeader),
         _interBarrierEpoch(di.interBarrierEpoch),
         _dataBufferBase(di.dataBufferBase), _signalBuffer(di.signalBuffer),
         _shadowBuffer(di.shadowBuffer), _counterBuffer(di.counterBuffer),
@@ -1851,25 +1854,32 @@ struct flagcxDevNet {
 #ifdef FLAGCX_DEVICE_API_NCCL
 template <typename Coop>
 struct flagcxInterBarrierSession {
-  ncclGinBarrierSession<ncclCoopCta> _impl;
+  alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
+      ncclGinBarrierSession<ncclCoopCta>)];
+  bool _hasGin;
   int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
                             flagcxTeam_t team, uint32_t index)
-      : _impl(ncclCoopCta(), net._gin, team._base, net._gin.comm.railGinBarrier,
-              index),
-        _nInterPeers(net._devComm._nInterPeers) {}
+      : _hasGin(net._devComm._hasGin), _nInterPeers(net._devComm._nInterPeers) {
+    if (_hasGin) {
+      new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
+          ncclCoopCta(), net._gin, team._base, net._gin.comm.railGinBarrier,
+          index);
+    }
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+    if (_hasGin && _nInterPeers > 0) {
+      reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
                  ncclGinFenceLevel::Relaxed);
     }
-    // else: no-op (same-node, no inter peers to sync with)
+    // else: no-op (GIN not available or same-node)
   }
 };
 #else

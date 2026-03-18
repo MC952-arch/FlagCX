@@ -45,27 +45,32 @@ int main(int argc, char *argv[]) {
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
-  void *sendbuff = nullptr, *recvbuff = nullptr, *hello;
+  void *sendBuff = nullptr, *recvBuff = nullptr, *hello;
   void *sendHandle = nullptr, *recvHandle = nullptr;
+  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   size_t count;
   timer tim;
 
   if (localRegister == 2) {
     // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
-    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, maxBytes, comm));
-    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC));
   } else if (localRegister == 1) {
     // Zero-copy: alloc + register for NIC RDMA access
-    FLAGCXCHECK(flagcxMemAlloc(&sendbuff, maxBytes, comm));
-    FLAGCXCHECK(flagcxMemAlloc(&recvbuff, maxBytes, comm));
-    FLAGCXCHECK(flagcxCommRegister(comm, sendbuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvbuff, maxBytes, &recvHandle));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle));
   } else {
     // Unregistered
     FLAGCXCHECK(
-        devHandle->deviceMalloc(&sendbuff, maxBytes, flagcxMemDevice, NULL));
+        devHandle->deviceMalloc(&sendBuff, maxBytes, flagcxMemDevice, NULL));
     FLAGCXCHECK(
-        devHandle->deviceMalloc(&recvbuff, maxBytes, flagcxMemDevice, NULL));
+        devHandle->deviceMalloc(&recvBuff, maxBytes, flagcxMemDevice, NULL));
   }
   hello = malloc(maxBytes);
   memset(hello, 0, maxBytes);
@@ -77,10 +82,10 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Create raw device memory handles for send/recv buffers
+  // Create device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  FLAGCXCHECK(flagcxDevMemCreate(NULL, sendbuff, maxBytes, NULL, &sendMem));
-  FLAGCXCHECK(flagcxDevMemCreate(NULL, recvbuff, maxBytes, NULL, &recvMem));
+  FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &sendMem));
+  FLAGCXCHECK(flagcxDevMemCreate(comm, recvBuff, maxBytes, recvWin, &recvMem));
 
   if (proc == 0 && color == 0) {
     printf("\n# FIFO AlltoAll test (two-sided send/recv, -R %d)\n",
@@ -108,22 +113,22 @@ int main(int argc, char *argv[]) {
     if (count == 0)
       count = 1;
 
-    // Initialize sendbuff: sendbuff[r * count + i] = proc * 1000 + r * 100 + i
-    // After alltoall: recvbuff[src * count + i] = src * 1000 + proc * 100 + i
+    // Initialize sendBuff: sendBuff[r * count + i] = proc * 1000 + r * 100 + i
+    // After alltoall: recvBuff[src * count + i] = src * 1000 + proc * 100 + i
     float *helloFloat = (float *)hello;
     for (int r = 0; r < totalProcs; r++) {
       for (size_t i = 0; i < count; i++) {
         helloFloat[r * count + i] = (float)(proc * 1000 + r * 100 + (int)i);
       }
     }
-    FLAGCXCHECK(devHandle->deviceMemcpy(sendbuff, hello, size,
+    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hello, size,
                                         flagcxMemcpyHostToDevice, NULL));
     memset(hello, 0, size);
-    FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, hello, size,
+    FLAGCXCHECK(devHandle->deviceMemcpy(recvBuff, hello, size,
                                         flagcxMemcpyHostToDevice, NULL));
 
     if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
-      printf("rank%d sendbuff:", proc);
+      printf("rank%d sendBuff:", proc);
       for (int p = 0; p < totalProcs; p++) {
         printf(" %.0f", helloFloat[p * count]);
       }
@@ -142,7 +147,7 @@ int main(int argc, char *argv[]) {
 
     // Verify correctness
     memset(hello, 0, size);
-    FLAGCXCHECK(devHandle->deviceMemcpy(hello, recvbuff, size,
+    FLAGCXCHECK(devHandle->deviceMemcpy(hello, recvBuff, size,
                                         flagcxMemcpyDeviceToHost, NULL));
     helloFloat = (float *)hello;
     bool correct = true;
@@ -152,7 +157,7 @@ int main(int argc, char *argv[]) {
         if (helloFloat[src * count + i] != expected) {
           correct = false;
           if (proc == 0) {
-            printf("  MISMATCH at recvbuff[%d*%zu+%zu]: got %.0f expected "
+            printf("  MISMATCH at recvBuff[%d*%zu+%zu]: got %.0f expected "
                    "%.0f\n",
                    src, count, i, helloFloat[src * count + i], expected);
           }
@@ -161,7 +166,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
-      printf("rank%d recvbuff:", proc);
+      printf("rank%d recvBuff:", proc);
       for (int p = 0; p < totalProcs; p++) {
         printf(" %.0f", helloFloat[p * count]);
       }
@@ -187,9 +192,9 @@ int main(int argc, char *argv[]) {
   if (localRegister == 2) {
     // Register windows (returns nullptr on Tier 2/3)
     flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendbuff, maxBytes, &sendWin,
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvbuff, maxBytes, &recvWin,
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));
 
     flagcxDevComm_t a2aDevComm = nullptr;
@@ -205,17 +210,17 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxDevCommCreate(comm, &a2aReqs, &a2aDevComm));
 
     FLAGCXCHECK(
-        flagcxDevMemCreate(comm, sendbuff, maxBytes, sendWin, &a2aSendMem));
+        flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &a2aSendMem));
     FLAGCXCHECK(
-        flagcxDevMemCreate(comm, recvbuff, maxBytes, recvWin, &a2aRecvMem));
+        flagcxDevMemCreate(comm, recvBuff, maxBytes, recvWin, &a2aRecvMem));
 
     for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
       count = size / sizeof(float) / totalProcs;
       if (count == 0)
         count = 1;
 
-      // Initialize sendbuff: sendbuff[r * count + i] = proc * 1000 + r * 100 +
-      // i After alltoall: recvbuff[src * count + i] = src * 1000 + proc * 100 +
+      // Initialize sendBuff: sendBuff[r * count + i] = proc * 1000 + r * 100 +
+      // i After alltoall: recvBuff[src * count + i] = src * 1000 + proc * 100 +
       // i
       float *helloFloat = (float *)hello;
       for (int r = 0; r < totalProcs; r++) {
@@ -223,14 +228,14 @@ int main(int argc, char *argv[]) {
           helloFloat[r * count + i] = (float)(proc * 1000 + r * 100 + (int)i);
         }
       }
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendbuff, hello, size,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hello, size,
                                           flagcxMemcpyHostToDevice, NULL));
       memset(hello, 0, size);
-      FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, hello, size,
+      FLAGCXCHECK(devHandle->deviceMemcpy(recvBuff, hello, size,
                                           flagcxMemcpyHostToDevice, NULL));
 
       if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
-        printf("rank%d sendbuff:", proc);
+        printf("rank%d sendBuff:", proc);
         for (int p = 0; p < totalProcs; p++) {
           printf(" %.0f", helloFloat[p * count]);
         }
@@ -249,7 +254,7 @@ int main(int argc, char *argv[]) {
 
       // Verify correctness
       memset(hello, 0, size);
-      FLAGCXCHECK(devHandle->deviceMemcpy(hello, recvbuff, size,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hello, recvBuff, size,
                                           flagcxMemcpyDeviceToHost, NULL));
       helloFloat = (float *)hello;
       bool correct = true;
@@ -259,7 +264,7 @@ int main(int argc, char *argv[]) {
           if (helloFloat[src * count + i] != expected) {
             correct = false;
             if (proc == 0) {
-              printf("  MISMATCH at recvbuff[%d*%zu+%zu]: got %.0f expected "
+              printf("  MISMATCH at recvBuff[%d*%zu+%zu]: got %.0f expected "
                      "%.0f\n",
                      src, count, i, helloFloat[src * count + i], expected);
             }
@@ -268,7 +273,7 @@ int main(int argc, char *argv[]) {
       }
 
       if (color == 0 && printBuffer && (proc == 0 || proc == totalProcs - 1)) {
-        printf("rank%d recvbuff:", proc);
+        printf("rank%d recvBuff:", proc);
         for (int p = 0; p < totalProcs; p++) {
           printf(" %.0f", helloFloat[p * count]);
         }
@@ -313,16 +318,16 @@ int main(int argc, char *argv[]) {
 
   // Free -R 1/-R 2 buffers before comm destroy (flagcxMemFree needs comm alive)
   if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendbuff, comm));
-    FLAGCXCHECK(flagcxMemFree(recvbuff, comm));
+    FLAGCXCHECK(flagcxMemFree(sendBuff, comm));
+    FLAGCXCHECK(flagcxMemFree(recvBuff, comm));
   }
 
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
   if (localRegister == 0) {
-    FLAGCXCHECK(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL));
-    FLAGCXCHECK(devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL));
+    FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
+    FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
   free(hello);
   FLAGCXCHECK(flagcxHandleFree(handler));

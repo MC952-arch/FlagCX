@@ -696,6 +696,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
                                                     &handle->ncclDev);
       if (ret == flagcxSuccess) {
         handle->hasNcclDev = true;
+        handle->hasGin = (handle->ncclDev.ginContextCount > 0);
       } else {
         WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d), "
              "NCCL device layer not available",
@@ -713,13 +714,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     hetero->devCommHandle = handle;
   }
 
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s",
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s%s",
        handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
            ? " + one-sided Tier 2"
            : "",
-       handle->hasNcclDev ? " + ncclDevComm" : "");
+       handle->hasNcclDev ? " + ncclDevComm" : "",
+       handle->hasGin ? " + GIN" : "");
   return flagcxSuccess;
 }
 
