@@ -1663,18 +1663,22 @@ struct flagcxDevNet {
       flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     (void)team;
     (void)localAction;
-    (void)coop;
     (void)descriptor;
     (void)alreadyReleased;
     (void)expected_scope;
-    size_t srcOff = _toDataOffset(srcMem, srcOffset);
-    size_t dstOff = _toDataOffset(dstMem, dstOffset);
-    size_t count = bytes; // count in bytes, datatype=0 (byte)
-    uint64_t fstValue = ((uint64_t)srcOff << flagcxDeviceTriggerOffSrcOffset) |
-                        ((uint64_t)dstOff << flagcxDeviceTriggerOffDstOffset);
-    flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, count, peer,
-                      flagcxUint8, flagcxDevicePrimPut);
-    _dispatchRemoteAction(remoteAction, peer);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      size_t srcOff = _toDataOffset(srcMem, srcOffset);
+      size_t dstOff = _toDataOffset(dstMem, dstOffset);
+      size_t count = bytes; // count in bytes, datatype=0 (byte)
+      uint64_t fstValue =
+          ((uint64_t)srcOff << flagcxDeviceTriggerOffSrcOffset) |
+          ((uint64_t)dstOff << flagcxDeviceTriggerOffDstOffset);
+      flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, count, peer,
+                        flagcxUint8, flagcxDevicePrimPut);
+      _dispatchRemoteAction(remoteAction, peer);
+    }
+    coop.sync();
   }
 
   // ---- put (SymPtr) — delegates to raw-ptr put ----
@@ -1708,13 +1712,16 @@ struct flagcxDevNet {
            flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
            flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     (void)team;
-    (void)coop;
     (void)descriptor;
     (void)alreadyReleased;
     (void)expected_scope;
-    size_t dstOff = _toDataOffset(dstMem, dstOffset);
-    putValueFifo(dstOff, (uint64_t)value, peer);
-    _dispatchRemoteAction(remoteAction, peer);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      size_t dstOff = _toDataOffset(dstMem, dstOffset);
+      putValueFifo(dstOff, (uint64_t)value, peer);
+      _dispatchRemoteAction(remoteAction, peer);
+    }
+    coop.sync();
   }
 
   // ---- putValue (SymPtr) — delegates to raw-ptr putValue ----
@@ -1742,11 +1749,14 @@ struct flagcxDevNet {
          flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
          flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     (void)team;
-    (void)coop;
     (void)descriptor;
     (void)alreadyReleased;
     (void)expected_scope;
-    _dispatchRemoteAction(remoteAction, peer);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      _dispatchRemoteAction(remoteAction, peer);
+    }
+    coop.sync();
   }
 
   // ---- flush — no-op (proxy serial execution provides ordering) ----
@@ -1760,11 +1770,14 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
       Coop coop, flagcxDevNetSignal_t signalId, uint64_t least, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    (void)coop;
     (void)bits;
     (void)order;
-    waitSignalFifo(_signalIdToOffset(signalId), (uint32_t)least, _devComm._rank,
-                   0);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      waitSignalFifo(_signalIdToOffset(signalId), (uint32_t)least,
+                     _devComm._rank, 0);
+    }
+    coop.sync();
   }
 
   // ---- waitSignalMeetShadow — read shadow, then waitSignal ----
@@ -1824,11 +1837,14 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
       Coop coop, flagcxDevNetCounter_t counterId, uint64_t least, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    (void)coop;
     (void)bits;
     (void)order;
-    waitSignalFifo(_counterIdToOffset(counterId), (uint32_t)least,
-                   _devComm._rank, 1);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      waitSignalFifo(_counterIdToOffset(counterId), (uint32_t)least,
+                     _devComm._rank, 1);
+    }
+    coop.sync();
   }
 
   // ---- readCounter — volatile read from GPU counter buffer ----
@@ -1951,8 +1967,10 @@ struct flagcxInterBarrierSession {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    coop.sync(); // Ensure all threads reach barrier before leader enqueues
     arrive(coop, order);
     wait(coop, order);
+    coop.sync(); // Ensure all threads see leader's wait completion
   }
 };
 #endif
