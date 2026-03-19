@@ -60,8 +60,8 @@ struct flagcxDevCommInternal {
   uint64_t *localBarrierFlags; // this rank's signal array (CTA_COUNT entries)
   uint64_t barrierEpoch; // monotonically increasing, set by host before launch
   // Host-side cleanup bookkeeping (not passed to kernel)
-  void **peerBarrierPtrs; // host array of IPC-mapped pointers (for close)
-  int *localRankToRank;   // intra-node rank mapping (for IPC exchange)
+  int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
+  int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
 
   // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
@@ -129,11 +129,9 @@ struct flagcxDevMemInternal {
   uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
 
   // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
-  void **devPeerPtrs; // device array: [localRank] -> peer buffer ptr
-  int nPeers;
-  int intraRank;       // this rank's local rank index (for IPC local pointer)
-  void **hostPeerPtrs; // host array: for ipcMemHandleClose cleanup
-  void *basePtr;       // this rank's buffer pointer (for IPC close check)
+  void **devPeerPtrs; // cached from comm->ipcTable[ipcIndex].devPeerPtrs
+  int ipcIndex;       // index into comm->ipcTable (-1 if no IPC)
+  int intraRank;      // this rank's local rank index (for IPC local pointer)
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- Window layer (set if window registration succeeds) ----

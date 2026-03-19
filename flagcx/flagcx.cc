@@ -7,6 +7,7 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "flagcx_hetero.h"
+#include "flagcx_kernel.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
 #include "launch_kernel.h"
@@ -1420,6 +1421,13 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     FLAGCXCHECK(
         cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
   }
+
+  // Clean up IPC peer pointer table — deferred to here.
+  FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+
+  // Drain deferred device/host-pinned memory frees — collected during
+  // DevComm/DevMem cleanup.
+  FLAGCXCHECK(flagcxCommDrainDeferredFrees(comm));
 
   // Destroy tuner
   if (comm->tuner) {

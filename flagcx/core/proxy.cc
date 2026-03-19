@@ -1350,11 +1350,15 @@ flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
 
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   if (comm->proxyState->initialized == 1) {
+    INFO(FLAGCX_PROXY, "flagcxProxyDestroy: sending stop to service thread...");
     int type = flagcxProxyMsgStop;
     flagcxSocketSend(&comm->proxyState->peerSock, &type, sizeof(int));
     comm->proxyState->kernelState.stop = 1;
+    INFO(FLAGCX_PROXY, "flagcxProxyDestroy: joining service thread...");
     pthread_join(comm->proxyState->thread, nullptr);
+    INFO(FLAGCX_PROXY, "flagcxProxyDestroy: service thread joined, freeing...");
     flagcxProxyFree(comm);
+    INFO(FLAGCX_PROXY, "flagcxProxyDestroy: done");
   }
   return flagcxSuccess;
 }

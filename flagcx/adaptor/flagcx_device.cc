@@ -24,17 +24,25 @@
 // Shared: IPC peer pointer exchange (used by both tiers)
 // ==========================================================================
 
-// Forward declaration (defined below buildIpcPeerPointers).
-static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
-                                   int nPeers, void *ownBuff);
-
 // Build IPC peer pointer table for a user buffer.
-// Allocates devPeerPtrs (device array) and hostPeerPtrs (host array).
-// Caller must free both on cleanup.
-static flagcxResult_t buildIpcPeerPointers(flagcxComm_t comm, void *buff,
-                                           size_t size, void ***outDevPeerPtrs,
-                                           void ***outHostPeerPtrs,
-                                           int *outNPeers) {
+// Stores results in comm->ipcTable and returns the table index.
+// Returns -1 on failure (IPC not available for this buffer).
+static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
+
+  // Find a free slot in the IPC table
+  int slot = -1;
+  for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
+    if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
+        comm->ipcTable[k].devPeerPtrs == nullptr) {
+      slot = k;
+      break;
+    }
+  }
+  if (slot < 0) {
+    WARN("buildIpcPeerPointers: IPC table full (max %d entries)",
+         FLAGCX_MAX_IPC_ENTRIES);
+    return -1;
+  }
 
   int myRank = comm->rank;
   int nRanks = comm->nranks;
@@ -112,23 +120,20 @@ static flagcxResult_t buildIpcPeerPointers(flagcxComm_t comm, void *buff,
                       flagcxMemcpyHostToDevice, NULL, NULL),
                   res, fail);
 
-  *outDevPeerPtrs = devPeerPtrs;
-  *outHostPeerPtrs = hostPeerPtrs;
-  *outNPeers = localRanks;
-  return flagcxSuccess;
+  // Store in comm->ipcTable
+  comm->ipcTable[slot].hostPeerPtrs = hostPeerPtrs;
+  comm->ipcTable[slot].devPeerPtrs = devPeerPtrs;
+  comm->ipcTable[slot].nPeers = localRanks;
+  comm->ipcTable[slot].basePtr = buff;
+  comm->ipcTable[slot].inUse = true;
+  return slot;
 
 fail:
   free(allDescs);
-  cleanupIpcPeerPointers(hostPeerPtrs, devPeerPtrs, localRanks, buff);
-  return res;
-}
-
-// Close IPC peer handles and free arrays.
-static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
-                                   int nPeers, void *ownBuff) {
+  // On failure, clean up partially built resources directly
   if (hostPeerPtrs) {
-    for (int i = 0; i < nPeers; i++) {
-      if (hostPeerPtrs[i] && hostPeerPtrs[i] != ownBuff) {
+    for (int i = 0; i < localRanks; i++) {
+      if (hostPeerPtrs[i] && hostPeerPtrs[i] != buff) {
         deviceAdaptor->ipcMemHandleClose(hostPeerPtrs[i]);
       }
     }
@@ -137,6 +142,7 @@ static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
   if (devPeerPtrs) {
     deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
   }
+  return -1;
 }
 
 // ==========================================================================
@@ -155,6 +161,9 @@ struct flagcxSignalMessage {
   uint32_t reserved;
 };
 
+// Sentinel ctaIndex sent during shutdown to unblock outstanding irecv.
+#define FLAGCX_SIGNAL_SHUTDOWN_CTA 0xFFFFFFFF
+
 // Receiver thread: polls irecv completions and updates interSignalFlags.
 static void *flagcxSignalRecvThread(void *arg) {
   flagcxDevComm_t dc = (flagcxDevComm_t)arg;
@@ -170,8 +179,11 @@ static void *flagcxSignalRecvThread(void *arg) {
   while (!__atomic_load_n(&dc->signalRecvStop, __ATOMIC_ACQUIRE)) {
     bool progress = false;
     for (int p = 0; p < nPeers; p++) {
-      // Post irecv if no outstanding request
-      if (requests[p] == nullptr) {
+      // Post irecv if no outstanding request (skip if stopping — avoids
+      // posting a speculative recv that would block net->test() forever
+      // when no more signals are coming after all peers have shut down).
+      if (requests[p] == nullptr &&
+          !__atomic_load_n(&dc->signalRecvStop, __ATOMIC_ACQUIRE)) {
         void *data = &dc->signalRecvBufs[p * sizeof(flagcxSignalMessage)];
         size_t sizes[1] = {sizeof(flagcxSignalMessage)};
         int tags[1] = {0};
@@ -190,6 +202,11 @@ static void *flagcxSignalRecvThread(void *arg) {
               (flagcxSignalMessage *)&dc
                   ->signalRecvBufs[p * sizeof(flagcxSignalMessage)];
           uint32_t ctaIdx = msg->ctaIndex;
+          if (ctaIdx == FLAGCX_SIGNAL_SHUTDOWN_CTA) {
+            // Shutdown sentinel — exit thread immediately.
+            free(requests);
+            return nullptr;
+          }
           if (ctaIdx < FLAGCX_DEVICE_CTA_COUNT) {
             // Single writer (this thread), GPU reads via PCIe-mapped pointer.
             // volatile ensures the write reaches memory (not cached in
@@ -431,7 +448,32 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   struct flagcxNetAdaptor *net =
       (struct flagcxNetAdaptor *)handle->netAdaptorPtr;
 
-  // Stop recv thread
+  // Send shutdown sentinel to all peers so their outstanding irecv completes.
+  // Without this, net->test() in the peer's recv thread spins forever
+  // because the posted irecv never gets a matching send after connections
+  // are torn down.
+  for (int p = 0; p < handle->nInterPeers; p++) {
+    if (handle->signalSendComms && handle->signalSendComms[p] &&
+        handle->signalSendMrs && handle->signalSendMrs[p]) {
+      uint32_t msg[2] = {FLAGCX_SIGNAL_SHUTDOWN_CTA, 0};
+      memcpy(&handle->signalSendBufs[p * sizeof(flagcxSignalMessage)], msg,
+             sizeof(flagcxSignalMessage));
+      void *req = nullptr;
+      while (req == nullptr) {
+        net->isend(handle->signalSendComms[p],
+                   &handle->signalSendBufs[p * sizeof(flagcxSignalMessage)],
+                   sizeof(flagcxSignalMessage), 0, handle->signalSendMrs[p],
+                   nullptr, &req);
+      }
+      int done = 0;
+      while (!done) {
+        net->test(req, &done, nullptr);
+      }
+    }
+  }
+
+  // Now safe to stop — all peers' recv threads will see the sentinel,
+  // complete their irecv, and exit on the next signalRecvStop check.
   __atomic_store_n(&handle->signalRecvStop, 1, __ATOMIC_RELEASE);
   if (handle->signalRecvThread) {
     pthread_join(handle->signalRecvThread, nullptr);
@@ -477,10 +519,10 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   free(handle->signalSendBufs);
   free(handle->signalRecvBufs);
 
-  // Free host-mapped signal flags
+  // Defer free of host-mapped signal flags (cudaFreeHost would deadlock
+  // on NCCL persistent kernels — drain after ncclCommDestroy).
   if (handle->interSignalFlagsHost) {
-    deviceAdaptor->deviceFree(handle->interSignalFlagsHost, flagcxMemHost,
-                              NULL);
+    flagcxCommDeferFree(comm, handle->interSignalFlagsHost, flagcxMemHost);
   }
 
   // Clear heteroComm reference
@@ -535,20 +577,20 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                  sizeof(struct flagcxP2pIpcDesc)));
 
   // Step 3: Open intra-node peer barrier IPC handles
-  handle->peerBarrierPtrs = (void **)calloc(localRanks, sizeof(void *));
-  if (handle->peerBarrierPtrs == nullptr) {
+  void **peerBarrierPtrs = (void **)calloc(localRanks, sizeof(void *));
+  if (peerBarrierPtrs == nullptr) {
     free(allBarrierDescs);
     return flagcxSystemError;
   }
   for (int lr = 0; lr < localRanks; lr++) {
     int gr = lrToR[lr];
     if (gr == myRank) {
-      handle->peerBarrierPtrs[lr] = handle->localBarrierFlags;
+      peerBarrierPtrs[lr] = handle->localBarrierFlags;
     } else {
       flagcxIpcMemHandle_t handlePtr =
           (flagcxIpcMemHandle_t)&allBarrierDescs[gr].handleData;
-      FLAGCXCHECK(deviceAdaptor->ipcMemHandleOpen(
-          handlePtr, &handle->peerBarrierPtrs[lr]));
+      FLAGCXCHECK(
+          deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerBarrierPtrs[lr]));
     }
   }
   free(allBarrierDescs);
@@ -558,8 +600,30 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                           localRanks * sizeof(uint64_t *),
                                           flagcxMemDevice, NULL));
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      handle->barrierPeers, handle->peerBarrierPtrs,
-      localRanks * sizeof(uint64_t *), flagcxMemcpyHostToDevice, NULL, NULL));
+      handle->barrierPeers, peerBarrierPtrs, localRanks * sizeof(uint64_t *),
+      flagcxMemcpyHostToDevice, NULL, NULL));
+
+  // Step 5: Store in comm->ipcTable for deferred cleanup
+  // (ipcMemHandleClose triggers implicit device sync like cudaFree)
+  int slot = -1;
+  for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
+    if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
+        comm->ipcTable[k].devPeerPtrs == nullptr) {
+      slot = k;
+      break;
+    }
+  }
+  if (slot < 0) {
+    WARN("setupIpcBarriers: IPC table full (max %d entries)",
+         FLAGCX_MAX_IPC_ENTRIES);
+    return flagcxInternalError;
+  }
+  comm->ipcTable[slot].hostPeerPtrs = peerBarrierPtrs;
+  comm->ipcTable[slot].devPeerPtrs = (void **)handle->barrierPeers;
+  comm->ipcTable[slot].nPeers = localRanks;
+  comm->ipcTable[slot].basePtr = handle->localBarrierFlags;
+  comm->ipcTable[slot].inUse = true;
+  handle->barrierIpcIndex = slot;
 
   return flagcxSuccess;
 }
@@ -585,6 +649,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevCommInternal));
+  handle->barrierIpcIndex = -1;
 
   // ---- Baseline: always ----
   handle->rank = comm->rank;
@@ -621,12 +686,12 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   // ---- One-sided Fallback layer: if signals or counters requested ----
   if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
-    // Allocate signal buffer (GPU, SYNC_MEMOPS via flagcxMemAlloc)
+    // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
     if (reqs->interSignalCount > 0) {
       handle->signalCount = reqs->interSignalCount;
       size_t sigSize = handle->signalCount * sizeof(uint64_t);
-      FLAGCXCHECK(
-          flagcxMemAlloc((void **)&handle->signalBuffer, sigSize, comm));
+      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+                                             sigSize, NULL));
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
                                               flagcxMemDevice, NULL));
       // Shadow buffer (local GPU memory, no MR needed)
@@ -635,12 +700,12 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
                                               flagcxMemDevice, NULL));
     }
-    // Allocate counter buffer (GPU, SYNC_MEMOPS via flagcxMemAlloc)
+    // Allocate counter buffer (GPU memory)
     if (reqs->interCounterCount > 0) {
       handle->counterCount = reqs->interCounterCount;
       size_t cntSize = handle->counterCount * sizeof(uint64_t);
-      FLAGCXCHECK(
-          flagcxMemAlloc((void **)&handle->counterBuffer, cntSize, comm));
+      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
+                                              cntSize, flagcxMemDevice, NULL));
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->counterBuffer, 0, cntSize,
                                               flagcxMemDevice, NULL));
     }
@@ -748,22 +813,15 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   // Inter-node signal relay cleanup
   cleanupInterNodeSignalRelay(comm, devComm);
 
-  // IPC barrier cleanup
-  if (devComm->peerBarrierPtrs) {
-    for (int i = 0; i < devComm->nLocalRanks; i++) {
-      if (devComm->peerBarrierPtrs[i] &&
-          devComm->peerBarrierPtrs[i] != devComm->localBarrierFlags) {
-        deviceAdaptor->ipcMemHandleClose(devComm->peerBarrierPtrs[i]);
-      }
-    }
-    free(devComm->peerBarrierPtrs);
-  }
-  if (devComm->barrierPeers) {
-    deviceAdaptor->deviceFree(devComm->barrierPeers, flagcxMemDevice, NULL);
+  // IPC barrier cleanup — mark ipcTable entry as unused.
+  // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
+  // (after ncclCommDestroy) to avoid implicit device synchronization deadlock.
+  if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
+      devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
+    comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
   }
   if (devComm->localBarrierFlags) {
-    deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
-                              NULL);
+    flagcxCommDeferFree(comm, devComm->localBarrierFlags, flagcxMemDevice);
   }
 
   // Clear heteroComm->devComm + deregister signal buffer
@@ -777,18 +835,17 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   // One-sided Fallback cleanup
   if (devComm->signalBuffer) {
-    flagcxMemFree(devComm->signalBuffer, comm);
+    flagcxCommDeferFree(comm, devComm->signalBuffer, flagcxMemDevice);
   }
   if (devComm->shadowBuffer) {
-    deviceAdaptor->deviceFree(devComm->shadowBuffer, flagcxMemDevice, NULL);
+    flagcxCommDeferFree(comm, devComm->shadowBuffer, flagcxMemDevice);
   }
   if (devComm->counterBuffer) {
-    flagcxMemFree(devComm->counterBuffer, comm);
+    flagcxCommDeferFree(comm, devComm->counterBuffer, flagcxMemDevice);
   }
   if (devComm->putValueStagingBuffer) {
     flagcxOneSideStagingDeregister(comm);
-    deviceAdaptor->deviceFree(devComm->putValueStagingBuffer, flagcxMemHost,
-                              NULL);
+    flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
 
   free(devComm->localRankToRank);
@@ -818,6 +875,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
   // ---- Baseline: always ----
   handle->rawPtr = buff;
+  handle->ipcIndex = -1;
 
   // ---- Per-window MR layer: lookup buff in globalOneSideHandleTable ----
   handle->mrIndex = -1;
@@ -853,14 +911,13 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
     // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
     if (win == nullptr) {
-      handle->basePtr = buff;
-      flagcxResult_t res =
-          buildIpcPeerPointers(comm, buff, size, &handle->devPeerPtrs,
-                               &handle->hostPeerPtrs, &handle->nPeers);
-      if (res != flagcxSuccess) {
-        WARN("flagcxDevMemCreate: IPC peer pointer setup failed (%d), "
-             "IPC layer not available",
-             res);
+      int idx = buildIpcPeerPointers(comm, buff, size);
+      if (idx >= 0) {
+        handle->ipcIndex = idx;
+        handle->devPeerPtrs = comm->ipcTable[idx].devPeerPtrs;
+      } else {
+        WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
+             "IPC layer not available");
         // devPeerPtrs stays nullptr — raw-only mode
       }
     }
@@ -890,13 +947,89 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
     return flagcxSuccess;
   }
 
-  // Clean up IPC peer pointers (if present)
-  if (devMem->hostPeerPtrs) {
-    cleanupIpcPeerPointers(devMem->hostPeerPtrs, devMem->devPeerPtrs,
-                           devMem->nPeers, devMem->basePtr);
+  // Mark IPC table entry as no longer in use (actual cleanup deferred to
+  // flagcxCommDestroy.
+  if (comm != nullptr && devMem->ipcIndex >= 0 &&
+      devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
+    comm->ipcTable[devMem->ipcIndex].inUse = false;
   }
 
   free(devMem);
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// IPC table cleanup — called from flagcxCommDestroy
+// ==========================================================================
+
+flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
+  if (comm == nullptr) {
+    return flagcxSuccess;
+  }
+
+  for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
+    struct flagcxIpcTableEntry *e = &comm->ipcTable[k];
+    if (e->hostPeerPtrs == nullptr && e->devPeerPtrs == nullptr) {
+      continue; // empty slot
+    }
+
+    if (e->inUse) {
+      WARN("flagcxCommCleanupIpcTable: entry %d still in use — "
+           "flagcxDevMemDestroy should be called before flagcxCommDestroy",
+           k);
+    }
+
+    // Close IPC handles
+    if (e->hostPeerPtrs) {
+      for (int i = 0; i < e->nPeers; i++) {
+        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr) {
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
+        }
+      }
+      free(e->hostPeerPtrs);
+      e->hostPeerPtrs = nullptr;
+    }
+
+    // Free device memory safely
+    if (e->devPeerPtrs) {
+      deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, NULL);
+      e->devPeerPtrs = nullptr;
+    }
+
+    e->inUse = false;
+  }
+
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Deferred device/host-pinned memory free.
+// ==========================================================================
+void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType) {
+  if (comm == nullptr || ptr == nullptr)
+    return;
+  if (comm->deferredFreeCount >= FLAGCX_MAX_DEFERRED_FREES) {
+    WARN("flagcxCommDeferFree: deferred free list full (%d), freeing now",
+         FLAGCX_MAX_DEFERRED_FREES);
+    deviceAdaptor->deviceFree(ptr, (flagcxMemType_t)memType, NULL);
+    return;
+  }
+  comm->deferredFrees[comm->deferredFreeCount].ptr = ptr;
+  comm->deferredFrees[comm->deferredFreeCount].memType = memType;
+  comm->deferredFreeCount++;
+}
+
+flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+  for (int i = 0; i < comm->deferredFreeCount; i++) {
+    struct flagcxDeferredFree *d = &comm->deferredFrees[i];
+    if (d->ptr) {
+      deviceAdaptor->deviceFree(d->ptr, (flagcxMemType_t)d->memType, NULL);
+      d->ptr = nullptr;
+    }
+  }
+  comm->deferredFreeCount = 0;
   return flagcxSuccess;
 }
 

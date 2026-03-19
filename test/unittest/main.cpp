@@ -341,12 +341,17 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  // Initialize sendbuff: each rank fills with (rank + 1)
+  // Allocate a separate buffer for the kernel (aligned with
+  // test_kernel_intranode -R 0)
+  void *regBuff = nullptr;
+  devHandle->deviceMalloc(&regBuff, size, flagcxMemDevice, NULL);
+
+  // Initialize: each rank fills with (rank + 1)
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = (float)(rank + 1);
   }
-  devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
-                          flagcxMemcpyHostToDevice, NULL);
+  devHandle->deviceMemcpy(regBuff, hostsendbuff, size, flagcxMemcpyHostToDevice,
+                          NULL);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -356,9 +361,9 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
-  // Create device memory handle
+  // Create device memory handle (implicit IPC via flagcxDevMemCreate)
   flagcxDevMem_t devMem = nullptr;
-  ASSERT_EQ(flagcxDevMemCreate(comm, sendbuff, size, NULL, &devMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, regBuff, size, NULL, &devMem),
             flagcxSuccess);
 
   // Run AllReduce
@@ -367,9 +372,9 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
 
-  // Copy results back
-  devHandle->deviceMemcpy(hostrecvbuff, sendbuff, size,
-                          flagcxMemcpyDeviceToHost, NULL);
+  // Copy results back from regBuff
+  devHandle->deviceMemcpy(hostrecvbuff, regBuff, size, flagcxMemcpyDeviceToHost,
+                          NULL);
 
   // Verify: expected = nranks*(nranks+1)/2
   float expected = (float)(nranks * (nranks + 1)) / 2.0f;
@@ -389,6 +394,7 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   // Cleanup
   flagcxDevMemDestroy(comm, devMem);
   flagcxDevCommDestroy(comm, devComm);
+  devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -412,9 +418,9 @@ TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Create device communicator
-  // Request IPC barriers — needed by flagcxBarrierSession in the kernel
+  // Request inter barriers — needed by flagcxInterBarrierSession in the kernel
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 

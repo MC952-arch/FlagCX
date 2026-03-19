@@ -108,7 +108,8 @@ constexpr unsigned int flagcxDeviceTriggerBitsBufferType = 2;
 constexpr unsigned int flagcxDeviceTriggerOffSignalIdxSig = 26;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalIdxSig = 8;
 constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 2;
-constexpr unsigned int flagcxDeviceTriggerBitsSignalValue = 24;
+constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
+    24; // max signal value: 2^24 (~16M)
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
@@ -359,6 +360,16 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 
 // Destroy a device memory handle created by flagcxDevMemCreate.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
+
+// Clean up IPC peer pointer table on comm.
+// Must be called after homoComm destroy.
+// so that cudaFree does not deadlock on device synchronization.
+flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
+
+// Deferred device/host-pinned memory free.
+// Collects pointers during DevComm/DevMem cleanup.
+void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
+flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
 
 // One-sided data buffer registration.
 // Must be called after flagcxCommInitRank and before one-sided operations.

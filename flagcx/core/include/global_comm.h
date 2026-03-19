@@ -11,6 +11,28 @@
 /* Opaque handle to flagcxInnerComm */
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 
+// IPC peer pointer table entry — owned by comm, referenced by devMem.
+// Cleanup deferred to flagcxCommDestroy.
+// to avoid cudaFree implicit device synchronization deadlock.
+#define FLAGCX_MAX_IPC_ENTRIES 16
+
+struct flagcxIpcTableEntry {
+  void **hostPeerPtrs; // host array: peer buffer ptrs (for ipcMemHandleClose)
+  void **devPeerPtrs;  // device array: peer buffer ptrs (for cudaFree)
+  int nPeers;          // number of local peers
+  void *basePtr;       // own buffer ptr (skip in ipcMemHandleClose loop)
+  bool inUse;          // true while a devMem references this entry
+};
+
+// Deferred device/host-pinned memory free — collected during cleanup,
+// drained in flagcxCommDestroy.
+#define FLAGCX_MAX_DEFERRED_FREES 32
+
+struct flagcxDeferredFree {
+  void *ptr;
+  int memType; // flagcxMemDevice, flagcxMemHost, etc.
+};
+
 /* Opaque handle to flagcxHeteroComm */
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -66,6 +88,13 @@ struct flagcxComm {
     int sendCluster;
     int recvCluster;
   } * c2cSchedule; // C2C schedule for pairing send/recv operations
+
+  // IPC peer pointer table — deferred cleanup
+  struct flagcxIpcTableEntry ipcTable[FLAGCX_MAX_IPC_ENTRIES];
+
+  // Deferred device/host-pinned memory free list
+  struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];
+  int deferredFreeCount;
 };
 
 #endif // end include guard
