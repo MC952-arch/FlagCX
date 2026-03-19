@@ -2,14 +2,14 @@
 
 // Common infrastructure for FlagCX performance tests.
 // Extracts the duplicated setup/teardown/benchmark boilerplate
-// shared across all 13 perf test files.
+// shared across all perf test files.
 
 #include "flagcx.h"
 #include "tools.h"
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 
 // Holds all state shared across perf tests.
 struct PerfContext {
@@ -46,32 +46,48 @@ struct PerfContext {
   // Stream
   flagcxStream_t stream;
   timer tim;
+
+  // Test-specific data accessible to callbacks
+  void *userData;
 };
 
+// Function pointer types for callbacks.
+using PerfBufSizeFn = void (*)(PerfContext &ctx, size_t &sendBufSize,
+                               size_t &recvBufSize);
+using PerfCollFn = void (*)(PerfContext &ctx, size_t count);
+using PerfBwFactorFn = double (*)(int totalProcs);
+using PerfDataInitFn = void (*)(PerfContext &ctx, size_t size, size_t count);
+using PerfPostIterFn = void (*)(PerfContext &ctx, size_t size, size_t count);
+
+// Root-iterated benchmark loop types.
+using PerfRootCollFn = void (*)(PerfContext &ctx, size_t count, int root);
+using PerfRootDataInitFn = void (*)(PerfContext &ctx, size_t size, size_t count,
+                                    int root);
+using PerfRootPostIterFn = void (*)(PerfContext &ctx, size_t size, size_t count,
+                                    int root);
+
 // Initialize everything: parse args, MPI init, GPU setup, comm init,
-// buffer allocation. Call this at the start of main().
-// sendBufSize/recvBufSize: override buffer sizes (0 = use maxBytes).
-void perfSetup(PerfContext &ctx, int argc, char **argv, size_t sendBufSize = 0,
-               size_t recvBufSize = 0);
+// buffer allocation. bufSizeFn is called after MPI init (when totalProcs
+// is known) to determine send/recv buffer sizes; nullptr = both maxBytes.
+void perfSetup(PerfContext &ctx, int argc, char **argv,
+               PerfBufSizeFn bufSizeFn = nullptr);
 
 // Free all buffers, destroy comm/stream, free handler, MPI_Finalize.
 void perfTeardown(PerfContext &ctx);
-
-// Callback type for collective operations in the benchmark loop.
-// Parameters: (ctx, sendbuff, recvbuff, count, stream)
-using PerfCollFn = std::function<void(PerfContext &ctx, size_t count)>;
 
 // Run warmup iterations for large and small message sizes.
 void perfWarmup(PerfContext &ctx, PerfCollFn fn);
 
 // Run the benchmark size sweep with timing, MPI averaging, and
-// bandwidth reporting. bwFactor converts base bandwidth to bus bandwidth.
-// dataInitFn: optional data initialization per size (can be nullptr).
-// bwFactorFn: returns bus_bw factor given totalProcs (if nullptr, uses 1.0).
-using PerfBwFactorFn = std::function<double(int totalProcs)>;
-using PerfDataInitFn =
-    std::function<void(PerfContext &ctx, size_t size, size_t count)>;
-
+// bandwidth reporting.
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
                        PerfBwFactorFn bwFactorFn = nullptr,
-                       PerfDataInitFn dataInitFn = nullptr);
+                       PerfDataInitFn dataInitFn = nullptr,
+                       PerfPostIterFn postIterFn = nullptr);
+
+// Run the benchmark size sweep with root iteration (for reduce, broadcast,
+// scatter, gather). Iterates over roots per size, accumulating BW.
+void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
+                           PerfBwFactorFn bwFactorFn = nullptr,
+                           PerfRootDataInitFn dataInitFn = nullptr,
+                           PerfRootPostIterFn postIterFn = nullptr);

@@ -195,8 +195,8 @@ int main(int argc, char *argv[]) {
       break;
 
     // Reset signal buffer before each size iteration
-    devHandle->deviceMemset(signalWindow, 0, signalTotalBytes,
-                            flagcxMemDevice, NULL);
+    devHandle->deviceMemset(signalWindow, 0, signalTotalBytes, flagcxMemDevice,
+                            NULL);
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Warmup iterations (signal slots [0 .. numWarmupIters-1])

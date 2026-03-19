@@ -1,8 +1,8 @@
 #include "perf_common.h"
 #include <cstdio>
 
-void perfSetup(PerfContext &ctx, int argc, char **argv, size_t sendBufSize,
-               size_t recvBufSize) {
+void perfSetup(PerfContext &ctx, int argc, char **argv,
+               PerfBufSizeFn bufSizeFn) {
   // Parse arguments
   ctx.args = new parser(argc, argv);
   ctx.minBytes = ctx.args->getMinBytes();
@@ -53,9 +53,12 @@ void perfSetup(PerfContext &ctx, int argc, char **argv, size_t sendBufSize,
   // Create stream
   ctx.devHandle->streamCreate(&ctx.stream);
 
-  // Buffer sizes (default to maxBytes)
-  size_t sBufSize = sendBufSize > 0 ? sendBufSize : ctx.maxBytes;
-  size_t rBufSize = recvBufSize > 0 ? recvBufSize : ctx.maxBytes;
+  // Buffer sizes: call bufSizeFn if provided (totalProcs is now known)
+  size_t sBufSize = ctx.maxBytes;
+  size_t rBufSize = ctx.maxBytes;
+  if (bufSizeFn) {
+    bufSizeFn(ctx, sBufSize, rBufSize);
+  }
   size_t hBufSize = ctx.maxBytes; // host buffer always maxBytes
 
   // Allocate buffers
@@ -75,6 +78,8 @@ void perfSetup(PerfContext &ctx, int argc, char **argv, size_t sendBufSize,
   }
   ctx.hello = malloc(hBufSize);
   memset(ctx.hello, 0, hBufSize);
+
+  ctx.userData = nullptr;
 }
 
 void perfTeardown(PerfContext &ctx) {
@@ -113,7 +118,8 @@ void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
 }
 
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
-                       PerfBwFactorFn bwFactorFn, PerfDataInitFn dataInitFn) {
+                       PerfBwFactorFn bwFactorFn, PerfDataInitFn dataInitFn,
+                       PerfPostIterFn postIterFn) {
   if (ctx.stepFactor <= 1) {
     fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
     return;
@@ -155,5 +161,80 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
+
+    // Optional post-iteration callback
+    if (postIterFn) {
+      postIterFn(ctx, size, count);
+    }
+  }
+}
+
+void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
+                           PerfBwFactorFn bwFactorFn,
+                           PerfRootDataInitFn dataInitFn,
+                           PerfRootPostIterFn postIterFn) {
+  if (ctx.stepFactor <= 1) {
+    fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
+    return;
+  }
+  for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
+       size *= ctx.stepFactor) {
+    int beginRoot, endRoot;
+    double sumAlgBw = 0;
+    double sumBusBw = 0;
+    double sumTime = 0;
+    int testCount = 0;
+
+    if (ctx.root != -1) {
+      beginRoot = endRoot = ctx.root;
+    } else {
+      beginRoot = 0;
+      endRoot = ctx.totalProcs - 1;
+    }
+
+    for (int r = beginRoot; r <= endRoot; r++) {
+      size_t count = size / sizeof(float);
+
+      if (dataInitFn) {
+        dataInitFn(ctx, size, count, r);
+      }
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      ctx.tim.reset();
+      for (int i = 0; i < ctx.numIters; i++) {
+        collFn(ctx, count, r);
+      }
+      ctx.devHandle->streamSynchronize(ctx.stream);
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
+      MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
+                    MPI_COMM_WORLD);
+      elapsedTime /= ctx.worldSize;
+
+      double baseBw = (double)(size) / 1.0E9 / elapsedTime;
+      double algBw = baseBw;
+      double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
+      double busBw = baseBw * factor;
+      sumAlgBw += algBw;
+      sumBusBw += busBw;
+      sumTime += elapsedTime;
+      testCount++;
+
+      if (postIterFn) {
+        postIterFn(ctx, size, count, r);
+      }
+    }
+
+    if (ctx.proc == 0 && ctx.color == 0) {
+      double algBw = sumAlgBw / testCount;
+      double busBw = sumBusBw / testCount;
+      double elapsedTime = sumTime / testCount;
+      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
+             "%lf GB/s; Bus bandwidth: %lf GB/s\n",
+             size, elapsedTime, algBw, busBw);
+    }
   }
 }
