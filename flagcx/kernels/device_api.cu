@@ -4,7 +4,7 @@
  * FlagCX Device API kernels.
  *
  * 1. Intra-node AllReduce — peer pointer + barrier based.
- *    Vendor-specific (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
+ *    Vendor (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
  *    Fallback:    IPC peer pointers + atomics barrier.
  *    Same kernel code compiles for both paths.
  *
@@ -106,7 +106,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 
   cudaStream_t cudaStream = *(cudaStream_t *)stream;
 
-  // Unified constructors — work for both Vendor-specific and Fallback
+  // Unified constructors — work for both Vendor and Fallback
   flagcxDevComm devCommKernel(*devComm);
   flagcxDevMem devMemKernel(*devMem);
 
@@ -134,7 +134,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 // 2a. Inter-node One-sided AlltoAll
 //
 // Thread-stride loop: each thread dispatches put ops to different peers.
-// put() posts FIFO descriptor (Fallback) or GIN descriptor (Vendor-specific).
+// put() posts FIFO descriptor (Fallback) or GIN descriptor (Vendor).
 // After all puts, waitSignal + flush ensure completion.
 //
 // Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
@@ -162,7 +162,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // Pre-communication barrier
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-  // One-sided put/waitSignal/flush — works for both Vendor-specific (GIN) and Fallback (FIFO proxy).
+  // One-sided put/waitSignal/flush — works for both Vendor (GIN) and Fallback (FIFO proxy).
   uint64_t signalValue = net.readSignal(0);
 
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
@@ -197,7 +197,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
   // Inter-only barrier: matches one-sided kernel pattern.
   // Same-node (nInterPeers == 0): no-op (FIFO term/wait handles completion).
-  // Multi-node: GIN barrier (Vendor-specific) or FIFO Signal relay (Fallback).
+  // Multi-node: GIN barrier (Vendor) or FIFO Signal relay (Fallback).
   flagcxInterBarrierSession<flagcxCoopBlock> bar(
       flagcxCoopBlock(), net, flagcxTeamWorld(devComm), FLAGCX_BLOCK_IDX_X);
 

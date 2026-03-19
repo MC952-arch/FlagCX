@@ -2425,10 +2425,10 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             void **srcHandles, void **dstHandles,
                             void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  struct flagcxIbGlobalHandleInfo *srcInfo =
-      (struct flagcxIbGlobalHandleInfo *)srcHandles;
-  struct flagcxIbGlobalHandleInfo *dstInfo =
-      (struct flagcxIbGlobalHandleInfo *)dstHandles;
+  struct flagcxOneSideHandleInfo *srcInfo =
+      (struct flagcxOneSideHandleInfo *)srcHandles;
+  struct flagcxOneSideHandleInfo *dstInfo =
+      (struct flagcxOneSideHandleInfo *)dstHandles;
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
@@ -2480,10 +2480,10 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   uint64_t signalOff, void **signalHandles,
                                   void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  struct flagcxIbGlobalHandleInfo *dataInfo =
-      (struct flagcxIbGlobalHandleInfo *)dataHandles;
-  struct flagcxIbGlobalHandleInfo *signalInfo =
-      (struct flagcxIbGlobalHandleInfo *)signalHandles;
+  struct flagcxOneSideHandleInfo *dataInfo =
+      (struct flagcxOneSideHandleInfo *)dataHandles;
+  struct flagcxOneSideHandleInfo *signalInfo =
+      (struct flagcxOneSideHandleInfo *)signalHandles;
   if (signalInfo == NULL || signalInfo->baseVas == NULL) {
     WARN("flagcxIbIputSignal: signalHandles is NULL or uninitialized");
     return flagcxInternalError;

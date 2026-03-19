@@ -35,17 +35,3 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
       return 0;
   }
 }
-
-FLAGCX_DEVICE_DECORATOR void
-flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
-                              uint64_t datatype, uint64_t type) {
-  fst = addr;
-  snd = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
-            << flagcxDeviceTriggerOffCount |
-        (peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
-            << flagcxDeviceTriggerOffPeerRank |
-        (datatype & flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype))
-            << flagcxDeviceTriggerOffDatatype |
-        (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
-            << flagcxDeviceTriggerOffPrim;
-}

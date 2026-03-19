@@ -12,8 +12,12 @@
 #include "ibvcore.h"
 #include "ibvwrap.h"
 #include "net.h"
+#include "onesided.h"
 #include <pthread.h>
 #include <stdint.h>
+
+// Backward-compat alias so adaptor code can keep using the old name.
+typedef struct flagcxOneSideHandleInfo flagcxIbGlobalHandleInfo;
 
 #define MAXNAMESIZE 64
 #define MAX_IB_DEVS 32
@@ -120,32 +124,6 @@ struct flagcxIbGidInfo {
 struct flagcxIbMrHandle {
   ibv_mr *mrs[FLAGCX_IB_MAX_DEVS_PER_NIC];
 };
-
-// Structure to store handle info for allgather
-struct flagcxIbGlobalHandleInfo {
-  uintptr_t *baseVas;
-  uint32_t *rkeys;
-  uint32_t *lkeys;
-  void *localMrHandle; // local rank's MR handle for deregMr
-  void *localRecvComm; // recvComm used for MR registration (PD match)
-  // Full-mesh IB connections (including self loopback, aligned with NCCL GIN)
-  void **fullSendComms; // [nRanks] per-peer sendComm (NULL if not owner)
-  void **fullRecvComms; // [nRanks] per-peer recvComm (NULL if not owner)
-  int nRanks;           // number of ranks (for cleanup iteration)
-};
-
-// Handle table for per-window MR addressing (aligned with NCCL GIN per-window
-// MR)
-#define FLAGCX_MAX_ONE_SIDE_HANDLES 8
-extern struct flagcxIbGlobalHandleInfo
-    *globalOneSideHandleTable[FLAGCX_MAX_ONE_SIDE_HANDLES];
-extern int globalOneSideHandleCount;
-
-// Backward compatibility: globalOneSideHandles = first entry in handle table
-#define globalOneSideHandles globalOneSideHandleTable[0]
-
-// Global variable for one-sided signal handles (separate MR, NCCL-style)
-extern struct flagcxIbGlobalHandleInfo *globalOneSideSignalHandles;
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
 #define FLAGCX_NET_IB_REQ_SEND 1

@@ -14,11 +14,11 @@
 
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel.h"
-#include "ib_common.h" // globalOneSideHandles
-#include "net.h"       // flagcxNetHandle_t
-#include "p2p.h"       // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
-#include <algorithm>   // std::min, std::max
-#include <unistd.h>    // usleep
+#include "net.h" // flagcxNetHandle_t
+#include "onesided.h"
+#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include <algorithm> // std::min, std::max
+#include <unistd.h>  // usleep
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -655,8 +655,20 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       flagcxResult_t regRes = flagcxOneSideSignalRegister(
           comm, handle->signalBuffer, handle->signalCount * sizeof(uint64_t));
       if (regRes != flagcxSuccess) {
-        INFO(FLAGCX_INIT,
-             "flagcxDevCommCreate: signal buffer registration skipped (%d)",
+        WARN("flagcxDevCommCreate: signal buffer MR registration failed (%d), "
+             "one-sided operations will not work",
+             regRes);
+        return regRes;
+      }
+    }
+
+    // Auto-register staging buffer for PutValue RDMA source
+    if (handle->putValueStagingBuffer) {
+      flagcxResult_t regRes = flagcxOneSideStagingRegister(
+          comm, handle->putValueStagingBuffer, sizeof(uint64_t));
+      if (regRes != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: staging buffer MR registration failed (%d), "
+             "putValue will not work",
              regRes);
       }
     }
@@ -765,15 +777,16 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   // One-sided Fallback cleanup
   if (devComm->signalBuffer) {
-    flagcxMemFree(devComm->signalBuffer);
+    flagcxMemFree(devComm->signalBuffer, comm);
   }
   if (devComm->shadowBuffer) {
     deviceAdaptor->deviceFree(devComm->shadowBuffer, flagcxMemDevice, NULL);
   }
   if (devComm->counterBuffer) {
-    flagcxMemFree(devComm->counterBuffer);
+    flagcxMemFree(devComm->counterBuffer, comm);
   }
   if (devComm->putValueStagingBuffer) {
+    flagcxOneSideStagingDeregister(comm);
     deviceAdaptor->deviceFree(devComm->putValueStagingBuffer, flagcxMemHost,
                               NULL);
   }
@@ -787,7 +800,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: ncclWindow_t (if win provided, Vendor-specific only)
+//   Window layer: ncclWindow_t (if win provided, Vendor only)
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
@@ -811,7 +824,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   handle->mrBase = 0;
   if (comm != nullptr) {
     for (int i = 0; i < globalOneSideHandleCount; i++) {
-      struct flagcxIbGlobalHandleInfo *info = globalOneSideHandleTable[i];
+      struct flagcxOneSideHandleInfo *info = globalOneSideHandleTable[i];
       if (info != NULL && info->baseVas != NULL) {
         uintptr_t base = info->baseVas[comm->rank];
         if ((uintptr_t)buff == base) {

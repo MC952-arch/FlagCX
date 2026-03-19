@@ -1,8 +1,8 @@
 #include "flagcx_hetero.h"
 #include "adaptor.h"
 #include "group.h"
-#include "ib_common.h"
 #include "net.h"
+#include "onesided.h"
 #include "transport.h"
 #include "type.h"
 
@@ -173,8 +173,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo) {
-  struct flagcxIbGlobalHandleInfo *info =
-      (struct flagcxIbGlobalHandleInfo *)gHandleInfo;
+  struct flagcxOneSideHandleInfo *info =
+      (struct flagcxOneSideHandleInfo *)gHandleInfo;
   if (info == NULL || info->localRecvComm == NULL ||
       info->localMrHandle == NULL)
     return flagcxNotSupported;
@@ -204,8 +204,8 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,
                                       flagcxStream_t stream) {
   (void)peer;
-  struct flagcxIbGlobalHandleInfo *info =
-      (struct flagcxIbGlobalHandleInfo *)globalOneSideSignalHandles;
+  struct flagcxOneSideHandleInfo *info =
+      (struct flagcxOneSideHandleInfo *)globalOneSideSignalHandles;
   if (info == NULL || info->baseVas == NULL)
     return flagcxNotSupported;
 
@@ -223,34 +223,56 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
 }
 
 flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
-                                    size_t dstOffset, void *stagingBuffer,
-                                    size_t size) {
+                                    uint64_t value, size_t dstOffset,
+                                    int dstMrIdx) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
 
-  int channelId = 0;
-  int connIndex = 0;
-  struct flagcxConnector *conn =
-      &comm->channels[channelId].peers[peer]->send[connIndex];
-  if (conn->connected == 0 ||
-      conn->proxyConn.connection->transport != TRANSPORT_NET) {
-    return flagcxNotSupported;
-  }
-  void **gHandles = (void **)globalOneSideHandles;
-  if (gHandles == NULL) {
-    WARN("flagcxHeteroPutValue: globalOneSideHandles not initialized");
+  // 1. Validate staging handles
+  struct flagcxOneSideHandleInfo *stagingH = globalOneSideStagingHandles;
+  if (stagingH == NULL || stagingH->baseVas == NULL) {
+    WARN("flagcxHeteroPutValue: staging handles not initialized");
     return flagcxInternalError;
   }
 
-  // stagingBuffer is host-pinned; compute its offset relative to data base VA.
-  // For PutValue, we use a special staging iput: the staging buffer MR is
-  // separate from the data MR. We reuse iput with the staging buffer's
-  // offset within the data region.
-  // TODO: Phase 2 enhancement — register staging buffer as separate MR
-  // For now, use iput with staging source offset = 0 (staging buffer is
-  // at a known registered address).
-  (void)stagingBuffer;
-  (void)size;
-  WARN("flagcxHeteroPutValue: not yet fully implemented (needs staging MR)");
-  return flagcxNotSupported;
+  // 2. Write value to local staging buffer
+  int myRank = comm->rank;
+  *(volatile uint64_t *)(stagingH->baseVas[myRank]) = value;
+
+  // 3. Get sendComm from full-mesh connections (data handle[0] owns them)
+  if (globalOneSideHandleCount == 0 ||
+      globalOneSideHandleTable[0]->fullSendComms == NULL) {
+    WARN("flagcxHeteroPutValue: no full-mesh connections");
+    return flagcxInternalError;
+  }
+  void *sendComm = globalOneSideHandleTable[0]->fullSendComms[peer];
+  if (sendComm == NULL) {
+    WARN("flagcxHeteroPutValue: no sendComm for peer %d", peer);
+    return flagcxInternalError;
+  }
+
+  // 4. Validate dst MR index
+  if (dstMrIdx < 0 || dstMrIdx >= globalOneSideHandleCount) {
+    WARN("flagcxHeteroPutValue: invalid dstMrIdx=%d (count=%d)", dstMrIdx,
+         globalOneSideHandleCount);
+    return flagcxInternalError;
+  }
+  void **srcHandles = (void **)stagingH;
+  void **dstHandles = (void **)globalOneSideHandleTable[dstMrIdx];
+
+  // 5. iput: srcOffset=0 (staging buffer start), size=8 bytes
+  int dstRank = peer;
+  void *request = NULL;
+  FLAGCXCHECK(comm->netAdaptor->iput(sendComm, 0, (uint64_t)dstOffset,
+                                     sizeof(uint64_t), myRank, dstRank,
+                                     srcHandles, dstHandles, &request));
+
+  // 6. Poll completion
+  if (request != NULL) {
+    int done = 0;
+    while (!done) {
+      FLAGCXCHECK(comm->netAdaptor->test(request, &done, NULL));
+    }
+  }
+  return flagcxSuccess;
 }

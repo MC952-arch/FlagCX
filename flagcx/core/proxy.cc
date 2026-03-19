@@ -10,9 +10,9 @@
 #include "device_api/flagcx_device.h" // flagcxDevCommInternal, devComm
 #include "flagcx_hetero.h"
 #include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
-#include "ib_common.h"
 #include "info.h"
 #include "net.h"
+#include "onesided.h"
 #include "p2p.h"
 #include "socket.h"
 #include "transport.h"
@@ -1047,14 +1047,14 @@ void *flagcxProxyKernelService(void *args) {
 
   auto validateOneSidedPeer = [](struct flagcxHeteroComm *comm,
                                  int peerRank) -> flagcxResult_t {
-    if (globalOneSideHandleCount == 0 || globalOneSideHandles == NULL)
+    if (globalOneSideHandleCount == 0 || globalOneSideHandleTable[0] == NULL)
       return flagcxNotSupported;
     if (peerRank < 0 || peerRank >= comm->nRanks)
       return flagcxInvalidArgument;
 
     // Check full-mesh connection exists for this peer (including self-loopback)
-    struct flagcxIbGlobalHandleInfo *handles =
-        (struct flagcxIbGlobalHandleInfo *)globalOneSideHandles;
+    struct flagcxOneSideHandleInfo *handles =
+        (struct flagcxOneSideHandleInfo *)globalOneSideHandleTable[0];
     if (handles->fullSendComms == NULL ||
         handles->fullSendComms[peerRank] == NULL)
       return flagcxNotSupported;
@@ -1094,13 +1094,13 @@ void *flagcxProxyKernelService(void *args) {
     if (comm->proxyState->kernelState.stop == 1)
       break;
     dequeue(fifo->buffer, ptr);
-    if ((ptr->getType() == flagcxDevicePrimSend ||
-         ptr->getType() == flagcxDevicePrimRecv) &&
+    if ((ptr->getPrim() == flagcxDevicePrimSend ||
+         ptr->getPrim() == flagcxDevicePrimRecv) &&
         ptr->getAddr() == 0) {
       sched_yield();
       continue;
     }
-    switch (ptr->getType()) {
+    switch (ptr->getPrim()) {
       case flagcxDevicePrimSend:
         if (groupCount == 0) {
           res = flagcxHeteroGroupStart();
@@ -1158,15 +1158,11 @@ void *flagcxProxyKernelService(void *args) {
         res = validateOneSidedPeer(comm, peerRank);
         if (res != flagcxSuccess)
           break;
-        // For Put, datatype field encodes MR indices: (srcMrIdx << 2) |
-        // dstMrIdx
-        int dtField = (int)ptr->getDatatype();
-        int srcMrIdx = dtField >> 2;
-        int dstMrIdx = dtField & 3;
+        int srcMrIdx = (int)ptr->getSrcMrIdx();
+        int dstMrIdx = (int)ptr->getDstMrIdx();
         size_t srcOffset = (size_t)ptr->getSrcOffset();
         size_t dstOffset = (size_t)ptr->getDstOffset();
-        size_t size =
-            (size_t)ptr->getCount(); // raw bytes (no datatypeSize mult)
+        size_t size = (size_t)ptr->getSize();
         res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size,
                               srcMrIdx, dstMrIdx);
         break;
@@ -1179,16 +1175,17 @@ void *flagcxProxyKernelService(void *args) {
         res = validateOneSidedPeer(comm, peerRank);
         if (res != flagcxSuccess)
           break;
-        size_t dstOffset = (size_t)ptr->getDstOffset();
-        // TODO: integrate with flagcxDevicePrimPut for chained posting
-        // For now, signal-only mode (size=0)
+        uint64_t bufType = ptr->getBufferType();
+        int signalIdx = (int)ptr->getSignalIdx();
+        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
         if (globalOneSideSignalHandles == NULL) {
           WARN("flagcxDevicePrimSignal: globalOneSideSignalHandles not "
                "initialized — call flagcxOneSideSignalRegister() before use");
           res = flagcxInternalError;
           break;
         }
-        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, dstOffset, 0, 0);
+        // bufType: 0=signal buffer, 1=counter buffer (via signalEx)
+        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, signalOff, 0, 0);
         break;
       }
       case flagcxDevicePrimWaitSignal: {
@@ -1196,17 +1193,17 @@ void *flagcxProxyKernelService(void *args) {
             FLAGCX_P2P,
             "rank=%d flagcxDevicePrimWaitSignal called by proxyKernelService.",
             comm->rank);
-        // fst encoding: [63:32]=expected, [31:0]=signalOffset
-        uint32_t wsExpected = (uint32_t)ptr->getSrcOffset();
-        size_t wsSignalOff = (size_t)ptr->getDstOffset();
-        uint64_t wsBufType = ptr->getDatatype(); // 0=signal, 1=counter
+        uint64_t wsBufType = ptr->getBufferType(); // 0=signal, 1=counter
+        int wsSignalIdx = (int)ptr->getSignalIdx();
+        uint32_t wsExpected = (uint32_t)ptr->getExpectedValue();
+        size_t wsSignalOff = (size_t)wsSignalIdx * sizeof(uint64_t);
         flagcxDevComm_t dc = comm->devCommHandle;
         if (dc == NULL) {
           WARN("flagcxDevicePrimWaitSignal: devComm not initialized");
           res = flagcxInternalError;
           break;
         }
-        // Select target buffer based on datatype field
+        // Select target buffer based on buffer type
         uint64_t *targetBuffer =
             (wsBufType == 0) ? dc->signalBuffer : dc->counterBuffer;
         if (targetBuffer == NULL) {
@@ -1220,28 +1217,37 @@ void *flagcxProxyKernelService(void *args) {
                                                (uint64_t)wsExpected, 0);
         break;
       }
-      case flagcxDevicePrimPutValue: {
+      case flagcxDevicePrimPutSignal: {
         TRACE(FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimPutValue called by proxyKernelService.",
+              "rank=%d flagcxDevicePrimPutSignal called by proxyKernelService.",
               comm->rank);
-        int pvPeerRank = (int)ptr->getPeerRank();
-        res = validateOneSidedPeer(comm, pvPeerRank);
+        int peerRank = (int)ptr->getPeerRank();
+        res = validateOneSidedPeer(comm, peerRank);
         if (res != flagcxSuccess)
           break;
-        // fst = full 64-bit value; count field repurposed as dstOffset
-        uint64_t pvValue = ptr->getAddr();
-        size_t pvDstOffset = (size_t)ptr->getCount();
-        flagcxDevComm_t pvDc = comm->devCommHandle;
-        if (pvDc == NULL || pvDc->putValueStagingBuffer == NULL) {
-          WARN("flagcxDevicePrimPutValue: staging buffer not initialized");
+        int srcMrIdx = (int)ptr->getSrcMrIdx();
+        int dstMrIdx = (int)ptr->getDstMrIdx();
+        size_t srcOffset = (size_t)ptr->getSrcOffset();
+        size_t dstOffset = (size_t)ptr->getDstOffset();
+        size_t size = (size_t)ptr->getSize();
+        int signalIdx = (int)ptr->getSignalIdx();
+        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
+        if (globalOneSideSignalHandles == NULL) {
+          WARN("flagcxDevicePrimPutSignal: globalOneSideSignalHandles not "
+               "initialized — call flagcxOneSideSignalRegister() before use");
           res = flagcxInternalError;
           break;
         }
-        // Copy value to staging buffer
-        memcpy(pvDc->putValueStagingBuffer, &pvValue, sizeof(uint64_t));
-        res =
-            flagcxHeteroPutValue(comm, pvPeerRank, pvDstOffset,
-                                 pvDc->putValueStagingBuffer, sizeof(uint64_t));
+        res = flagcxHeteroPutSignal(comm, peerRank, srcOffset, dstOffset, size,
+                                    signalOff, srcMrIdx, dstMrIdx);
+        break;
+      }
+      case flagcxDevicePrimPutValue: {
+        int peerRank = (int)ptr->getPeerRank();
+        int dstMrIdx = (int)ptr->getDstMrIdx();
+        size_t dstOffset = (size_t)ptr->getDstOffset();
+        uint64_t value = ptr->getValue();
+        res = flagcxHeteroPutValue(comm, peerRank, value, dstOffset, dstMrIdx);
         break;
       }
       case flagcxDevicePrimWait:

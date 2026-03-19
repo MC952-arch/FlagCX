@@ -4,37 +4,102 @@
 
 FLAGCX_PARAM(KernelFifoCapacity, "KERNEL_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() { return fst; }
+// ==========================================================================
+// flagcxDeviceTrigger accessors — read from trd (common) / fst,snd (payload)
+// ==========================================================================
 
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
-  return snd >> flagcxDeviceTriggerOffCount &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
-  return snd >> flagcxDeviceTriggerOffPeerRank &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
-  return snd >> flagcxDeviceTriggerOffDatatype &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
-  return snd >> flagcxDeviceTriggerOffPrim &
+// Common accessors (trd)
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPrim() {
+  return (trd >> flagcxDeviceTriggerOffPrim) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
 }
 
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
+  return (trd >> flagcxDeviceTriggerOffPeerRank) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSlotIdx() {
+  return (trd >> flagcxDeviceTriggerOffSlotIdx) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSlotIdx);
+}
+
+// Backward compat alias
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
+  return getPrim();
+}
+
+// Two-sided accessors (Send/Recv)
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() { return fst; }
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
+  return (trd >> flagcxDeviceTriggerOffDatatype) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
+  return (trd >> flagcxDeviceTriggerOffCount) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
+}
+
+// One-sided accessors (Put/PutSignal/PutValue)
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSrcMrIdx() {
+  return (trd >> flagcxDeviceTriggerOffSrcMrIdx) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSrcMrIdx);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstMrIdx() {
+  return (trd >> flagcxDeviceTriggerOffDstMrIdx) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDstMrIdx);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSize() {
+  return (snd >> flagcxDeviceTriggerOffSize) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSize);
+}
+
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSrcOffset() {
-  return fst >> flagcxDeviceTriggerOffSrcOffset &
+  return (fst >> flagcxDeviceTriggerOffSrcOffset) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsSrcOffset);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstOffset() {
-  return fst >> flagcxDeviceTriggerOffDstOffset &
+  return (fst >> flagcxDeviceTriggerOffDstOffset) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
 }
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getValue() { return snd; }
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
+  // PutSignal uses trd[14:7], Signal/WaitSignal uses trd[33:26]
+  uint64_t prim = getPrim();
+  if (prim == flagcxDevicePrimPutSignal) {
+    return (trd >> flagcxDeviceTriggerOffSignalIdx) &
+           flagcxTriggerMask(flagcxDeviceTriggerBitsSignalIdx);
+  }
+  // Signal, WaitSignal
+  return (trd >> flagcxDeviceTriggerOffSignalIdxSig) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalIdxSig);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalValue() {
+  return (trd >> flagcxDeviceTriggerOffSignalValue) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getExpectedValue() {
+  return (trd >> flagcxDeviceTriggerOffSignalValue) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getBufferType() {
+  return (trd >> flagcxDeviceTriggerOffBufferType) &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsBufferType);
+}
+
+// ==========================================================================
+// FIFO init / destroy
+// ==========================================================================
 
 flagcxResult_t flagcxFifo::flagcxFifoInit() {
   INFO(FLAGCX_KERNEL, "flagcxFifoInit called");
@@ -60,6 +125,10 @@ flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
   return flagcxSuccess;
 }
 
+// ==========================================================================
+// Host-side dequeue — polls trd (word2) for valid bit
+// ==========================================================================
+
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger) {
   volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
@@ -68,18 +137,17 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   uint64_t prod = buffer[flagcxFifoIdxProduced];
 
   if (prod > cons) {
-    // Get pointer to slot's raw uint64_t fields
+    // Get pointer to slot's raw uint64_t fields (3 words per entry)
     uint64_t idx = cons % capacity;
     volatile uint64_t *slotFst =
         buffer + flagcxFifoIdxData +
         idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
     volatile uint64_t *slotSnd = slotFst + 1;
+    volatile uint64_t *slotTrd = slotFst + 2;
 
-    // Wait for valid bit to be set (data is committed by producer)
-    // Use hybrid approach: spin vigorously first, then yield to reduce CPU
-    // usage
+    // Wait for valid bit on trd (word2, written last by producer)
     int spins = 0;
-    while (!(*slotSnd & flagcxDeviceTriggerValidMask)) {
+    while (!(*slotTrd & flagcxDeviceTriggerValidMask)) {
       __sync_synchronize();
       if (++spins > 1000) {
         sched_yield();
@@ -87,15 +155,16 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
       }
     }
 
-    // Memory fence before reading
+    // Memory fence before reading payload
     __sync_synchronize();
 
     // Copy data (clear valid bit in the copy)
     trigger->fst = *slotFst;
-    trigger->snd = *slotSnd & ~flagcxDeviceTriggerValidMask;
+    trigger->snd = *slotSnd;
+    trigger->trd = *slotTrd & ~flagcxDeviceTriggerValidMask;
 
-    // Clear valid bit in slot for reuse
-    *slotSnd = 0;
+    // Clear trd valid bit in slot for reuse
+    *slotTrd = 0;
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }

@@ -356,9 +356,9 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
-  // Create device memory handle (raw IPC mode)
+  // Create device memory handle
   flagcxDevMem_t devMem = nullptr;
-  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &devMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, sendbuff, size, NULL, &devMem),
             flagcxSuccess);
 
   // Run AllReduce
@@ -387,14 +387,14 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
   EXPECT_TRUE(success);
 
   // Cleanup
-  flagcxDevMemDestroy(NULL, devMem);
+  flagcxDevMemDestroy(comm, devMem);
   flagcxDevCommDestroy(comm, devComm);
 }
 
 // ---------------------------------------------------------------------------
 // Inter-node AlltoAll: two-sided send/recv via FIFO
 // ---------------------------------------------------------------------------
-TEST_F(FlagCXKernelTest, InterAlltoAll) {
+TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
@@ -420,9 +420,9 @@ TEST_F(FlagCXKernelTest, InterAlltoAll) {
 
   // Create raw device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, sendbuff, size, NULL, &sendMem),
             flagcxSuccess);
-  ASSERT_EQ(flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, recvbuff, size, NULL, &recvMem),
             flagcxSuccess);
 
   // Launch AlltoAll kernel
@@ -432,8 +432,8 @@ TEST_F(FlagCXKernelTest, InterAlltoAll) {
   EXPECT_EQ(result, flagcxSuccess);
 
   // Destroy raw device memory handles
-  flagcxDevMemDestroy(NULL, sendMem);
-  flagcxDevMemDestroy(NULL, recvMem);
+  flagcxDevMemDestroy(comm, sendMem);
+  flagcxDevMemDestroy(comm, recvMem);
 
   // Destroy device communicator
   flagcxDevCommDestroy(comm, devComm);
@@ -452,8 +452,9 @@ TEST_F(FlagCXKernelTest, InterAlltoAll) {
     if (actual != expected) {
       success = false;
       if (rank == 0) {
-        std::cout << "Mismatch at peer " << p << ": expected " << expected
-                  << ", got " << actual << std::endl;
+        std::cout << "InterTwoSidedAlltoAll mismatch at peer " << p
+                  << ": expected " << expected << ", got " << actual
+                  << std::endl;
       }
     }
   }
@@ -469,12 +470,24 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
 
   size_t countPerPeer = count / nranks;
 
+  // One-sided needs VMM memory + RDMA registration.
+  // Allocate separate buffers (fixture's sendbuff/recvbuff stay untouched).
+  void *osSend = nullptr, *osRecv = nullptr;
+  ASSERT_EQ(flagcxMemAlloc(&osSend, size, comm), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&osRecv, size, comm), flagcxSuccess);
+
+  void *sendRegHandle = nullptr, *recvRegHandle = nullptr;
+  ASSERT_EQ(flagcxCommRegister(comm, osSend, size, &sendRegHandle),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxCommRegister(comm, osRecv, size, &recvRegHandle),
+            flagcxSuccess);
+
   // Initialize sendbuff: all elements = rank
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = (float)rank;
   }
-  devHandle->deviceMemcpy(sendbuff, hostsendbuff, size,
-                          flagcxMemcpyHostToDevice, NULL);
+  devHandle->deviceMemcpy(osSend, hostsendbuff, size, flagcxMemcpyHostToDevice,
+                          NULL);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -487,9 +500,9 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
 
   // Create device memory handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  ASSERT_EQ(flagcxDevMemCreate(NULL, sendbuff, size, NULL, &sendMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, osSend, size, NULL, &sendMem),
             flagcxSuccess);
-  ASSERT_EQ(flagcxDevMemCreate(NULL, recvbuff, size, NULL, &recvMem),
+  ASSERT_EQ(flagcxDevMemCreate(comm, osRecv, size, NULL, &recvMem),
             flagcxSuccess);
 
   // Launch one-sided AlltoAll
@@ -499,15 +512,15 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   EXPECT_EQ(result, flagcxSuccess);
 
   // Destroy device memory handles
-  flagcxDevMemDestroy(NULL, sendMem);
-  flagcxDevMemDestroy(NULL, recvMem);
+  flagcxDevMemDestroy(comm, sendMem);
+  flagcxDevMemDestroy(comm, recvMem);
 
   // Destroy device communicator
   flagcxDevCommDestroy(comm, devComm);
 
-  // Copy results back
-  devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
-                          flagcxMemcpyDeviceToHost, NULL);
+  // Copy results back from osRecv
+  devHandle->deviceMemcpy(hostrecvbuff, osRecv, size, flagcxMemcpyDeviceToHost,
+                          NULL);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -526,6 +539,12 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
     }
   }
   EXPECT_TRUE(success);
+
+  // Cleanup one-sided buffers
+  flagcxCommDeregister(comm, sendRegHandle);
+  flagcxCommDeregister(comm, recvRegHandle);
+  flagcxMemFree(osSend, comm);
+  flagcxMemFree(osRecv, comm);
 }
 
 int main(int argc, char *argv[]) {

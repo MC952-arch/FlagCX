@@ -19,6 +19,7 @@
 #include "tools.h"
 #include <algorithm>
 #include <cstring>
+#include <unistd.h>
 
 #define DATATYPE flagcxFloat
 
@@ -60,6 +61,15 @@ int main(int argc, char *argv[]) {
   if (totalProcs < 2) {
     if (proc == 0)
       printf("test_kernel_internode_onesided requires at least 2 ranks.\n");
+    FLAGCXCHECK(flagcxCommDestroy(comm));
+    FLAGCXCHECK(flagcxHandleFree(handler));
+    MPI_Finalize();
+    return 0;
+  }
+
+  if (localRegister == 0) {
+    if (proc == 0)
+      printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxHandleFree(handler));
     MPI_Finalize();
