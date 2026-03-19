@@ -609,6 +609,11 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
   if (comm == NULL)
     return flagcxInternalError;
 
+  INFO(FLAGCX_INIT,
+       "flagcxOneSideSignalDeregister: rank %d enter, "
+       "localMrHandle=%p, localRecvComm=%p",
+       comm->rank, info->localMrHandle, info->localRecvComm);
+
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
     // Deregister MR (connections are shared with data handle table, not owned)
@@ -620,7 +625,11 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
             (struct flagcxIbRecvComm *)regComm;
         regComm = (void *)&ibRecvComm->base;
       }
+      INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d deregMr...",
+           comm->rank);
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
+      INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d deregMr done",
+           comm->rank);
     }
     // No closeSend/closeRecv — connections owned by data handle table[0]
   }
@@ -630,6 +639,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
   free(info->lkeys);
   free(info);
   globalOneSideSignalHandles = NULL;
+  INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d done", comm->rank);
   return flagcxSuccess;
 }
 
@@ -752,6 +762,11 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
   if (comm == NULL)
     return flagcxInternalError;
 
+  INFO(FLAGCX_INIT,
+       "flagcxOneSideStagingDeregister: rank %d enter, "
+       "localMrHandle=%p, localRecvComm=%p",
+       comm->rank, info->localMrHandle, info->localRecvComm);
+
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
     if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
@@ -762,7 +777,11 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
             (struct flagcxIbRecvComm *)regComm;
         regComm = (void *)&ibRecvComm->base;
       }
+      INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d deregMr...",
+           comm->rank);
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
+      INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d deregMr done",
+           comm->rank);
     }
   }
 
@@ -771,6 +790,146 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
   free(info->lkeys);
   free(info);
   globalOneSideStagingHandles = NULL;
+  INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d done", comm->rank);
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
+                             void *buff, size_t size,
+                             struct flagcxOneSideHandleInfo **outInfo) {
+  if (comm == NULL || outInfo == NULL)
+    return flagcxInvalidArgument;
+  *outInfo = NULL;
+
+  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->regMr == NULL)
+    return flagcxNotSupported;
+
+  struct bootstrapState *state = comm->bootstrap;
+  if (state == NULL)
+    return flagcxNotSupported;
+
+  struct flagcxNetAdaptor *net = heteroComm->netAdaptor;
+  flagcxResult_t res = flagcxSuccess;
+  void *mrHandle = NULL;
+  uint32_t rkey = 0, lkey = 0;
+  uintptr_t baseVa = 0;
+  struct flagcxOneSideHandleInfo *info = NULL;
+
+  // Leaders (recvComm != NULL): register MR and extract keys
+  if (recvComm != NULL && buff != NULL && size > 0) {
+    void *regComm = recvComm;
+    if (net->name && strcmp(net->name, "IB") == 0) {
+      struct flagcxIbRecvComm *ibRecvComm = (struct flagcxIbRecvComm *)regComm;
+      regComm = (void *)&ibRecvComm->base;
+    }
+    res = net->regMr(regComm, buff, size, FLAGCX_PTR_HOST,
+                     FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    if (res != flagcxSuccess || mrHandle == NULL) {
+      INFO(FLAGCX_REG, "flagcxOneSideBarrierRegister: regMr failed, res=%d",
+           res);
+      return flagcxNotSupported;
+    }
+    struct flagcxIbMrHandle *ibMrHandle = (struct flagcxIbMrHandle *)mrHandle;
+    struct ibv_mr *mr = ibMrHandle->mrs[0];
+    rkey = mr->rkey;
+    lkey = mr->lkey;
+    baseVa = (uintptr_t)buff;
+  }
+
+  // ALL ranks: allocate info, populate own entry, AllGather
+  {
+    int nranks = state->nranks;
+    int myRank = state->rank;
+    FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
+    FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail_mr);
+    FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
+    FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
+
+    info->baseVas[myRank] = baseVa;
+    info->rkeys[myRank] = rkey;
+    info->lkeys[myRank] = lkey;
+    info->localMrHandle = mrHandle;
+    info->localRecvComm = recvComm;
+
+    FLAGCXCHECKGOTO(
+        bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)),
+        res, fail_mr);
+    FLAGCXCHECKGOTO(
+        bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)), res,
+        fail_mr);
+    FLAGCXCHECKGOTO(
+        bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)), res,
+        fail_mr);
+
+    INFO(FLAGCX_REG,
+         "Barrier register allgather results (rank %d, nranks %d):", myRank,
+         nranks);
+    for (int i = 0; i < nranks; i++) {
+      INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
+           info->baseVas[i], info->rkeys[i], info->lkeys[i]);
+    }
+  }
+
+  *outInfo = info;
+  return flagcxSuccess;
+
+fail_mr:
+  if (info) {
+    free(info->lkeys);
+    free(info->rkeys);
+    free(info->baseVas);
+    free(info);
+  }
+  if (mrHandle != NULL) {
+    void *regComm = recvComm;
+    if (net->name && strcmp(net->name, "IB") == 0) {
+      struct flagcxIbRecvComm *ibRecvComm = (struct flagcxIbRecvComm *)regComm;
+      regComm = (void *)&ibRecvComm->base;
+    }
+    net->deregMr(regComm, mrHandle);
+  }
+  return res;
+}
+
+flagcxResult_t
+flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
+                               struct flagcxOneSideHandleInfo *info) {
+  if (info == NULL)
+    return flagcxSuccess;
+  if (comm == NULL)
+    return flagcxInternalError;
+
+  INFO(FLAGCX_INIT,
+       "flagcxOneSideBarrierDeregister: rank %d enter, "
+       "localMrHandle=%p, localRecvComm=%p",
+       comm->rank, info->localMrHandle, info->localRecvComm);
+
+  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
+  if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
+    if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
+      void *regComm = info->localRecvComm;
+      if (heteroComm->netAdaptor->name &&
+          strcmp(heteroComm->netAdaptor->name, "IB") == 0) {
+        struct flagcxIbRecvComm *ibRecvComm =
+            (struct flagcxIbRecvComm *)regComm;
+        regComm = (void *)&ibRecvComm->base;
+      }
+      INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d deregMr...",
+           comm->rank);
+      heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
+      INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d deregMr done",
+           comm->rank);
+    }
+  }
+
+  free(info->baseVas);
+  free(info->rkeys);
+  free(info->lkeys);
+  free(info);
+  INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d done", comm->rank);
   return flagcxSuccess;
 }
 

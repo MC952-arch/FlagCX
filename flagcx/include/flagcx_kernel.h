@@ -393,6 +393,18 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
 // Release staging buffer MR resources.
 flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm);
 
+// One-sided barrier MR registration (host-pinned memory for inter-node
+// barrier). Collective: ALL ranks must call. Leaders pass recvComm+buff,
+// non-leaders pass NULL.
+flagcxResult_t
+flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
+                             void *buff, size_t size,
+                             struct flagcxOneSideHandleInfo **outInfo);
+// Release barrier MR and free handle info.
+flagcxResult_t
+flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
+                               struct flagcxOneSideHandleInfo *info);
+
 // Intra-node AllReduce using FlagCX Device API.
 // The caller provides a registered buffer (via flagcxDevMemCreate)
 // already containing the input data.  The kernel runs an in-place

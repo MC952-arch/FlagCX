@@ -303,20 +303,23 @@ int main(int argc, char *argv[]) {
   // Destroy stream first (sync any pending work)
   FLAGCXCHECK(devHandle->streamDestroy(stream));
 
-  // Destroy raw device memory handles
-  FLAGCXCHECK(flagcxDevMemDestroy(NULL, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(NULL, recvMem));
+  // Destroy device memory handles
+  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
+  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
 
-  // Destroy device communicator before comm destroy
+  // Destroy device communicator (before comm destroy)
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
-  if (localRegister == 1) {
-    // deregister buffer (must be done before comm destroy)
+  // Deregister buffer (before comm destroy)
+  if (localRegister == 2) {
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+  } else if (localRegister == 1) {
     FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
     FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
   }
 
-  // Free -R 1/-R 2 buffers before comm destroy (flagcxMemFree needs comm alive)
+  // Free buffer (before comm destroy)
   if (localRegister >= 1) {
     FLAGCXCHECK(flagcxMemFree(sendBuff, comm));
     FLAGCXCHECK(flagcxMemFree(recvBuff, comm));
@@ -325,6 +328,8 @@ int main(int argc, char *argv[]) {
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
+  // If using raw device malloc without registration, free the buffers here
+  // after comm destroy.
   if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));

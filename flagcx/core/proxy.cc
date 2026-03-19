@@ -1257,41 +1257,54 @@ void *flagcxProxyKernelService(void *args) {
         deviceAdaptor->streamSynchronize(stream);
         break;
       case flagcxDevicePrimBarrierSignal: {
-        // Inter-node signal relay: fan out isend to all inter-node peers.
-        // The ctaIndex is encoded in the addr field of the trigger.
+        // Inter-node barrier: RDMA ATOMIC FETCH_AND_ADD to each peer's
+        // interSignalFlagsHost counter via iputSignal (signal-only, size=0).
         flagcxDevComm_t dc = comm->devCommHandle;
-        if (dc && dc->nInterPeers > 0) {
+        if (dc && dc->nInterPeers > 0 && dc->barrierHandleInfo) {
+          dc->barrierInFlight = 1;
+          __sync_synchronize();
+          // Re-check after fence (cleanup may have cleared fields)
+          if (dc->nInterPeers <= 0 || dc->barrierHandleInfo == nullptr) {
+            dc->barrierInFlight = 0;
+            break;
+          }
           uint32_t ctaIdx = (uint32_t)ptr->getAddr();
           struct flagcxNetAdaptor *net =
               (struct flagcxNetAdaptor *)dc->netAdaptorPtr;
-          // Signal message: {ctaIndex(4B), reserved(4B)} = 8 bytes
-          const int signalMsgSize = 8;
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimBarrierSignal cta=%u nInterPeers=%d.",
-                comm->rank, ctaIdx, dc->nInterPeers);
-          // Post all isends first (pipelined), then poll completions
-          if (dc->nInterPeers > FLAGCX_MAX_INTER_PEERS) {
-            WARN("nInterPeers (%d) exceeds FLAGCX_MAX_INTER_PEERS (%d)",
-                 dc->nInterPeers, FLAGCX_MAX_INTER_PEERS);
-            break;
-          }
-          void *signalReqs[FLAGCX_MAX_INTER_PEERS];
+          size_t signalOff = (size_t)ctaIdx * sizeof(uint64_t);
+          INFO(FLAGCX_P2P,
+               "rank=%d BarrierSignal cta=%u nInterPeers=%d signalOff=%zu",
+               comm->rank, ctaIdx, dc->nInterPeers, signalOff);
+
+          void *reqs[FLAGCX_MAX_INTER_PEERS];
           for (int p = 0; p < dc->nInterPeers; p++) {
-            uint32_t msg[2] = {ctaIdx, 0};
-            memcpy(&dc->signalSendBufs[p * signalMsgSize], msg, signalMsgSize);
-            signalReqs[p] = nullptr;
-            while (signalReqs[p] == nullptr) {
-              net->isend(dc->signalSendComms[p],
-                         &dc->signalSendBufs[p * signalMsgSize], signalMsgSize,
-                         0, dc->signalSendMrs[p], nullptr, &signalReqs[p]);
-            }
+            reqs[p] = nullptr;
+            INFO(FLAGCX_P2P,
+                 "rank=%d BarrierSignal iputSignal peer %d/%d (rank %d)...",
+                 comm->rank, p, dc->nInterPeers, dc->interPeerRanks[p]);
+            net->iputSignal(dc->signalSendComms[p], 0, 0, 0, comm->rank,
+                            dc->interPeerRanks[p], NULL, (uint64_t)signalOff,
+                            (void **)dc->barrierHandleInfo, &reqs[p]);
+            INFO(FLAGCX_P2P,
+                 "rank=%d BarrierSignal iputSignal peer %d posted, req=%p",
+                 comm->rank, p, reqs[p]);
           }
           for (int p = 0; p < dc->nInterPeers; p++) {
-            int done = 0;
-            while (!done) {
-              net->test(signalReqs[p], &done, nullptr);
+            if (reqs[p]) {
+              INFO(FLAGCX_P2P, "rank=%d BarrierSignal test peer %d...",
+                   comm->rank, p);
+              int done = 0;
+              while (!done) {
+                net->test(reqs[p], &done, nullptr);
+              }
+              INFO(FLAGCX_P2P, "rank=%d BarrierSignal test peer %d done",
+                   comm->rank, p);
             }
           }
+          INFO(FLAGCX_P2P, "rank=%d BarrierSignal cta=%u complete", comm->rank,
+               ctaIdx);
+          __sync_synchronize();
+          dc->barrierInFlight = 0;
         }
         break;
       }

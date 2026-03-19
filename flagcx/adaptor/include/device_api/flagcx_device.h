@@ -71,18 +71,12 @@ struct flagcxDevCommInternal {
   int nInterPeers;            // number of inter-node peers (set on ALL ranks)
   bool isInterLeader;         // true only on localRank 0 (manages connections)
   int *interPeerRanks;        // global ranks of inter-node peers
-  // netAdaptor connections for signal relay
-  void **signalSendComms; // [nInterPeers] netAdaptor sendComm
-  void **signalRecvComms; // [nInterPeers] netAdaptor recvComm
-  // Signal recv thread
-  pthread_t signalRecvThread;
-  int signalRecvStop;
-  // MR + staging buffers (per-peer for IB PD safety)
-  void **signalSendMrs;
-  void **signalRecvMrs;
-  char *signalSendBufs; // [nInterPeers * 8]
-  char *signalRecvBufs; // [nInterPeers * 8]
-  // netAdaptor pointer (cached for recv thread)
+  // netAdaptor connections for signal relay (one-sided RDMA atomic)
+  void **signalSendComms;       // [nInterPeers] sendComm (for iputSignal)
+  void **barrierRecvComms;      // [nInterPeers] recvComm (kept alive for QP)
+  void *barrierHandleInfo;      // flagcxOneSideHandleInfo* with rkeys/baseVas
+  volatile int barrierInFlight; // 1 while proxy is processing BarrierSignal
+  // netAdaptor pointer (cached for proxy)
   void *netAdaptorPtr;
 
   // ---- One-sided Fallback layer (set if interSignalCount/interCounterCount >

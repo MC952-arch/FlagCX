@@ -232,38 +232,57 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
-  // Cleanup
-  MPI_Barrier(MPI_COMM_WORLD);
-  sleep(1);
+  // Destroy stream first (sync any pending work)
+  FLAGCXCHECK(devHandle->streamDestroy(stream));
 
+  // Destroy device memory handles
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
 
-  if (devComm != nullptr) {
-    FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-  }
+  // Destroy device communicator (before comm destroy)
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  printf("[rank %d] flagcxDevCommDestroy done\n", proc);
+  fflush(stdout);
 
-  free(hostBuff);
-
+  // Deregister buffer (before comm destroy)
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
+    printf("[rank %d] flagcxCommWindowDeregister(sendWin) done\n", proc);
+    fflush(stdout);
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    printf("[rank %d] flagcxCommWindowDeregister(recvWin) done\n", proc);
+    fflush(stdout);
   } else if (localRegister == 1) {
     FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
+    printf("[rank %d] flagcxCommDeregister(sendHandle) done\n", proc);
+    fflush(stdout);
     FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    printf("[rank %d] flagcxCommDeregister(recvHandle) done\n", proc);
+    fflush(stdout);
   }
 
-  FLAGCXCHECK(devHandle->streamDestroy(stream));
+  // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
+  printf("[rank %d] flagcxCommDestroy...\n", proc);
+  fflush(stdout);
+  FLAGCXCHECK(flagcxCommDestroy(comm));
 
-  if (localRegister == 0) {
+  // Free buffer
+  if (localRegister >= 1) {
+    printf("[rank %d] flagcxMemFree(sendBuff)...\n", proc);
+    fflush(stdout);
+    FLAGCXCHECK(flagcxMemFree(sendBuff, NULL));
+    printf("[rank %d] flagcxMemFree(sendBuff) done\n", proc);
+    fflush(stdout);
+    printf("[rank %d] flagcxMemFree(recvBuff)...\n", proc);
+    fflush(stdout);
+    FLAGCXCHECK(flagcxMemFree(recvBuff, NULL));
+    printf("[rank %d] flagcxMemFree(recvBuff) done\n", proc);
+    fflush(stdout);
+  } else if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
-  } else {
-    FLAGCXCHECK(flagcxMemFree(sendBuff, comm));
-    FLAGCXCHECK(flagcxMemFree(recvBuff, comm));
   }
-
-  FLAGCXCHECK(flagcxCommDestroy(comm));
+  free(hostBuff);
   FLAGCXCHECK(flagcxHandleFree(handler));
 
   MPI_Finalize();
