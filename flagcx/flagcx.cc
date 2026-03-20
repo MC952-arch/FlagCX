@@ -149,44 +149,38 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
+FLAGCX_PARAM(MemEnable, "MEM_ENABLE", 0);
+
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size) {
   if (ptr == NULL || size == 0) {
     WARN("Invalid ptr(NULL) or size(0) for allocation.");
     return flagcxInvalidArgument;
   }
-  if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
-    if (comm == NULL) {
-      INFO(FLAGCX_ALLOC,
-           "flagcxMemAlloc: comm is NULL, delegating to homo adaptor directly");
+  if (flagcxParamMemEnable()) {
+    FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
+    if (*ptr != NULL) {
+      INFO(FLAGCX_REG, "flagcxMemAlloc: GDR allocated [%p, %ld]", *ptr, size);
+    } else {
+      WARN("flagcxMemAlloc: GDR allocation failed");
+      return flagcxUnhandledDeviceError;
     }
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
-    return flagcxSuccess;
-  }
-  FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
-  if (*ptr != NULL) {
-    INFO(FLAGCX_REG, "User buffer memory allocated with [%p, %ld]", *ptr, size);
   } else {
-    WARN("User buffer allocation failed");
-    return flagcxUnhandledDeviceError;
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
+flagcxResult_t flagcxMemFree(void *ptr) {
   if (ptr == NULL) {
-    WARN("Invalid pointer(=NULL)for de-allocation.");
+    WARN("Invalid pointer(=NULL) for de-allocation.");
     return flagcxSuccess;
   }
-  if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
-    if (comm == NULL) {
-      INFO(FLAGCX_ALLOC,
-           "flagcxMemFree: comm is NULL, delegating to homo adaptor directly");
-    }
+  if (flagcxParamMemEnable()) {
+    FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
+    INFO(FLAGCX_REG, "flagcxMemFree: GDR memory deallocated");
+  } else {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
-    return flagcxSuccess;
   }
-  FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
-  INFO(FLAGCX_REG, "User buffer memory deallocated");
   return flagcxSuccess;
 }
 
@@ -609,11 +603,6 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
   if (comm == NULL)
     return flagcxInternalError;
 
-  INFO(FLAGCX_INIT,
-       "flagcxOneSideSignalDeregister: rank %d enter, "
-       "localMrHandle=%p, localRecvComm=%p",
-       comm->rank, info->localMrHandle, info->localRecvComm);
-
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
     // Deregister MR (connections are shared with data handle table, not owned)
@@ -625,11 +614,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
             (struct flagcxIbRecvComm *)regComm;
         regComm = (void *)&ibRecvComm->base;
       }
-      INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d deregMr...",
-           comm->rank);
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-      INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d deregMr done",
-           comm->rank);
     }
     // No closeSend/closeRecv — connections owned by data handle table[0]
   }
@@ -639,7 +624,6 @@ flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm) {
   free(info->lkeys);
   free(info);
   globalOneSideSignalHandles = NULL;
-  INFO(FLAGCX_INIT, "flagcxOneSideSignalDeregister: rank %d done", comm->rank);
   return flagcxSuccess;
 }
 
@@ -762,11 +746,6 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
   if (comm == NULL)
     return flagcxInternalError;
 
-  INFO(FLAGCX_INIT,
-       "flagcxOneSideStagingDeregister: rank %d enter, "
-       "localMrHandle=%p, localRecvComm=%p",
-       comm->rank, info->localMrHandle, info->localRecvComm);
-
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
     if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
@@ -777,11 +756,7 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
             (struct flagcxIbRecvComm *)regComm;
         regComm = (void *)&ibRecvComm->base;
       }
-      INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d deregMr...",
-           comm->rank);
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-      INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d deregMr done",
-           comm->rank);
     }
   }
 
@@ -790,7 +765,6 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
   free(info->lkeys);
   free(info);
   globalOneSideStagingHandles = NULL;
-  INFO(FLAGCX_INIT, "flagcxOneSideStagingDeregister: rank %d done", comm->rank);
   return flagcxSuccess;
 }
 
@@ -902,11 +876,6 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
   if (comm == NULL)
     return flagcxInternalError;
 
-  INFO(FLAGCX_INIT,
-       "flagcxOneSideBarrierDeregister: rank %d enter, "
-       "localMrHandle=%p, localRecvComm=%p",
-       comm->rank, info->localMrHandle, info->localRecvComm);
-
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
     if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
@@ -917,11 +886,7 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
             (struct flagcxIbRecvComm *)regComm;
         regComm = (void *)&ibRecvComm->base;
       }
-      INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d deregMr...",
-           comm->rank);
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-      INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d deregMr done",
-           comm->rank);
     }
   }
 
@@ -929,7 +894,6 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
   free(info->rkeys);
   free(info->lkeys);
   free(info);
-  INFO(FLAGCX_INIT, "flagcxOneSideBarrierDeregister: rank %d done", comm->rank);
   return flagcxSuccess;
 }
 
@@ -1556,18 +1520,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->localRankToRank);
   free(comm->c2cSchedule);
 
-  // Destroy bootstrap state and net
-  bootstrapClose(comm->bootstrap);
-
-  if (!useHomoComm(comm)) {
-    // Destroy hetero comm
-    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
-    // Destroy host comm
-    if (useHostComm()) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
-    }
-  }
   // Destroy homo comms
   if (comm->tuner) {
     for (const auto &item : comm->homoCommMap) {
@@ -1581,12 +1533,25 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
         cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
   }
 
+  if (!useHomoComm(comm)) {
+    // Destroy hetero comm
+    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
+    // Destroy host comm
+    if (useHostComm()) {
+      FLAGCXCHECK(
+          cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
+    }
+  }
+
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
 
-  // Drain deferred device/host-pinned memory frees — collected during
-  // DevComm/DevMem cleanup.
+  // Drain deferred device/host-pinned memory frees,
+  // collected during DevComm/DevMem cleanup.
   FLAGCXCHECK(flagcxCommDrainDeferredFrees(comm));
+
+  // Destroy bootstrap state and net
+  bootstrapClose(comm->bootstrap);
 
   // Destroy tuner
   if (comm->tuner) {

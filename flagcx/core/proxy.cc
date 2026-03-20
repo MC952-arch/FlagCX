@@ -1261,50 +1261,26 @@ void *flagcxProxyKernelService(void *args) {
         // interSignalFlagsHost counter via iputSignal (signal-only, size=0).
         flagcxDevComm_t dc = comm->devCommHandle;
         if (dc && dc->nInterPeers > 0 && dc->barrierHandleInfo) {
-          dc->barrierInFlight = 1;
-          __sync_synchronize();
-          // Re-check after fence (cleanup may have cleared fields)
-          if (dc->nInterPeers <= 0 || dc->barrierHandleInfo == nullptr) {
-            dc->barrierInFlight = 0;
-            break;
-          }
           uint32_t ctaIdx = (uint32_t)ptr->getAddr();
           struct flagcxNetAdaptor *net =
               (struct flagcxNetAdaptor *)dc->netAdaptorPtr;
           size_t signalOff = (size_t)ctaIdx * sizeof(uint64_t);
-          INFO(FLAGCX_P2P,
-               "rank=%d BarrierSignal cta=%u nInterPeers=%d signalOff=%zu",
-               comm->rank, ctaIdx, dc->nInterPeers, signalOff);
 
           void *reqs[FLAGCX_MAX_INTER_PEERS];
           for (int p = 0; p < dc->nInterPeers; p++) {
             reqs[p] = nullptr;
-            INFO(FLAGCX_P2P,
-                 "rank=%d BarrierSignal iputSignal peer %d/%d (rank %d)...",
-                 comm->rank, p, dc->nInterPeers, dc->interPeerRanks[p]);
             net->iputSignal(dc->signalSendComms[p], 0, 0, 0, comm->rank,
                             dc->interPeerRanks[p], NULL, (uint64_t)signalOff,
                             (void **)dc->barrierHandleInfo, &reqs[p]);
-            INFO(FLAGCX_P2P,
-                 "rank=%d BarrierSignal iputSignal peer %d posted, req=%p",
-                 comm->rank, p, reqs[p]);
           }
           for (int p = 0; p < dc->nInterPeers; p++) {
             if (reqs[p]) {
-              INFO(FLAGCX_P2P, "rank=%d BarrierSignal test peer %d...",
-                   comm->rank, p);
               int done = 0;
               while (!done) {
                 net->test(reqs[p], &done, nullptr);
               }
-              INFO(FLAGCX_P2P, "rank=%d BarrierSignal test peer %d done",
-                   comm->rank, p);
             }
           }
-          INFO(FLAGCX_P2P, "rank=%d BarrierSignal cta=%u complete", comm->rank,
-               ctaIdx);
-          __sync_synchronize();
-          dc->barrierInFlight = 0;
         }
         break;
       }

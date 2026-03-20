@@ -72,10 +72,9 @@ struct flagcxDevCommInternal {
   bool isInterLeader;         // true only on localRank 0 (manages connections)
   int *interPeerRanks;        // global ranks of inter-node peers
   // netAdaptor connections for signal relay (one-sided RDMA atomic)
-  void **signalSendComms;       // [nInterPeers] sendComm (for iputSignal)
-  void **barrierRecvComms;      // [nInterPeers] recvComm (kept alive for QP)
-  void *barrierHandleInfo;      // flagcxOneSideHandleInfo* with rkeys/baseVas
-  volatile int barrierInFlight; // 1 while proxy is processing BarrierSignal
+  void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
+  void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
+  void *barrierHandleInfo; // flagcxOneSideHandleInfo* with rkeys/baseVas
   // netAdaptor pointer (cached for proxy)
   void *netAdaptorPtr;
 

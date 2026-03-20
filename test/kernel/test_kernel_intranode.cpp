@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(
         devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL));
   } else {
-    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes));
   }
   if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only; graceful fallback on Fallback)
@@ -217,7 +217,7 @@ int main(int argc, char *argv[]) {
   if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(regBuff, flagcxMemDevice, NULL));
   } else {
-    FLAGCXCHECK(flagcxMemFree(regBuff, comm));
+    FLAGCXCHECK(flagcxMemFree(regBuff));
   }
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));

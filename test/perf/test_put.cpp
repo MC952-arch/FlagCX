@@ -137,7 +137,7 @@ int main(int argc, char *argv[]) {
 
   // Data buffer: GDR memory (SYNC_MEMOPS ensures NIC visibility via GDR BAR)
   void *dataWindow = nullptr;
-  res = flagcxMemAlloc(&dataWindow, data_bytes, comm);
+  res = flagcxMemAlloc(&dataWindow, data_bytes);
   if (res != flagcxSuccess || dataWindow == nullptr) {
     fprintf(stderr, "[rank %d] flagcxMemAlloc failed for data (size=%zu)\n",
             proc, data_bytes);
@@ -147,7 +147,7 @@ int main(int argc, char *argv[]) {
 
   // Signal buffer: GDR memory (SYNC_MEMOPS for RDMA ATOMIC visibility)
   void *signalWindow = nullptr;
-  res = flagcxMemAlloc(&signalWindow, signal_total_bytes, comm);
+  res = flagcxMemAlloc(&signalWindow, signal_total_bytes);
   if (res != flagcxSuccess || signalWindow == nullptr) {
     fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
             proc, signal_total_bytes);
@@ -312,8 +312,8 @@ int main(int argc, char *argv[]) {
 
   flagcxOneSideDeregister(comm);
   flagcxOneSideSignalDeregister(comm);
-  flagcxMemFree(dataWindow, comm);
-  flagcxMemFree(signalWindow, comm);
+  flagcxMemFree(dataWindow);
+  flagcxMemFree(signalWindow);
   free(hostStaging);
 
   if (waitStream != nullptr) {

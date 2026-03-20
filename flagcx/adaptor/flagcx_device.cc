@@ -319,9 +319,25 @@ fail:
 // Teardown inter-node signal relay (called from flagcxDevCommDestroy).
 static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
                                         flagcxDevComm_t handle) {
-  INFO(FLAGCX_INIT,
-       "cleanupInterNodeSignalRelay: rank %d, isLeader=%d, nInterPeers=%d",
-       handle->rank, handle->isInterLeader, handle->nInterPeers);
+  // Step 0: Drain FIFO — wait for proxy thread to finish all pending
+  // entries (including BarrierSignal RDMA atomics) before closing connections.
+  {
+    struct flagcxHeteroComm *hetero = comm->heteroComm;
+    if (hetero && hetero->proxyState && hetero->proxyState->kernelState.fifo) {
+      volatile uint64_t *buf =
+          (volatile uint64_t *)hetero->proxyState->kernelState.fifo->buffer;
+      if (buf) {
+        while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced]) {
+          sched_yield();
+        }
+      }
+    }
+  }
+
+  // Step 1: Cross-rank barrier — all ranks must drain before any rank
+  // closes connections, preventing the race where rank A destroys its QP
+  // while rank B's proxy is still posting RDMA atomics to rank A.
+  bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
 
   // Free peer rank list (set on all ranks)
   free(handle->interPeerRanks);
@@ -334,51 +350,18 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   struct flagcxNetAdaptor *net =
       (struct flagcxNetAdaptor *)handle->netAdaptorPtr;
 
-  // 0. Atomically disable the proxy's BarrierSignal path, then wait for
-  //    any in-flight operation to finish before touching connections.
-  {
-    int savedNInterPeers = handle->nInterPeers;
-    void *savedHandleInfo = handle->barrierHandleInfo;
-
-    handle->barrierHandleInfo = nullptr;
-    handle->nInterPeers = 0;
-    __sync_synchronize(); // ensure proxy sees the zeroed fields
-
-    // Spin-wait for any in-flight BarrierSignal to complete
-    while (handle->barrierInFlight) {
-      sched_yield();
-    }
-    __sync_synchronize();
-
-    // Restore for cleanup use below (proxy is guaranteed to be out)
-    handle->nInterPeers = savedNInterPeers;
-    handle->barrierHandleInfo = savedHandleInfo;
-  }
-
   // 1. Deregister barrier MR and free handle info
   if (handle->barrierHandleInfo) {
-    INFO(FLAGCX_INIT,
-         "cleanupInterNodeSignalRelay: rank %d deregister barrier MR...",
-         handle->rank);
     flagcxOneSideBarrierDeregister(
         comm, (struct flagcxOneSideHandleInfo *)handle->barrierHandleInfo);
     handle->barrierHandleInfo = nullptr;
-    INFO(FLAGCX_INIT,
-         "cleanupInterNodeSignalRelay: rank %d deregister barrier MR done",
-         handle->rank);
   }
 
   // 2. Close send comms
   if (handle->signalSendComms) {
     for (int p = 0; p < handle->nInterPeers; p++) {
       if (handle->signalSendComms[p]) {
-        INFO(FLAGCX_INIT,
-             "cleanupInterNodeSignalRelay: rank %d closeSend peer %d/%d...",
-             handle->rank, p, handle->nInterPeers);
         net->closeSend(handle->signalSendComms[p]);
-        INFO(FLAGCX_INIT,
-             "cleanupInterNodeSignalRelay: rank %d closeSend peer %d done",
-             handle->rank, p);
       }
     }
     free(handle->signalSendComms);
@@ -388,13 +371,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   if (handle->barrierRecvComms) {
     for (int p = 0; p < handle->nInterPeers; p++) {
       if (handle->barrierRecvComms[p]) {
-        INFO(FLAGCX_INIT,
-             "cleanupInterNodeSignalRelay: rank %d closeRecv peer %d/%d...",
-             handle->rank, p, handle->nInterPeers);
         net->closeRecv(handle->barrierRecvComms[p]);
-        INFO(FLAGCX_INIT,
-             "cleanupInterNodeSignalRelay: rank %d closeRecv peer %d done",
-             handle->rank, p);
       }
     }
     free(handle->barrierRecvComms);
@@ -403,16 +380,11 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   // 4. Defer free of host-mapped signal flags (cudaFreeHost would deadlock
   // on NCCL persistent kernels — drain after ncclCommDestroy).
   if (handle->interSignalFlagsHost) {
-    INFO(FLAGCX_INIT,
-         "cleanupInterNodeSignalRelay: rank %d defer free interSignalFlagsHost",
-         handle->rank);
     flagcxCommDeferFree(comm, handle->interSignalFlagsHost, flagcxMemHost);
   }
 
   // Note: do NOT clear comm->heteroComm->devCommHandle here.
   // flagcxDevCommDestroy needs it to gate signalDeregister.
-
-  INFO(FLAGCX_INIT, "cleanupInterNodeSignalRelay: rank %d done", handle->rank);
 }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
@@ -691,23 +663,13 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (devComm->hasVendorComm && comm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
     if (innerComm != nullptr) {
-      INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d ncclDevCommDestroy...",
-           devComm->rank);
       ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
-      INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d ncclDevCommDestroy done",
-           devComm->rank);
     }
   }
 #endif
 
   // Inter-node signal relay cleanup
-  INFO(FLAGCX_INIT,
-       "flagcxDevCommDestroy: rank %d cleanupInterNodeSignalRelay...",
-       devComm->rank);
   cleanupInterNodeSignalRelay(comm, devComm);
-  INFO(FLAGCX_INIT,
-       "flagcxDevCommDestroy: rank %d cleanupInterNodeSignalRelay done",
-       devComm->rank);
 
   // IPC barrier cleanup — mark ipcTable entry as unused.
   // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
@@ -724,11 +686,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (comm != nullptr && comm->heteroComm != nullptr &&
       comm->heteroComm->devCommHandle == devComm) {
     if (devComm->signalBuffer) {
-      INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d signalDeregister...",
-           devComm->rank);
       flagcxOneSideSignalDeregister(comm);
-      INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d signalDeregister done",
-           devComm->rank);
     }
     comm->heteroComm->devCommHandle = nullptr;
   }
@@ -744,11 +702,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxCommDeferFree(comm, devComm->counterBuffer, flagcxMemDevice);
   }
   if (devComm->putValueStagingBuffer) {
-    INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d stagingDeregister...",
-         devComm->rank);
     flagcxOneSideStagingDeregister(comm);
-    INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d stagingDeregister done",
-         devComm->rank);
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
 

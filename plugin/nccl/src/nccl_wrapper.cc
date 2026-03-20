@@ -566,7 +566,7 @@ ncclResult_t ncclMemAlloc(void **ptr, size_t size) {
     return getRealNccl().ncclMemAlloc(ptr, size);
   }
   recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxMemAlloc(ptr, size, nullptr));
+  return toNcclResult(flagcxMemAlloc(ptr, size));
 }
 
 ncclResult_t ncclMemFree(void *ptr) {
@@ -574,7 +574,7 @@ ncclResult_t ncclMemFree(void *ptr) {
     return getRealNccl().ncclMemFree(ptr);
   }
   recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxMemFree(ptr, nullptr));
+  return toNcclResult(flagcxMemFree(ptr));
 }
 
 /* ──────────────────────────────────────────────────────────────────────

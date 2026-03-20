@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
 
   // Signal buffer: GPU memory for RDMA atomic signal writes (FORCE_SO MR)
   void *signalWindow = nullptr;
-  flagcxResult_t res = flagcxMemAlloc(&signalWindow, signal_total_bytes, comm);
+  flagcxResult_t res = flagcxMemAlloc(&signalWindow, signal_total_bytes);
   if (res != flagcxSuccess || signalWindow == nullptr) {
     fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
             proc, signal_total_bytes);
@@ -257,7 +257,7 @@ int main(int argc, char *argv[]) {
     flagcxCommDeregister(comm, windowHandle);
   }
   free(window);
-  flagcxMemFree(signalWindow, comm);
+  flagcxMemFree(signalWindow);
 
   devHandle->streamDestroy(stream);
   flagcxCommDestroy(comm);

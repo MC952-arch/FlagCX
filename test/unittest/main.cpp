@@ -479,8 +479,8 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   // One-sided needs VMM memory + RDMA registration.
   // Allocate separate buffers (fixture's sendbuff/recvbuff stay untouched).
   void *osSend = nullptr, *osRecv = nullptr;
-  ASSERT_EQ(flagcxMemAlloc(&osSend, size, comm), flagcxSuccess);
-  ASSERT_EQ(flagcxMemAlloc(&osRecv, size, comm), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&osSend, size), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&osRecv, size), flagcxSuccess);
 
   void *sendRegHandle = nullptr, *recvRegHandle = nullptr;
   ASSERT_EQ(flagcxCommRegister(comm, osSend, size, &sendRegHandle),
@@ -549,8 +549,8 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   // Cleanup one-sided buffers
   flagcxCommDeregister(comm, sendRegHandle);
   flagcxCommDeregister(comm, recvRegHandle);
-  flagcxMemFree(osSend, comm);
-  flagcxMemFree(osRecv, comm);
+  flagcxMemFree(osSend);
+  flagcxMemFree(osRecv);
 }
 
 int main(int argc, char *argv[]) {

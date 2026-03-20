@@ -150,7 +150,7 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getSize();      // snd[63:32]
   FLAGCX_HOST_DECORATOR uint64_t getSrcOffset(); // fst[63:32]
   FLAGCX_HOST_DECORATOR uint64_t getDstOffset(); // fst[31:0]
-  FLAGCX_HOST_DECORATOR uint64_t getValue();     // fst (PutValue)
+  FLAGCX_HOST_DECORATOR uint64_t getValue();     // snd (PutValue)
   FLAGCX_HOST_DECORATOR uint64_t
   getSignalIdx(); // trd (PutSignal/Signal/WaitSignal)
   FLAGCX_HOST_DECORATOR uint64_t getSignalValue();   // trd (Signal)

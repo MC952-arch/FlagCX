@@ -53,16 +53,16 @@ int main(int argc, char *argv[]) {
 
   if (localRegister == 2) {
     // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, comm));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
                                          FLAGCX_WIN_COLL_SYMMETRIC));
   } else if (localRegister == 1) {
     // Zero-copy: alloc + register for NIC RDMA access
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, comm));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
     FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
     FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle));
   } else {
@@ -190,13 +190,6 @@ int main(int argc, char *argv[]) {
   // Falls back to FIFO AlltoAll on Fallback when window not available
   // ==========================================================================
   if (localRegister == 2) {
-    // Register windows (returns nullptr on Fallback)
-    flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
-
     flagcxDevComm_t a2aDevComm = nullptr;
     flagcxDevMem_t a2aSendMem = nullptr, a2aRecvMem = nullptr;
 
@@ -296,8 +289,6 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxDevMemDestroy(comm, a2aSendMem));
     FLAGCXCHECK(flagcxDevMemDestroy(comm, a2aRecvMem));
     FLAGCXCHECK(flagcxDevCommDestroy(comm, a2aDevComm));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
   }
 
   // Destroy stream first (sync any pending work)
@@ -319,18 +310,14 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
   }
 
-  // Free buffer (before comm destroy)
-  if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendBuff, comm));
-    FLAGCXCHECK(flagcxMemFree(recvBuff, comm));
-  }
-
   // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
   FLAGCXCHECK(flagcxCommDestroy(comm));
 
-  // If using raw device malloc without registration, free the buffers here
-  // after comm destroy.
-  if (localRegister == 0) {
+  // Free buffer
+  if (localRegister >= 1) {
+    FLAGCXCHECK(flagcxMemFree(sendBuff));
+    FLAGCXCHECK(flagcxMemFree(recvBuff));
+  } else if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
