@@ -1646,6 +1646,18 @@ struct flagcxDevNet {
     signalEx(a.counter, 1, peer, 1);
   }
 
+  // LocalAction compile-time dispatch overloads
+  // Counter buffer is host-pinned; proxy increments it after the put completes.
+  // FIFO ordering guarantees the PrimSignal(bufType=1) arrives at the proxy
+  // only after the preceding put has been fully processed.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  _dispatchLocalAction(flagcxDevNet_None) const {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  _dispatchLocalAction(flagcxDevNet_CounterInc a) const {
+    signalEx(a.counter, 1, 0, 1); // peer=0 is ignored by proxy for bufType=1
+  }
+
   // ---- put (raw ptr) ----
   template <typename RemoteAction = flagcxDevNet_None,
             typename LocalAction = flagcxDevNet_None,
@@ -1661,7 +1673,6 @@ struct flagcxDevNet {
       flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
       flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     (void)team;
-    (void)localAction;
     (void)descriptor;
     (void)alreadyReleased;
     (void)expected_scope;
@@ -1671,6 +1682,7 @@ struct flagcxDevNet {
       size_t dstOff = _toDataOffset(dstMem, dstOffset);
       put(srcOff, dstOff, bytes, peer, srcMem._mrIndex, dstMem._mrIndex);
       _dispatchRemoteAction(remoteAction, peer);
+      _dispatchLocalAction(localAction);
     }
     coop.sync();
   }

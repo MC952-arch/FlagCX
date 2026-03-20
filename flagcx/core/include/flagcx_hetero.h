@@ -46,7 +46,8 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset,
-                                     int srcMrIdx, int dstMrIdx);
+                                     int srcMrIdx, int dstMrIdx,
+                                     uint64_t signalValue);
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);

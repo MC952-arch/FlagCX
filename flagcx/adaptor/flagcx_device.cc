@@ -556,14 +556,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
                                               flagcxMemDevice, NULL));
     }
-    // Allocate counter buffer (GPU memory)
+    // Allocate counter buffer (host-pinned: CPU proxy writes, GPU reads via
+    // UVA)
     if (reqs->interCounterCount > 0) {
       handle->counterCount = reqs->interCounterCount;
       size_t cntSize = handle->counterCount * sizeof(uint64_t);
       FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
-                                              cntSize, flagcxMemDevice, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->counterBuffer, 0, cntSize,
-                                              flagcxMemDevice, NULL));
+                                              cntSize, flagcxMemHost, NULL));
+      memset(handle->counterBuffer, 0, cntSize);
     }
     // PutValue staging buffer (8 bytes host-pinned)
     FLAGCXCHECK(
@@ -699,7 +699,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxCommDeferFree(comm, devComm->shadowBuffer, flagcxMemDevice);
   }
   if (devComm->counterBuffer) {
-    flagcxCommDeferFree(comm, devComm->counterBuffer, flagcxMemDevice);
+    flagcxCommDeferFree(comm, devComm->counterBuffer, flagcxMemHost);
   }
   if (devComm->putValueStagingBuffer) {
     flagcxOneSideStagingDeregister(comm);

@@ -1171,21 +1171,36 @@ void *flagcxProxyKernelService(void *args) {
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimSignal called by proxyKernelService.",
               comm->rank);
-        int peerRank = (int)ptr->getPeerRank();
-        res = validateOneSidedPeer(comm, peerRank);
-        if (res != flagcxSuccess)
-          break;
         uint64_t bufType = ptr->getBufferType();
         int signalIdx = (int)ptr->getSignalIdx();
+        uint64_t signalValue = ptr->getSignalValue();
         size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
-        if (globalOneSideSignalHandles == NULL) {
-          WARN("flagcxDevicePrimSignal: globalOneSideSignalHandles not "
-               "initialized — call flagcxOneSideSignalRegister() before use");
-          res = flagcxInternalError;
-          break;
+
+        if (bufType == 0) {
+          // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
+          int peerRank = (int)ptr->getPeerRank();
+          res = validateOneSidedPeer(comm, peerRank);
+          if (res != flagcxSuccess)
+            break;
+          if (globalOneSideSignalHandles == NULL) {
+            WARN("flagcxDevicePrimSignal: globalOneSideSignalHandles not "
+                 "initialized — call flagcxOneSideSignalRegister() before use");
+            res = flagcxInternalError;
+            break;
+          }
+          res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, signalOff, 0, 0,
+                                      signalValue);
+        } else {
+          // Counter buffer: local CPU atomic increment (no network operation)
+          flagcxDevComm_t dc = comm->devCommHandle;
+          if (dc == NULL || dc->counterBuffer == NULL) {
+            WARN("flagcxDevicePrimSignal: counterBuffer not initialized");
+            res = flagcxInternalError;
+            break;
+          }
+          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + signalIdx;
+          __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELAXED);
         }
-        // bufType: 0=signal buffer, 1=counter buffer (via signalEx)
-        res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, signalOff, 0, 0);
         break;
       }
       case flagcxDevicePrimWaitSignal: {
@@ -1239,7 +1254,7 @@ void *flagcxProxyKernelService(void *args) {
           break;
         }
         res = flagcxHeteroPutSignal(comm, peerRank, srcOffset, dstOffset, size,
-                                    signalOff, srcMrIdx, dstMrIdx);
+                                    signalOff, srcMrIdx, dstMrIdx, 1);
         break;
       }
       case flagcxDevicePrimPutValue: {
@@ -1271,7 +1286,7 @@ void *flagcxProxyKernelService(void *args) {
             reqs[p] = nullptr;
             net->iputSignal(dc->signalSendComms[p], 0, 0, 0, comm->rank,
                             dc->interPeerRanks[p], NULL, (uint64_t)signalOff,
-                            (void **)dc->barrierHandleInfo, &reqs[p]);
+                            (void **)dc->barrierHandleInfo, 1, &reqs[p]);
           }
           for (int p = 0; p < dc->nInterPeers; p++) {
             if (reqs[p]) {

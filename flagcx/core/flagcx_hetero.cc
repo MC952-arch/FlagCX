@@ -119,7 +119,8 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset,
-                                     int srcMrIdx, int dstMrIdx) {
+                                     int srcMrIdx, int dstMrIdx,
+                                     uint64_t signalValue) {
   // Check if netAdaptor->iputSignal is available
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL)
     return flagcxNotSupported;
@@ -160,7 +161,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   void *request = NULL;
   FLAGCXCHECK(comm->netAdaptor->iputSignal(
       sendComm, (uint64_t)srcOffset, (uint64_t)dstOffset, size, srcRank,
-      dstRank, dataHandles, (uint64_t)signalOffset, signalHandles, &request));
+      dstRank, dataHandles, (uint64_t)signalOffset, signalHandles, signalValue,
+      &request));
   // Poll completion (single CQE for chained WRITE + ATOMIC)
   if (request != NULL) {
     int done = 0;

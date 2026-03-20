@@ -2478,7 +2478,7 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   uint64_t dstOff, size_t size, int srcRank,
                                   int dstRank, void **dataHandles,
                                   uint64_t signalOff, void **signalHandles,
-                                  void **request) {
+                                  uint64_t signalValue, void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *dataInfo =
       (struct flagcxOneSideHandleInfo *)dataHandles;
@@ -2540,7 +2540,7 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   wr[1].wr_id = req - comm->base.reqs;
   wr[1].next = NULL;
   wr[1].wr.atomic.remote_addr = (uint64_t)signalPtr;
-  wr[1].wr.atomic.compare_add = 1;
+  wr[1].wr.atomic.compare_add = signalValue;
   wr[1].wr.atomic.rkey = signalRkey;
   wr[1].sg_list = &sge[1];
   wr[1].num_sge = 1;
