@@ -114,6 +114,12 @@ int main(int argc, char *argv[]) {
   int localRegister = args.getLocalRegister();
   uint64_t splitMask = args.getSplitMask();
 
+  if (stepFactor <= 1) {
+    printf("Error: stepFactor must be > 1, got %d\n", stepFactor);
+    MPI_Finalize();
+    return 1;
+  }
+
   flagcxHandlerGroup_t handler;
   FLAGCXCHECK(flagcxHandleInit(&handler));
   flagcxUniqueId_t &uniqueId = handler->uniqueId;
@@ -205,8 +211,8 @@ int main(int argc, char *argv[]) {
            localRegister == 2 ? "window" : "ipc");
     printf("# Kernels: K1=SignalInc  K2=SignalAdd  K4=PutValue"
            "  K5=SignalOnly\n");
-    printf("#          K6=FlushDecouple  K7=FollowShadow"
-           "  K8=MeetShadow  K9=Reset  K3=CounterPipeline\n");
+    printf("#          K6=FlushDecouple  K7=Reset"
+           "  K3=CounterPipeline\n");
     printf("#\n");
   }
 
@@ -258,7 +264,11 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxInterTestSignalAdd(sendMem, recvMem, countPerPeer,
                                          DATATYPE, devComm, stream));
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    printResult("K2 SignalAdd", true, proc); // hang-free = PASS
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuff, recvBuff, floatSize,
+                                        flagcxMemcpyDeviceToHost, NULL));
+    bool k2Ok =
+        verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
+    printResult("K2 SignalAdd", k2Ok, proc);
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K3: CounterInc two-round pipeline ---

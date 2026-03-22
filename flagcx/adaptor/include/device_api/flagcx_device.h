@@ -1364,9 +1364,7 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0) : _devComm(dc) {
     int cnt = (dc._contextCount > 0) ? dc._contextCount : 1;
-    // Mirroring NCCL ncclGinInitCommon modulo hack (only 3 is non-power-of-2)
-    _contextId = (cnt == 3) ? (int)(uint32_t(contextIndex) % 3)
-                            : (contextIndex & (cnt - 1));
+    _contextId = contextIndex % cnt;
   }
 #endif
 
@@ -1427,7 +1425,8 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t signal(int signalIdx,
                                                        int peer) const {
     uint64_t trdSpecific =
-        ((uint64_t)signalIdx << flagcxDeviceTriggerOffSignalIdxSig) |
+        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
+         << flagcxDeviceTriggerOffSignalIdxSig) |
         ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), 0, 0,
@@ -1438,10 +1437,13 @@ struct flagcxDevNet {
   // All fields packed into trd: bufferType(2)|signalIdx(8)|signalValue(16)
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
   signalEx(int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
+    int combinedIdx = (bufferType == 0)
+                          ? (_contextId * _devComm._signalCount + signalIdx)
+                          : (_contextId * _devComm._counterCount + signalIdx);
     uint64_t trdSpecific =
         ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
-        ((uint64_t)signalIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-        ((uint64_t)value << flagcxDeviceTriggerOffSignalValue);
+        ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
+        ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), 0, 0,
         flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
@@ -1469,13 +1471,14 @@ struct flagcxDevNet {
     uint64_t fstValue =
         ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
         ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-    uint64_t sndValue =
-        ((uint64_t)size << flagcxDeviceTriggerOffSize) |
-        ((uint64_t)signalValue << flagcxDeviceTriggerOffSignalValuePut);
+    uint64_t sndValue = ((uint64_t)size << flagcxDeviceTriggerOffSize) |
+                        ((uint64_t)(signalValue & 0xFFFFu)
+                         << flagcxDeviceTriggerOffSignalValuePut);
     uint64_t trdSpecific =
         ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
         ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
-        ((uint64_t)signalIdx << flagcxDeviceTriggerOffSignalIdx);
+        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
+         << flagcxDeviceTriggerOffSignalIdx);
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), fstValue, sndValue,
         flagcxBuildTrd(flagcxDevicePrimPutSignal, peer, trdSpecific));
@@ -1948,7 +1951,8 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetSignal(flagcxDevNetSignal_t signalId) const {
     int idx = _contextId * _devComm._signalCount + (int)signalId;
-    ((volatile uint64_t *)_devComm._signalBuffer)[idx] = 0;
+    flagcxDeviceAtomicStore(&_devComm._signalBuffer[idx], (uint64_t)0,
+                            flagcxDeviceMemoryOrderRelease);
   }
 
   // ---- waitCounter — GPU spin on _counterBuffer[ctx*N+id] with ACQUIRE
@@ -1988,7 +1992,8 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetCounter(flagcxDevNetCounter_t counterId) const {
     int idx = _contextId * _devComm._counterCount + (int)counterId;
-    ((volatile uint64_t *)_devComm._counterBuffer)[idx] = 0;
+    flagcxDeviceAtomicStore(&_devComm._counterBuffer[idx], (uint64_t)0,
+                            flagcxDeviceMemoryOrderRelease);
   }
 #endif // FLAGCX_DEVICE_API_NCCL
 };
