@@ -24,7 +24,7 @@ endif
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)
 COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK)
 
-all: test-kernel-intranode test-kernel-internode-twosided test-kernel-internode-onesided
+all: test-kernel-intranode test-kernel-internode-twosided test-kernel-internode-onesided test-devapi-internode-onesided
 
 test-kernel-intranode: test_kernel_intranode.cpp
 	@echo "Compiling $@"
@@ -38,8 +38,12 @@ test-kernel-internode-onesided: test_kernel_internode_onesided.cpp
 	@echo "Compiling $@"
 	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_kernel_internode_onesided test_kernel_internode_onesided.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
+test-devapi-internode-onesided: test_devapi_internode_onesided.cpp
+	@echo "Compiling $@"
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_devapi_internode_onesided test_devapi_internode_onesided.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+
 clean:
-	@rm -f test_kernel_intranode test_kernel_internode_twosided test_kernel_internode_onesided
+	@rm -f test_kernel_intranode test_kernel_internode_twosided test_kernel_internode_onesided test_devapi_internode_onesided
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

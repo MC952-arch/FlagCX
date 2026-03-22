@@ -71,7 +71,7 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstOffset() {
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getValue() { return snd; }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
-  // PutSignal uses trd[14:7], Signal/WaitSignal uses trd[33:26]
+  // PutSignal uses trd[21:14], Signal/WaitSignal uses trd[33:26]
   uint64_t prim = getPrim();
   if (prim == flagcxDevicePrimPutSignal) {
     return (trd >> flagcxDeviceTriggerOffSignalIdx) &
@@ -83,6 +83,12 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalValue() {
+  // PutSignal stores signalValue in snd[15:0], Signal stores in trd[25:10]
+  uint64_t prim = getPrim();
+  if (prim == flagcxDevicePrimPutSignal) {
+    return (snd >> flagcxDeviceTriggerOffSignalValuePut) &
+           flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValuePut);
+  }
   return (trd >> flagcxDeviceTriggerOffSignalValue) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
 }

@@ -141,7 +141,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   int dstRank = peer;
 
   // Data handles from per-window MR table
-  void **dataHandles = NULL;
+  void **srcHandles = NULL;
+  void **dstHandles = NULL;
   if (size > 0) {
     if (srcMrIdx < 0 || srcMrIdx >= globalOneSideHandleCount || dstMrIdx < 0 ||
         dstMrIdx >= globalOneSideHandleCount) {
@@ -149,9 +150,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
            dstMrIdx);
       return flagcxInternalError;
     }
-    dataHandles = (void **)globalOneSideHandleTable[srcMrIdx];
-    // Note: for iputSignal, dataHandles carries src info, dstMrIdx is used
-    // via dstOffset which is already MR-relative
+    srcHandles = (void **)globalOneSideHandleTable[srcMrIdx];
+    dstHandles = (void **)globalOneSideHandleTable[dstMrIdx];
   }
   void **signalHandles = (void **)globalOneSideSignalHandles;
   if (signalHandles == NULL) {
@@ -161,8 +161,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   void *request = NULL;
   FLAGCXCHECK(comm->netAdaptor->iputSignal(
       sendComm, (uint64_t)srcOffset, (uint64_t)dstOffset, size, srcRank,
-      dstRank, dataHandles, (uint64_t)signalOffset, signalHandles, signalValue,
-      &request));
+      dstRank, srcHandles, dstHandles, (uint64_t)signalOffset, signalHandles,
+      signalValue, &request));
   // Poll completion (single CQE for chained WRITE + ATOMIC)
   if (request != NULL) {
     int done = 0;

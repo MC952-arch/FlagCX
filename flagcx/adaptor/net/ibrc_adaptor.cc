@@ -2476,12 +2476,15 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
 
 flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   uint64_t dstOff, size_t size, int srcRank,
-                                  int dstRank, void **dataHandles,
-                                  uint64_t signalOff, void **signalHandles,
-                                  uint64_t signalValue, void **request) {
+                                  int dstRank, void **srcHandles,
+                                  void **dstHandles, uint64_t signalOff,
+                                  void **signalHandles, uint64_t signalValue,
+                                  void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  struct flagcxOneSideHandleInfo *dataInfo =
-      (struct flagcxOneSideHandleInfo *)dataHandles;
+  struct flagcxOneSideHandleInfo *srcInfo =
+      (struct flagcxOneSideHandleInfo *)srcHandles;
+  struct flagcxOneSideHandleInfo *dstInfo =
+      (struct flagcxOneSideHandleInfo *)dstHandles;
   struct flagcxOneSideHandleInfo *signalInfo =
       (struct flagcxOneSideHandleInfo *)signalHandles;
   if (signalInfo == NULL || signalInfo->baseVas == NULL) {
@@ -2505,11 +2508,11 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   memset(&sge, 0, sizeof(sge));
 
   // wr[0]: RDMA WRITE (data) — no CQE, chained to signal
-  if (size > 0 && dataInfo != NULL) {
-    void *srcPtr = (void *)(dataInfo->baseVas[srcRank] + srcOff);
-    void *dstPtr = (void *)(dataInfo->baseVas[dstRank] + dstOff);
-    uint32_t lkey = dataInfo->lkeys[srcRank];
-    uint32_t rkey = dataInfo->rkeys[dstRank];
+  if (size > 0 && srcInfo != NULL && dstInfo != NULL) {
+    void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
+    void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
+    uint32_t lkey = srcInfo->lkeys[srcRank];
+    uint32_t rkey = dstInfo->rkeys[dstRank];
 
     wr[0].opcode = IBV_WR_RDMA_WRITE;
     wr[0].send_flags = 0; // No CQE — only signal gets CQE
@@ -2551,7 +2554,7 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
 
   // Post chained (data+signal) or signal-only
   struct ibv_send_wr *bad_wr;
-  bool chainData = (size > 0 && dataInfo != NULL);
+  bool chainData = (size > 0 && srcInfo != NULL && dstInfo != NULL);
   FLAGCXCHECK(
       flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr));
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);

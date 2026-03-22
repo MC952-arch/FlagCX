@@ -414,7 +414,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   // Step 1: Allocate local barrier flags (IPC-shareable device memory)
   struct flagcxP2pIpcDesc barrierIpcDesc;
   memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
-  size_t barrierSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
 
@@ -453,10 +453,10 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   // Step 4: Build device barrier pointer array
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->barrierPeers,
-                                          localRanks * sizeof(uint64_t *),
+                                          localRanks * sizeof(uint32_t *),
                                           flagcxMemDevice, NULL));
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      handle->barrierPeers, peerBarrierPtrs, localRanks * sizeof(uint64_t *),
+      handle->barrierPeers, peerBarrierPtrs, localRanks * sizeof(uint32_t *),
       flagcxMemcpyHostToDevice, NULL, NULL));
 
   // Step 5: Store in comm->ipcTable for deferred cleanup
@@ -480,6 +480,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   comm->ipcTable[slot].basePtr = handle->localBarrierFlags;
   comm->ipcTable[slot].inUse = true;
   handle->barrierIpcIndex = slot;
+  handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
 
   return flagcxSuccess;
 }
@@ -542,25 +543,32 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   // ---- One-sided Fallback layer: if signals or counters requested ----
   if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+    // contextCount: number of independent CTA-context slots (default 4)
+    int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 4;
+    handle->contextCount = ctxCount;
+
     // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
+    // Size: contextCount × signalCount entries (2D layout)
     if (reqs->interSignalCount > 0) {
       handle->signalCount = reqs->interSignalCount;
-      size_t sigSize = handle->signalCount * sizeof(uint64_t);
+      size_t sigSize =
+          (size_t)handle->signalCount * ctxCount * sizeof(uint64_t);
       FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
                                              sigSize, NULL));
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
                                               flagcxMemDevice, NULL));
-      // Shadow buffer (local GPU memory, no MR needed)
+      // Shadow buffer (local GPU memory, no MR needed), same 2D layout
       FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer,
                                               sigSize, flagcxMemDevice, NULL));
       FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
                                               flagcxMemDevice, NULL));
     }
     // Allocate counter buffer (host-pinned: CPU proxy writes, GPU reads via
-    // UVA)
+    // UVA), Size: contextCount × counterCount entries (2D layout)
     if (reqs->interCounterCount > 0) {
       handle->counterCount = reqs->interCounterCount;
-      size_t cntSize = handle->counterCount * sizeof(uint64_t);
+      size_t cntSize =
+          (size_t)handle->counterCount * ctxCount * sizeof(uint64_t);
       FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
                                               cntSize, flagcxMemHost, NULL));
       memset(handle->counterBuffer, 0, cntSize);
@@ -574,7 +582,9 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     // Auto-register signal buffer for RDMA one-sided access
     if (handle->signalBuffer) {
       flagcxResult_t regRes = flagcxOneSideSignalRegister(
-          comm, handle->signalBuffer, handle->signalCount * sizeof(uint64_t));
+          comm, handle->signalBuffer,
+          (size_t)handle->signalCount * handle->contextCount *
+              sizeof(uint64_t));
       if (regRes != flagcxSuccess) {
         WARN("flagcxDevCommCreate: signal buffer MR registration failed (%d), "
              "one-sided operations will not work",
@@ -596,8 +606,8 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
     INFO(FLAGCX_INIT,
          "flagcxDevCommCreate: one-sided Fallback buffers allocated "
-         "(signals=%d, counters=%d)",
-         handle->signalCount, handle->counterCount);
+         "(signals=%d, counters=%d, contexts=%d)",
+         handle->signalCount, handle->counterCount, handle->contextCount);
   }
 
 #ifdef FLAGCX_DEVICE_API_NCCL

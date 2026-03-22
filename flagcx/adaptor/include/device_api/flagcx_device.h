@@ -55,10 +55,13 @@ struct flagcxDevCommInternal {
 
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
-  uint64_t *
+  uint32_t *
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
-  uint64_t *localBarrierFlags; // this rank's signal array (CTA_COUNT entries)
-  uint64_t barrierEpoch; // monotonically increasing, set by host before launch
+  uint32_t
+      *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
+  uint32_t
+      intraBarrierEpoch; // monotonically increasing, set by host before launch
+  int nBarriers;         // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
@@ -67,10 +70,11 @@ struct flagcxDevCommInternal {
   // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
   uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
   uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
-  uint64_t interBarrierEpoch; // inter-node epoch (separate from barrierEpoch)
-  int nInterPeers;            // number of inter-node peers (set on ALL ranks)
-  bool isInterLeader;         // true only on localRank 0 (manages connections)
-  int *interPeerRanks;        // global ranks of inter-node peers
+  uint64_t
+      interBarrierEpoch; // inter-node epoch (separate from intraBarrierEpoch)
+  int nInterPeers;       // number of inter-node peers (set on ALL ranks)
+  bool isInterLeader;    // true only on localRank 0 (manages connections)
+  int *interPeerRanks;   // global ranks of inter-node peers
   // netAdaptor connections for signal relay (one-sided RDMA atomic)
   void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
   void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
@@ -88,6 +92,7 @@ struct flagcxDevCommInternal {
       *counterBuffer; // GPU memory (flagcxMemAlloc), [counterCount] entries
   int signalCount;
   int counterCount;
+  int contextCount; // = reqs.interContextCount (default 4)
   // Host-only: MR handles + staging for cleanup
   void *signalBufferMr;        // MR handle for signalBuffer
   void *counterBufferMr;       // MR handle for counterBuffer
@@ -157,8 +162,9 @@ struct flagcxDevComm {
   bool _hasVendorNet;  // true if vendor net is activated (ginContextCount > 0)
 
   // ---- IPC layer (may be nullptr if IPC barrier not set up) ----
-  uint64_t **_barrierPeers;
-  uint64_t _barrierEpoch;
+  uint32_t **_barrierPeers;
+  uint32_t _intraBarrierEpoch;
+  int _nBarriers; // = FLAGCX_DEVICE_CTA_COUNT
 
   // ---- Inter-node signal relay (nullptr if single-node) ----
   uint64_t *_interSignalFlags; // device ptr to host-mapped inter signals
@@ -172,6 +178,7 @@ struct flagcxDevComm {
   uint64_t *_counterBuffer;
   int _signalCount;
   int _counterCount;
+  int _contextCount; // number of per-CTA contexts (default 4)
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- Vendor layer (valid only if _hasVendorComm is true) ----
@@ -181,10 +188,11 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
         _fifoBuffer(nullptr), _hasVendorComm(false), _hasVendorNet(false),
-        _barrierPeers(nullptr), _barrierEpoch(0ULL), _interSignalFlags(nullptr),
-        _nInterPeers(0), _isInterLeader(false), _interBarrierEpoch(0ULL),
-        _signalBuffer(nullptr), _shadowBuffer(nullptr), _counterBuffer(nullptr),
-        _signalCount(0), _counterCount(0)
+        _barrierPeers(nullptr), _intraBarrierEpoch(0), _nBarriers(0),
+        _interSignalFlags(nullptr), _nInterPeers(0), _isInterLeader(false),
+        _interBarrierEpoch(0ULL), _signalBuffer(nullptr),
+        _shadowBuffer(nullptr), _counterBuffer(nullptr), _signalCount(0),
+        _counterCount(0), _contextCount(0)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base()
@@ -197,13 +205,14 @@ struct flagcxDevComm {
       : _rank(di.rank), _nRanks(di.nRanks), _intraRank(di.intraRank),
         _intraSize(di.intraSize), _fifoBuffer(di.fifoBuffer),
         _hasVendorComm(di.hasVendorComm), _hasVendorNet(di.hasVendorNet),
-        _barrierPeers(di.barrierPeers), _barrierEpoch(di.barrierEpoch),
+        _barrierPeers(di.barrierPeers),
+        _intraBarrierEpoch(di.intraBarrierEpoch), _nBarriers(di.nBarriers),
         _interSignalFlags(di.interSignalFlags), _nInterPeers(di.nInterPeers),
         _isInterLeader(di.isInterLeader),
         _interBarrierEpoch(di.interBarrierEpoch),
         _signalBuffer(di.signalBuffer), _shadowBuffer(di.shadowBuffer),
         _counterBuffer(di.counterBuffer), _signalCount(di.signalCount),
-        _counterCount(di.counterCount)
+        _counterCount(di.counterCount), _contextCount(di.contextCount)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base(di.ncclDev)
@@ -858,82 +867,76 @@ struct flagcxIntraBarrierSession {
     _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
   }
 #else
-  // Fallback: epoch-based barrier using IPC-mapped peer signals + atomics.
-  // NCCL-style: atomicAdd fan-out to peers + wait on own signal.
-  uint64_t **_peerSignals;
+  // Fallback: thread-striped per-peer inbox barrier (aligned with
+  // ncclLsaBarrierSession). Each rank has an inbox buffer: inbox[senderRank *
+  // nBarriers + ctaIndex]. arrive: thread-striped store(epoch+1) to each peer's
+  // inbox slot for me. wait:   thread-striped spin on own inbox slots from each
+  // peer.
+  uint32_t **_peerBuffers; // IPC-mapped pointers to each peer's inbox buffer
   int _nRanks, _myRank;
+  int _nBarriers; // = CTA_COUNT
   uint32_t _ctaIndex;
-  uint64_t _epoch;
+  uint32_t _epoch;
 
   // Default constructor (no-op, for inter-only barrier composition)
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxIntraBarrierSession()
-      : _peerSignals(nullptr), _nRanks(0), _myRank(0), _ctaIndex(0), _epoch(0) {
-  }
+      : _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
+        _ctaIndex(0), _epoch(0) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
                             flagcxTeam_t team, uint32_t index,
                             bool multimem = false,
                             flagcxMulticastHandle mcHandle = {})
-      : _peerSignals(devComm._barrierPeers), _nRanks(team.nRanks),
-        _myRank(team.rank), _ctaIndex(index), _epoch(devComm._barrierEpoch) {}
+      : _peerBuffers(devComm._barrierPeers), _nRanks(team.nRanks),
+        _myRank(team.rank), _nBarriers(devComm._nBarriers), _ctaIndex(index),
+        _epoch(devComm._intraBarrierEpoch) {}
 
-  // Lightweight arrive: signal all intra peers (thread-0 only, no coop.sync).
-  // Used by flagcxBarrierSession to compose with inter barrier.
+  // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
          flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _epoch += _nRanks - 1;
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      for (int i = 0; i < _nRanks - 1; i++) {
-        int peer = 1 + _myRank + i;
-        if (peer >= _nRanks)
-          peer -= _nRanks;
-        flagcxDeviceAtomicFetchAdd(&_peerSignals[peer][_ctaIndex], (uint64_t)1,
-                                   flagcxDeviceMemoryOrderRelease);
-      }
+    coop.sync();
+    for (int i = FLAGCX_THREAD_IDX_X; i < _nRanks - 1;
+         i += FLAGCX_BLOCK_DIM_X) {
+      int peer = 1 + _myRank + i;
+      if (peer >= _nRanks)
+        peer -= _nRanks;
+      // Write to peer's buffer at inbox[myRank * nBarriers + ctaIndex]
+      flagcxDeviceAtomicStore(
+          &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex], _epoch + 1,
+          flagcxDeviceMemoryOrderRelease);
     }
   }
 
-  // Lightweight wait: spin on own signal (thread-0 only, no coop.sync).
+  // wait: thread-striped spin on own inbox slots from each peer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    if (FLAGCX_THREAD_IDX_X == 0) {
+    for (int i = FLAGCX_THREAD_IDX_X; i < _nRanks - 1;
+         i += FLAGCX_BLOCK_DIM_X) {
+      int peer = 1 + _myRank + i;
+      if (peer >= _nRanks)
+        peer -= _nRanks;
+      // Read from my buffer at inbox[peer * nBarriers + ctaIndex]
       int iter = 0;
-      while (flagcxDeviceAtomicLoad(&_peerSignals[_myRank][_ctaIndex],
-                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
+      while (flagcxDeviceAtomicLoad(
+                 &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex],
+                 flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
         spinBackoff(iter++);
       }
     }
+    _epoch += 1;
+    coop.sync();
   }
 
-  // Standalone sync: includes coop.sync() bookends.
-  // Used directly by flagcxIntraAllReduceKernel (intra-only demo).
+  // sync = arrive + wait (same as NCCL)
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    // Advance epoch: each peer will atomicAdd(1) to our signal
-    _epoch += _nRanks - 1;
-    coop.sync();
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      // Fan-out: signal all peers (release — our writes visible before signal)
-      for (int i = 0; i < _nRanks - 1; i++) {
-        int peer = 1 + _myRank + i;
-        if (peer >= _nRanks)
-          peer -= _nRanks;
-        flagcxDeviceAtomicFetchAdd(&_peerSignals[peer][_ctaIndex], (uint64_t)1,
-                                   flagcxDeviceMemoryOrderRelease);
-      }
-      // Wait: spin on own signal reaching epoch (acquire — peer writes visible)
-      int iter = 0;
-      while (flagcxDeviceAtomicLoad(&_peerSignals[_myRank][_ctaIndex],
-                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
-        spinBackoff(iter++);
-      }
-    }
-    coop.sync();
+    arrive(coop, order);
+    wait(coop, order);
   }
 #endif
 };
@@ -1244,21 +1247,29 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoEnqueue(
   return flagcxSuccess;
 }
 
-// Wait until all FIFO entries are consumed by the host proxy.
-// Enqueues a WAIT marker, then spins until produced == consumed.
-FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoWait(void *fifoBuffer) {
-  flagcxFifoEnqueue(fifoBuffer, 0, 0,
-                    flagcxBuildTrd(flagcxDevicePrimWait, 0, 0));
-
+// Flush: snapshot produced, then spin until consumed >= snapshot.
+// No FIFO entry enqueued — pure drain.  Used by one-sided flush()
+// where no streamSynchronize is needed.  Each caller gets a fixed
+// target so there is no moving-goalpost deadlock.
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+flagcxFifoFlush(void *fifoBuffer) {
   uint64_t *buffer = (uint64_t *)fifoBuffer;
+  uint64_t snapshot = flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced],
+                                             flagcxDeviceMemoryOrderAcquire);
   int iter = 0;
-  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced],
-                                flagcxDeviceMemoryOrderAcquire) >
-         flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed],
-                                flagcxDeviceMemoryOrderAcquire)) {
+  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed],
+                                flagcxDeviceMemoryOrderAcquire) < snapshot) {
     spinBackoff(iter++);
   }
   return flagcxSuccess;
+}
+
+// Wait: enqueue a PrimWait (proxy will streamSynchronize), then
+// snapshot-spin via flagcxFifoFlush.  Used by two-sided wait().
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoWait(void *fifoBuffer) {
+  flagcxFifoEnqueue(fifoBuffer, 0, 0,
+                    flagcxBuildTrd(flagcxDevicePrimWait, 0, 0));
+  return flagcxFifoFlush(fifoBuffer);
 }
 
 // ============================================================
@@ -1349,8 +1360,14 @@ struct flagcxDevNet {
   flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0)
       : _devComm(dc), _gin(dc._base, contextIndex) {}
 #else
+  int _contextId; // per-CTA context slot: contextIndex & (contextCount-1)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0) : _devComm(dc) {}
+  flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0) : _devComm(dc) {
+    int cnt = (dc._contextCount > 0) ? dc._contextCount : 1;
+    // Mirroring NCCL ncclGinInitCommon modulo hack (only 3 is non-power-of-2)
+    _contextId = (cnt == 3) ? (int)(uint32_t(contextIndex) % 3)
+                            : (contextIndex & (cnt - 1));
+  }
 #endif
 
   // ---- Two-sided operations (all tiers, via FIFO) ----
@@ -1418,7 +1435,7 @@ struct flagcxDevNet {
   }
 
   // Extended signal: supports value and buffer type (0=signal, 1=counter).
-  // All fields packed into trd: bufferType(2)|signalIdx(8)|signalValue(24)
+  // All fields packed into trd: bufferType(2)|signalIdx(8)|signalValue(16)
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
   signalEx(int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
     uint64_t trdSpecific =
@@ -1428,19 +1445,6 @@ struct flagcxDevNet {
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), 0, 0,
         flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
-  }
-
-  // WaitSignal via FIFO: proxy calls streamWaitValue64 on the target buffer.
-  // All fields packed into trd: bufferType(2)|signalIdx(8)|expectedValue(24)
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t waitSignalFifo(
-      int signalIdx, uint32_t expected, int peer, uint64_t bufferType) const {
-    uint64_t trdSpecific =
-        ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
-        ((uint64_t)signalIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-        ((uint64_t)expected << flagcxDeviceTriggerOffSignalValue);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), 0, 0,
-        flagcxBuildTrd(flagcxDevicePrimWaitSignal, peer, trdSpecific));
   }
 
   // PutValue via FIFO: proxy copies value to staging buffer then does iput.
@@ -1453,6 +1457,28 @@ struct flagcxDevNet {
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), fstValue, value,
         flagcxBuildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
+  }
+
+  // ---- putSignalFifo — fused data put + signal in one chained IB WR ----
+  // Enqueues PrimPutSignal; proxy calls flagcxHeteroPutSignal → iputSignal
+  // (RDMA WRITE for data + RDMA ATOMIC FETCH_ADD on signal buffer).
+  // Supports both SignalInc (value=1) and SignalAdd (arbitrary value ≤ 65535).
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t putSignalFifo(
+      size_t srcOffset, size_t dstOffset, size_t size, int signalIdx,
+      uint32_t signalValue, int peer, int srcMrIdx, int dstMrIdx) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    uint64_t sndValue =
+        ((uint64_t)size << flagcxDeviceTriggerOffSize) |
+        ((uint64_t)signalValue << flagcxDeviceTriggerOffSignalValuePut);
+    uint64_t trdSpecific =
+        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
+        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
+        ((uint64_t)signalIdx << flagcxDeviceTriggerOffSignalIdx);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, sndValue,
+        flagcxBuildTrd(flagcxDevicePrimPutSignal, peer, trdSpecific));
   }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
@@ -1629,33 +1655,85 @@ struct flagcxDevNet {
     return (uintptr_t)((char *)mem.rawPtr + off) - mem._mrBase;
   }
 
-  // RemoteAction compile-time dispatch overloads
-  FLAGCX_DEVICE_INLINE_DECORATOR void _dispatchRemoteAction(flagcxDevNet_None,
-                                                            int) const {}
+  // ---- Action decomposition helpers (mirrors NCCL gin__funcs.h signal/counter
+  // helpers) ---- constexpr overloads let the compiler dead-code-eliminate
+  // false branches.
 
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  _dispatchRemoteAction(flagcxDevNet_SignalInc a, int peer) const {
-    signalEx(a.signal, 1, peer, 0);
+  // Signal: is the RemoteAction a signal operation?
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool _isSignal(T) const {
+    return false;
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  _dispatchRemoteAction(flagcxDevNet_SignalAdd a, int peer) const {
-    signalEx(a.signal, (uint32_t)a.value, peer, 0);
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+  _isSignal(flagcxDevNet_SignalInc) const {
+    return true;
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  _dispatchRemoteAction(flagcxDevNet_CounterInc a, int peer) const {
-    signalEx(a.counter, 1, peer, 1);
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+  _isSignal(flagcxDevNet_SignalAdd) const {
+    return true;
   }
 
-  // LocalAction compile-time dispatch overloads
-  // Counter buffer is host-pinned; proxy increments it after the put completes.
-  // FIFO ordering guarantees the PrimSignal(bufType=1) arrives at the proxy
-  // only after the preceding put has been fully processed.
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  _dispatchLocalAction(flagcxDevNet_None) const {}
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr int _getSignalIdx(T) const {
+    return 0;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr int
+  _getSignalIdx(flagcxDevNet_SignalInc a) const {
+    return a.signal;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr int
+  _getSignalIdx(flagcxDevNet_SignalAdd a) const {
+    return a.signal;
+  }
 
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  _dispatchLocalAction(flagcxDevNet_CounterInc a) const {
-    signalEx(a.counter, 1, 0, 1); // peer=0 is ignored by proxy for bufType=1
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t _getSignalValue(T) const {
+    return 0;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t
+  _getSignalValue(flagcxDevNet_SignalInc) const {
+    return 1;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t
+  _getSignalValue(flagcxDevNet_SignalAdd a) const {
+    return (uint32_t)a.value;
+  }
+
+  // Can signal be fused into single PrimPutSignal?
+  // Both SignalInc and SignalAdd → fused PrimPutSignal (chained IB WR:
+  // RDMA WRITE + RDMA ATOMIC FETCH_ADD with value in snd[15:0]).
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool _canFuseSignal(T) const {
+    return false;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+  _canFuseSignal(flagcxDevNet_SignalInc) const {
+    return true;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+  _canFuseSignal(flagcxDevNet_SignalAdd) const {
+    return true;
+  }
+
+  // Counter: is the LocalAction a counter increment?
+  // CounterInc is only valid as LocalAction (NCCL contract: RemoteAction ∈
+  // {None, SignalInc, SignalAdd}, LocalAction ∈ {None, CounterInc}).
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool _isCounter(T) const {
+    return false;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
+  _isCounter(flagcxDevNet_CounterInc) const {
+    return true;
+  }
+
+  template <typename T>
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr int _getCounterIdx(T) const {
+    return 0;
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR constexpr int
+  _getCounterIdx(flagcxDevNet_CounterInc a) const {
+    return a.counter;
   }
 
   // ---- put (raw ptr) ----
@@ -1680,9 +1758,18 @@ struct flagcxDevNet {
     if (coop.threadRank() == 0) {
       size_t srcOff = _toDataOffset(srcMem, srcOffset);
       size_t dstOff = _toDataOffset(dstMem, dstOffset);
-      put(srcOff, dstOff, bytes, peer, srcMem._mrIndex, dstMem._mrIndex);
-      _dispatchRemoteAction(remoteAction, peer);
-      _dispatchLocalAction(localAction);
+      if (_canFuseSignal(remoteAction)) {
+        putSignalFifo(srcOff, dstOff, bytes, _getSignalIdx(remoteAction),
+                      _getSignalValue(remoteAction), peer, srcMem._mrIndex,
+                      dstMem._mrIndex);
+      } else {
+        put(srcOff, dstOff, bytes, peer, srcMem._mrIndex, dstMem._mrIndex);
+        if (_isSignal(remoteAction))
+          signalEx(_getSignalIdx(remoteAction), _getSignalValue(remoteAction),
+                   peer, 0);
+      }
+      if (_isCounter(localAction))
+        signalEx(_getCounterIdx(localAction), 1, 0, 1);
     }
     coop.sync();
   }
@@ -1725,7 +1812,9 @@ struct flagcxDevNet {
     if (coop.threadRank() == 0) {
       size_t dstOff = _toDataOffset(dstMem, dstOffset);
       putValueFifo(dstOff, (uint64_t)value, peer, dstMem._mrIndex);
-      _dispatchRemoteAction(remoteAction, peer);
+      if (_isSignal(remoteAction))
+        signalEx(_getSignalIdx(remoteAction), _getSignalValue(remoteAction),
+                 peer, 0);
     }
     coop.sync();
   }
@@ -1760,18 +1849,31 @@ struct flagcxDevNet {
     (void)expected_scope;
     coop.sync();
     if (coop.threadRank() == 0) {
-      _dispatchRemoteAction(remoteAction, peer);
+      if (_isSignal(remoteAction))
+        signalEx(_getSignalIdx(remoteAction), _getSignalValue(remoteAction),
+                 peer, 0);
     }
     coop.sync();
   }
 
-  // ---- flush — no-op (proxy serial execution provides ordering) ----
+  // ---- flush — drain FIFO: GPU snapshots produced, then spins until
+  // ---- consumed >= snapshot.  No PrimWait enqueued (one-sided path needs
+  // ---- no streamSynchronize).  Matches NCCL GIN Proxy flush (CI spin).
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  flush(Coop,
-        flagcxDeviceMemoryOrder_t = flagcxDeviceMemoryOrderAcquire) const {}
+  flush(Coop coop,
+        flagcxDeviceMemoryOrder_t = flagcxDeviceMemoryOrderAcquire) const {
+    coop.sync();
+    if (coop.threadRank() == 0 && _devComm.getFifoBuffer() != nullptr) {
+      flagcxFifoFlush(_devComm.getFifoBuffer());
+    }
+    coop.sync();
+  }
 
-  // ---- waitSignal — FIFO prim=7 (datatype=0 for signal buffer) ----
+  // ---- waitSignal — GPU spin on _signalBuffer[ctx*N+id] with ACQUIRE ordering
+  // ---- Matches NCCL GIN waitSignal: GPU directly polls NIC-written device
+  // memory. After this returns, readSignal() is trivially correct (value
+  // already in register).
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
       Coop coop, flagcxDevNetSignal_t signalId, uint64_t least, int bits = 64,
@@ -1780,17 +1882,22 @@ struct flagcxDevNet {
     (void)order;
     coop.sync();
     if (coop.threadRank() == 0) {
-      waitSignalFifo(signalId, (uint32_t)least, _devComm._rank, 0);
+      int idx = _contextId * _devComm._signalCount + (int)signalId;
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_devComm._signalBuffer[idx],
+                                    flagcxDeviceMemoryOrderAcquire) < least) {
+        spinBackoff(iter++);
+      }
     }
     coop.sync();
   }
 
-  // ---- waitSignalMeetShadow — read shadow, then waitSignal ----
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalMeetShadow(
       Coop coop, flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[signalId];
+    int idx = _contextId * _devComm._signalCount + (int)signalId;
+    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[idx];
     waitSignal(coop, signalId, shadow, bits, order);
   }
 
@@ -1800,10 +1907,11 @@ struct flagcxDevNet {
       Coop coop, flagcxDevNetSignal_t signalId, Uint delta,
       Uint *outSignalValue, Uint *outShadowValue, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[signalId];
+    int idx = _contextId * _devComm._signalCount + (int)signalId;
+    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[idx];
     uint64_t target = shadow + (uint64_t)delta;
     waitSignal(coop, signalId, target, bits, order);
-    _devComm._shadowBuffer[signalId] = target;
+    _devComm._shadowBuffer[idx] = target;
     if (outSignalValue)
       *outSignalValue = (Uint)target;
     if (outShadowValue)
@@ -1813,31 +1921,40 @@ struct flagcxDevNet {
   // ---- getSignalShadowPtr — direct GPU memory access ----
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
   getSignalShadowPtr(flagcxDevNetSignal_t signalId) const {
-    return &_devComm._shadowBuffer[signalId];
+    return &_devComm._shadowBuffer[_contextId * _devComm._signalCount +
+                                   (int)signalId];
   }
 
   // ---- increaseSignalShadow — direct GPU memory access ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   increaseSignalShadow(flagcxDevNetSignal_t signalId, uint64_t delta) const {
-    _devComm._shadowBuffer[signalId] += delta;
+    _devComm
+        ._shadowBuffer[_contextId * _devComm._signalCount + (int)signalId] +=
+        delta;
   }
 
-  // ---- readSignal — volatile read from GPU signal buffer ----
+  // ---- readSignal — atomic load ACQUIRE from GPU signal buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
       flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     (void)bits;
     (void)order;
-    return ((volatile uint64_t *)_devComm._signalBuffer)[signalId];
+    int idx = _contextId * _devComm._signalCount + (int)signalId;
+    return flagcxDeviceAtomicLoad(&_devComm._signalBuffer[idx],
+                                  flagcxDeviceMemoryOrderAcquire);
   }
 
   // ---- resetSignal — write 0 to GPU signal buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetSignal(flagcxDevNetSignal_t signalId) const {
-    ((volatile uint64_t *)_devComm._signalBuffer)[signalId] = 0;
+    int idx = _contextId * _devComm._signalCount + (int)signalId;
+    ((volatile uint64_t *)_devComm._signalBuffer)[idx] = 0;
   }
 
-  // ---- waitCounter — FIFO prim=7 (datatype=1 for counter buffer) ----
+  // ---- waitCounter — GPU spin on _counterBuffer[ctx*N+id] with ACQUIRE
+  // ordering ---- counterBuffer is host-pinned GPU-mapped memory; proxy CPU
+  // writes via __atomic_fetch_add. GPU spin identical to _interSignalFlags
+  // pattern used by inter-node barrier.
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
       Coop coop, flagcxDevNetCounter_t counterId, uint64_t least, int bits = 56,
@@ -1846,24 +1963,32 @@ struct flagcxDevNet {
     (void)order;
     coop.sync();
     if (coop.threadRank() == 0) {
-      waitSignalFifo(counterId, (uint32_t)least, _devComm._rank, 1);
+      int idx = _contextId * _devComm._counterCount + (int)counterId;
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_devComm._counterBuffer[idx],
+                                    flagcxDeviceMemoryOrderAcquire) < least) {
+        spinBackoff(iter++);
+      }
     }
     coop.sync();
   }
 
-  // ---- readCounter — volatile read from GPU counter buffer ----
+  // ---- readCounter — atomic load ACQUIRE from GPU counter buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
       flagcxDevNetCounter_t counterId, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     (void)bits;
     (void)order;
-    return ((volatile uint64_t *)_devComm._counterBuffer)[counterId];
+    int idx = _contextId * _devComm._counterCount + (int)counterId;
+    return flagcxDeviceAtomicLoad(&_devComm._counterBuffer[idx],
+                                  flagcxDeviceMemoryOrderAcquire);
   }
 
   // ---- resetCounter — write 0 to GPU counter buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetCounter(flagcxDevNetCounter_t counterId) const {
-    ((volatile uint64_t *)_devComm._counterBuffer)[counterId] = 0;
+    int idx = _contextId * _devComm._counterCount + (int)counterId;
+    ((volatile uint64_t *)_devComm._counterBuffer)[idx] = 0;
   }
 #endif // FLAGCX_DEVICE_API_NCCL
 };
@@ -1975,10 +2100,8 @@ struct flagcxInterBarrierSession {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    coop.sync(); // Ensure all threads reach barrier before leader enqueues
     arrive(coop, order);
     wait(coop, order);
-    coop.sync(); // Ensure all threads see leader's wait completion
   }
 };
 #endif
@@ -2054,28 +2177,20 @@ struct flagcxBarrierSession {
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
-      // Multi-node: two-phase intra barrier with inter in between
-      // Phase 1: intra sync — all local ranks ensure data is visible
-      coop.sync();
-      _intra.arrive(coop, order);
-      _intra.wait(coop, order);
-      coop.sync();
-
-      // Phase 2: leader does inter signal+wait (non-leaders skip)
+      // Phase 1: intra sync (arrive has coop.sync at start, wait has coop.sync
+      // at end)
+      _intra.arrive(coop, flagcxDeviceMemoryOrderRelease);
+      _intra.wait(coop, flagcxDeviceMemoryOrderRelease);
+      // Phase 2: inter signal+wait (leader only, non-leaders skip)
       _inter.arrive(coop, order);
       _inter.wait(coop, order);
-
-      // Phase 3: intra sync — broadcast inter completion to all local ranks
-      coop.sync();
-      _intra.arrive(coop, order);
-      _intra.wait(coop, order);
-      coop.sync();
+      // Phase 3: intra sync (broadcast inter completion)
+      _intra.arrive(coop, flagcxDeviceMemoryOrderAcquire);
+      _intra.wait(coop, flagcxDeviceMemoryOrderAcquire);
     } else {
-      // Single-node: just one intra sync
-      coop.sync();
+      // Single-node: one intra sync
       _intra.arrive(coop, order);
       _intra.wait(coop, order);
-      coop.sync();
     }
   }
 };

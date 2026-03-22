@@ -77,14 +77,18 @@ constexpr unsigned int flagcxDeviceTriggerBitsCount = 32;
 
 // One-sided Put/PutSignal: trd prim-specific
 //   trd[35:29] = srcMrIdx(7), trd[28:22] = dstMrIdx(7)
-//   PutSignal: trd[14:7] = signalIdx(8)
-//   fst = srcOffset(32)|dstOffset(32), snd = size(32)|reserved(32)
+//   PutSignal: trd[21:14] = signalIdx(8), trd[13:0] = unused
+//   fst = srcOffset(32)|dstOffset(32), snd =
+//   size(32)|signalValue(16)|reserved(16)
 constexpr unsigned int flagcxDeviceTriggerOffSrcMrIdx = 29;
 constexpr unsigned int flagcxDeviceTriggerBitsSrcMrIdx = 7;
 constexpr unsigned int flagcxDeviceTriggerOffDstMrIdx = 22;
 constexpr unsigned int flagcxDeviceTriggerBitsDstMrIdx = 7;
-constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 7;
+constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 14;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalIdx = 8;
+// PutSignal signalValue in snd[15:0] (same max as PrimSignal: 16b)
+constexpr unsigned int flagcxDeviceTriggerOffSignalValuePut = 0;
+constexpr unsigned int flagcxDeviceTriggerBitsSignalValuePut = 16;
 // fst offsets for srcOffset/dstOffset (shared with PutValue dstOffset accessor)
 constexpr unsigned int flagcxDeviceTriggerOffSrcOffset = 32;
 constexpr unsigned int flagcxDeviceTriggerBitsSrcOffset = 32;
@@ -101,15 +105,15 @@ constexpr unsigned int flagcxDeviceTriggerBitsSize = 32;
 
 // Signal/WaitSignal: all in trd prim-specific
 //   trd[35:34] = bufferType(2), trd[33:26] = signalIdx(8),
-//   trd[25:2] = signalValue/expectedValue(24)
+//   trd[25:10] = signalValue/expectedValue(16), trd[9:0] = unused
 //   fst = 0, snd = 0
 constexpr unsigned int flagcxDeviceTriggerOffBufferType = 34;
 constexpr unsigned int flagcxDeviceTriggerBitsBufferType = 2;
 constexpr unsigned int flagcxDeviceTriggerOffSignalIdxSig = 26;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalIdxSig = 8;
-constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 2;
+constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 10;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
-    24; // max signal value: 2^24 (~16M)
+    16; // max signal value: 2^16 (65535)
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
@@ -327,6 +331,48 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
                                            flagcxDataType_t datatype,
                                            flagcxDevComm_t devComm,
                                            flagcxStream_t stream);
+
+// Inter-node Device API test kernels.
+// Each kernel tests one API facet; host verifies after streamSynchronize.
+flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
+                                        flagcxDevMem_t recvMem, size_t count,
+                                        flagcxDataType_t datatype,
+                                        flagcxDevComm_t devComm,
+                                        flagcxStream_t stream);
+
+flagcxResult_t flagcxInterTestSignalAdd(flagcxDevMem_t sendMem,
+                                        flagcxDevMem_t recvMem, size_t count,
+                                        flagcxDataType_t datatype,
+                                        flagcxDevComm_t devComm,
+                                        flagcxStream_t stream);
+
+flagcxResult_t
+flagcxInterTestCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                               size_t count, flagcxDataType_t datatype,
+                               flagcxDevComm_t devComm, flagcxStream_t stream,
+                               uint64_t *resultBuf);
+
+flagcxResult_t flagcxInterTestPutValue(flagcxDevMem_t recvMem,
+                                       flagcxDevComm_t devComm,
+                                       flagcxStream_t stream,
+                                       size_t putValBase);
+
+flagcxResult_t flagcxInterTestSignalOnly(flagcxDevComm_t devComm,
+                                         flagcxStream_t stream);
+
+flagcxResult_t
+flagcxInterTestFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                             size_t count, flagcxDataType_t datatype,
+                             flagcxDevComm_t devComm, flagcxStream_t stream);
+
+flagcxResult_t flagcxInterTestFollowShadow(flagcxDevComm_t devComm,
+                                           flagcxStream_t stream);
+
+flagcxResult_t flagcxInterTestMeetShadow(flagcxDevComm_t devComm,
+                                         flagcxStream_t stream);
+
+flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
+                                    flagcxStream_t stream, uint64_t *resultBuf);
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).

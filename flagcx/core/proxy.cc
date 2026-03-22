@@ -1246,6 +1246,7 @@ void *flagcxProxyKernelService(void *args) {
         size_t dstOffset = (size_t)ptr->getDstOffset();
         size_t size = (size_t)ptr->getSize();
         int signalIdx = (int)ptr->getSignalIdx();
+        uint64_t signalValue = ptr->getSignalValue();
         size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
         if (globalOneSideSignalHandles == NULL) {
           WARN("flagcxDevicePrimPutSignal: globalOneSideSignalHandles not "
@@ -1254,7 +1255,7 @@ void *flagcxProxyKernelService(void *args) {
           break;
         }
         res = flagcxHeteroPutSignal(comm, peerRank, srcOffset, dstOffset, size,
-                                    signalOff, srcMrIdx, dstMrIdx, 1);
+                                    signalOff, srcMrIdx, dstMrIdx, signalValue);
         break;
       }
       case flagcxDevicePrimPutValue: {
@@ -1285,8 +1286,9 @@ void *flagcxProxyKernelService(void *args) {
           for (int p = 0; p < dc->nInterPeers; p++) {
             reqs[p] = nullptr;
             net->iputSignal(dc->signalSendComms[p], 0, 0, 0, comm->rank,
-                            dc->interPeerRanks[p], NULL, (uint64_t)signalOff,
-                            (void **)dc->barrierHandleInfo, 1, &reqs[p]);
+                            dc->interPeerRanks[p], NULL, NULL,
+                            (uint64_t)signalOff, (void **)dc->barrierHandleInfo,
+                            1, &reqs[p]);
           }
           for (int p = 0; p < dc->nInterPeers; p++) {
             if (reqs[p]) {
