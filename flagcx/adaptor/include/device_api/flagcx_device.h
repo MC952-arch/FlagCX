@@ -2263,7 +2263,7 @@ struct flagcxBarrierSession {
     } else {
       reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
-                 ncclGinFenceLevel::Relaxed);
+                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
     }
   }
 };
