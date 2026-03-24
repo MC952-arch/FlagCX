@@ -321,7 +321,7 @@ ipcAlltoAll(const flagcxDevMem &sendMem, const flagcxDevMem &recvMem,
 
 // put + SignalInc
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestSignalIncKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+    flagcxInterTestPutSignalIncKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
                                    size_t count, flagcxDataType_t datatype,
                                    flagcxDevComm devComm) {
   int nRanks = devComm.getSize();
@@ -368,7 +368,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // Fallback path: PrimPut + PrimSignal(value=2) (two FIFO entries, slot 0).
 // Contrast with K1 where both paths fuse into a single chained WR.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestSignalAddKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+    flagcxInterTestPutSignalAddDecoupledKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
                                    size_t count, flagcxDataType_t datatype,
                                    flagcxDevComm devComm) {
   int nRanks = devComm.getSize();
@@ -552,7 +552,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // signal standalone
 // Each rank signals all other peers on slot 1; waits for nRanks-1 incoming.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestSignalOnlyKernel(flagcxDevComm devComm) {
+    flagcxInterTestSignalKernel(flagcxDevComm devComm) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -730,7 +730,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // Host wrappers
 // --------------------------------------------------------------------------
 
-flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
+flagcxResult_t flagcxInterTestPutSignalInc(flagcxDevMem_t sendMem,
                                         flagcxDevMem_t recvMem, size_t count,
                                         flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
@@ -738,7 +738,7 @@ flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestSignalIncKernel
+  flagcxInterTestPutSignalIncKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();
@@ -747,7 +747,7 @@ flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t flagcxInterTestSignalAdd(flagcxDevMem_t sendMem,
+flagcxResult_t flagcxInterTestPutSignalAddDecoupled(flagcxDevMem_t sendMem,
                                         flagcxDevMem_t recvMem, size_t count,
                                         flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
@@ -755,7 +755,7 @@ flagcxResult_t flagcxInterTestSignalAdd(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestSignalAddKernel
+  flagcxInterTestPutSignalAddDecoupledKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();
@@ -801,11 +801,11 @@ flagcxResult_t flagcxInterTestPutValue(flagcxDevMem_t recvMem,
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t flagcxInterTestSignalOnly(flagcxDevComm_t devComm,
+flagcxResult_t flagcxInterTestSignal(flagcxDevComm_t devComm,
                                          flagcxStream_t stream) {
   if (!devComm) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
-  flagcxInterTestSignalOnlyKernel
+  flagcxInterTestSignalKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(dc);
   cudaError_t err = cudaGetLastError();
@@ -884,6 +884,76 @@ flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
   flagcxInterTestResetKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(dc, resultBuf);
+  cudaError_t err = cudaGetLastError();
+  advanceIntraEpoch(devComm, 2);
+  devComm->interBarrierEpoch += 2 * devComm->nInterPeers;
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+// ==========================================================================
+// K8: get AlltoAll
+//
+// Each rank RDMA-READs peer's sendBuff[myRank*size..] into local
+// recvBuff[peer*size..].  Producer fills sendBuff, consumer pulls via get().
+// Synchronized by barrier.  No fused signal — get() has no signal action;
+// the post-barrier ensures completion visibility.
+// ==========================================================================
+
+FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
+    flagcxInterTestGetKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+                                     size_t count, flagcxDataType_t datatype,
+                                     flagcxDevComm devComm) {
+  int nRanks = devComm.getSize();
+  int myRank = devComm.getRank();
+  int intraSize = devComm.getIntraSize();
+  int intraBase = myRank - devComm.getIntraRank();
+  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+
+  if (devComm._nInterPeers > 0) {
+    flagcxDevNet net(devComm, 0);
+    flagcxBarrierSession<flagcxCoopBlock> bar(
+        flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
+    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+
+    // IPC for intra-node peers
+    ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
+
+    // RDMA READ for inter-node peers: pull from peer's sendMem into my recvMem
+    for (int peer = tid; peer < nRanks; peer += nthreads) {
+      if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      // src: peer's sendBuff at offset myRank*size (peer's data for me)
+      // dst: my recvBuff at offset peer*size (my slot for peer's data)
+      net.get(flagcxTeamWorld(devComm), peer,
+              sendMem, (size_t)myRank * size,
+              recvMem, (size_t)peer * size, size,
+              flagcxCoopThread{});
+    }
+    net.flush(flagcxCoopBlock{});
+    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+  } else {
+    // Intra-only: use IPC
+    flagcxBarrierSession<flagcxCoopBlock> bar(
+        flagcxCoopBlock(), flagcxTeamTagIntra{}, devComm, FLAGCX_BLOCK_IDX_X);
+    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+    ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
+    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+  }
+}
+
+flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
+                                          flagcxDevMem_t recvMem, size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxDevComm_t devComm,
+                                          flagcxStream_t stream) {
+  if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxDevMem sm(*sendMem), rm(*recvMem);
+  flagcxInterTestGetKernel
+      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();
   advanceIntraEpoch(devComm, 2);
   devComm->interBarrierEpoch += 2 * devComm->nInterPeers;

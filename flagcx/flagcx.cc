@@ -1945,6 +1945,8 @@ flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
                                 flagcxStream_t stream) {
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
+  if (stream == NULL)
+    return flagcxInvalidArgument;
   return flagcxHeteroWaitSignal(comm->heteroComm, peer, signalOffset, expected,
                                 stream);
 }

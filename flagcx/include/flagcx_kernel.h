@@ -338,17 +338,15 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 
 // Inter-node Device API test kernels.
 // Each kernel tests one API facet; host verifies after streamSynchronize.
-flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
-                                        flagcxDevMem_t recvMem, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxDevComm_t devComm,
-                                        flagcxStream_t stream);
+flagcxResult_t flagcxInterTestPutSignalInc(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream);
 
-flagcxResult_t flagcxInterTestSignalAdd(flagcxDevMem_t sendMem,
-                                        flagcxDevMem_t recvMem, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxDevComm_t devComm,
-                                        flagcxStream_t stream);
+flagcxResult_t flagcxInterTestPutSignalAddDecoupled(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream);
 
 flagcxResult_t
 flagcxInterTestCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
@@ -361,8 +359,8 @@ flagcxResult_t flagcxInterTestPutValue(flagcxDevMem_t recvMem,
                                        flagcxStream_t stream,
                                        size_t putValBase);
 
-flagcxResult_t flagcxInterTestSignalOnly(flagcxDevComm_t devComm,
-                                         flagcxStream_t stream);
+flagcxResult_t flagcxInterTestSignal(flagcxDevComm_t devComm,
+                                     flagcxStream_t stream);
 
 flagcxResult_t
 flagcxInterTestFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
@@ -377,6 +375,12 @@ flagcxResult_t flagcxInterTestMeetShadow(flagcxDevComm_t devComm,
 
 flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
                                     flagcxStream_t stream, uint64_t *resultBuf);
+
+flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
+                                  flagcxDevMem_t recvMem, size_t count,
+                                  flagcxDataType_t datatype,
+                                  flagcxDevComm_t devComm,
+                                  flagcxStream_t stream);
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).

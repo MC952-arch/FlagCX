@@ -92,6 +92,8 @@ int main(int argc, char *argv[]) {
   if (totalProcs != 2) {
     if (proc == 0)
       printf("test_get requires exactly 2 ranks (producer=0, getter=1).\n");
+    flagcxCommDestroy(comm);
+    flagcxHandleFree(handler);
     MPI_Finalize();
     return 0;
   }

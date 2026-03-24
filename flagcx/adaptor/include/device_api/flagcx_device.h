@@ -1878,6 +1878,25 @@ struct flagcxDevNet {
               alreadyReleased, expected_scope);
   }
 
+  // ---- get (Coop-scope, Fallback only) ----
+  // RDMA READ: pull data from remote peer's srcMem into local dstMem.
+  // GIN has no RDMA READ, so this is Fallback-only (no Vendor stub needed).
+  // No fused signal — caller coordinates via separate signal/waitSignal.
+  template <typename Coop = flagcxCoopBlock>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  get(flagcxTeam_t team, int peer, const flagcxDevMem &srcMem, size_t srcOffset,
+      const flagcxDevMem &dstMem, size_t dstOffset, size_t bytes,
+      Coop coop = flagcxCoopBlock{}) const {
+    (void)team;
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      size_t srcOff = _toDataOffset(srcMem, srcOffset);
+      size_t dstOff = _toDataOffset(dstMem, dstOffset);
+      get(srcOff, dstOff, bytes, peer, srcMem._mrIndex, dstMem._mrIndex);
+    }
+    coop.sync();
+  }
+
   // ---- putValue (raw ptr) ----
   template <typename T, typename RemoteAction = flagcxDevNet_None,
             typename Coop = flagcxCoopBlock,

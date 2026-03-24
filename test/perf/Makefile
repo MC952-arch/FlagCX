@@ -150,10 +150,10 @@ run-ipc-sendrecv:
 	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_ipc_sendrecv
 
 run-put:
-	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_put
+	@mpirun --allow-run-as-root -np 2 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_put
 
 run-get:
-	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_get
+	@mpirun --allow-run-as-root -np 2 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_get
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

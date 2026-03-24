@@ -78,6 +78,13 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
 
+  // Validate peer range
+  if (peer < 0 || peer >= comm->nRanks) {
+    WARN("flagcxHeteroPut: peer %d out of range (nRanks=%d)", peer,
+         comm->nRanks);
+    return flagcxInvalidArgument;
+  }
+
   // Get sendComm from full-mesh connections (handle table slot 0 owns them)
   if (globalOneSideHandleCount == 0 ||
       globalOneSideHandleTable[0]->fullSendComms == NULL) {
@@ -121,6 +128,13 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                int srcMrIdx, int dstMrIdx) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iget == NULL)
     return flagcxNotSupported;
+
+  // Validate peer range
+  if (peer < 0 || peer >= comm->nRanks) {
+    WARN("flagcxHeteroGet: peer %d out of range (nRanks=%d)", peer,
+         comm->nRanks);
+    return flagcxInvalidArgument;
+  }
 
   if (globalOneSideHandleCount == 0 ||
       globalOneSideHandleTable[0]->fullSendComms == NULL) {

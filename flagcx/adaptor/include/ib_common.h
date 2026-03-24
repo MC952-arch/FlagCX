@@ -130,6 +130,7 @@ struct flagcxIbMrHandle {
 #define FLAGCX_NET_IB_REQ_RECV 2
 #define FLAGCX_NET_IB_REQ_FLUSH 3
 #define FLAGCX_NET_IB_REQ_IPUT 4
+#define FLAGCX_NET_IB_REQ_IGET 5
 
 extern const char *reqTypeStr[];
 

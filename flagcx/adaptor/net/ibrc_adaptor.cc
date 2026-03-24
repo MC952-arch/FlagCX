@@ -602,7 +602,7 @@ fail:
   return ret;
 }
 
-const char *reqTypeStr[] = {"Unused", "Send", "Recv", "Flush"};
+const char *reqTypeStr[] = {"Unused", "Send", "Recv", "Flush", "IPut", "IGet"};
 
 static void flagcxIbAddEvent(struct flagcxIbRequest *req, int devIndex,
                              struct flagcxIbNetCommDevBase *base) {
@@ -2495,7 +2495,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   int lkey = dstInfo->lkeys[dstRank]; // local key for the destination buffer
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
-  req->type = FLAGCX_NET_IB_REQ_IPUT;
+  req->type = FLAGCX_NET_IB_REQ_IGET;
   req->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++) {
     req->devBases[i] = &comm->devs[i].base;
