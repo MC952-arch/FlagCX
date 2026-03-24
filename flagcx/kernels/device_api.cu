@@ -1,10 +1,10 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * FlagCX Device API kernels.
  *
  * 1. Intra-node AllReduce — peer pointer + barrier based.
- *    Vendor (NCCL > 2.28): wraps ncclDevComm + ncclWindow_t + ncclLsaBarrier.
+ *    Vendor (>= 2.28): wraps vendor DevComm + vendor Window + vendor barrier.
  *    Fallback:    IPC peer pointers + atomics barrier.
  *    Same kernel code compiles for both paths.
  *
@@ -141,7 +141,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 // Inter-node One-sided AlltoAll
 //
 // Thread-stride loop: each thread dispatches put ops to different peers.
-// put() posts FIFO descriptor (Fallback) or GIN descriptor (Vendor).
+// put() posts FIFO descriptor (Fallback) or one-sided descriptor (Vendor).
 // After all puts, waitSignal + flush ensure completion.
 //
 // Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
@@ -364,7 +364,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 // put data + separate SignalAdd: decouples data transfer from signalling.
-// GIN path:      two NIC ops (WRITE then ATOMIC+2 on slot 0).
+// One-sided path: two NIC ops (WRITE then ATOMIC+2 on slot 0).
 // Fallback path: PrimPut + PrimSignal(value=2) (two FIFO entries, slot 0).
 // Contrast with K1 where both paths fuse into a single chained WR.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)

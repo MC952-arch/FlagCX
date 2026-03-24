@@ -1,12 +1,12 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Host-side lifecycle management for flagcxDevComm_t and flagcxDevMem_t.
  *
  * Capability-based additive design:
  *   Baseline (always): rawPtr + fifoBuffer + rank info
  *   IPC layer:         peer pointers + IPC barriers (if IPC exchange succeeds)
- *   NCCL layer:        ncclDevComm + ncclWindow_t (if NCCL > 2.28)
+ *   Vendor layer:      vendor DevComm + vendor Window (if vendor supported)
  *
  * Each layer is added when available; lower layers are always present
  * as fallback. Kernel dispatch uses priority: Window > IPC > Raw.
@@ -378,7 +378,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   }
 
   // 4. Defer free of host-mapped signal flags (cudaFreeHost would deadlock
-  // on NCCL persistent kernels — drain after ncclCommDestroy).
+  // on vendor persistent kernels — drain after vendor comm destroy).
   if (handle->interSignalFlagsHost) {
     flagcxCommDeferFree(comm, handle->interSignalFlagsHost, flagcxMemHost);
   }
@@ -475,7 +475,7 @@ flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 // Unified DevComm: Additive capability layers
 //   Baseline: rank info + fifoBuffer (always)
 //   IPC layer: barrier pointers (if intraBarrierCount > 0)
-//   NCCL layer: ncclDevComm (if NCCL > 2.28)
+//   Vendor layer: vendor DevComm (if vendor supported)
 // ==========================================================================
 
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
@@ -674,7 +674,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   // IPC barrier cleanup — mark ipcTable entry as unused.
   // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
-  // (after ncclCommDestroy) to avoid implicit device synchronization deadlock.
+  // (after vendor comm destroy) to avoid implicit device synchronization
+  // deadlock.
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
@@ -718,7 +719,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: ncclWindow_t (if win provided, Vendor only)
+//   Window layer: vendor Window (if win provided, Vendor only)
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
@@ -788,7 +789,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       handle->hasWindow = true;
 #ifdef FLAGCX_DEVICE_API_VENDOR
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-      // Allocate ncclWindow_t and store in opaque pointer
+      // Allocate vendor Window and store in opaque pointer
       ncclWindow_t *ncclWin = (ncclWindow_t *)malloc(sizeof(ncclWindow_t));
       if (ncclWin == nullptr) {
         WARN("flagcxDevMemCreate: failed to allocate ncclWindow_t");
@@ -928,12 +929,12 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->nRanks = comm->nranks;
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
-  // NCCL-specific fields: fill from NCCL if available
+  // Vendor-specific fields: fill from vendor if available
 #ifdef FLAGCX_DEVICE_API_VENDOR
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm != nullptr && innerComm->base != nullptr) {
-    props->deviceApiSupport = true; // NCCL > 2.28 available
-    // ncclCommQueryProperties not yet wired through adaptor — set defaults.
+    props->deviceApiSupport = true; // Vendor device API available
+    // Vendor CommQueryProperties not yet wired through adaptor — set defaults.
     // Full delegation will be added when the adaptor wrapper is available.
     props->multicastSupport = false;
     props->netType = flagcxNetTypeNone;

@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Device API Traits - Unified interface for Vendor and Default device APIs.
  *
