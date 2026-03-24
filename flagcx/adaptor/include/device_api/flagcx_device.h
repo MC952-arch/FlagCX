@@ -18,30 +18,12 @@
 
 #include <cstddef> // ptrdiff_t, size_t
 
-#include "atomic_device.h"
 #include "device_utils.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-// ============================================================
-// Vendor backend: include vendor device headers
-// ============================================================
-#ifdef USE_NVIDIA_ADAPTOR
-#include "nccl.h"
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0) &&                              \
-    !defined(FLAGCX_FORCE_FALLBACK)
-#include "nccl_device.h"
-#define FLAGCX_DEVICE_API_VENDOR 1
-#endif
-#endif
-
-#ifdef FLAGCX_DEVICE_API_VENDOR
-static constexpr bool hasVendorDev = true;
-#else
-static constexpr bool hasVendorDev = false;
-#endif
-
-// Include device traits for unified vendor/default API
+// Device traits — provides DeviceAPI with all type/function dispatch.
+// Also defines FLAGCX_DEVICE_API_VENDOR when vendor backend is active.
 #include "device_traits.h"
 
 // ============================================================
@@ -158,28 +140,39 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 struct flagcxDevComm {
   typename DeviceAPI::DevComm _commBase;
 
-  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm() : _commBase() {}
+  // Wrapper-level fields needed by FIFO encoding on all paths.
+  // Populated from flagcxDevCommInternal; safe to be 0 when unused.
+  int _signalCount;
+  int _counterCount;
+  int _contextCount;
+  int _nInterPeers;
 
-  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di) {
+  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
+      : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
+        _nInterPeers(0) {}
+
+  FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
+      : _signalCount(di.signalCount), _counterCount(di.counterCount),
+        _contextCount(di.contextCount), _nInterPeers(di.nInterPeers) {
     if (di.devComm)
       _commBase = *(typename DeviceAPI::DevComm *)di.devComm;
   }
 
-  // Accessors delegate to DeviceAPI
+  // Accessors delegate to _commBase member functions
   FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
-    return DeviceAPI::getIntraRank(&_commBase);
+    return _commBase.getIntraRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int getIntraSize() const {
-    return DeviceAPI::getIntraSize(&_commBase);
+    return _commBase.getIntraSize();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int getRank() const {
-    return DeviceAPI::getRank(&_commBase);
+    return _commBase.getRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const {
-    return DeviceAPI::getSize(&_commBase);
+    return _commBase.getSize();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
-    return DeviceAPI::getFifoBuffer(&_commBase);
+    return _commBase.getFifoBuffer();
   }
 };
 
@@ -242,20 +235,12 @@ typedef struct flagcxMulticastHandle flagcxMulticastHandle_t;
 // Fallback: placeholder structs (no resource-handle model yet).
 // ============================================================
 struct flagcxIntraBarrierHandle {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclLsaBarrierHandle _impl;
-#else
-  int nBarriers;
-#endif
+  typename DeviceAPI::IntraBarrierHandle _base;
 };
 typedef struct flagcxIntraBarrierHandle flagcxIntraBarrierHandle_t;
 
 struct flagcxInterBarrierHandle {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclGinBarrierHandle _impl;
-#else
-  int placeholder;
-#endif
+  typename DeviceAPI::InterBarrierHandle _base;
 };
 typedef struct flagcxInterBarrierHandle flagcxInterBarrierHandle_t;
 
@@ -393,73 +378,37 @@ flagcxTeamRankToIntra(const flagcxDevComm &devComm, flagcxTeam_t team,
 // Naming: "Tile" = N PEs cooperating (avoids vendor-specific
 //         Warp/Wave/Subgroup terms).
 //
-// 3-way guard: FLAGCX_DEVICE_API_VENDOR → wrap vendor types (Vendor)
-//              FLAGCX_SIMT_WIDTH       → SIMT intrinsics (Fallback)
-//              else                    → non-SIMT stubs
+// All implementations live in DeviceTraits; these are thin wrappers.
 // ============================================================
 
 // ---- 6a. flagcxCoopBlock — CTA-level cooperative group ----
 struct flagcxCoopBlock {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclCoopCta _impl;
+  typename DeviceAPI::CoopBlock _base;
 
-  FLAGCX_HOST_DEVICE_INLINE flagcxCoopBlock() : _impl() {}
+  FLAGCX_HOST_DEVICE_INLINE flagcxCoopBlock() : _base() {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return _impl.thread_rank();
+    return _base.threadRank();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-  // Implicit conversion for passthrough to vendor APIs
-  FLAGCX_HOST_DEVICE_INLINE operator ncclCoopCta() const { return _impl; }
-#elif defined(FLAGCX_SIMT_WIDTH)
-  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return FLAGCX_THREAD_IDX_X;
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return FLAGCX_BLOCK_DIM_X; }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { FLAGCX_DEVICE_SYNC_THREADS(); }
-#else
-  int threadRank() const { return FLAGCX_THREAD_IDX_X; }
-  int size() const { return FLAGCX_BLOCK_DIM_X; }
-  void sync() {}
-#endif
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
 
 // ---- 6b. flagcxCoopTile<N> — Tile of N threads within a warp ----
 template <int N>
 struct flagcxCoopTile {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclCoopTile<N> _impl;
+  typename DeviceAPI::template CoopTile<N> _base;
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return _impl.thread_rank();
+    return _base.threadRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
+#ifdef FLAGCX_SIMT_WIDTH
   FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
-    return _impl.laneMask();
+    return _base.laneMask();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-#elif defined(FLAGCX_SIMT_WIDTH)
-  static_assert(N > 0 && (N & (N - 1)) == 0 && N <= FLAGCX_SIMT_WIDTH,
-                "N must be a power of 2 and <= FLAGCX_SIMT_WIDTH");
-
-  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return flagcxLane() % N;
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
-    return (0xffffffffu >> (32 - N)) << (flagcxLane() & -N);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-    if (N > 1)
-      flagcxSyncwarp(laneMask());
-  }
-#else
-  int threadRank() const { return 0; }
-  int size() const { return N; }
-  void sync() {}
 #endif
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
 
 // ---- 6c. flagcxCoopThread — single-thread alias ----
@@ -473,167 +422,62 @@ typedef flagcxCoopTile<FLAGCX_SIMT_WIDTH> flagcxCoopWarp;
 // ---- 6e. flagcxCoopTileSpan — consecutive tiles with named barrier ----
 #ifdef FLAGCX_SIMT_WIDTH
 struct flagcxCoopTileSpan {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclCoopWarpSpan _impl;
+  typename DeviceAPI::CoopTileSpan _base;
 
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopTileSpan(int t0, int nTiles, int id)
-      : _impl(t0, nTiles, id) {}
+      : _base(t0, nTiles, id) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return _impl.thread_rank();
+    return _base.threadRank();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-#else
-  uint32_t t0 : 8, nTiles : 8, id : 8;
-
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopTileSpan(int t0, int nTiles, int id)
-      : t0(t0), nTiles(nTiles), id(id) {}
-
-  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return FLAGCX_THREAD_IDX_X - FLAGCX_SIMT_WIDTH * t0;
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
-    return FLAGCX_SIMT_WIDTH * nTiles;
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-    flagcxNamedBarrierSync(1 + id, FLAGCX_SIMT_WIDTH * nTiles);
-  }
-#endif
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
 #endif // FLAGCX_SIMT_WIDTH
 
 // ---- 6f. flagcxCoopLanes — arbitrary lane bitmask ----
 #ifdef FLAGCX_SIMT_WIDTH
 struct flagcxCoopLanes {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclCoopLanes _impl;
+  typename DeviceAPI::CoopLanes _base;
 
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopLanes(uint32_t lmask = 0xffffffffu)
-      : _impl{lmask} {}
+      : _base(lmask) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return _impl.thread_rank();
+    return _base.threadRank();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
   FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const {
-    return _impl.lmask;
+    return _base.getLmask();
   }
-#else
-  uint32_t lmask;
-
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopLanes(uint32_t lmask = 0xffffffffu)
-      : lmask(lmask) {}
-
-  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return flagcxPopc(lmask & flagcxLanemaskLt());
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return flagcxPopc(lmask); }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { flagcxSyncwarp(lmask); }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const { return lmask; }
-#endif
 };
 #endif // FLAGCX_SIMT_WIDTH
 
 // ---- 6g. flagcxCoopAny — type-erased cooperative group ----
 struct flagcxCoopAny {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclCoopAny _impl;
+  typename DeviceAPI::CoopAny _base;
 
   flagcxCoopAny() = default;
   flagcxCoopAny(flagcxCoopAny const &) = default;
 
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopBlock b)
-      : _impl(b._impl) {}
+      : _base(b._base) {}
   template <int N>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopTile<N> t)
-      : _impl(t._impl) {}
+      : _base(t._base) {}
 #ifdef FLAGCX_SIMT_WIDTH
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopTileSpan s)
-      : _impl(s._impl) {}
+      : _base(s._base) {}
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopLanes l)
-      : _impl(l._impl) {}
+      : _base(l._base) {}
 #endif
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return _impl.thread_rank();
+    return _base.threadRank();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-#elif defined(FLAGCX_SIMT_WIDTH)
-  // Fallback: own vtable-based type erasure
-  struct Storage {
-    alignas(alignof(void *)) char space[16];
-  };
-  struct VTable {
-    int (*threadRank)(void const *);
-    int (*size)(void const *);
-    void (*sync)(void *);
-  };
-
-  template <typename Impl>
-  FLAGCX_DEVICE_INLINE_DECORATOR static int threadRank_fn(void const *o) {
-    return static_cast<Impl const *>(o)->threadRank();
-  }
-  template <typename Impl>
-  FLAGCX_DEVICE_INLINE_DECORATOR static int size_fn(void const *o) {
-    return static_cast<Impl const *>(o)->size();
-  }
-  template <typename Impl>
-  FLAGCX_DEVICE_INLINE_DECORATOR static void sync_fn(void *o) {
-    static_cast<Impl *>(o)->sync();
-  }
-
-  template <typename Impl>
-  FLAGCX_DEVICE_INLINE_DECORATOR static VTable const *get_vtable() {
-    static_assert(sizeof(Impl) <= sizeof(Storage), "Coop type too large");
-    static_assert(alignof(Impl) <= alignof(Storage),
-                  "Coop type alignment too large");
-    static constexpr VTable v = {&threadRank_fn<Impl>, &size_fn<Impl>,
-                                 &sync_fn<Impl>};
-    return &v;
-  }
-
-  Storage storage;
-  VTable const *vtable;
-
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny()
-      : storage{}, vtable(get_vtable<flagcxCoopThread>()) {}
-  flagcxCoopAny(flagcxCoopAny const &) = default;
-
-  template <typename Impl>
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(Impl impl) {
-    char const *src = reinterpret_cast<char const *>(&impl);
-    for (unsigned i = 0; i < sizeof(Impl); ++i)
-      this->storage.space[i] = src[i];
-    this->vtable = get_vtable<Impl>();
-  }
-
-  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
-    return vtable->threadRank(&storage);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
-    return vtable->size(&storage);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { vtable->sync(&storage); }
-
-#else
-  // Non-SIMT fallback: simple capture
-  int _threadRank;
-  int _size;
-
-  flagcxCoopAny() : _threadRank(0), _size(1) {}
-  flagcxCoopAny(flagcxCoopBlock b)
-      : _threadRank(b.threadRank()), _size(b.size()) {}
-  template <int N>
-  flagcxCoopAny(flagcxCoopTile<N>) : _threadRank(0), _size(N) {}
-
-  int threadRank() const { return _threadRank; }
-  int size() const { return _size; }
-  void sync() {}
-#endif
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
 
 // ---- 6h. Free functions ----
@@ -695,7 +539,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopTileSpan) {
 // flagcxCoopCoalesced: get a cooperative group of active/safe threads
 #ifdef FLAGCX_SIMT_WIDTH
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopLanes flagcxCoopCoalesced() {
-  return flagcxCoopLanes{flagcxActivemask()};
+  return flagcxCoopLanes{DeviceAPI::Intrin::activemask()};
 }
 template <typename Coop>
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopWarp flagcxCoopCoalesced(Coop) {
@@ -729,25 +573,25 @@ struct flagcxIntraBarrierSession {
                             bool multimem = false,
                             flagcxMulticastHandle mcHandle = {})
       : _impl(ncclCoopCta(), devComm._commBase, ncclTeamLsa(devComm._commBase),
-              devComm._commBase.lsaBarrier, index, multimem,
+              devComm._commBase._impl.lsaBarrier, index, multimem,
               mcHandle._multimemBase) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
          flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.arrive(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
+    _impl.arrive(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.wait(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
+    _impl.wait(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
+    _impl.sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
   }
 #else
   // Fallback: thread-striped per-peer inbox barrier (aligned with
@@ -788,7 +632,7 @@ struct flagcxIntraBarrierSession {
       if (peer >= _nRanks)
         peer -= _nRanks;
       // Write to peer's buffer at inbox[myRank * nBarriers + ctaIndex]
-      flagcxDeviceAtomicStore(
+      DeviceAPI::Atomic::store(
           &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex], _epoch + 1,
           flagcxDeviceMemoryOrderRelease);
     }
@@ -805,10 +649,10 @@ struct flagcxIntraBarrierSession {
         peer -= _nRanks;
       // Read from my buffer at inbox[peer * nBarriers + ctaIndex]
       int iter = 0;
-      while (flagcxDeviceAtomicLoad(
+      while (DeviceAPI::Atomic::load(
                  &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex],
                  flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
-        spinBackoff(iter++);
+        DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
     _epoch += 1;
@@ -828,22 +672,19 @@ struct flagcxIntraBarrierSession {
 // ============================================================
 // Section 8: Pointer Access Functions (Inline Wrappers)
 //
-// All functions delegate to DeviceAPI::xxx() — no #ifdef branches.
+// All functions delegate to _winBase member functions — no #ifdef branches.
 // On Vendor: forwards to vendor pointer functions via _winBase.
 // On default: uses IPC peerPtrs / rawPtr fallback.
 // ============================================================
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam_t team,
                      int peer) {
-  return DeviceAPI::getPeerPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset,
-      team._teamBase, peer);
+  return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
-  return DeviceAPI::getLocalPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset);
+  return mem._winBase.getLocalPointer(offset);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR void *
@@ -851,9 +692,7 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
                           const flagcxDevComm &devComm) {
   (void)devComm;
   flagcxMulticastHandle_t mmHandle;
-  return DeviceAPI::getMulticastPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset,
-      mmHandle._multimemBase);
+  return mem._winBase.getMulticastPointer(offset, mmHandle._multimemBase);
 }
 
 // ---- Additional pointer functions ----
@@ -862,24 +701,20 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   // Without team, treat as intra-node access
-  return DeviceAPI::getIntraPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset, peer);
+  return mem._winBase.getIntraPointer(offset, peer);
 }
 
 // Intra-node rank pointer.
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetIntraPointer(const flagcxDevMem &mem, size_t offset, int peer) {
-  return DeviceAPI::getIntraPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset, peer);
+  return mem._winBase.getIntraPointer(offset, peer);
 }
 
 // Multicast pointer with explicit MulticastHandle.
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
                           flagcxMulticastHandle_t mmHandle) {
-  return DeviceAPI::getMulticastPointer(
-      const_cast<typename DeviceAPI::Window *>(&mem._winBase), offset,
-      mmHandle._multimemBase);
+  return mem._winBase.getMulticastPointer(offset, mmHandle._multimemBase);
 }
 
 // Reverse lookup: raw pointer → flagcxDevMem.
@@ -1008,8 +843,7 @@ FLAGCX_HOST_DEVICE_INLINE ptrdiff_t operator-(flagcxSymPtr<T> a,
 template <typename T>
 FLAGCX_HOST_DEVICE_INLINE bool operator==(flagcxSymPtr<T> a,
                                           flagcxSymPtr<T> b) {
-  return DeviceAPI::windowEqual(&a.mem._winBase, &b.mem._winBase) &&
-         a.offset == b.offset;
+  return a.mem._winBase == b.mem._winBase && a.offset == b.offset;
 }
 template <typename T>
 FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
@@ -1053,21 +887,21 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxBuildTrd(uint64_t prim,
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoEnqueue(
     void *fifoBuffer, uint64_t fstVal, uint64_t sndVal, uint64_t trdVal) {
   uint64_t *buffer = (uint64_t *)fifoBuffer;
-  uint64_t capacity = flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxCapacity],
-                                             flagcxDeviceMemoryOrderRelaxed);
+  uint64_t capacity = DeviceAPI::Atomic::load(&buffer[flagcxFifoIdxCapacity],
+                                              flagcxDeviceMemoryOrderRelaxed);
 
   // 1. Atomically reserve a slot
   uint64_t mySlot =
-      flagcxDeviceAtomicFetchAdd(&buffer[flagcxFifoIdxProduced], (uint64_t)1,
-                                 flagcxDeviceMemoryOrderAcqRel);
+      DeviceAPI::Atomic::fetchAdd(&buffer[flagcxFifoIdxProduced], (uint64_t)1,
+                                  flagcxDeviceMemoryOrderAcqRel);
 
   // 2. Wait until there's space (mySlot - consumed < capacity)
   int iter = 0;
   while ((int64_t)(mySlot -
-                   flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed],
-                                          flagcxDeviceMemoryOrderAcquire)) >=
+                   DeviceAPI::Atomic::load(&buffer[flagcxFifoIdxConsumed],
+                                           flagcxDeviceMemoryOrderAcquire)) >=
          (int64_t)capacity) {
-    spinBackoff(iter++);
+    DeviceAPI::Intrin::spinBackoff(iter++);
   }
 
   // 3. Compute slot index and get pointers to slot's 3 uint64_t fields
@@ -1078,13 +912,13 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoEnqueue(
   uint64_t *slotTrd = slotFst + 2;
 
   // 4. Write fst, snd (payload, relaxed)
-  flagcxDeviceAtomicStore(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
-  flagcxDeviceAtomicStore(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
 
   // 5. Write trd with valid bit (release ensures payload visible before
   // control)
-  flagcxDeviceAtomicStore(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
-                          flagcxDeviceMemoryOrderRelease);
+  DeviceAPI::Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
+                           flagcxDeviceMemoryOrderRelease);
 
   return flagcxSuccess;
 }
@@ -1096,12 +930,12 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoEnqueue(
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
 flagcxFifoFlush(void *fifoBuffer) {
   uint64_t *buffer = (uint64_t *)fifoBuffer;
-  uint64_t snapshot = flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxProduced],
-                                             flagcxDeviceMemoryOrderAcquire);
+  uint64_t snapshot = DeviceAPI::Atomic::load(&buffer[flagcxFifoIdxProduced],
+                                              flagcxDeviceMemoryOrderAcquire);
   int iter = 0;
-  while (flagcxDeviceAtomicLoad(&buffer[flagcxFifoIdxConsumed],
-                                flagcxDeviceMemoryOrderAcquire) < snapshot) {
-    spinBackoff(iter++);
+  while (DeviceAPI::Atomic::load(&buffer[flagcxFifoIdxConsumed],
+                                 flagcxDeviceMemoryOrderAcquire) < snapshot) {
+    DeviceAPI::Intrin::spinBackoff(iter++);
   }
   return flagcxSuccess;
 }
@@ -1182,20 +1016,20 @@ toNccl(flagcxDevNet_DescriptorSmem a) {
   return {a.smem._impl};
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopCta toNccl(flagcxCoopBlock b) {
-  return b._impl;
+  return b._base;
 }
 template <int N>
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopTile<N> toNccl(flagcxCoopTile<N> t) {
-  return t._impl;
+  return t._base;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopWarpSpan toNccl(flagcxCoopTileSpan s) {
-  return s._impl;
+  return s._base;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopLanes toNccl(flagcxCoopLanes l) {
-  return l._impl;
+  return l._base;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopAny toNccl(flagcxCoopAny a) {
-  return a._impl;
+  return a._base;
 }
 #endif // FLAGCX_DEVICE_API_VENDOR
 
@@ -1218,7 +1052,7 @@ struct flagcxDevNet {
         _gin(dc._commBase, contextIndex)
 #endif
   {
-    int cnt = (dc._commBase.contextCount > 0) ? dc._commBase.contextCount : 1;
+    int cnt = (dc._contextCount > 0) ? dc._contextCount : 1;
     _contextId = contextIndex % cnt;
   }
 
@@ -1431,8 +1265,8 @@ struct flagcxDevNet {
     _gin.put(team._teamBase, peer, dstMem._winBase, dstOffset, srcMem._winBase,
              srcOffset, bytes, toNccl(remoteAction), toNccl(localAction),
              toNccl(coop), toNccl(descriptor),
-             flagcxDeviceScopeMap[alreadyReleased],
-             flagcxDeviceScopeMap[expected_scope]);
+             DeviceAPI::Atomic::toNativeScope(alreadyReleased),
+             DeviceAPI::Atomic::toNativeScope(expected_scope));
   }
 
   // SymPtr-based put overload — convenience wrapper.
@@ -1466,8 +1300,8 @@ struct flagcxDevNet {
            flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     _gin.putValue(team._teamBase, peer, dstMem._winBase, dstOffset, value,
                   toNccl(remoteAction), toNccl(coop), toNccl(descriptor),
-                  flagcxDeviceScopeMap[alreadyReleased],
-                  flagcxDeviceScopeMap[expected_scope]);
+                  DeviceAPI::Atomic::toNativeScope(alreadyReleased),
+                  DeviceAPI::Atomic::toNativeScope(expected_scope));
   }
 
   // SymPtr-based putValue overload.
@@ -1494,15 +1328,16 @@ struct flagcxDevNet {
          flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
          flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
     _gin.signal(team._teamBase, peer, toNccl(remoteAction), toNccl(coop),
-                toNccl(descriptor), flagcxDeviceScopeMap[alreadyReleased],
-                flagcxDeviceScopeMap[expected_scope]);
+                toNccl(descriptor),
+                DeviceAPI::Atomic::toNativeScope(alreadyReleased),
+                DeviceAPI::Atomic::toNativeScope(expected_scope));
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void flush(
       Coop coop,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    _gin.flush(toNccl(coop), flagcxDeviceMemoryOrderMap[order]);
+    _gin.flush(toNccl(coop), DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   template <typename Coop>
@@ -1510,7 +1345,7 @@ struct flagcxDevNet {
       Coop coop, flagcxDevNetSignal_t signal, uint64_t least, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     _gin.waitSignal(toNccl(coop), signal, least, bits,
-                    flagcxDeviceMemoryOrderMap[order]);
+                    DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   // Wait for signal to meet or exceed its shadow value.
@@ -1520,7 +1355,7 @@ struct flagcxDevNet {
       Coop coop, flagcxDevNetSignal_t signal, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     _gin.waitSignalMeetShadow(toNccl(coop), signal, bits,
-                              flagcxDeviceMemoryOrderMap[order]);
+                              DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   // Wait until signal exceeds shadow by leastDelta, updates shadow with latest
@@ -1532,7 +1367,7 @@ struct flagcxDevNet {
       Uint *delta, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     _gin.waitSignalFollowShadow(toNccl(coop), signal, leastDelta, before, delta,
-                                bits, flagcxDeviceMemoryOrderMap[order]);
+                                bits, DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   // --- Shadow manipulation ---
@@ -1550,7 +1385,8 @@ struct flagcxDevNet {
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
       flagcxDevNetSignal_t signal, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    return _gin.readSignal(signal, bits, flagcxDeviceMemoryOrderMap[order]);
+    return _gin.readSignal(signal, bits,
+                           DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -1563,13 +1399,14 @@ struct flagcxDevNet {
       Coop coop, flagcxDevNetCounter_t counter, uint64_t least, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     _gin.waitCounter(toNccl(coop), counter, least, bits,
-                     flagcxDeviceMemoryOrderMap[order]);
+                     DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
       flagcxDevNetCounter_t counter, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    return _gin.readCounter(counter, bits, flagcxDeviceMemoryOrderMap[order]);
+    return _gin.readCounter(counter, bits,
+                            DeviceAPI::Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -1839,9 +1676,9 @@ struct flagcxDevNet {
     if (coop.threadRank() == 0) {
       int idx = _contextId * _devComm._signalCount + (int)signalId;
       int iter = 0;
-      while (flagcxDeviceAtomicLoad(&_devComm._signalBuffer[idx],
-                                    flagcxDeviceMemoryOrderAcquire) < least) {
-        spinBackoff(iter++);
+      while (DeviceAPI::Atomic::load(&_devComm._commBase.signalBuffer[idx],
+                                     flagcxDeviceMemoryOrderAcquire) < least) {
+        DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
     coop.sync();
@@ -1852,7 +1689,8 @@ struct flagcxDevNet {
       Coop coop, flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     int idx = _contextId * _devComm._signalCount + (int)signalId;
-    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[idx];
+    uint64_t shadow =
+        ((volatile uint64_t *)_devComm._commBase.shadowBuffer)[idx];
     waitSignal(coop, signalId, shadow, bits, order);
   }
 
@@ -1863,10 +1701,11 @@ struct flagcxDevNet {
       Uint *outSignalValue, Uint *outShadowValue, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     int idx = _contextId * _devComm._signalCount + (int)signalId;
-    uint64_t shadow = ((volatile uint64_t *)_devComm._shadowBuffer)[idx];
+    uint64_t shadow =
+        ((volatile uint64_t *)_devComm._commBase.shadowBuffer)[idx];
     uint64_t target = shadow + (uint64_t)delta;
     waitSignal(coop, signalId, target, bits, order);
-    _devComm._shadowBuffer[idx] = target;
+    _devComm._commBase.shadowBuffer[idx] = target;
     if (outSignalValue)
       *outSignalValue = (Uint)target;
     if (outShadowValue)
@@ -1876,15 +1715,15 @@ struct flagcxDevNet {
   // ---- getSignalShadowPtr — direct GPU memory access ----
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
   getSignalShadowPtr(flagcxDevNetSignal_t signalId) const {
-    return &_devComm._shadowBuffer[_contextId * _devComm._signalCount +
-                                   (int)signalId];
+    return &_devComm._commBase.shadowBuffer[_contextId * _devComm._signalCount +
+                                            (int)signalId];
   }
 
   // ---- increaseSignalShadow — direct GPU memory access ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   increaseSignalShadow(flagcxDevNetSignal_t signalId, uint64_t delta) const {
-    _devComm
-        ._shadowBuffer[_contextId * _devComm._signalCount + (int)signalId] +=
+    _devComm._commBase
+        .shadowBuffer[_contextId * _devComm._signalCount + (int)signalId] +=
         delta;
   }
 
@@ -1895,16 +1734,16 @@ struct flagcxDevNet {
     (void)bits;
     (void)order;
     int idx = _contextId * _devComm._signalCount + (int)signalId;
-    return flagcxDeviceAtomicLoad(&_devComm._signalBuffer[idx],
-                                  flagcxDeviceMemoryOrderAcquire);
+    return DeviceAPI::Atomic::load(&_devComm._commBase.signalBuffer[idx],
+                                   flagcxDeviceMemoryOrderAcquire);
   }
 
   // ---- resetSignal — write 0 to GPU signal buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetSignal(flagcxDevNetSignal_t signalId) const {
     int idx = _contextId * _devComm._signalCount + (int)signalId;
-    flagcxDeviceAtomicStore(&_devComm._signalBuffer[idx], (uint64_t)0,
-                            flagcxDeviceMemoryOrderRelease);
+    DeviceAPI::Atomic::store(&_devComm._commBase.signalBuffer[idx], (uint64_t)0,
+                             flagcxDeviceMemoryOrderRelease);
   }
 
   // ---- waitCounter — GPU spin on _counterBuffer[ctx*N+id] with ACQUIRE
@@ -1921,9 +1760,9 @@ struct flagcxDevNet {
     if (coop.threadRank() == 0) {
       int idx = _contextId * _devComm._counterCount + (int)counterId;
       int iter = 0;
-      while (flagcxDeviceAtomicLoad(&_devComm._counterBuffer[idx],
-                                    flagcxDeviceMemoryOrderAcquire) < least) {
-        spinBackoff(iter++);
+      while (DeviceAPI::Atomic::load(&_devComm._commBase.counterBuffer[idx],
+                                     flagcxDeviceMemoryOrderAcquire) < least) {
+        DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
     coop.sync();
@@ -1936,16 +1775,16 @@ struct flagcxDevNet {
     (void)bits;
     (void)order;
     int idx = _contextId * _devComm._counterCount + (int)counterId;
-    return flagcxDeviceAtomicLoad(&_devComm._counterBuffer[idx],
-                                  flagcxDeviceMemoryOrderAcquire);
+    return DeviceAPI::Atomic::load(&_devComm._commBase.counterBuffer[idx],
+                                   flagcxDeviceMemoryOrderAcquire);
   }
 
   // ---- resetCounter — write 0 to GPU counter buffer ----
   FLAGCX_DEVICE_INLINE_DECORATOR void
   resetCounter(flagcxDevNetCounter_t counterId) const {
     int idx = _contextId * _devComm._counterCount + (int)counterId;
-    flagcxDeviceAtomicStore(&_devComm._counterBuffer[idx], (uint64_t)0,
-                            flagcxDeviceMemoryOrderRelease);
+    DeviceAPI::Atomic::store(&_devComm._commBase.counterBuffer[idx],
+                             (uint64_t)0, flagcxDeviceMemoryOrderRelease);
   }
 #endif // FLAGCX_DEVICE_API_VENDOR
 };
@@ -1970,7 +1809,7 @@ struct flagcxInterBarrierSession {
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
                             flagcxTeam_t team, uint32_t index)
-      : _nInterPeers(net._devComm._commBase.nInterPeers) {
+      : _nInterPeers(net._devComm._nInterPeers) {
     new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
         ncclCoopCta(), net._gin, team._teamBase, net._gin.comm.railGinBarrier,
         index);
@@ -1982,7 +1821,7 @@ struct flagcxInterBarrierSession {
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order),
                  flagcxGinFenceLevelMap[static_cast<int>(fence)]);
     }
   }
@@ -2007,7 +1846,7 @@ struct flagcxInterBarrierSession {
                             uint32_t index)
       : _interSignals(devComm._commBase.interSignalFlags),
         _fifoBuffer(devComm.getFifoBuffer()),
-        _nInterPeers(devComm._commBase.nInterPeers),
+        _nInterPeers(devComm._nInterPeers),
         _isLeader(devComm._commBase.isInterLeader), _ctaIndex(index),
         _epoch(devComm._commBase.interBarrierEpoch) {}
 
@@ -2018,7 +1857,7 @@ struct flagcxInterBarrierSession {
                             flagcxTeam_t team, uint32_t index)
       : _interSignals(net._devComm._commBase.interSignalFlags),
         _fifoBuffer(net._devComm.getFifoBuffer()),
-        _nInterPeers(net._devComm._commBase.nInterPeers),
+        _nInterPeers(net._devComm._nInterPeers),
         _isLeader(net._devComm._commBase.isInterLeader), _ctaIndex(index),
         _epoch(net._devComm._commBase.interBarrierEpoch) {}
 
@@ -2051,9 +1890,9 @@ struct flagcxInterBarrierSession {
     coop.sync();
     if (coop.threadRank() == 0 && _isLeader) {
       int iter = 0;
-      while (flagcxDeviceAtomicLoad(&_interSignals[_ctaIndex],
-                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
-        spinBackoff(iter++);
+      while (DeviceAPI::Atomic::load(&_interSignals[_ctaIndex],
+                                     flagcxDeviceMemoryOrderAcquire) < _epoch) {
+        DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
     coop.sync();
@@ -2101,7 +1940,7 @@ struct flagcxBarrierSession {
       : _intraOnly(true) {
     new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
         ncclCoopCta(), devComm._commBase, ncclTeamLsa(devComm._commBase),
-        devComm._commBase.lsaBarrier, index, multimem);
+        devComm._commBase._impl.lsaBarrier, index, multimem);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -2110,10 +1949,10 @@ struct flagcxBarrierSession {
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
     if (_intraOnly) {
       reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
+          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
     } else {
       reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order),
                  flagcxGinFenceLevelMap[static_cast<int>(fence)]);
     }
   }
@@ -2137,7 +1976,7 @@ struct flagcxBarrierSession {
                        uint32_t index, bool multimem = false)
       : _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index),
         _inter(coop, net._devComm, index),
-        _nInterPeers(net._devComm._commBase.nInterPeers) {}
+        _nInterPeers(net._devComm._nInterPeers) {}
 
   // Intra-only barrier: inter is default constructed (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
