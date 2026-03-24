@@ -348,6 +348,8 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     bootstrapAdaptorAlltoAll, bootstrapAdaptorAlltoAllv, bootstrapAdaptorSend,
     bootstrapAdaptorRecv,
     // Group semantics
-    bootstrapAdaptorGroupStart, bootstrapAdaptorGroupEnd};
+    bootstrapAdaptorGroupStart, bootstrapAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_BOOTSTRAP_ADAPTOR

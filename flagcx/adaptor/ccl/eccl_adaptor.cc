@@ -246,6 +246,8 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     ecclAdaptorAllGather, ecclAdaptorAlltoAll, ecclAdaptorAlltoAllv,
     ecclAdaptorSend, ecclAdaptorRecv,
     // Group semantics
-    ecclAdaptorGroupStart, ecclAdaptorGroupEnd};
+    ecclAdaptorGroupStart, ecclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_ENFLAME_ADAPTOR

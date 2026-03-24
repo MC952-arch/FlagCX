@@ -456,6 +456,8 @@ struct flagcxCCLAdaptor mpiAdaptor = {
     mpiAdaptorAllReduce, mpiAdaptorReduceScatter, mpiAdaptorAllGather,
     mpiAdaptorAlltoAll, mpiAdaptorAlltoAllv, mpiAdaptorSend, mpiAdaptorRecv,
     // Group semantics
-    mpiAdaptorGroupStart, mpiAdaptorGroupEnd};
+    mpiAdaptorGroupStart, mpiAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_MPI_ADAPTOR

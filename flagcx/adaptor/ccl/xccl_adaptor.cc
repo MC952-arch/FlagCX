@@ -339,6 +339,8 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     xcclAdaptorAllGather, xcclAdaptorAlltoAll, xcclAdaptorAlltoAllv,
     xcclAdaptorSend, xcclAdaptorRecv,
     // Group semantics
-    xcclAdaptorGroupStart, xcclAdaptorGroupEnd};
+    xcclAdaptorGroupStart, xcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_KUNLUNXIN_ADAPTOR

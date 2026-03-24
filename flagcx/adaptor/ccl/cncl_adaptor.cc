@@ -354,6 +354,8 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     cnclAdaptorAllGather, cnclAdaptorAlltoAll, cnclAdaptorAlltoAllv,
     cnclAdaptorSend, cnclAdaptorRecv,
     // Group semantics
-    cnclAdaptorGroupStart, cnclAdaptorGroupEnd};
+    cnclAdaptorGroupStart, cnclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_CAMBRICON_ADAPTOR

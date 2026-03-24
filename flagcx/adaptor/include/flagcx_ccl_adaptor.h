@@ -105,6 +105,11 @@ struct flagcxCCLAdaptor_v1 {
   // Group semantics
   flagcxResult_t (*groupStart)();
   flagcxResult_t (*groupEnd)();
+
+  // Device API - Host-side management (NCCL > 2.28, CNCL device API, etc.)
+  flagcxResult_t (*devCommCreate)(flagcxInnerComm_t comm, void **devComm,
+                                  void *requirements);
+  flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t comm, void *devComm);
 };
 #define flagcxCCLAdaptor flagcxCCLAdaptor_v1
 

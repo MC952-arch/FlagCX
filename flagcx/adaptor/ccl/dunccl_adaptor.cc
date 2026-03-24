@@ -314,6 +314,8 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     duncclAdaptorAllGather, duncclAdaptorAlltoAll, duncclAdaptorAlltoAllv,
     duncclAdaptorSend, duncclAdaptorRecv,
     // Group semantics
-    duncclAdaptorGroupStart, duncclAdaptorGroupEnd};
+    duncclAdaptorGroupStart, duncclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_DU_ADAPTOR

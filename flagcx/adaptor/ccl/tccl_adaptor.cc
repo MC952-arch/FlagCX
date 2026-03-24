@@ -393,6 +393,8 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     tcclAdaptorAllGather, tcclAdaptorAlltoAll, tcclAdaptorAlltoAllv,
     tcclAdaptorSend, tcclAdaptorRecv,
     // Group semantics
-    tcclAdaptorGroupStart, tcclAdaptorGroupEnd};
+    tcclAdaptorGroupStart, tcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_TSM_ADAPTOR

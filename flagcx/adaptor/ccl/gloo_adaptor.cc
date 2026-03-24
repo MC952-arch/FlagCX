@@ -469,6 +469,8 @@ struct flagcxCCLAdaptor glooAdaptor = {
     glooAdaptorAllGather, glooAdaptorAlltoAll, glooAdaptorAlltoAllv,
     glooAdaptorSend, glooAdaptorRecv,
     // Group semantics
-    glooAdaptorGroupStart, glooAdaptorGroupEnd};
+    glooAdaptorGroupStart, glooAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_GLOO_ADAPTOR

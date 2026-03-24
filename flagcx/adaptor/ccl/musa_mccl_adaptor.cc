@@ -303,6 +303,8 @@ struct flagcxCCLAdaptor musa_mcclAdaptor = {
     mcclAdaptorAllGather, mcclAdaptorAlltoAll, mcclAdaptorAlltoAllv,
     mcclAdaptorSend, mcclAdaptorRecv,
     // Group semantics
-    mcclAdaptorGroupStart, mcclAdaptorGroupEnd};
+    mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_MUSA_ADAPTOR

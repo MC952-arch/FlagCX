@@ -558,6 +558,38 @@ flagcxResult_t ncclAdaptorGroupStart() {
 
 flagcxResult_t ncclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+static flagcxResult_t ncclAdaptorDevCommCreateWrapper(flagcxInnerComm_t comm,
+                                                      void **devComm,
+                                                      void *requirements) {
+  ncclDevComm *nccl = (ncclDevComm *)malloc(sizeof(ncclDevComm));
+  if (!nccl)
+    return flagcxSystemError;
+
+  ncclDevCommRequirements *reqs = (ncclDevCommRequirements *)requirements;
+  flagcxResult_t ret = ncclAdaptorDevCommCreate(comm->base, reqs, nccl);
+  if (ret != flagcxSuccess) {
+    free(nccl);
+    return ret;
+  }
+
+  *devComm = nccl;
+  comm->devBase = nccl;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t ncclAdaptorDevCommDestroyWrapper(flagcxInnerComm_t comm,
+                                                       void *devComm) {
+  if (!devComm)
+    return flagcxSuccess;
+  ncclDevComm *nccl = (ncclDevComm *)devComm;
+  flagcxResult_t ret = ncclAdaptorDevCommDestroy(comm->base, nccl);
+  free(nccl);
+  comm->devBase = NULL;
+  return ret;
+}
+#endif
+
 struct flagcxCCLAdaptor ncclAdaptor = {
     "NCCL",
     // Basic functions
@@ -577,6 +609,13 @@ struct flagcxCCLAdaptor ncclAdaptor = {
     ncclAdaptorAllGather, ncclAdaptorAlltoAll, ncclAdaptorAlltoAllv,
     ncclAdaptorSend, ncclAdaptorRecv,
     // Group semantics
-    ncclAdaptorGroupStart, ncclAdaptorGroupEnd};
+    ncclAdaptorGroupStart, ncclAdaptorGroupEnd,
+// Device API
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+    ncclAdaptorDevCommCreateWrapper, ncclAdaptorDevCommDestroyWrapper
+#else
+    NULL, NULL
+#endif
+};
 
 #endif // USE_NVIDIA_ADAPTOR

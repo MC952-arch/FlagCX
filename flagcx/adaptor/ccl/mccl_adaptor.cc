@@ -308,6 +308,8 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     mcclAdaptorAllGather, mcclAdaptorAlltoAll, mcclAdaptorAlltoAllv,
     mcclAdaptorSend, mcclAdaptorRecv,
     // Group semantics
-    mcclAdaptorGroupStart, mcclAdaptorGroupEnd};
+    mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_METAX_ADAPTOR

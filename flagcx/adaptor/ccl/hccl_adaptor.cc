@@ -357,6 +357,8 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorAllGather, hcclAdaptorAlltoAll, hcclAdaptorAlltoAllv,
     hcclAdaptorSend, hcclAdaptorRecv,
     // Group semantics
-    hcclAdaptorGroupStart, hcclAdaptorGroupEnd};
+    hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_ASCEND_ADAPTOR

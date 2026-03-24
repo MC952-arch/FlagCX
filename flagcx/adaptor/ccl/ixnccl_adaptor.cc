@@ -315,6 +315,8 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorAllGather, ixncclAdaptorAlltoAll, ixncclAdaptorAlltoAllv,
     ixncclAdaptorSend, ixncclAdaptorRecv,
     // Group semantics
-    ixncclAdaptorGroupStart, ixncclAdaptorGroupEnd};
+    ixncclAdaptorGroupStart, ixncclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_ILUVATAR_COREX_ADAPTOR

@@ -317,6 +317,8 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     rcclAdaptorAllGather, rcclAdaptorAlltoAll, rcclAdaptorAlltoAllv,
     rcclAdaptorSend, rcclAdaptorRecv,
     // Group semantics
-    rcclAdaptorGroupStart, rcclAdaptorGroupEnd};
+    rcclAdaptorGroupStart, rcclAdaptorGroupEnd,
+    // Device API
+    NULL, NULL};
 
 #endif // USE_AMD_ADAPTOR
