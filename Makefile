@@ -132,7 +132,7 @@ COMPILE_KERNEL_FLAG =
 ifeq ($(USE_NVIDIA), 1)
 	include makefiles/nvidia_gencode.mk
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
 	DEVICE_RUNTIME = CUDA
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
@@ -227,12 +227,21 @@ else ifeq ($(USE_ENFLAME), 1)
 	ADAPTOR_FLAG = -DUSE_ENFLAME_ADAPTOR
 else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
+	DEVICE_RUNTIME = CUDA
+	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
+	DEVICE_LINKER = $(DEVICE_HOME)/bin/nvcc -dlink
+	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
+	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
+	DEVICE_FILE_EXTENSION = cu
 	CCL_LIB = $(CCL_HOME)/lib
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -lnccl
 	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
+ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
+	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
+endif
 endif
 
 ifeq ($(FORCE_FALLBACK), 1)
@@ -366,7 +375,7 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
@@ -375,7 +384,7 @@ $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@ ($(DEVICE_RUNTIME))"
-	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
+	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)
