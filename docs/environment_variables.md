@@ -4,21 +4,25 @@ This document provides a comprehensive reference for all environment variables u
 
 ## Table of Contents
 
-- [Debug and Logging](#debug-and-logging)
-- [Communication Mode](#communication-mode)
-- [Buffer and Memory](#buffer-and-memory)
-- [Proxy and Runtime](#proxy-and-runtime)
-- [Topology Configuration](#topology-configuration)
-- [Tuner Configuration](#tuner-configuration)
-- [HybridRunner Configuration](#hybridrunner-configuration)
-- [UniRunner Configuration](#unirunner-configuration)
-- [Network Configuration](#network-configuration)
-  - [InfiniBand (IB) Settings](#infiniband-ib-settings)
-  - [IB Retransmission](#ib-retransmission)
-  - [Socket Network](#socket-network)
-  - [UCX Network](#ucx-network)
-- [Plugin Configuration](#plugin-configuration)
-- [Miscellaneous](#miscellaneous)
+- [FlagCX Environment Variables](#flagcx-environment-variables)
+  - [Table of Contents](#table-of-contents)
+  - [Debug and Logging](#debug-and-logging)
+  - [Communication Mode](#communication-mode)
+  - [Buffer and Memory](#buffer-and-memory)
+  - [Proxy and Runtime](#proxy-and-runtime)
+  - [Topology Configuration](#topology-configuration)
+  - [Tuner Configuration](#tuner-configuration)
+  - [HybridRunner Configuration](#hybridrunner-configuration)
+  - [UniRunner Configuration](#unirunner-configuration)
+  - [Network Configuration](#network-configuration)
+    - [InfiniBand (IB) Settings](#infiniband-ib-settings)
+    - [IB Retransmission](#ib-retransmission)
+    - [Socket Network](#socket-network)
+    - [UCX Network](#ucx-network)
+    - [Gloo Network](#gloo-network)
+  - [Plugin Configuration](#plugin-configuration)
+  - [Miscellaneous](#miscellaneous)
+  - [Notes](#notes)
 
 ---
 
@@ -39,10 +43,10 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_USE_HOST_COMM` | 0 | When set to 1, uses host communication mode |
-| `FLAGCX_USE_HETERO_COMM` | 0 | When set to 1, enables heterogeneous communication mode |
+| `FLAGCX_USE_HETERO_COMM` | 0 | When set to 1, enables UniRunner mode |
 | `FLAGCX_COMM_ID` | None | Specifies the communication ID for bootstrap. When set, rank 0 will create the root |
 | `FLAGCX_HOSTID` | None | Override the host identifier string for host hashing |
-| `FLAGCX_CLUSTER_SPLIT_LIST` | None | Comma-separated list of cluster split counts (e.g., 2,4,8) |
+| `FLAGCX_CLUSTER_SPLIT_LIST` | None | Comma-separated list of cluster split counts (e.g., 2,4,8), enabling HybridRunner mode |
 
 ---
 
@@ -55,8 +59,8 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_P2P_BUFFER_SIZE` | 67108864 (64MB) | P2P buffer size in bytes |
 | `FLAGCX_P2P_CHUNK_SIZE` | 16777216 (16MB) | P2P chunk size in bytes |
 | `FLAGCX_SEMAPHORE_BUFFER_POOL_CAPACITY` | 32 | Capacity of semaphore buffer pool |
-| `FLAGCX_KERNEL_FIFO_CAPACITY` | FLAGCX_FIFO_CAPACITY | Kernel FIFO capacity |
-| `FLAGCX_REDUCE_FIFO_CAPACITY` | FLAGCX_FIFO_CAPACITY | Reduce operation FIFO capacity |
+| `FLAGCX_KERNEL_FIFO_CAPACITY` | 128 | Kernel FIFO capacity |
+| `FLAGCX_REDUCE_FIFO_CAPACITY` | 128 | Reduce operation FIFO capacity |
 | `FLAGCX_MEM_ENABLE` | 0 | When set to 1, enables memory allocation via device adaptor |
 | `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
 

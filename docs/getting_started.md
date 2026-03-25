@@ -1,246 +1,128 @@
-## Environment Setup
-
-**Reference Command for Container Creation:** Modify the `<Docker name> <mount directory> <mount point>` and choose the `<Docker Image>` as needed.
-
-```Plain
--------------Reference Command for Container Creation on NVIDIA A800 Platform------------
-sudo docker run -itd \
-                --name <Docker name> \
-                --privileged \
-                --net=host \
-                --pid=host \
-                --cap-add=ALL \
-                --shm-size 128G \
-                --ulimit memlock=-1 \
-                --gpus all \
-                -v /dev/:/dev/ \
-                -v /usr/src/:/usr/src/ \
-                -v /lib/modules/:/lib/modules/ \
-                -v <mount directory>:<mount point> \
-                <Docker Image> \
-                /bin/bash
--------------Reference Command for Container Creation on Kunlunxin P800 Platform-----------
-sudo docker run -itd \
-        --name <Docker name> \
-        --privileged \
-        --net=host \
-        --pid=host \
-        --shm-size 128G \
-        --ulimit memlock=-1 \
-        --group-add video \
-        -v <mount directory>:<mount point> \
-        -v /usr/local/xpu/:/usr/local/xpu \
-        <Docker Image> \
-        /bin/bash  
-```
-
-​            
-
 ## Build and Installation
 
-1. Obtain FlagCX Source Code and Build Installation
+### Obtain Source Code
 
-   Review and Choose Build Options Suitable for the Current Platform
+```
+git clone https://github.com/flagos-ai/FlagCX.git
+cd FlagCX
+git submodule update --init --recursive
+```
 
-   ```
-   git clone https://github.com/flagos-ai/FlagCX.git
-   cd FlagCX 
-   git submodule update --init --recursive
-   cat Makefile
-   make USE_NVIDIA=1 -j$(nproc) # NVIDIA GPU Platform
-   make USE_CAMBRICON=1 -j$(nproc)  # Cambricon Platform
-   make USE_KUNLUNXIN=1 -j$(nproc) # Kunlunxin Platform
-   ```
-   
-2. Successful Build Result
+### Installation
 
-   ![flagcx_build_and_installation_successful_build_result.png](images/flagcx_build_and_installation_successful_build_result.png)
+**Option A — Pythonic Installation (pip install):**
 
-3. Potential Issues During Compilation
+```shell
+pip install . -v --no-build-isolation
+```
 
-   - **If** **`nccl.h`** **or other libraries are not found** 
+![flagcx_pip_install.png](images/flagcx_pip_install.png)
 
-      - You can first use `locate xxx.h` to find the local path of the header file.
+**Option B — C++ library (make):**
 
-      - Once found, you can directly set `CCL_HOME=XXX` to specify the installation path. The build system will automatically use `$CCL_HOME/include` and `$CCL_HOME/lib` for header and library paths.
+```shell
+make <backend>=1 -j$(nproc)
+```
+where `<backend>` is one of:
+- `USE_NVIDIA`: NVIDIA GPU support
+- `USE_ILUVATAR_COREX`: Iluvatar Corex support
+- `USE_CAMBRICON`: Cambricon support
+- `USE_METAX`: MetaX support
+- `USE_MUSA`: Moore Threads support
+- `USE_KUNLUNXIN`: Kunlunxin support
+- `USE_DU`: Hygon support
+- `USE_ASCEND`: Huawei Ascend support
+- `USE_AMD`: AMD support
+- `USE_TSM`: TsingMicro support
+- `USE_ENFLAME`: Enflame support
+- `USE_GLOO`: GLOO support
+- `USE_MPI`: MPI support
 
-      - If the file is not present locally, install the corresponding header/library. There are multiple installation methods; one example is provided below.
+Note that Option A also supports `<backend>=1`, allowing users to explicitly specify the backend. Otherwise, it will be selected automatically.
 
-        ```Plain
-        sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys A4B469963BF863CC  #Import the public key
-        echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda.list                                # Add repository
-        sudo apt-get update                                              # Update apt
-        sudo apt-get install libnccl-dev                                 # Install NCCL development package
-        sudo apt-get install cuda-toolkit-11-8                           # Install CUDA Toolkit
-        ```
+## Tests
 
+### Performance Test
 
-   - If `gtest.h` header file error occurs
+Performance tests are maintained in `test/perf`.
 
-      Install Google Test (gtest) unit testing framework
+```shell
+cd test/perf
+make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_TSM | USE_ENFLAME]=1
+mpirun --allow-run-as-root -np 8 ./test_allreduce -b 128K -e 4G -f 2
+```
 
-      ```Plain
-      git clone https://github.com/google/googletest.git # Obtain gtest source code
-      cd googletest                                      # Enter the project directory
-      mkdir build                                        # Create a directory to store build output
-      cd build                                           # Enter the build directory
-      cmake ..                                           # Generate native build scripts for GoogleTest
-      make                                               # Compile the source
-      sudo make install                                  # Install the static libraries
-      ```
+Note that the default MPI install path is set to `/usr/local/mpi`, you may specify the MPI path with:
 
+```shell
+make MPI_HOME=<MPI path>
+```
 
-## Homogeneous Testing with FlagCX
+All tests support the same set of arguments:
 
-## Communication API Test
+- Sizes to scan
 
-1. Environment Setup
+  * `-b <min>` minimum size in bytes to start with. Default: 1M.
+  * `-e <max>` maximum size in bytes to end at. Default: 1G.
+  * `-f <increment factor>` multiplication factor between sizes. Default: 2.
 
-   Select the Docker image `<Docker Image>` to create a container and enter it.
+- Performance
 
-2. Select Build Options
+  * `-w, <warmup iterations >` number of warmup iterations (not timed). Default: 5.
+  * `-n, <iterations >` number of iterations. Default: 20.
 
-   ```Plain
-   cd FlagCX/test/perf # Enter the test directory
-   make USE_NVIDIA=1 # Compile with options based on the hardware platform
-   ```
+- Test operation
 
-3. Successful Build Result
+  * `-R, <0/1/2>` enable local buffer registration on send/recv buffers. Default: 0.
+  * `-s, <OCT/DEC/HEX>` specify MPI communication split mode. Default: 0
 
-   ![homogeneous_communication_api_test_successful_build_result.png](images/homogeneous_communication_api_test_successful_build_result.png)
+- Utils
 
-## Torch API Test
+  * `-p, <0/1>` print buffer info. Default: 0.
+  * `-h` print help message. Default: disabled.
 
-1. Environment Setup
+### Device API Test
 
-   - Select the Docker image `<Docker Image>` to create a container and enter it.
-   
-   
-      - Check whether PyTorch is installed in the container. If not, install it using the procedure below.
-   
-        ```Plain
-        pip list | grep torch         # Check if PyTorch is installed in the container
-        ------------------# Install PyTorch----------------------------------
-        python -m pip install --pre torch \
-          --index-url https://download.pytorch.org/whl/nightly/<cuXXX> \
-          --trusted-host download.pytorch.org \
-          --no-cache-dir --timeout 300 \
-          --root-user-action=ignore
-          
-        nvcc --version 2>/dev/null || nvidia-smi   # Check the CUDA runtime driver version; if release is 12.4, install the corresponding cu124 version
-        ```
-   
-         **Note:** `<cuXXX>` corresponds to the version of the CUDA toolkit matching your current hardware driver.
-   
+Device API tests are maintained in `test/kernel/`. There are four test binaries:
 
+| Binary | What it tests |
+|---|---|
+| `test_intranode` | Intra-node AllReduce via Device API. Correctness + bandwidth benchmarking. |
+| `test_internode_twosided` | Inter-node two-sided AlltoAll (FIFO-based; Window-based with `-R 2`). Correctness + bandwidth. |
+| `test_internode_onesided` | Inter-node one-sided AlltoAll (put+signal+wait pattern). Requires `-R 1` or `-R 2`. |
+| `test_device_api` | Correctness suite for 10 one-sided Device API kernels. Requires `-R 1` or `-R 2`. |
 
-2. Select Build Options
+Build:
 
-   ```
-   cd /FlagCX/plugin/torch/
-   FLAGCX_ADAPTOR=[xxx] pip install -e . --no-build-isolation
-   ```
+```shell
+cd test/kernel
+make USE_NVIDIA=1    # or other backend flag
+```
 
-   **Note**: `[xxx]` should be selected according to the current platform, e.g., `nvidia`, `klx`, etc.
+Supports `MPI_HOME=<path>`.
 
-3. Successful Build Result
+Run examples:
 
-   - After compilation, a `build` directory will be generated.Run the command:
+```shell
+# Intra-node AllReduce (single node, 8 GPUs)
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_intranode -b 1M -e 64M -f 2
 
-     ```
-     pip list | grep flagcx
-     ```
+# Inter-node two-sided AlltoAll (multi-node)
+mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_internode_twosided -b 1M -e 64M -f 2 -R 1
 
-   - You should see the `flagcx` version and path matching the current build directory, indicating that the compilation and installation were successful.
+# Inter-node one-sided AlltoAll (requires -R 1 or -R 2)
+mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_internode_onesided -b 1M -e 64M -f 2 -R 2
 
-     ```
-     python -c "import flagcx; print(flagcx)"
-     ```
+# Device API correctness test (requires -R 1 or -R 2)
+mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_device_api -b 1M -e 64M -f 2 -R 2
+```
 
+Arguments are the same as Performance Test (`-b`, `-e`, `-f`, `-w`, `-n`, `-R`, `-p`, `-s`).
 
-## Homogeneous Training with FlagCX + FlagScale
+Registration modes (`-R`):
 
-1. Environment Setup
+- `-R 0`: Raw device memory (default). No explicit registration.
+- `-R 1`: IPC mode — `flagcxMemAlloc` + `flagcxCommRegister`.
+- `-R 2`: Window mode — `flagcxMemAlloc` + `flagcxCommWindowRegister`.
 
-   - Select the Docker image `<Docker Image>`, create a container named `<Docker name>`, and enter the container.
-
-     ```Plain
-     ## Check conda environments
-     conda env list  
-     ## Activate the flagscale-train environment for subsequent operations
-     conda activate flagscale-train 
-     pip install modelscope 
-     pip install pandas
-     ```
-     
-     **Note:** if there is no conda env called "flagscale-train", we may need to set up the conda env by running
-     
-     ```Plain
-     ./install/install-requirements.sh --env train
-     ```
-     
-   
-   - Training Backend Code Adaptation for Unpatched Mode
-   
-     ```Plain
-     cd FlagScale
-     python tools/patch/unpatch.py --backend Megatron-LM
-     ```
-
-
-2. Build and Install the FlagCX Library
-
-   - Pull the FlagScale and FlagCX source code.
-
-     ```Plain
-     git clone https://github.com/flagos-ai/FlagScale.git 
-     git clone https://github.com/flagos-ai/FlagCX.git
-     ```
-   
-   
-      - Build and Install FlagCX
-   
-        ```Plain
-        cd FlagCX                        # Enter the FlagCX directory; check the Makefile to select build options based on your platform, e.g., USE_NVIDIA, USE_KUNLUNXIN, etc.
-        make USE_NVIDIA=1                # Compile FlagCX with NVIDIA GPU support
-        cd plugin/torch                  # Enter the Torch plugin directory
-        python setup.py develop --adaptor nvidia   # Install the Python Torch adaptor in development mode
-        pip list | grep flagcx           # Verify the installation and check the absolute path of the installed FlagCX package
-        ```
-   
-   
-      - Screenshot of Successful Compilation and Installation
-   
-        ```
-        python -c "import flagcx; print(flagcx)"
-        ```
-   
-
-
-## Heterogeneous Testing with FlagCX
-
-## Communication API Test
-
-1. Environment Setup
-
-   Select the Docker image `<Docker Image>` to create a container and enter it.
-
-
-2. Create a symbolic link
-
-   ```
-   cd /root
-   ln -s /workspace/flagcx_test_[xxx]/FlagCX ./FlagCX
-   ```
-
-   **Explanation**
-
-   - `/workspace/` — Shared folder; after mounting in the containers, both host1 and host2 can access it.
-   - `flagcx_test_[xxx]/FlagCX` — `[xxx]` indicates the FlagCX communication library for different platforms.
-   - `./FlagCX` — Symbolic link name; by accessing `/root/FlagCX`, you can reach the FlagCX library for the current platform.
-
-3. Build and Install
-
-   - On each host, compile and install the FlagCX communication API separately.
-
-   - Refer to the section **“Homogeneous Testing with FlagCX”** for detailed steps.
+One-sided tests (`test_internode_onesided`, `test_device_api`) require `-R 1` or `-R 2`.
