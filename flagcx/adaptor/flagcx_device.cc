@@ -400,85 +400,31 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
 // ==========================================================================
 static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                        flagcxDevComm_t handle) {
-  int myRank = comm->rank;
-  int nRanks = comm->nranks;
   int localRanks = comm->localRanks;
-  int *lrToR = comm->localRankToRank;
 
   handle->nLocalRanks = localRanks;
   handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
   if (handle->localRankToRank == nullptr)
     return flagcxSystemError;
-  memcpy(handle->localRankToRank, lrToR, localRanks * sizeof(int));
+  memcpy(handle->localRankToRank, comm->localRankToRank,
+         localRanks * sizeof(int));
 
-  // Step 1: Allocate local barrier flags (IPC-shareable device memory)
+  // Allocate IPC-shareable barrier flags
   struct flagcxP2pIpcDesc barrierIpcDesc;
   memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
   size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
-
-  // Zero barrier flags
   FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
                                           barrierSize, flagcxMemDevice, NULL));
 
-  // Step 2: Exchange barrier IPC handles with all ranks
-  struct flagcxP2pIpcDesc *allBarrierDescs = (struct flagcxP2pIpcDesc *)calloc(
-      nRanks, sizeof(struct flagcxP2pIpcDesc));
-  if (allBarrierDescs == nullptr)
-    return flagcxSystemError;
-  memcpy(&allBarrierDescs[myRank], &barrierIpcDesc,
-         sizeof(struct flagcxP2pIpcDesc));
-  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap, allBarrierDescs,
-                                 sizeof(struct flagcxP2pIpcDesc)));
-
-  // Step 3: Open intra-node peer barrier IPC handles
-  void **peerBarrierPtrs = (void **)calloc(localRanks, sizeof(void *));
-  if (peerBarrierPtrs == nullptr) {
-    free(allBarrierDescs);
-    return flagcxSystemError;
-  }
-  for (int lr = 0; lr < localRanks; lr++) {
-    int gr = lrToR[lr];
-    if (gr == myRank) {
-      peerBarrierPtrs[lr] = handle->localBarrierFlags;
-    } else {
-      flagcxIpcMemHandle_t handlePtr =
-          (flagcxIpcMemHandle_t)&allBarrierDescs[gr].handleData;
-      FLAGCXCHECK(
-          deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerBarrierPtrs[lr]));
-    }
-  }
-  free(allBarrierDescs);
-
-  // Step 4: Build device barrier pointer array
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->barrierPeers,
-                                          localRanks * sizeof(uint32_t *),
-                                          flagcxMemDevice, NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      handle->barrierPeers, peerBarrierPtrs, localRanks * sizeof(uint32_t *),
-      flagcxMemcpyHostToDevice, NULL, NULL));
-
-  // Step 5: Store in comm->ipcTable for deferred cleanup
-  // (ipcMemHandleClose triggers implicit device sync like cudaFree)
-  int slot = -1;
-  for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
-    if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
-        comm->ipcTable[k].devPeerPtrs == nullptr) {
-      slot = k;
-      break;
-    }
-  }
-  if (slot < 0) {
-    WARN("setupIpcBarriers: IPC table full (max %d entries)",
-         FLAGCX_MAX_IPC_ENTRIES);
+  // Reuse common IPC exchange logic
+  int slot = buildIpcPeerPointers(comm, handle->localBarrierFlags, barrierSize);
+  if (slot < 0)
     return flagcxInternalError;
-  }
-  comm->ipcTable[slot].hostPeerPtrs = peerBarrierPtrs;
-  comm->ipcTable[slot].devPeerPtrs = (void **)handle->barrierPeers;
-  comm->ipcTable[slot].nPeers = localRanks;
-  comm->ipcTable[slot].basePtr = handle->localBarrierFlags;
-  comm->ipcTable[slot].inUse = true;
+
+  // Store barrier-specific metadata on devComm handle
+  handle->barrierPeers = (uint32_t **)comm->ipcTable[slot].devPeerPtrs;
   handle->barrierIpcIndex = slot;
   handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
 
