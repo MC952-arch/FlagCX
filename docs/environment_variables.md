@@ -17,6 +17,7 @@ This document provides a comprehensive reference for all environment variables u
   - [IB Retransmission](#ib-retransmission)
   - [Socket Network](#socket-network)
   - [UCX Network](#ucx-network)
+- [Plugin Configuration](#plugin-configuration)
 - [Miscellaneous](#miscellaneous)
 
 ---
@@ -54,8 +55,9 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_P2P_BUFFER_SIZE` | 67108864 (64MB) | P2P buffer size in bytes |
 | `FLAGCX_P2P_CHUNK_SIZE` | 16777216 (16MB) | P2P chunk size in bytes |
 | `FLAGCX_SEMAPHORE_BUFFER_POOL_CAPACITY` | 32 | Capacity of semaphore buffer pool |
-| `FLAGCX_KERNEL_FIFO_CAPACITY` | Default | Kernel FIFO capacity |
-| `FLAGCX_REDUCE_FIFO_CAPACITY` | Default | Reduce operation FIFO capacity |
+| `FLAGCX_KERNEL_FIFO_CAPACITY` | FLAGCX_FIFO_CAPACITY | Kernel FIFO capacity |
+| `FLAGCX_REDUCE_FIFO_CAPACITY` | FLAGCX_FIFO_CAPACITY | Reduce operation FIFO capacity |
+| `FLAGCX_MEM_ENABLE` | 0 | When set to 1, enables memory allocation via device adaptor |
 | `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
 
 
@@ -80,6 +82,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_TOPO_FILE` | None | Path to XML topology file for network/GPU topology |
 | `FLAGCX_TOPO_DUMP_FILE` | None | Path to dump discovered topology as XML |
 | `FLAGCX_INTERSERVER_ROUTE_FILE` | None | Path to inter-server routing configuration file |
+| `FLAGCX_TOPO_DETECTION_DISABLE` | 0 | When set to 1, disables topology detection |
 
 ---
 
@@ -96,6 +99,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_TUNE_FILE` | None | Path to tune file |
 | `FLAGCX_TUNE_GROUP_IDX` | None | Tune group index |
 | `FLAGCX_TUNING_WITH_FLAGSCALE` | 0 | When set to 1, enables tuning with FlagScale |
+| `TUNNING_WITH_SINGLE_COMM` | 0 | When set to 1, uses a single communicator for tuning (note: no FLAGCX_ prefix) |
 
 ---
 
@@ -122,6 +126,9 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for UniRunner |
 | `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in UniRunner |
 | `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in UniRunner |
+| `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in UniRunner |
+| `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for UniRunner (0 = auto) |
+| `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for UniRunner |
 
 ---
 
@@ -186,6 +193,16 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_GLOO_IB_DISABLE` | 0 | When set to 1, disables IB for Gloo transport |
+
+---
+
+## Plugin Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLAGCX_DEVICE_ADAPTOR_PLUGIN` | None | Path to device adaptor plugin shared library |
+| `FLAGCX_NET_ADAPTOR_PLUGIN` | None | Path to network adaptor plugin shared library |
+| `FLAGCX_CCL_ADAPTOR_PLUGIN` | None | Path to CCL adaptor plugin shared library |
 
 ---
 
