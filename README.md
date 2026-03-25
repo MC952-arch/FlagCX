@@ -40,6 +40,16 @@ enabling high-performance P2P operations for both cross-chip and single-chip sce
 These mechanisms can be seamlessly combined with native x-CCL backends to deliver optimized performance
 for cross-chip collective communications.
 
+## Quick Start
+
+Please check the guides on building, testing the software:
+
+<!--TODO(Qiming): Rework the page structure and then the list below.-->
+- [Changelog](./docs/CHANGELOG.md)
+- [Getting started](./docs/getting_started.md)
+- [Environment variables](./docs/environment_variables.md)
+
+
 ## Backend Support
 
 The following table summarizes the currently supported communication backends and their corresponding capabilities.
@@ -120,16 +130,6 @@ ensuring robust functionality, consistent performance, and compatibility in mult
 > it is recommended to use identical PyTorch versions across all nodes.
 > Mismatched versions may lead to initialization failures during process group setup.
 > Helpful advice for doing things better or more easily.
-
-## Quick Start
-
-Please check the guides on building, testing the software:
-
-<!--TODO(Qiming): Rework the page structure and then the list below.-->
-- [Getting started](./docs/getting_started.md)
-- [Build](./docs/build.md)
-- [Testing](./docs/testing.md)
-
 
 ### Training Models
 

@@ -43,10 +43,10 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_USE_HOST_COMM` | 0 | When set to 1, uses host communication mode |
-| `FLAGCX_USE_HETERO_COMM` | 0 | When set to 1, enables UniRunner mode |
+| `FLAGCX_USE_HETERO_COMM` | 0 | When set to 1, enables uniRunner mode |
 | `FLAGCX_COMM_ID` | None | Specifies the communication ID for bootstrap. When set, rank 0 will create the root |
 | `FLAGCX_HOSTID` | None | Override the host identifier string for host hashing |
-| `FLAGCX_CLUSTER_SPLIT_LIST` | None | Comma-separated list of cluster split counts (e.g., 2,4,8), enabling HybridRunner mode |
+| `FLAGCX_CLUSTER_SPLIT_LIST` | None | Comma-separated list of cluster split counts (e.g., 2,4,8), enabling hybridRunner mode |
 
 ---
 
@@ -125,14 +125,14 @@ This document provides a comprehensive reference for all environment variables u
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
-| `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for UniRunner |
-| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for UniRunner |
-| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for UniRunner |
-| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in UniRunner |
-| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in UniRunner |
-| `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in UniRunner |
-| `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for UniRunner (0 = auto) |
-| `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for UniRunner |
+| `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for uniRunner |
+| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for uniRunner |
+| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for uniRunner |
+| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in uniRunner |
+| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in uniRunner |
+| `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in uniRunner |
+| `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for uniRunner (0 = auto) |
+| `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for uniRunner |
 
 ---
 
