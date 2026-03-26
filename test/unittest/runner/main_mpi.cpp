@@ -2,7 +2,6 @@
 // Provides main(), MPIEnvironment, and all fixture implementations
 // for the coll_*.cpp test files.
 
-#include "flagcx_kernel.h"
 #include "runner_fixtures.hpp"
 #include <cstring>
 
@@ -76,82 +75,6 @@ void FlagCXCollTest::TearDown() {
   devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
   devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
 
-  flagcxHandleFree(handler);
-  FlagCXTest::TearDown();
-}
-
-// ---------- FlagCXTopoTest ----------
-
-void FlagCXTopoTest::SetUp() {
-  FlagCXTest::SetUp();
-
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
-
-  int numDevices;
-  devHandle->getDeviceCount(&numDevices);
-  devHandle->setDevice(rank % numDevices);
-
-  if (rank == 0)
-    flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
-            MPI_COMM_WORLD);
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
-void FlagCXTopoTest::TearDown() {
-  if (handler->comm) {
-    flagcxCommDestroy(handler->comm);
-  }
-  flagcxHandleFree(handler);
-}
-
-// ---------- FlagCXKernelTest ----------
-
-void FlagCXKernelTest::SetUp() {
-  FlagCXTest::SetUp();
-
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
-  sendbuff = nullptr;
-  recvbuff = nullptr;
-  hostsendbuff = nullptr;
-  hostrecvbuff = nullptr;
-  size = 1ULL * 1024 * 1024; // 1MB for kernel test
-  count = size / sizeof(float);
-
-  int numDevices;
-  devHandle->getDeviceCount(&numDevices);
-  devHandle->setDevice(rank % numDevices);
-
-  if (rank == 0)
-    flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
-            MPI_COMM_WORLD);
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  flagcxCommInitRank(&comm, nranks, uniqueId, rank);
-  devHandle->streamCreate(&stream);
-
-  devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL);
-  devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, NULL);
-  hostsendbuff = malloc(size);
-  memset(hostsendbuff, 0, size);
-  hostrecvbuff = malloc(size);
-  memset(hostrecvbuff, 0, size);
-}
-
-void FlagCXKernelTest::TearDown() {
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
-  devHandle->streamDestroy(stream);
-  flagcxCommDestroy(handler->comm);
-  devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
-  free(hostsendbuff);
-  free(hostrecvbuff);
   flagcxHandleFree(handler);
   FlagCXTest::TearDown();
 }

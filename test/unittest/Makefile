@@ -10,7 +10,7 @@
 #   make run          Run everything
 #   make clean        Clean all build artifacts
 
-COMPONENTS := adaptor core service runner
+COMPONENTS := adaptor core kernel service runner
 
 .PHONY: all $(COMPONENTS) clean run-unit run-mpi run
 
