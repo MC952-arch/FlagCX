@@ -240,7 +240,181 @@ struct DeviceTraits<NvidiaVendor> {
   using RemoteAction = ncclGinRemoteAction;
   using LocalAction = ncclGinLocalAction;
   using FenceLevel = ncclGinFenceLevel;
+
+  // ---- Action type conversion helpers (flagcx -> NCCL) ----
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None toNccl(flagcxDevNet_None) {
+    return {};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalInc
+  toNccl(flagcxDevNet_SignalInc a) {
+    return {a.signal};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalAdd
+  toNccl(flagcxDevNet_SignalAdd a) {
+    return {a.signal, a.value};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_CounterInc
+  toNccl(flagcxDevNet_CounterInc a) {
+    return {a.counter};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_DescriptorSmem
+  toNccl(flagcxDevNet_DescriptorSmem a) {
+    return {(ncclGinDescriptorSmem *)a.smem._impl};
+  }
+
+  // ---- Net: wraps ncclGin for one-sided operations ----
+  struct Net {
+    ncclGin _gin;
+    int _contextId;
+
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    Net(const DevComm &dc, int contextIndex)
+        : _gin(dc, contextIndex), _contextId(contextIndex) {}
+
+    // --- One-sided: put (raw Window) ---
+    template <typename RA, typename LA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    put(Team team, int peer, Window dst, size_t dstOff, Window src,
+        size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
+        flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
+      _gin.put((ncclTeam_t)team, peer, dst._impl, dstOff, src._impl, srcOff,
+               bytes, toNccl(ra), toNccl(la), coop._impl, toNccl(desc),
+               Atomic::toNativeScope(ar), Atomic::toNativeScope(es));
+    }
+
+    // --- One-sided: putValue ---
+    template <typename T, typename RA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    putValue(Team team, int peer, Window dst, size_t dstOff, T value, RA ra,
+             Coop coop, Desc desc, flagcxDeviceScope_t ar,
+             flagcxDeviceScope_t es) const {
+      _gin.putValue((ncclTeam_t)team, peer, dst._impl, dstOff, value,
+                    toNccl(ra), coop._impl, toNccl(desc),
+                    Atomic::toNativeScope(ar), Atomic::toNativeScope(es));
+    }
+
+    // --- One-sided: signal ---
+    template <typename RA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    signal(Team team, int peer, RA ra, Coop coop, Desc desc,
+           flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
+      _gin.signal((ncclTeam_t)team, peer, toNccl(ra), coop._impl, toNccl(desc),
+                  Atomic::toNativeScope(ar), Atomic::toNativeScope(es));
+    }
+
+    // --- One-sided: flush ---
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    flush(Coop coop, flagcxDeviceMemoryOrder_t order) const {
+      _gin.flush(coop._impl, Atomic::toNativeOrder(order));
+    }
+
+    // --- One-sided: waitSignal ---
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    waitSignal(Coop coop, flagcxDevNetSignal_t signal, uint64_t least, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
+      _gin.waitSignal(coop._impl, signal, least, bits,
+                      Atomic::toNativeOrder(order));
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signal, int bits,
+                         flagcxDeviceMemoryOrder_t order) const {
+      _gin.waitSignalMeetShadow(coop._impl, signal, bits,
+                                Atomic::toNativeOrder(order));
+    }
+
+    template <typename Coop, typename Uint>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signal,
+                           Uint leastDelta, Uint *before, Uint *delta, int bits,
+                           flagcxDeviceMemoryOrder_t order) const {
+      _gin.waitSignalFollowShadow(coop._impl, signal, leastDelta, before, delta,
+                                  bits, Atomic::toNativeOrder(order));
+    }
+
+    // --- Shadow manipulation ---
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalShadowPtr(flagcxDevNetSignal_t signal) const {
+      return _gin.getSignalShadowPtr(signal);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    increaseSignalShadow(flagcxDevNetSignal_t signal, uint64_t delta) const {
+      _gin.increaseSignalShadow(signal, delta);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+    readSignal(flagcxDevNetSignal_t signal, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
+      return _gin.readSignal(signal, bits, Atomic::toNativeOrder(order));
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    resetSignal(flagcxDevNetSignal_t signal) const {
+      _gin.resetSignal(signal);
+    }
+
+    // --- Counter ---
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    waitCounter(Coop coop, flagcxDevNetCounter_t counter, uint64_t least,
+                int bits, flagcxDeviceMemoryOrder_t order) const {
+      _gin.waitCounter(coop._impl, counter, least, bits,
+                       Atomic::toNativeOrder(order));
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+    readCounter(flagcxDevNetCounter_t counter, int bits,
+                flagcxDeviceMemoryOrder_t order) const {
+      return _gin.readCounter(counter, bits, Atomic::toNativeOrder(order));
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    resetCounter(flagcxDevNetCounter_t counter) const {
+      _gin.resetCounter(counter);
+    }
+
+    // --- Two-sided stubs (never called on vendor, exist for compilation) ---
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t send(Coop, Window, size_t,
+                                                       size_t, flagcxDataType_t,
+                                                       int) const {
+      return flagcxInternalError;
+    }
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t recv(Coop, Window, size_t,
+                                                       size_t, flagcxDataType_t,
+                                                       int) const {
+      return flagcxInternalError;
+    }
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop) const {
+      return flagcxInternalError;
+    }
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop) const {
+      return flagcxInternalError;
+    }
+
+    // --- get stub (fallback-only, vendor has no RDMA READ) ---
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void get(Team, int, Window, size_t, Window,
+                                            size_t, size_t, Coop) const {}
+  };
 };
+
+// Fence level mapping (file scope for CUDA __constant__ compatibility)
+#ifdef FLAGCX_DEVICE_COMPILE
+FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
+    flagcxGinFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
+static_assert(
+    sizeof(flagcxGinFenceLevelMap) / sizeof(flagcxGinFenceLevelMap[0]) ==
+        static_cast<int>(flagcxGinFenceLevel::Relaxed) + 1,
+    "flagcxGinFenceLevelMap must cover all flagcxGinFenceLevel values");
+#endif
 
 #define FLAGCX_DEVICE_API_VENDOR 1
 using DeviceAPI = DeviceTraits<NvidiaVendor>;

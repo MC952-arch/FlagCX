@@ -35,6 +35,38 @@ struct DeviceTraits;
 template <typename PlatformTag>
 struct Fallback {};
 
+// ============================================================
+// Action types for one-sided operations (needed by traits Net types).
+// Pure POD structs with no device builtins.
+// ============================================================
+typedef uint32_t flagcxDevNetSignal_t;
+typedef uint32_t flagcxDevNetCounter_t;
+
+struct flagcxDevNet_None {};
+struct flagcxDevNet_SignalInc {
+  flagcxDevNetSignal_t signal;
+};
+struct flagcxDevNet_SignalAdd {
+  flagcxDevNetSignal_t signal;
+  uint64_t value;
+};
+struct flagcxDevNet_CounterInc {
+  flagcxDevNetCounter_t counter;
+};
+
+// Shared memory descriptor for NIC descriptor optimization.
+// Uses void* on all paths; vendor Net casts to native type in toNccl().
+struct flagcxDescriptorSmem {
+  void *_impl = nullptr;
+};
+
+struct flagcxDevNet_DescriptorSmem {
+  flagcxDescriptorSmem smem;
+};
+
+// Fence level enum — available on all tiers for unified barrier API
+enum class flagcxGinFenceLevel { Relaxed };
+
 // Common fallback partial specialization (IPC-based, works for any platform)
 #include "fallback_device_traits.h"
 
