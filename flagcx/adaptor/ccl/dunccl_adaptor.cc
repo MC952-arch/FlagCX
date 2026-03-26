@@ -293,6 +293,18 @@ flagcxResult_t duncclAdaptorGroupEnd() {
   return (flagcxResult_t)ncclGroupEnd();
 }
 
+flagcxResult_t
+duncclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                           const flagcxDevCommRequirements * /*reqs*/,
+                           flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t duncclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                           flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor duncclAdaptor = {
     "DUNCCL",
     // Basic functions
@@ -316,6 +328,6 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     // Group semantics
     duncclAdaptorGroupStart, duncclAdaptorGroupEnd,
     // Device API
-    NULL, NULL};
+    duncclAdaptorDevCommCreate, duncclAdaptorDevCommDestroy};
 
 #endif // USE_DU_ADAPTOR

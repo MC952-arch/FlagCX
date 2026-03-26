@@ -26,6 +26,10 @@
 // Also defines FLAGCX_DEVICE_API_VENDOR when vendor backend is active.
 #include "device_traits.h"
 
+// Forward declaration for typed vendor device comm handle
+struct flagcxInnerDevComm;
+typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
+
 // ============================================================
 // Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
 //
@@ -89,7 +93,7 @@ struct flagcxDevCommInternal {
 
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
-  void *devComm; // Opaque vendor handle (vendor DevComm*, etc.)
+  flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
 };
 
 // ============================================================
@@ -154,8 +158,33 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers) {
-    if (di.devComm)
+    if (di.devComm) {
       _commBase = *(typename DeviceAPI::DevComm *)di.devComm;
+    }
+#ifndef FLAGCX_DEVICE_API_VENDOR
+    else {
+      // Fallback: populate _commBase directly from handle fields.
+      // This ensures mutable fields (epochs) are always up-to-date.
+      _commBase.rank = di.rank;
+      _commBase.nRanks = di.nRanks;
+      _commBase.intraRank = di.intraRank;
+      _commBase.intraSize = di.intraSize;
+      _commBase.fifoBuffer = di.fifoBuffer;
+      _commBase.barrierPeers = di.barrierPeers;
+      _commBase.intraBarrierEpoch = di.intraBarrierEpoch;
+      _commBase.nBarriers = di.nBarriers;
+      _commBase.interSignalFlags = di.interSignalFlags;
+      _commBase.nInterPeers = di.nInterPeers;
+      _commBase.isInterLeader = di.isInterLeader;
+      _commBase.interBarrierEpoch = di.interBarrierEpoch;
+      _commBase.signalBuffer = di.signalBuffer;
+      _commBase.shadowBuffer = di.shadowBuffer;
+      _commBase.counterBuffer = di.counterBuffer;
+      _commBase.signalCount = di.signalCount;
+      _commBase.counterCount = di.counterCount;
+      _commBase.contextCount = di.contextCount;
+    }
+#endif
   }
 
   // Accessors delegate to _commBase member functions
@@ -192,6 +221,19 @@ struct flagcxDevMem {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di) {
     if (di.window)
       _winBase = *(typename DeviceAPI::Window *)di.window;
+  }
+
+  FLAGCX_HOST_DEVICE_INLINE bool hasWindow() const {
+    return _winBase.hasAccess();
+  }
+  FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const {
+    return _winBase.getRawPtr();
+  }
+  FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
+    return _winBase.getDevPeerPtrs();
+  }
+  FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const {
+    return _winBase.getMrIndex();
   }
 };
 
@@ -1056,196 +1098,6 @@ struct flagcxDevNet {
     _contextId = contextIndex % cnt;
   }
 
-  // ---- Two-sided operations (all tiers, via FIFO) ----
-  // send/recv use flagcxDevMem for API consistency; extract rawPtr for FIFO.
-  // One-sided path uses put + signals; two-sided send/recv always use FIFO.
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t send(const flagcxDevMem &mem,
-                                                     size_t offset,
-                                                     size_t count,
-                                                     flagcxDataType_t datatype,
-                                                     int peer) const {
-    void *ptr = flagcxGetLocalPointer(mem, offset);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), (uint64_t)((uintptr_t)ptr), 0,
-        flagcxBuildTrd(flagcxDevicePrimSend, peer,
-                       ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
-                           ((uint64_t)count << flagcxDeviceTriggerOffCount)));
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t recv(const flagcxDevMem &mem,
-                                                     size_t offset,
-                                                     size_t count,
-                                                     flagcxDataType_t datatype,
-                                                     int peer) const {
-    void *ptr = flagcxGetLocalPointer(mem, offset);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), (uint64_t)((uintptr_t)ptr), 0,
-        flagcxBuildTrd(flagcxDevicePrimRecv, peer,
-                       ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
-                           ((uint64_t)count << flagcxDeviceTriggerOffCount)));
-  }
-
-  // ---- Two-sided send (Coop-scope, Layer 2) ----
-  template <typename Coop>
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-  send(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
-       flagcxDataType_t datatype, int peer) const {
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      _enqueueFifoSend(mem, offset, count, datatype, peer);
-    }
-    coop.sync();
-    return flagcxSuccess;
-  }
-
-  // ---- Two-sided recv (Coop-scope, Layer 2) ----
-  template <typename Coop>
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-  recv(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
-       flagcxDataType_t datatype, int peer) const {
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      _enqueueFifoRecv(mem, offset, count, datatype, peer);
-    }
-    coop.sync();
-    return flagcxSuccess;
-  }
-
-  // ---- Two-sided term (Layer 1: FIFO encoder) ----
-  // Encodes totalCoops (total number of Coop groups in the grid) in fst
-  // so the proxy knows how many PrimTerm entries to expect before
-  // calling GroupEnd.  Proxy reads via getTotalCoops().
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-  _enqueueFifoTerm(int totalCoops) const {
-    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), (uint64_t)totalCoops, 0,
-                             flagcxBuildTrd(flagcxDevicePrimTerm, 0, 0));
-  }
-
-  // ---- Two-sided group termination (Coop-scope, Layer 2) ----
-  // Each Coop group enqueues exactly one PrimTerm entry. Proxy counts
-  // totalCoops term entries then calls GroupEnd.
-  // All threads in Coop must call this (sync barrier inside).
-  template <typename Coop>
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      int totalCoops = (FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X) / coop.size();
-      _enqueueFifoTerm(totalCoops);
-    }
-    coop.sync();
-    return flagcxSuccess;
-  }
-
-  // ---- Two-sided wait (Coop-scope) ----
-  // Enqueues PrimWait (proxy calls streamSynchronize), then GPU spins
-  // until consumed >= produced snapshot.
-  template <typename Coop>
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      flagcxFifoWait(_devComm.getFifoBuffer());
-    }
-    coop.sync();
-    return flagcxSuccess;
-  }
-
-  // ---- One-sided FIFO operations (all tiers, via FIFO) ----
-  // put/get/signal use FIFO for proxy-based one-sided operations.
-  // These are simpler than GIN put/signal and work on all tiers.
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
-  _enqueueFifoPut(size_t srcOffset, size_t dstOffset, size_t size, int peer,
-                  int srcMrIdx, int dstMrIdx) const {
-    uint64_t fstValue =
-        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-    uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
-    uint64_t trdSpecific =
-        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), fstValue, sndValue,
-        flagcxBuildTrd(flagcxDevicePrimPut, peer, trdSpecific));
-  }
-  // get: RDMA READ from remote peer's srcMrIdx into local dstMrIdx.
-  // srcOffset/dstOffset are relative to the respective MR base addresses.
-  // Encoding mirrors put() — proxy dispatches flagcxHeteroGet.
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t get(size_t srcOffset,
-                                                    size_t dstOffset,
-                                                    size_t size, int peer,
-                                                    int srcMrIdx,
-                                                    int dstMrIdx) const {
-    uint64_t fstValue =
-        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-    uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
-    uint64_t trdSpecific =
-        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), fstValue, sndValue,
-        flagcxBuildTrd(flagcxDevicePrimGet, peer, trdSpecific));
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t signal(int signalIdx,
-                                                       int peer) const {
-    uint64_t trdSpecific =
-        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
-         << flagcxDeviceTriggerOffSignalIdxSig) |
-        ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), 0, 0,
-        flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
-  }
-
-  // Extended signal: supports value and buffer type (0=signal, 1=counter).
-  // All fields packed into trd: bufferType(2)|signalIdx(8)|signalValue(16)
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoSignal(
-      int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
-    int combinedIdx = (bufferType == 0)
-                          ? (_contextId * _devComm._signalCount + signalIdx)
-                          : (_contextId * _devComm._counterCount + signalIdx);
-    uint64_t trdSpecific =
-        ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
-        ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-        ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), 0, 0,
-        flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
-  }
-
-  // PutValue via FIFO: proxy copies value to staging buffer then does iput.
-  // fst = 0|dstOffset(32) at fst[31:0], snd = value(64), trd = dstMrIdx(7)
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoPutValue(
-      size_t dstOffset, uint64_t value, int peer, int dstMrIdx) const {
-    uint64_t fstValue = (uint64_t)dstOffset &
-                        flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
-    uint64_t trdSpecific = (uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx;
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), fstValue, value,
-        flagcxBuildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
-  }
-
-  // ---- _enqueueFifoPutSignal — fused data put + signal in one chained IB WR
-  // ---- Enqueues PrimPutSignal; proxy calls flagcxHeteroPutSignal → iputSignal
-  // (RDMA WRITE for data + RDMA ATOMIC FETCH_ADD on signal buffer).
-  // Supports both SignalInc (value=1) and SignalAdd (arbitrary value ≤ 65535).
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoPutSignal(
-      size_t srcOffset, size_t dstOffset, size_t size, int signalIdx,
-      uint32_t signalValue, int peer, int srcMrIdx, int dstMrIdx) const {
-    uint64_t fstValue =
-        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
-        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
-    uint64_t sndValue = ((uint64_t)size << flagcxDeviceTriggerOffSize) |
-                        ((uint64_t)(signalValue & 0xFFFFu)
-                         << flagcxDeviceTriggerOffSignalValuePut);
-    uint64_t trdSpecific =
-        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
-        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
-        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
-         << flagcxDeviceTriggerOffSignalIdx);
-    return flagcxFifoEnqueue(
-        _devComm.getFifoBuffer(), fstValue, sndValue,
-        flagcxBuildTrd(flagcxDevicePrimPutSignal, peer, trdSpecific));
-  }
-
 #ifdef FLAGCX_DEVICE_API_VENDOR
   // ---- One-sided operations (Vendor only) ----
 
@@ -1414,6 +1266,157 @@ struct flagcxDevNet {
     _gin.resetCounter(counter);
   }
 #else
+  // ---- Fallback: FIFO-based implementations ----
+
+  // ---- Two-sided FIFO encoders ----
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  _enqueueFifoSend(const flagcxDevMem &mem, size_t offset, size_t count,
+                   flagcxDataType_t datatype, int peer) const {
+    void *ptr = flagcxGetLocalPointer(mem, offset);
+    flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), (uint64_t)((uintptr_t)ptr), 0,
+        flagcxBuildTrd(flagcxDevicePrimSend, peer,
+                       ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
+                           ((uint64_t)count << flagcxDeviceTriggerOffCount)));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  _enqueueFifoRecv(const flagcxDevMem &mem, size_t offset, size_t count,
+                   flagcxDataType_t datatype, int peer) const {
+    void *ptr = flagcxGetLocalPointer(mem, offset);
+    flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), (uint64_t)((uintptr_t)ptr), 0,
+        flagcxBuildTrd(flagcxDevicePrimRecv, peer,
+                       ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
+                           ((uint64_t)count << flagcxDeviceTriggerOffCount)));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  _enqueueFifoTerm(int totalCoops) const {
+    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), (uint64_t)totalCoops, 0,
+                             flagcxBuildTrd(flagcxDevicePrimTerm, 0, 0));
+  }
+
+  // ---- Two-sided Coop-scope operations ----
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  send(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
+       flagcxDataType_t datatype, int peer) const {
+    coop.sync();
+    if (coop.threadRank() == 0)
+      _enqueueFifoSend(mem, offset, count, datatype, peer);
+    coop.sync();
+    return flagcxSuccess;
+  }
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  recv(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
+       flagcxDataType_t datatype, int peer) const {
+    coop.sync();
+    if (coop.threadRank() == 0)
+      _enqueueFifoRecv(mem, offset, count, datatype, peer);
+    coop.sync();
+    return flagcxSuccess;
+  }
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      int totalCoops = (FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X) / coop.size();
+      _enqueueFifoTerm(totalCoops);
+    }
+    coop.sync();
+    return flagcxSuccess;
+  }
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
+    coop.sync();
+    if (coop.threadRank() == 0)
+      flagcxFifoWait(_devComm.getFifoBuffer());
+    coop.sync();
+    return flagcxSuccess;
+  }
+
+  // ---- One-sided FIFO encoders ----
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  _enqueueFifoPut(size_t srcOffset, size_t dstOffset, size_t size, int peer,
+                  int srcMrIdx, int dstMrIdx) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
+    uint64_t trdSpecific =
+        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
+        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, sndValue,
+        flagcxBuildTrd(flagcxDevicePrimPut, peer, trdSpecific));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t get(size_t srcOffset,
+                                                    size_t dstOffset,
+                                                    size_t size, int peer,
+                                                    int srcMrIdx,
+                                                    int dstMrIdx) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
+    uint64_t trdSpecific =
+        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
+        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, sndValue,
+        flagcxBuildTrd(flagcxDevicePrimGet, peer, trdSpecific));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t signal(int signalIdx,
+                                                       int peer) const {
+    uint64_t trdSpecific =
+        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
+         << flagcxDeviceTriggerOffSignalIdxSig) |
+        ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), 0, 0,
+        flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoSignal(
+      int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
+    int combinedIdx = (bufferType == 0)
+                          ? (_contextId * _devComm._signalCount + signalIdx)
+                          : (_contextId * _devComm._counterCount + signalIdx);
+    uint64_t trdSpecific =
+        ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
+        ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
+        ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), 0, 0,
+        flagcxBuildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoPutValue(
+      size_t dstOffset, uint64_t value, int peer, int dstMrIdx) const {
+    uint64_t fstValue = (uint64_t)dstOffset &
+                        flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
+    uint64_t trdSpecific = (uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx;
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, value,
+        flagcxBuildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoPutSignal(
+      size_t srcOffset, size_t dstOffset, size_t size, int signalIdx,
+      uint32_t signalValue, int peer, int srcMrIdx, int dstMrIdx) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    uint64_t sndValue = ((uint64_t)size << flagcxDeviceTriggerOffSize) |
+                        ((uint64_t)(signalValue & 0xFFFFu)
+                         << flagcxDeviceTriggerOffSignalValuePut);
+    uint64_t trdSpecific =
+        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
+        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
+        ((uint64_t)(_contextId * _devComm._signalCount + signalIdx)
+         << flagcxDeviceTriggerOffSignalIdx);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, sndValue,
+        flagcxBuildTrd(flagcxDevicePrimPutSignal, peer, trdSpecific));
+  }
+
   // ---- Fallback: FIFO-based one-sided implementations ----
   // Offset conversion + FIFO dispatch for remote ops;
   // direct GPU memory access for local ops.
@@ -1532,10 +1535,10 @@ struct flagcxDevNet {
         _enqueueFifoPutSignal(srcOff, dstOff, bytes,
                               _getSignalIdx(remoteAction),
                               _getSignalValue(remoteAction), peer,
-                              srcMem._mrIndex, dstMem._mrIndex);
+                              srcMem.getMrIndex(), dstMem.getMrIndex());
       } else {
-        _enqueueFifoPut(srcOff, dstOff, bytes, peer, srcMem._mrIndex,
-                        dstMem._mrIndex);
+        _enqueueFifoPut(srcOff, dstOff, bytes, peer, srcMem.getMrIndex(),
+                        dstMem.getMrIndex());
         if (_isSignal(remoteAction))
           _enqueueFifoSignal(_getSignalIdx(remoteAction),
                              _getSignalValue(remoteAction), peer, 0);
@@ -1578,7 +1581,8 @@ struct flagcxDevNet {
     if (coop.threadRank() == 0) {
       size_t srcOff = _toDataOffset(srcMem, srcOffset);
       size_t dstOff = _toDataOffset(dstMem, dstOffset);
-      get(srcOff, dstOff, bytes, peer, srcMem._mrIndex, dstMem._mrIndex);
+      get(srcOff, dstOff, bytes, peer, srcMem.getMrIndex(),
+          dstMem.getMrIndex());
     }
     coop.sync();
   }
@@ -1602,7 +1606,7 @@ struct flagcxDevNet {
     coop.sync();
     if (coop.threadRank() == 0) {
       size_t dstOff = _toDataOffset(dstMem, dstOffset);
-      _enqueueFifoPutValue(dstOff, (uint64_t)value, peer, dstMem._mrIndex);
+      _enqueueFifoPutValue(dstOff, (uint64_t)value, peer, dstMem.getMrIndex());
       if (_isSignal(remoteAction))
         _enqueueFifoSignal(_getSignalIdx(remoteAction),
                            _getSignalValue(remoteAction), peer, 0);

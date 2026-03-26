@@ -92,6 +92,15 @@ struct DeviceTraits<NvidiaVendor> {
       return ncclGetMultimemPointer(_impl, offset, mm._impl);
     }
 
+    FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
+      return _impl.base != 0 || _impl.size != 0;
+    }
+    FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const {
+      return (void *)_impl.base;
+    }
+    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const { return nullptr; }
+    FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return -1; }
+
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
       return _impl.base == o._impl.base && _impl.size == o._impl.size;
     }

@@ -289,6 +289,18 @@ flagcxResult_t mcclAdaptorGroupStart() {
 
 flagcxResult_t mcclAdaptorGroupEnd() { return (flagcxResult_t)mcclGroupEnd(); }
 
+flagcxResult_t
+mcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor mcclAdaptor = {
     "MCCL",
     // Basic functions
@@ -310,6 +322,6 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     // Group semantics
     mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
     // Device API
-    NULL, NULL};
+    mcclAdaptorDevCommCreate, mcclAdaptorDevCommDestroy};
 
 #endif // USE_METAX_ADAPTOR

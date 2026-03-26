@@ -104,9 +104,9 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
 }
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
-                                        ncclDevCommRequirements *reqs,
-                                        ncclDevComm *devComm) {
+static flagcxResult_t ncclDevCommCreateHelper(ncclComm_t comm,
+                                              ncclDevCommRequirements *reqs,
+                                              ncclDevComm *devComm) {
   using pncclDevCommCreate_t =
       flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, ncclDevCommRequirements *,
                            ncclDevComm *>;
@@ -125,8 +125,8 @@ flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
   return (flagcxResult_t)ret;
 }
 
-flagcxResult_t ncclAdaptorDevCommDestroy(ncclComm_t comm,
-                                         const ncclDevComm *devComm) {
+static flagcxResult_t ncclDevCommDestroyHelper(ncclComm_t comm,
+                                               const ncclDevComm *devComm) {
   using pncclDevCommDestroy_t =
       flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t, const ncclDevComm *>;
   void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
@@ -189,7 +189,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       // flagcxDevCommCreate. reqs.railGinBarrierCount =
       // NCCL_ADAPTOR_DEVICE_CTA_COUNT; reqs.ginSignalCount = 1;
       flagcxResult_t devCommRes =
-          ncclAdaptorDevCommCreate((*comm)->base, &reqs, (*comm)->devBase);
+          ncclDevCommCreateHelper((*comm)->base, &reqs, (*comm)->devBase);
       if (devCommRes != flagcxSuccess) {
         WARN("ncclDevCommCreate unavailable (res=%d), DevComm disabled",
              devCommRes);
@@ -219,7 +219,7 @@ flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
     free(comm->recvStagedBuff);
   }
   if (comm->devBase != NULL) {
-    FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
+    FLAGCXCHECK(ncclDevCommDestroyHelper(comm->base, comm->devBase));
     free(comm->devBase);
     comm->devBase = NULL;
   }
@@ -244,7 +244,7 @@ flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
     free(comm->recvStagedBuff);
   }
   if (comm->devBase != NULL) {
-    FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
+    FLAGCXCHECK(ncclDevCommDestroyHelper(comm->base, comm->devBase));
     free(comm->devBase);
     comm->devBase = NULL;
   }
@@ -269,7 +269,7 @@ flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
     free(comm->recvStagedBuff);
   }
   if (comm->devBase != NULL) {
-    FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
+    FLAGCXCHECK(ncclDevCommDestroyHelper(comm->base, comm->devBase));
     free(comm->devBase);
     comm->devBase = NULL;
   }
@@ -558,37 +558,56 @@ flagcxResult_t ncclAdaptorGroupStart() {
 
 flagcxResult_t ncclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 
+flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
+                                        const flagcxDevCommRequirements *reqs,
+                                        flagcxInnerDevComm_t *devComm) {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-static flagcxResult_t ncclAdaptorDevCommCreateWrapper(flagcxInnerComm_t comm,
-                                                      void **devComm,
-                                                      void *requirements) {
-  ncclDevComm *nccl = (ncclDevComm *)malloc(sizeof(ncclDevComm));
-  if (!nccl)
+  flagcxInnerDevComm_t inner =
+      (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
+  if (!inner)
     return flagcxSystemError;
 
-  ncclDevCommRequirements *reqs = (ncclDevCommRequirements *)requirements;
-  flagcxResult_t ret = ncclAdaptorDevCommCreate(comm->base, reqs, nccl);
+  // Map generic requirements to NCCL-specific requirements
+  ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
+  ncclReqs.lsaMultimem = reqs->intraMulticast;
+  ncclReqs.barrierCount = reqs->barrierCount;
+  ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
+  ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
+  ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
+  ncclReqs.ginSignalCount = reqs->interSignalCount;
+  ncclReqs.ginForceEnable = reqs->interForceEnable;
+  ncclReqs.ginContextCount = reqs->interContextCount;
+  ncclReqs.ginCounterCount = reqs->interCounterCount;
+
+  flagcxResult_t ret =
+      ncclDevCommCreateHelper(comm->base, &ncclReqs, &inner->base);
   if (ret != flagcxSuccess) {
-    free(nccl);
+    free(inner);
     return ret;
   }
 
-  *devComm = nccl;
-  comm->devBase = nccl;
+  *devComm = inner;
+  comm->devBase = &inner->base;
   return flagcxSuccess;
+#else
+  return flagcxNotSupported;
+#endif
 }
 
-static flagcxResult_t ncclAdaptorDevCommDestroyWrapper(flagcxInnerComm_t comm,
-                                                       void *devComm) {
+flagcxResult_t ncclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
+                                         flagcxInnerDevComm_t devComm) {
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   if (!devComm)
     return flagcxSuccess;
-  ncclDevComm *nccl = (ncclDevComm *)devComm;
-  flagcxResult_t ret = ncclAdaptorDevCommDestroy(comm->base, nccl);
-  free(nccl);
+  flagcxResult_t ret = ncclDevCommDestroyHelper(comm->base, &devComm->base);
+  free(devComm);
   comm->devBase = NULL;
   return ret;
-}
+#else
+  return flagcxNotSupported;
 #endif
+}
 
 struct flagcxCCLAdaptor ncclAdaptor = {
     "NCCL",
@@ -610,12 +629,7 @@ struct flagcxCCLAdaptor ncclAdaptor = {
     ncclAdaptorSend, ncclAdaptorRecv,
     // Group semantics
     ncclAdaptorGroupStart, ncclAdaptorGroupEnd,
-// Device API
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-    ncclAdaptorDevCommCreateWrapper, ncclAdaptorDevCommDestroyWrapper
-#else
-    NULL, NULL
-#endif
-};
+    // Device API
+    ncclAdaptorDevCommCreate, ncclAdaptorDevCommDestroy};
 
 #endif // USE_NVIDIA_ADAPTOR

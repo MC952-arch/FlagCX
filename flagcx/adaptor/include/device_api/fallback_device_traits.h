@@ -70,6 +70,13 @@ struct DeviceTraits<Fallback<PlatformTag>> {
       return nullptr; // Multicast not available in fallback
     }
 
+    FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
+      return rawPtr != nullptr || peerPtrs != nullptr;
+    }
+    FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return rawPtr; }
+    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const { return peerPtrs; }
+    FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return mrIndex; }
+
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
       return rawPtr == o.rawPtr;
     }

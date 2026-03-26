@@ -338,6 +338,18 @@ flagcxResult_t hcclAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
+flagcxResult_t
+hcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t hcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor hcclAdaptor = {
     "HCCL",
     // Basic functions
@@ -359,6 +371,6 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     // Group semantics
     hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
     // Device API
-    NULL, NULL};
+    hcclAdaptorDevCommCreate, hcclAdaptorDevCommDestroy};
 
 #endif // USE_ASCEND_ADAPTOR

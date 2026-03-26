@@ -374,6 +374,18 @@ flagcxResult_t tcclAdaptorGroupEnd() {
   return fromTcclResult(result);
 }
 
+flagcxResult_t
+tcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t tcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor tcclAdaptor = {
     "TCCL",
     // Basic functions
@@ -395,6 +407,6 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     // Group semantics
     tcclAdaptorGroupStart, tcclAdaptorGroupEnd,
     // Device API
-    NULL, NULL};
+    tcclAdaptorDevCommCreate, tcclAdaptorDevCommDestroy};
 
 #endif // USE_TSM_ADAPTOR

@@ -335,6 +335,18 @@ flagcxResult_t cnclAdaptorGroupEnd() {
   return (flagcxResult_t)c2f_ret_map[cnclGroupEnd()];
 }
 
+flagcxResult_t
+cnclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor cnclAdaptor = {
     "CNCL",
     // Basic functions
@@ -356,6 +368,6 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     // Group semantics
     cnclAdaptorGroupStart, cnclAdaptorGroupEnd,
     // Device API
-    NULL, NULL};
+    cnclAdaptorDevCommCreate, cnclAdaptorDevCommDestroy};
 
 #endif // USE_CAMBRICON_ADAPTOR

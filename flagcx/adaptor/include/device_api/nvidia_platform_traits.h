@@ -172,10 +172,6 @@ struct PlatformTraits<NvidiaPlatform> {
     }
 
   private:
-    // Memory order mapping
-    FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR
-        cuda::memory_order orderMap_[];
-
     static FLAGCX_DEVICE_INLINE_DECORATOR cuda::memory_order
     toOrder(flagcxDeviceMemoryOrder_t o) {
       FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR

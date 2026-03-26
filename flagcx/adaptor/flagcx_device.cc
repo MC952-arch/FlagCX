@@ -504,33 +504,19 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   // ---- Vendor path: try devCommCreate via adaptor ----
   flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm != nullptr && innerComm->adaptor != nullptr &&
-      innerComm->adaptor->devCommCreate != nullptr) {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-    ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
-    ncclReqs.lsaMultimem = reqs->intraMulticast;
-    ncclReqs.barrierCount = reqs->barrierCount;
-    ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
-    ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
-    ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
-    ncclReqs.ginSignalCount = reqs->interSignalCount;
-    ncclReqs.ginForceEnable = reqs->interForceEnable;
-    ncclReqs.ginContextCount = reqs->interContextCount;
-    ncclReqs.ginCounterCount = reqs->interCounterCount;
-
-    void *vendorComm = nullptr;
-    flagcxResult_t ret =
-        innerComm->adaptor->devCommCreate(innerComm, &vendorComm, &ncclReqs);
-    if (ret != flagcxSuccess) {
+  if (innerComm != nullptr) {
+    flagcxInnerDevComm_t innerDevComm = nullptr;
+    flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
+        innerComm, reqs, &innerDevComm);
+    if (ret != flagcxSuccess && ret != flagcxNotSupported) {
       WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
       free(handle);
       return ret;
     }
-    handle->devComm = vendorComm;
-    INFO(FLAGCX_INIT, " + vendor devComm");
-#endif
-  } else {
+    if (ret == flagcxSuccess)
+      handle->devComm = innerDevComm;
+  }
+  if (handle->devComm == nullptr) {
     // ---- Fallback path: IPC barriers + inter-node signal relay + one-sided
     // ----
 
@@ -635,15 +621,13 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     hetero->devCommHandle = handle;
   }
 
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s",
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s",
        handle->rank, handle->devComm ? " + vendor devComm" : "",
        handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
            ? " + one-sided Fallback"
-           : ""
-#endif
-  );
+           : "");
 
   // Pre-establish full-mesh connections from main thread
   FLAGCXCHECK(preconnectFullMesh(comm));
@@ -662,9 +646,9 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   // Vendor layer cleanup via adaptor
   if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr && innerComm->adaptor != nullptr &&
-        innerComm->adaptor->devCommDestroy != nullptr) {
-      innerComm->adaptor->devCommDestroy(innerComm, devComm->devComm);
+    if (innerComm != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
+                                                          devComm->devComm);
       devComm->devComm = nullptr;
     }
   }
@@ -707,7 +691,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxOneSideStagingDeregister(comm);
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
-#endif
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d done", devComm->rank);
   free(devComm->localRankToRank);
@@ -800,13 +783,33 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       handle->window = ncclWin;
       handle->winHandle = (void *)win;
 #else
-      // Allocate defaultDeviceImpl::Window and populate from IPC/MR layers
-      // (Future: implement default window allocation)
       handle->window = nullptr;
       handle->winHandle = nullptr;
 #endif
     }
   }
+
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  // Fallback: always create a Window with baseline/IPC/MR fields so that
+  // flagcxDevMem(di) can copy it into _winBase for kernel use.
+  if (handle->window == nullptr) {
+    auto *fbWin = (typename DeviceAPI::Window *)malloc(
+        sizeof(typename DeviceAPI::Window));
+    if (fbWin == nullptr) {
+      WARN("flagcxDevMemCreate: failed to allocate fallback Window");
+      free(handle);
+      return flagcxSystemError;
+    }
+    fbWin->rawPtr = handle->rawPtr;
+    fbWin->peerPtrs = handle->devPeerPtrs;
+    fbWin->intraRank = handle->intraRank;
+    fbWin->mrBase = handle->mrBase;
+    fbWin->mrIndex = handle->mrIndex;
+    handle->window = fbWin;
+    handle->hasWindow =
+        (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);
+  }
+#endif
 
   *devMem = handle;
   INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
