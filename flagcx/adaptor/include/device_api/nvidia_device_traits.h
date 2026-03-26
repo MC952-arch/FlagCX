@@ -131,6 +131,11 @@ struct DeviceTraits<NvidiaVendor> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
       return nullptr;
     }
+
+    // No-op: vendor DevComm is populated via devComm pointer cast
+    template <typename DI>
+    static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(DevComm &,
+                                                               const DI &) {}
   };
 
   // ---- CoopBlock: wraps ncclCoopCta ----
@@ -240,6 +245,11 @@ struct DeviceTraits<NvidiaVendor> {
   using RemoteAction = ncclGinRemoteAction;
   using LocalAction = ncclGinLocalAction;
   using FenceLevel = ncclGinFenceLevel;
+
+  // ---- DevBarrier alias: delegates to standalone DevBarrier<Backend, Tag>
+  // ----
+  template <typename T>
+  using DevBarrier = ::DevBarrier<NvidiaVendor, T>;
 
   // ---- Action type conversion helpers (flagcx -> NCCL) ----
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None toNccl(flagcxDevNet_None) {
@@ -415,6 +425,196 @@ static_assert(
         static_cast<int>(flagcxGinFenceLevel::Relaxed) + 1,
     "flagcxGinFenceLevelMap must cover all flagcxGinFenceLevel values");
 #endif
+
+// ============================================================
+// DevBarrier specializations for NvidiaVendor
+// ============================================================
+
+// ---- DevBarrier<NvidiaVendor, flagcxBarrierIntra> ----
+// Wraps ncclLsaBarrierSession<ncclCoopCta>.
+template <>
+struct DevBarrier<NvidiaVendor, flagcxBarrierIntra> {
+  using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
+  using Team = DeviceTraits<NvidiaVendor>::Team;
+  using Multimem = DeviceTraits<NvidiaVendor>::Multimem;
+
+  ncclLsaBarrierSession<ncclCoopCta> _impl;
+
+  // Default ctor
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier() : _impl() {}
+
+  // Active ctor
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier(const DevComm &dc, Team team, uint32_t index,
+             bool multimem = false, const Multimem &mm = {})
+      : _impl(ncclCoopCta(), dc, ncclTeamLsa(dc), dc._impl.lsaBarrier, index,
+              multimem, mm._impl) {}
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(Coop,
+         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    _impl.arrive(ncclCoopCta(), Atomic::toNativeOrder(order));
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    _impl.wait(ncclCoopCta(), Atomic::toNativeOrder(order));
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    _impl.sync(ncclCoopCta(), Atomic::toNativeOrder(order));
+  }
+};
+
+// ---- DevBarrier<NvidiaVendor, flagcxBarrierInter> ----
+// Wraps ncclGinBarrierSession<ncclCoopCta> via placement new.
+template <>
+struct DevBarrier<NvidiaVendor, flagcxBarrierInter> {
+  using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
+  using Team = DeviceTraits<NvidiaVendor>::Team;
+  using Net = DeviceTraits<NvidiaVendor>::Net;
+
+  alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
+      ncclGinBarrierSession<ncclCoopCta>)];
+  int _nInterPeers;
+
+  // Default ctor (no-op barrier)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier() : _nInterPeers(0) {}
+
+  // Active ctor
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier(const Net &net, const DevComm &dc, Team team, uint32_t index,
+             int nInterPeers)
+      : _nInterPeers(nInterPeers) {
+    new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), net._gin, team, net._gin.comm.railGinBarrier, index);
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    // ncclGinBarrierSession only exposes sync; arrive is a no-op on vendor
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    // ncclGinBarrierSession only exposes sync; wait is a no-op on vendor
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    if (_nInterPeers > 0) {
+      reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), Atomic::toNativeOrder(order),
+                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
+    }
+  }
+};
+
+// ---- DevBarrier<NvidiaVendor, flagcxBarrierWorld> ----
+// World: wraps ncclBarrierSession. Intra: wraps ncclLsaBarrierSession.
+// Uses placement new for the union of both types.
+template <>
+struct DevBarrier<NvidiaVendor, flagcxBarrierWorld> {
+  using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
+  using Net = DeviceTraits<NvidiaVendor>::Net;
+
+  // Storage large enough for the larger of the two session types
+  static constexpr size_t kWorldSize = sizeof(ncclBarrierSession<ncclCoopCta>);
+  static constexpr size_t kIntraSize =
+      sizeof(ncclLsaBarrierSession<ncclCoopCta>);
+  static constexpr size_t kMaxSize =
+      (kWorldSize > kIntraSize) ? kWorldSize : kIntraSize;
+  static constexpr size_t kWorldAlign =
+      alignof(ncclBarrierSession<ncclCoopCta>);
+  static constexpr size_t kIntraAlign =
+      alignof(ncclLsaBarrierSession<ncclCoopCta>);
+  static constexpr size_t kMaxAlign =
+      (kWorldAlign > kIntraAlign) ? kWorldAlign : kIntraAlign;
+
+  alignas(kMaxAlign) char _implStorage[kMaxSize];
+  bool _intraOnly;
+
+  // World barrier (intra + inter)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier(flagcxBarrierWorld::World, const Net &net, const DevComm &dc,
+             uint32_t index, bool multimem, int)
+      : _intraOnly(false) {
+    new (_implStorage) ncclBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), ncclTeamTagWorld(), net._gin, index, multimem);
+  }
+
+  // Intra-only barrier
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier(flagcxBarrierWorld::Intra, const Net &, const DevComm &dc,
+             uint32_t index, bool multimem, int)
+      : _intraOnly(true) {
+    new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), dc, ncclTeamLsa(dc), dc._impl.lsaBarrier, index,
+        multimem);
+  }
+
+  // Inter-only barrier (ncclTeamTagRail)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  DevBarrier(flagcxBarrierWorld::Inter, const Net &net, const DevComm &,
+             uint32_t index, bool, int)
+      : _intraOnly(false) {
+    new (_implStorage) ncclBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), ncclTeamTagRail(), net._gin, index);
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(Coop coop,
+         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    if (_intraOnly) {
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->arrive(ncclCoopCta(), Atomic::toNativeOrder(order));
+    }
+    // ncclBarrierSession (World/Inter) only exposes sync; arrive is a no-op
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    if (_intraOnly) {
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->wait(ncclCoopCta(), Atomic::toNativeOrder(order));
+    }
+    // ncclBarrierSession (World/Inter) only exposes sync; wait is a no-op
+  }
+
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sync(Coop, flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    if (_intraOnly) {
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), Atomic::toNativeOrder(order));
+    } else {
+      reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), Atomic::toNativeOrder(order),
+                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
+    }
+  }
+};
 
 #define FLAGCX_DEVICE_API_VENDOR 1
 using DeviceAPI = DeviceTraits<NvidiaVendor>;

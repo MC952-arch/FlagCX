@@ -162,31 +162,12 @@ struct flagcxDevComm {
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers) {
     if (di.devComm) {
       _commBase = *(typename DeviceAPI::DevComm *)di.devComm;
-    }
-#ifndef FLAGCX_DEVICE_API_VENDOR
-    else {
+    } else {
       // Fallback: populate _commBase directly from handle fields.
-      // This ensures mutable fields (epochs) are always up-to-date.
-      _commBase.rank = di.rank;
-      _commBase.nRanks = di.nRanks;
-      _commBase.intraRank = di.intraRank;
-      _commBase.intraSize = di.intraSize;
-      _commBase.fifoBuffer = di.fifoBuffer;
-      _commBase.barrierPeers = di.barrierPeers;
-      _commBase.intraBarrierEpoch = di.intraBarrierEpoch;
-      _commBase.nBarriers = di.nBarriers;
-      _commBase.interSignalFlags = di.interSignalFlags;
-      _commBase.nInterPeers = di.nInterPeers;
-      _commBase.isInterLeader = di.isInterLeader;
-      _commBase.interBarrierEpoch = di.interBarrierEpoch;
-      _commBase.signalBuffer = di.signalBuffer;
-      _commBase.shadowBuffer = di.shadowBuffer;
-      _commBase.counterBuffer = di.counterBuffer;
-      _commBase.signalCount = di.signalCount;
-      _commBase.counterCount = di.counterCount;
-      _commBase.contextCount = di.contextCount;
+      // Vendor path: no-op (devComm pointer always set).
+      // Dispatch resolved at compile time via DeviceAPI::DevComm.
+      DeviceAPI::DevComm::populateFromInternal(_commBase, di);
     }
-#endif
   }
 
   // Accessors delegate to _commBase member functions
@@ -601,116 +582,48 @@ flagcxCoopCoalesced(flagcxCoopTile<N> coop) {
 #endif // FLAGCX_SIMT_WIDTH
 
 // ============================================================
-// Section 7: flagcxIntraBarrierSession — Intra-Node Barrier
+// Section 7: flagcxDevBarrier — Barrier Session Wrappers
 //
-// On NVIDIA (Vendor > 2.28): wraps vendor barrier session.
-// On fallback: flag-based barrier using IPC-mapped peer memory + atomics.
+// Thin wrappers delegating to DeviceAPI::DevBarrier<Tag>.
+// No #ifdef FLAGCX_DEVICE_API_VENDOR — dispatch resolved by DeviceTraits.
 // ============================================================
+
+// Primary template
+template <typename Tag, typename Coop>
+struct flagcxDevBarrier;
+
+// ---- Intra ----
 template <typename Coop>
-struct flagcxIntraBarrierSession {
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  ncclLsaBarrierSession<ncclCoopCta> _impl;
+struct flagcxDevBarrier<flagcxBarrierIntra, Coop> {
+  typename DeviceAPI::template DevBarrier<flagcxBarrierIntra> _impl;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
-                            flagcxTeam_t team, uint32_t index,
-                            bool multimem = false,
-                            flagcxMulticastHandle mcHandle = {})
-      : _impl(ncclCoopCta(), devComm._commBase, ncclTeamLsa(devComm._commBase),
-              devComm._commBase._impl.lsaBarrier, index, multimem,
+  flagcxDevBarrier() : _impl() {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxDevBarrier(Coop coop, const flagcxDevComm &devComm, flagcxTeam_t team,
+                   uint32_t index, bool multimem = false,
+                   flagcxMulticastHandle mcHandle = {})
+      : _impl(devComm._commBase, team._teamBase, index, multimem,
               mcHandle._multimemBase) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
          flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.arrive(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
+    _impl.arrive(coop._base, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.wait(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
+    _impl.wait(coop._base, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
+    _impl.sync(coop._base, order);
   }
-#else
-  // Fallback: thread-striped per-peer inbox barrier (aligned with
-  // vendor barrier session). Each rank has an inbox buffer: inbox[senderRank *
-  // nBarriers + ctaIndex]. arrive: thread-striped store(epoch+1) to each peer's
-  // inbox slot for me. wait:   thread-striped spin on own inbox slots from each
-  // peer.
-  uint32_t **_peerBuffers; // IPC-mapped pointers to each peer's inbox buffer
-  int _nRanks, _myRank;
-  int _nBarriers; // = CTA_COUNT
-  uint32_t _ctaIndex;
-  uint32_t _epoch;
-
-  // Default constructor (no-op, for inter-only barrier composition)
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxIntraBarrierSession()
-      : _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
-        _ctaIndex(0), _epoch(0) {}
-
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
-                            flagcxTeam_t team, uint32_t index,
-                            bool multimem = false,
-                            flagcxMulticastHandle mcHandle = {})
-      : _peerBuffers(devComm._commBase.barrierPeers),
-        _nRanks(team._teamBase.nRanks), _myRank(team._teamBase.rank),
-        _nBarriers(devComm._commBase.nBarriers), _ctaIndex(index),
-        _epoch(devComm._commBase.intraBarrierEpoch) {}
-
-  // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  arrive(Coop coop,
-         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    coop.sync();
-    for (int i = FLAGCX_THREAD_IDX_X; i < _nRanks - 1;
-         i += FLAGCX_BLOCK_DIM_X) {
-      int peer = 1 + _myRank + i;
-      if (peer >= _nRanks)
-        peer -= _nRanks;
-      // Write to peer's buffer at inbox[myRank * nBarriers + ctaIndex]
-      DeviceAPI::Atomic::store(
-          &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex], _epoch + 1,
-          flagcxDeviceMemoryOrderRelease);
-    }
-  }
-
-  // wait: thread-striped spin on own inbox slots from each peer
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  wait(Coop coop,
-       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    for (int i = FLAGCX_THREAD_IDX_X; i < _nRanks - 1;
-         i += FLAGCX_BLOCK_DIM_X) {
-      int peer = 1 + _myRank + i;
-      if (peer >= _nRanks)
-        peer -= _nRanks;
-      // Read from my buffer at inbox[peer * nBarriers + ctaIndex]
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(
-                 &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex],
-                 flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    _epoch += 1;
-    coop.sync();
-  }
-
-  // sync = arrive + wait (same as vendor)
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(Coop coop,
-       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(coop, order);
-    wait(coop, order);
-  }
-#endif
 };
 
 // ============================================================
@@ -1123,233 +1036,100 @@ struct flagcxDevNet {
 };
 
 // ============================================================
-// Section 11: flagcxInterBarrierSession — Inter-Node Barrier (Vendor only)
+// Section 11: flagcxDevBarrier<flagcxBarrierInter> — Inter-Node Barrier
 // ============================================================
-#ifdef FLAGCX_DEVICE_API_VENDOR
-// NOTE: On the vendor path, _nInterPeers is always 0 (set only by fallback's
-// setupInterNodeSignalRelay). sync() is therefore a no-op. Multi-node kernels
-// should use flagcxBarrierSession(flagcxTeamTagWorld) which wraps
-// ncclBarrierSession for combined intra+inter sync.
+// ---- Inter ----
 template <typename Coop>
-struct flagcxInterBarrierSession {
-  alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
-      ncclGinBarrierSession<ncclCoopCta>)];
-  static_assert(sizeof(_implStorage) >=
-                    sizeof(ncclGinBarrierSession<ncclCoopCta>),
-                "implStorage too small for ncclGinBarrierSession");
-  int _nInterPeers;
+struct flagcxDevBarrier<flagcxBarrierInter, Coop> {
+  typename DeviceAPI::template DevBarrier<flagcxBarrierInter> _impl;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
-                            flagcxTeam_t team, uint32_t index)
-      : _nInterPeers(net._devComm._nInterPeers) {
-    new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), net._netBase._gin, team._teamBase,
-        net._netBase._gin.comm.railGinBarrier, index);
-  }
+  flagcxDevBarrier() : _impl() {}
 
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(Coop coop,
-       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order),
-                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
-    }
-  }
-};
-#else
-// Fallback: Inter-node barrier via FIFO Signal + netAdaptor isend/irecv.
-// Sends signals to inter-node peers, waits on host-mapped interSignalFlags.
-// Only the inter leader (localRank 0) actually sends/waits; non-leaders are
-// no-ops. All ranks know nInterPeers for two-phase logic in BarrierSession.
-template <typename Coop>
-struct flagcxInterBarrierSession {
-  uint64_t *_interSignals; // host-mapped inter signal array [CTA_COUNT]
-  void *_fifoBuffer;       // for FIFO Signal entries
-  int _nInterPeers;
-  bool _isLeader;
-  uint32_t _ctaIndex;
-  uint64_t _epoch;
-
-  // Active constructor (world barrier with inter-node peers)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession(Coop coop, const flagcxDevComm &devComm,
-                            uint32_t index)
-      : _interSignals(devComm._commBase.interSignalFlags),
-        _fifoBuffer(devComm.getFifoBuffer()),
-        _nInterPeers(devComm._nInterPeers),
-        _isLeader(devComm._commBase.isInterLeader), _ctaIndex(index),
-        _epoch(devComm._commBase.interBarrierEpoch) {}
+  flagcxDevBarrier(Coop coop, const flagcxDevNet &net, flagcxTeam_t team,
+                   uint32_t index)
+      : _impl(net._netBase, net._devComm._commBase, team._teamBase, index,
+              net._devComm._nInterPeers) {}
 
-  // Overload matching Vendor signature (coop, net, team, index)
-  // Used by kernels that want inter-only barrier directly.
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
-                            flagcxTeam_t team, uint32_t index)
-      : _interSignals(net._devComm._commBase.interSignalFlags),
-        _fifoBuffer(net._devComm.getFifoBuffer()),
-        _nInterPeers(net._devComm._nInterPeers),
-        _isLeader(net._devComm._commBase.isInterLeader), _ctaIndex(index),
-        _epoch(net._devComm._commBase.interBarrierEpoch) {}
-
-  // Default constructor (intra-only, all operations are no-ops)
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession()
-      : _interSignals(nullptr), _fifoBuffer(nullptr), _nInterPeers(0),
-        _isLeader(false), _ctaIndex(0), _epoch(0) {}
-
-  // Arrive: write one FIFO Signal entry (proxy fans out to all inter peers)
-  // Only the leader sends; non-leaders skip.  Coop-scope: all threads
-  // participate in sync, only threadRank==0 touches FIFO.
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
-         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _epoch += _nInterPeers;
-    coop.sync();
-    if (coop.threadRank() == 0 && _isLeader) {
-      DeviceAPI::fifoEnqueue(
-          _fifoBuffer, (uint64_t)_ctaIndex, 0,
-          DeviceAPI::buildTrd(flagcxDevicePrimBarrierSignal, 0, 0));
-    }
-    coop.sync();
+         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.arrive(coop._base, order, fence);
   }
 
-  // Wait: spin on host-mapped inter signal array
-  // Only the leader waits; non-leaders skip.  Coop-scope.
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(Coop coop,
-       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    coop.sync();
-    if (coop.threadRank() == 0 && _isLeader) {
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(&_interSignals[_ctaIndex],
-                                     flagcxDeviceMemoryOrderAcquire) < _epoch) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    coop.sync();
-  }
-
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(Coop coop,
-       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(coop, order);
-    wait(coop, order);
-  }
-};
-#endif
-
-// ============================================================
-// Section 12: flagcxBarrierSession — Unified Barrier (both tiers)
-// ============================================================
-#ifdef FLAGCX_DEVICE_API_VENDOR
-template <typename Coop>
-struct flagcxBarrierSession {
-  // Placement-new storage: large enough for vendor barrier session (World) or
-  // vendor intra-barrier session (Intra-only). The world barrier wraps
-  // intra+inter so it is always >= the intra-barrier session in size and
-  // alignment.
-  alignas(ncclBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
-      ncclBarrierSession<ncclCoopCta>)];
-  bool _intraOnly;
-
-  // World barrier (intra + inter) — construct vendor barrier session
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
-                       uint32_t index, bool multimem = false)
-      : _intraOnly(false) {
-    new (_implStorage) ncclBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), ncclTeamTagWorld(), net._netBase._gin, index, multimem);
-  }
-
-  // Intra-only barrier — construct vendor intra-barrier session directly.
-  // Bypasses the world barrier constructor which triggers a deleted
-  // copy constructor in vendor utility internals.
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
-                       const flagcxDevComm &devComm, uint32_t index,
-                       bool multimem = false)
-      : _intraOnly(true) {
-    new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), devComm._commBase, ncclTeamLsa(devComm._commBase),
-        devComm._commBase._impl.lsaBarrier, index, multimem);
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.wait(coop._base, order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_intraOnly) {
-      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order));
-    } else {
-      reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
-          ->sync(ncclCoopCta(), DeviceAPI::Atomic::toNativeOrder(order),
-                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
-    }
+    _impl.sync(coop._base, order, fence);
   }
 };
-#else
-// Fallback: Composes intra (IPC atomicAdd) + inter (FIFO Signal relay).
-//         Three-phase pattern for multi-node:
-//           Phase 1: intra sync (all local ranks ensure data visible)
-//           Phase 2: leader inter signal+wait (non-leaders skip)
-//           Phase 3: intra sync (broadcasts inter completion)
-//         Single-node: just one intra sync (no phase 2/3).
+
+// ---- World ----
 template <typename Coop>
-struct flagcxBarrierSession {
-  flagcxIntraBarrierSession<Coop> _intra;
-  flagcxInterBarrierSession<Coop> _inter;
-  int _nInterPeers;
+struct flagcxDevBarrier<flagcxBarrierWorld, Coop> {
+  typename DeviceAPI::template DevBarrier<flagcxBarrierWorld> _impl;
 
-  // World barrier: intra (IPC) + inter (FIFO Signal → isend)
+  // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
-                       uint32_t index, bool multimem = false)
-      : _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index),
-        _inter(coop, net._devComm, index),
-        _nInterPeers(net._devComm._nInterPeers) {}
+  flagcxDevBarrier(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
+                   uint32_t index, bool multimem = false)
+      : _impl(flagcxBarrierWorld::World{}, net._netBase, net._devComm._commBase,
+              index, multimem, net._devComm._nInterPeers) {}
 
-  // Intra-only barrier: inter is default constructed (no-op)
+  // Intra-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
-                       const flagcxDevComm &devComm, uint32_t index,
-                       bool multimem = false)
-      : _intra(coop, devComm, flagcxTeamIntra(devComm), index), _inter(),
-        _nInterPeers(0) {}
+  flagcxDevBarrier(Coop coop, flagcxTeamTagIntra, const flagcxDevComm &devComm,
+                   uint32_t index, bool multimem = false)
+      : _impl(flagcxBarrierWorld::Intra{},
+              typename DeviceAPI::Net(devComm._commBase, 0), devComm._commBase,
+              index, multimem, 0) {}
 
-  // Accessors for sub-barrier sessions (Fallback only)
+  // Inter-only barrier (ncclTeamTagRail on NVIDIA)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxIntraBarrierSession<Coop> &intraBarrier() { return _intra; }
+  flagcxDevBarrier(Coop coop, flagcxTeamTagInter, const flagcxDevNet &net,
+                   uint32_t index, bool multimem = false)
+      : _impl(flagcxBarrierWorld::Inter{}, net._netBase, net._devComm._commBase,
+              index, multimem, net._devComm._nInterPeers) {}
 
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession<Coop> &interBarrier() { return _inter; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(Coop coop,
+         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.arrive(coop._base, order, fence);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+    _impl.wait(coop._base, order, fence);
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      // Phase 1: intra sync (arrive has coop.sync at start, wait has coop.sync
-      // at end)
-      _intra.arrive(coop, flagcxDeviceMemoryOrderRelease);
-      _intra.wait(coop, flagcxDeviceMemoryOrderRelease);
-      // Phase 2: inter signal+wait (leader only, non-leaders skip)
-      _inter.arrive(coop, order);
-      _inter.wait(coop, order);
-      // Phase 3: intra sync (broadcast inter completion)
-      _intra.arrive(coop, flagcxDeviceMemoryOrderAcquire);
-      _intra.wait(coop, flagcxDeviceMemoryOrderAcquire);
-    } else {
-      // Single-node: one intra sync
-      _intra.arrive(coop, order);
-      _intra.wait(coop, order);
-    }
+    _impl.sync(coop._base, order, fence);
   }
 };
-#endif
+
+// Backward-compatible aliases
+template <typename Coop>
+using flagcxIntraBarrierSession = flagcxDevBarrier<flagcxBarrierIntra, Coop>;
+template <typename Coop>
+using flagcxInterBarrierSession = flagcxDevBarrier<flagcxBarrierInter, Coop>;
+template <typename Coop>
+using flagcxBarrierSession = flagcxDevBarrier<flagcxBarrierWorld, Coop>;
 
 #endif // FLAGCX_DEVICE_COMPILE (Sections 9b-12)
 
