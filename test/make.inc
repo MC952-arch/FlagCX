@@ -37,6 +37,9 @@ GTEST_LINK    := -L$(GTEST_LIB) -lgtest -lgtest_main -lpthread
 # Shared test fixtures
 FIXTURE_INCLUDE := -I$(PROJECT_ROOT)/test/fixtures
 
+# Shared unittest base fixtures (flagcx_test.hpp, etc.)
+UNITTEST_INCLUDE := -I$(PROJECT_ROOT)/test/unittest/include
+
 # MPI (used by _mpi_tests targets)
 MPI_HOME    ?= /usr/local/mpi
 MPI_INCLUDE := -I$(MPI_HOME)/include
