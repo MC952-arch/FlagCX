@@ -412,7 +412,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   // Allocate IPC-shareable barrier flags
   struct flagcxP2pIpcDesc barrierIpcDesc;
   memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
-  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
+  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
   FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
@@ -424,7 +424,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     return flagcxInternalError;
 
   // Store barrier-specific metadata on devComm handle
-  handle->barrierPeers = (uint32_t **)comm->ipcTable[slot].devPeerPtrs;
+  handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
   handle->barrierIpcIndex = slot;
   handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
 

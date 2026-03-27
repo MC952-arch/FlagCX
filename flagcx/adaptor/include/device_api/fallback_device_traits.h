@@ -95,8 +95,8 @@ struct DeviceTraits<Fallback<PlatformTag>> {
     void *fifoBuffer;
 
     // IPC barriers
-    uint32_t **barrierPeers;
-    uint32_t intraBarrierEpoch;
+    uint64_t **barrierPeers;
+    uint64_t intraBarrierEpoch;
     int nBarriers;
 
     // Inter-node signal relay
@@ -725,11 +725,11 @@ struct DevBarrier<Fallback<P>, flagcxBarrierIntra> {
   using Team = typename DeviceTraits<Fallback<P>>::Team;
   using Multimem = typename DeviceTraits<Fallback<P>>::Multimem;
 
-  uint32_t **_peerBuffers;
+  uint64_t **_peerBuffers;
   int _nRanks, _myRank;
   int _nBarriers;
   uint32_t _ctaIndex;
-  uint32_t _epoch;
+  uint64_t _epoch;
 
   // Default ctor (no-op, for barrier composition)
   FLAGCX_DEVICE_INLINE_DECORATOR

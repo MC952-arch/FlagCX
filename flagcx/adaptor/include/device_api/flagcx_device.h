@@ -49,11 +49,11 @@ struct flagcxDevCommInternal {
   void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
-  uint32_t *
+  uint64_t *
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
-  uint32_t
+  uint64_t
       *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
-  uint32_t
+  uint64_t
       intraBarrierEpoch; // monotonically increasing, set by host before launch
   int nBarriers;         // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
@@ -106,7 +106,7 @@ struct flagcxDevCommInternal {
 // Unified capability-based design: rawPtr always populated,
 // IPC and Window layers added when available.
 // Capabilities detected by null-checks:
-//   devPeerPtrs != nullptr → IPC available
+//   devPeerPtrs != nullptr  → IPC available
 //   window != nullptr       → Window available (Vendor or default)
 // ============================================================
 struct flagcxDevMemInternal {
