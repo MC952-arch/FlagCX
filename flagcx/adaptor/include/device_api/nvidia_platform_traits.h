@@ -224,6 +224,71 @@ struct PlatformTraits<NvidiaPlatform> {
       using atomic_ref_t = cuda::atomic_ref<T, cuda::thread_scope_thread>;
     };
   };
+
+  // ==============================================================
+  // Coop — SIMT cooperative groups
+  // ==============================================================
+
+  struct CoopBlock {
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return FLAGCX_THREAD_IDX_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      return FLAGCX_BLOCK_DIM_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { FLAGCX_DEVICE_SYNC_THREADS(); }
+  };
+
+  template <int N>
+  struct CoopTile {
+    static_assert(N > 0 && (N & (N - 1)) == 0 && N <= Intrin::simtWidth,
+                  "N must be power of 2 and <= simtWidth");
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return Intrin::lane() % N;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
+    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
+      return (0xffffffffu >> (32 - N)) << (Intrin::lane() & -N);
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      if (N > 1)
+        Intrin::syncwarp(laneMask());
+    }
+  };
+
+  using CoopThread = CoopTile<1>;
+  using CoopWarp = CoopTile<Intrin::simtWidth>;
+
+  struct CoopTileSpan {
+    uint32_t t0 : 8, nTiles : 8, id : 8;
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopTileSpan(int t0, int nTiles, int id)
+        : t0(t0), nTiles(nTiles), id(id) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return FLAGCX_THREAD_IDX_X - Intrin::simtWidth * t0;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      return Intrin::simtWidth * nTiles;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      Intrin::namedBarrierSync(1 + id, Intrin::simtWidth * nTiles);
+    }
+  };
+
+  struct CoopLanes {
+    uint32_t lmask;
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopLanes(uint32_t lmask = 0xffffffffu)
+        : lmask(lmask) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return Intrin::popc(lmask & Intrin::lanemaskLt());
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      return Intrin::popc(lmask);
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { Intrin::syncwarp(lmask); }
+    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const { return lmask; }
+  };
+
+  using CoopAny = PlatformCoop;
 };
 
 #endif // FLAGCX_NVIDIA_PLATFORM_TRAITS_H_

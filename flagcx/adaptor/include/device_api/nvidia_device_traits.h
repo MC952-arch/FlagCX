@@ -149,8 +149,6 @@ struct DeviceTraits<NvidiaVendor> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-    FLAGCX_HOST_DEVICE_INLINE operator ncclCoopCta() const { return _impl; }
   };
 
   // ---- CoopTile<N>: wraps ncclCoopTile<N> ----
@@ -166,8 +164,6 @@ struct DeviceTraits<NvidiaVendor> {
       return _impl.laneMask();
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-    FLAGCX_HOST_DEVICE_INLINE operator ncclCoopTile<N>() const { return _impl; }
   };
 
   using CoopThread = CoopTile<1>;
@@ -185,10 +181,6 @@ struct DeviceTraits<NvidiaVendor> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-    FLAGCX_HOST_DEVICE_INLINE operator ncclCoopWarpSpan() const {
-      return _impl;
-    }
   };
 
   // ---- CoopLanes: wraps ncclCoopLanes ----
@@ -206,8 +198,6 @@ struct DeviceTraits<NvidiaVendor> {
     FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const {
       return _impl.lmask;
     }
-
-    FLAGCX_HOST_DEVICE_INLINE operator ncclCoopLanes() const { return _impl; }
   };
 
   // ---- CoopAny: wraps ncclCoopAny ----
@@ -228,8 +218,6 @@ struct DeviceTraits<NvidiaVendor> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-
-    FLAGCX_HOST_DEVICE_INLINE operator ncclCoopAny() const { return _impl; }
   };
 
   // ---- Barrier handles ----

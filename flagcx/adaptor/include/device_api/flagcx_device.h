@@ -428,24 +428,19 @@ struct flagcxCoopTile {
     return _base.threadRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-#ifdef FLAGCX_SIMT_WIDTH
   FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
     return _base.laneMask();
   }
-#endif
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
 
 // ---- 6c. flagcxCoopThread — single-thread alias ----
 typedef flagcxCoopTile<1> flagcxCoopThread;
 
-// ---- 6d. flagcxCoopWarp — full-warp alias (SIMT only) ----
-#ifdef FLAGCX_SIMT_WIDTH
+// ---- 6d. flagcxCoopWarp — full-warp alias ----
 typedef flagcxCoopTile<FLAGCX_SIMT_WIDTH> flagcxCoopWarp;
-#endif
 
 // ---- 6e. flagcxCoopTileSpan — consecutive tiles with named barrier ----
-#ifdef FLAGCX_SIMT_WIDTH
 struct flagcxCoopTileSpan {
   typename DeviceAPI::CoopTileSpan _base;
 
@@ -458,10 +453,8 @@ struct flagcxCoopTileSpan {
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
 };
-#endif // FLAGCX_SIMT_WIDTH
 
 // ---- 6f. flagcxCoopLanes — arbitrary lane bitmask ----
-#ifdef FLAGCX_SIMT_WIDTH
 struct flagcxCoopLanes {
   typename DeviceAPI::CoopLanes _base;
 
@@ -477,7 +470,6 @@ struct flagcxCoopLanes {
     return _base.getLmask();
   }
 };
-#endif // FLAGCX_SIMT_WIDTH
 
 // ---- 6g. flagcxCoopAny — type-erased cooperative group ----
 struct flagcxCoopAny {
@@ -491,12 +483,10 @@ struct flagcxCoopAny {
   template <int N>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopTile<N> t)
       : _base(t._base) {}
-#ifdef FLAGCX_SIMT_WIDTH
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopTileSpan s)
       : _base(s._base) {}
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopLanes l)
       : _base(l._base) {}
-#endif
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
     return _base.threadRank();
@@ -508,7 +498,6 @@ struct flagcxCoopAny {
 // ---- 6h. Free functions ----
 
 // flagcxCoopGetLaneMask: get the active lane bitmask for a cooperative group
-#ifdef FLAGCX_SIMT_WIDTH
 template <int N>
 FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
 flagcxCoopGetLaneMask(flagcxCoopTile<N> coop) {
@@ -525,7 +514,6 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
 flagcxCoopGetLaneMask(flagcxCoopTileSpan) {
   return 0xffffffffu;
 }
-#endif // FLAGCX_SIMT_WIDTH
 
 // flagcxCoopIsThread: compile-time check if group is a single thread
 template <int N>
@@ -535,14 +523,12 @@ FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopTile<N>) {
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopBlock) {
   return false;
 }
-#ifdef FLAGCX_SIMT_WIDTH
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopLanes) {
   return false;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopIsThread(flagcxCoopTileSpan) {
   return false;
 }
-#endif // FLAGCX_SIMT_WIDTH
 
 // flagcxCoopWithinTile: compile-time check if group fits within a single tile
 template <int N>
@@ -552,17 +538,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopTile<N>) {
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopBlock) {
   return false;
 }
-#ifdef FLAGCX_SIMT_WIDTH
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopLanes) {
   return true;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR bool flagcxCoopWithinTile(flagcxCoopTileSpan) {
   return false;
 }
-#endif // FLAGCX_SIMT_WIDTH
 
 // flagcxCoopCoalesced: get a cooperative group of active/safe threads
-#ifdef FLAGCX_SIMT_WIDTH
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopLanes flagcxCoopCoalesced() {
   return flagcxCoopLanes{DeviceAPI::Intrin::activemask()};
 }
@@ -579,7 +562,6 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopTile<N>
 flagcxCoopCoalesced(flagcxCoopTile<N> coop) {
   return coop;
 }
-#endif // FLAGCX_SIMT_WIDTH
 
 // ============================================================
 // Section 7: flagcxDevBarrier — Barrier Session Wrappers
