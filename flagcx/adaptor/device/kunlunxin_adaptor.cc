@@ -376,6 +376,13 @@ flagcxResult_t kunlunAdaptorEventElapsedTime(float *, flagcxEvent_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t kunlunAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunAdaptorHostUnregister(void *) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor kunlunAdaptor {
   "KUNLUN",
       // Basic functions
@@ -432,6 +439,8 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
+      kunlunAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                   // size_t);
+      kunlunAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
-
 #endif // USE_KUNLUNXIN_ADAPTOR

@@ -270,6 +270,11 @@ flagcxResult_t cannAdaptorEventElapsedTime(float *, flagcxEvent_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t cannAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
 struct flagcxDeviceAdaptor cannAdaptor {
   "CANN",
       // Basic functions
@@ -322,6 +327,9 @@ struct flagcxDeviceAdaptor cannAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
+      cannAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      cannAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_ASCEND_ADAPTOR

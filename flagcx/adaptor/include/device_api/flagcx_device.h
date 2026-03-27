@@ -60,6 +60,14 @@ struct flagcxDevCommInternal {
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
+  // POSIX shm barrier path (non-null when FLAGCX_BARRIER_IPC_DISABLE=1)
+  void *localBarrierShmPtr;  // CPU VA of own shm mapping (hipHostUnregister +
+                             // munmap)
+  void **peerBarrierShmPtrs; // CPU VA array [nLocalRanks] for each peer's shm
+                             // mapping
+  size_t barrierShmSize;     // size in bytes (for munmap)
+  uint64_t **barrierDevPeerPtrsRaw; // standalone device array (deviceFree; shm
+                                    // path only)
 
   // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
   uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)

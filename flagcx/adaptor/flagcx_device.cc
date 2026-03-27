@@ -17,7 +17,12 @@
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
 #include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc (+comm.h, transport.h)
+#include "utils.h"   // flagcxParamBarrierIpcDisable
 #include <algorithm> // std::min, std::max
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -125,6 +130,14 @@ static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   comm->ipcTable[slot].nPeers = localRanks;
   comm->ipcTable[slot].basePtr = buff;
   comm->ipcTable[slot].inUse = true;
+
+  INFO(FLAGCX_INIT,
+       "buildIpcPeerPointers: rank %d slot %d buff=%p devPeerPtrs=%p", myRank,
+       slot, buff, (void *)devPeerPtrs);
+  for (int lr = 0; lr < localRanks; lr++) {
+    INFO(FLAGCX_INIT, "buildIpcPeerPointers:   hostPeerPtrs[%d]=%p", lr,
+         hostPeerPtrs[lr]);
+  }
   return slot;
 
 fail:
@@ -392,15 +405,36 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
 #endif
 
 // ==========================================================================
-// IPC barrier setup helper (extracted from old Fallback DevCommCreate)
-//
-// Allocates IPC-shareable barrier flags, exchanges handles with all ranks,
-// and builds a device-side pointer array. On failure, partially-allocated
-// resources are cleaned up by flagcxDevCommDestroy (null-safe).
+// Platform wrappers for host memory registration (POSIX shm barrier path).
+// Used only when FLAGCX_BARRIER_IPC_DISABLE=1.
+// Delegates to deviceAdaptor->hostRegister / hostUnregister.
+// ==========================================================================
+static flagcxResult_t shmHostRegister(void *ptr, size_t bytes) {
+  if (deviceAdaptor->hostRegister == nullptr) {
+    WARN("FLAGCX_BARRIER_IPC_DISABLE=1: hostRegister not supported on this "
+         "platform");
+    return flagcxNotSupported;
+  }
+  return deviceAdaptor->hostRegister(ptr, bytes);
+}
+
+static void shmHostUnregister(void *ptr) {
+  if (deviceAdaptor->hostUnregister)
+    deviceAdaptor->hostUnregister(ptr);
+}
+// Allocates barrier flags, exchanges pointers with local peers, and builds
+// a device-side pointer array. Two paths:
+//   Default (FLAGCX_BARRIER_IPC_DISABLE=0): IPC device memory via ipcTable.
+//   Fallback (FLAGCX_BARRIER_IPC_DISABLE=1): POSIX shm + hostRegister.
+//     Used on platforms (e.g. Hygon DCU) where GPU L2 cache is not flushed
+//     mid-kernel for IPC-mapped peer device memory.
+// On failure, partial resources are cleaned up by flagcxDevCommDestroy.
 // ==========================================================================
 static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                        flagcxDevComm_t handle) {
   int localRanks = comm->localRanks;
+  int myRank = comm->rank;
+  int myLocalRank = comm->localRank;
 
   handle->nLocalRanks = localRanks;
   handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
@@ -409,24 +443,194 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   memcpy(handle->localRankToRank, comm->localRankToRank,
          localRanks * sizeof(int));
 
-  // Allocate IPC-shareable barrier flags
-  struct flagcxP2pIpcDesc barrierIpcDesc;
-  memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
   size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
-  FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
-      barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
-  FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
-                                          barrierSize, flagcxMemDevice, NULL));
 
-  // Reuse common IPC exchange logic
-  int slot = buildIpcPeerPointers(comm, handle->localBarrierFlags, barrierSize);
-  if (slot < 0)
-    return flagcxInternalError;
+  if (flagcxParamBarrierIpcDisable() == 0) {
+    // ── IPC device memory path (default) ─────────────────────────────────
+    // Allocate device memory, exchange IPC handles, build peer ptr array.
+    void *barrierFlags = nullptr;
+    FLAGCXCHECK(deviceAdaptor->deviceMalloc(&barrierFlags, barrierSize,
+                                            flagcxMemDevice, NULL));
+    FLAGCXCHECK(deviceAdaptor->deviceMemset(barrierFlags, 0, barrierSize,
+                                            flagcxMemDevice, NULL));
+    handle->localBarrierFlags = (uint64_t *)barrierFlags;
 
-  // Store barrier-specific metadata on devComm handle
-  handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
-  handle->barrierIpcIndex = slot;
-  handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+    int slot = buildIpcPeerPointers(comm, barrierFlags, barrierSize);
+    if (slot < 0) {
+      deviceAdaptor->deviceFree(barrierFlags, flagcxMemDevice, NULL);
+      handle->localBarrierFlags = nullptr;
+      return flagcxSystemError;
+    }
+
+    handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
+    handle->barrierIpcIndex = slot;
+    handle->localBarrierShmPtr = nullptr;
+    handle->peerBarrierShmPtrs = nullptr;
+    handle->barrierShmSize = 0;
+    handle->barrierDevPeerPtrsRaw = nullptr; // tracked via ipcTable
+    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+
+    INFO(FLAGCX_INIT,
+         "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
+         "barrierPeers=%p nBarriers=%d",
+         myRank, slot, barrierFlags, (void *)handle->barrierPeers,
+         handle->nBarriers);
+
+  } else {
+    // ── POSIX shm + hipHostRegister path (FLAGCX_BARRIER_IPC_DISABLE=1) ──
+    // Each process creates its own shm segment, maps all peers, registers
+    // them as pinned memory (bypasses GPU L2), then gets per-process device
+    // VAs via hostGetDevicePointer.
+
+    flagcxResult_t res = flagcxSuccess;
+    void *myCpuPtr = nullptr;
+    void **peerCpuPtrs = nullptr;
+    void **devPeerPtrs = nullptr;
+    void *myDevPtr = nullptr;
+    void **hostDevPtrs = nullptr;
+
+    // Build shm name prefix from magic for uniqueness.
+    char myShmName[64];
+    snprintf(myShmName, sizeof(myShmName), "/flagcx_barrier_%016llx_%d",
+             (unsigned long long)comm->magic, myLocalRank);
+
+    // Step 1: Create and map own shm segment.
+    int fd = shm_open(myShmName, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+      WARN("setupIpcBarriers(shm): shm_open own failed: %s", strerror(errno));
+      return flagcxSystemError;
+    }
+    if (ftruncate(fd, (off_t)barrierSize) != 0) {
+      WARN("setupIpcBarriers(shm): ftruncate failed: %s", strerror(errno));
+      close(fd);
+      shm_unlink(myShmName);
+      return flagcxSystemError;
+    }
+    myCpuPtr =
+        mmap(nullptr, barrierSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (myCpuPtr == MAP_FAILED) {
+      WARN("setupIpcBarriers(shm): mmap own failed: %s", strerror(errno));
+      shm_unlink(myShmName);
+      return flagcxSystemError;
+    }
+    memset(myCpuPtr, 0, barrierSize);
+
+    // Step 2: Bootstrap barrier — all ranks have created their shm.
+    FLAGCXCHECKGOTO(
+        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA01),
+        res, fail_own_mmap);
+
+    // Step 3: Open and map each peer's shm segment.
+    peerCpuPtrs = (void **)calloc(localRanks, sizeof(void *));
+    if (peerCpuPtrs == nullptr) {
+      res = flagcxSystemError;
+      goto fail_own_mmap;
+    }
+    peerCpuPtrs[myLocalRank] = myCpuPtr; // own slot points to own mapping
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr == myLocalRank)
+        continue;
+      char peerShmName[64];
+      snprintf(peerShmName, sizeof(peerShmName), "/flagcx_barrier_%016llx_%d",
+               (unsigned long long)comm->magic, lr);
+      int pfd = shm_open(peerShmName, O_RDWR, 0600);
+      if (pfd < 0) {
+        WARN("setupIpcBarriers(shm): shm_open peer %d failed: %s", lr,
+             strerror(errno));
+        res = flagcxSystemError;
+        goto fail_peer_mmaps;
+      }
+      peerCpuPtrs[lr] = mmap(nullptr, barrierSize, PROT_READ | PROT_WRITE,
+                             MAP_SHARED, pfd, 0);
+      close(pfd);
+      if (peerCpuPtrs[lr] == MAP_FAILED) {
+        WARN("setupIpcBarriers(shm): mmap peer %d failed: %s", lr,
+             strerror(errno));
+        peerCpuPtrs[lr] = nullptr;
+        res = flagcxSystemError;
+        goto fail_peer_mmaps;
+      }
+    }
+
+    // Step 4: Bootstrap barrier — all ranks have opened peer shm.
+    // Then unlink own shm: safe because peers already have it mmap'd.
+    FLAGCXCHECKGOTO(
+        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA02),
+        res, fail_peer_mmaps);
+    shm_unlink(myShmName);
+
+    // Step 5: Register own CPU mapping as pinned host memory.
+    FLAGCXCHECKGOTO(shmHostRegister(myCpuPtr, barrierSize), res,
+                    fail_peer_mmaps);
+    FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(&myDevPtr, myCpuPtr),
+                    res, fail_unreg_own);
+    handle->localBarrierFlags = (uint64_t *)myDevPtr;
+
+    // Step 6: Register each peer's mapping and collect device VAs.
+    hostDevPtrs = (void **)calloc(localRanks, sizeof(void *));
+    if (hostDevPtrs == nullptr) {
+      res = flagcxSystemError;
+      goto fail_unreg_own;
+    }
+    hostDevPtrs[myLocalRank] = myDevPtr;
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr == myLocalRank)
+        continue;
+      FLAGCXCHECKGOTO(shmHostRegister(peerCpuPtrs[lr], barrierSize), res,
+                      fail_unreg_peers);
+      FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(&hostDevPtrs[lr],
+                                                          peerCpuPtrs[lr]),
+                      res, fail_unreg_peers);
+    }
+
+    // Step 7: Copy device VA array to device memory for kernel access.
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc((void **)&devPeerPtrs,
+                                                localRanks * sizeof(void *),
+                                                flagcxMemDevice, NULL),
+                    res, fail_unreg_peers);
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMemcpy(
+                        devPeerPtrs, hostDevPtrs, localRanks * sizeof(void *),
+                        flagcxMemcpyHostToDevice, NULL, NULL),
+                    res, fail_free_devptrs);
+    free(hostDevPtrs);
+    hostDevPtrs = nullptr;
+
+    handle->barrierPeers = (uint64_t **)devPeerPtrs;
+    handle->barrierIpcIndex = -1;
+    handle->localBarrierShmPtr = myCpuPtr;
+    handle->peerBarrierShmPtrs = peerCpuPtrs;
+    handle->barrierShmSize = barrierSize;
+    handle->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
+    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+
+    INFO(FLAGCX_INIT,
+         "setupIpcBarriers(shm): rank %d localBarrierFlags=%p "
+         "barrierPeers=%p nBarriers=%d",
+         myRank, (void *)handle->localBarrierFlags,
+         (void *)handle->barrierPeers, handle->nBarriers);
+    return flagcxSuccess;
+
+  fail_free_devptrs:
+    deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
+  fail_unreg_peers:
+    free(hostDevPtrs);
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr != myLocalRank && peerCpuPtrs[lr])
+        shmHostUnregister(peerCpuPtrs[lr]);
+    }
+  fail_unreg_own:
+    shmHostUnregister(myCpuPtr);
+  fail_peer_mmaps:
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr != myLocalRank && peerCpuPtrs[lr])
+        munmap(peerCpuPtrs[lr], barrierSize);
+    }
+    free(peerCpuPtrs);
+  fail_own_mmap:
+    munmap(myCpuPtr, barrierSize);
+    return res;
+  }
 
   return flagcxSuccess;
 }
@@ -664,8 +868,32 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
   }
-  if (devComm->localBarrierFlags) {
+  // IPC path: localBarrierFlags is device-allocated (tracked via ipcTable).
+  // shm path: localBarrierFlags is a device VA alias of localBarrierShmPtr;
+  //   do NOT free it — the CPU mapping is freed below via shmHostUnregister.
+  if (devComm->localBarrierShmPtr == nullptr && devComm->localBarrierFlags &&
+      devComm->barrierIpcIndex < 0) {
+    // Standalone device allocation (not tracked via ipcTable): free directly.
     flagcxCommDeferFree(comm, devComm->localBarrierFlags, flagcxMemDevice);
+  }
+  // POSIX shm path cleanup: unregister and unmap all shm mappings.
+  if (devComm->localBarrierShmPtr) {
+    shmHostUnregister(devComm->localBarrierShmPtr);
+    munmap(devComm->localBarrierShmPtr, devComm->barrierShmSize);
+  }
+  if (devComm->peerBarrierShmPtrs) {
+    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
+      void *p = devComm->peerBarrierShmPtrs[lr];
+      if (p && p != devComm->localBarrierShmPtr) {
+        shmHostUnregister(p);
+        munmap(p, devComm->barrierShmSize);
+      }
+    }
+    free(devComm->peerBarrierShmPtrs);
+  }
+  if (devComm->barrierDevPeerPtrsRaw) {
+    // shm path: standalone device pointer array (not in ipcTable).
+    flagcxCommDeferFree(comm, devComm->barrierDevPeerPtrsRaw, flagcxMemDevice);
   }
 
   // Clear heteroComm->devComm + deregister signal buffer

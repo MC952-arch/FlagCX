@@ -756,8 +756,8 @@ struct DevBarrier<Fallback<P>, flagcxBarrierIntra> {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
         peer -= _nRanks;
-      Atomic::store(&_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex],
-                    _epoch + 1, flagcxDeviceMemoryOrderRelease);
+      uint64_t *slot = &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex];
+      Atomic::store(slot, _epoch + 1, flagcxDeviceMemoryOrderRelease);
     }
   }
 
@@ -771,9 +771,9 @@ struct DevBarrier<Fallback<P>, flagcxBarrierIntra> {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
         peer -= _nRanks;
+      uint64_t *slot = &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex];
       int iter = 0;
-      while (Atomic::load(&_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex],
-                          flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
+      while (Atomic::load(slot, flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
         Intrin::spinBackoff(iter++);
       }
     }

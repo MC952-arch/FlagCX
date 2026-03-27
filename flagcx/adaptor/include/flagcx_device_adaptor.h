@@ -113,6 +113,13 @@ struct flagcxDeviceAdaptor_v1 {
   flagcxResult_t (*getHandleForAddressRange)(void *handleOut, void *buffer,
                                              size_t size,
                                              unsigned long long flags);
+
+  // Host memory registration for POSIX shm barrier path
+  // (FLAGCX_BARRIER_IPC_DISABLE=1). Registers/unregisters an existing
+  // mmap'd buffer as mapped pinned memory so hostGetDevicePointer can
+  // return a valid per-process GPU VA.
+  flagcxResult_t (*hostRegister)(void *ptr, size_t size);
+  flagcxResult_t (*hostUnregister)(void *ptr);
 };
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_v1
 

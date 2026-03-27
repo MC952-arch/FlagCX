@@ -329,6 +329,11 @@ flagcxResult_t hipAdaptorEventElapsedTime(float *, flagcxEvent_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t hipAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
       // Basic functions
@@ -389,6 +394,8 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // *handleOut, void *buffer,
                                              // size_t size, unsigned long long
                                              // flags);
+      hipAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
+      hipAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_AMD_ADAPTOR

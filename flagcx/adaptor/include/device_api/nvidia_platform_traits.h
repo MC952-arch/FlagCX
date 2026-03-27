@@ -73,6 +73,12 @@ struct PlatformTraits<NvidiaPlatform> {
 #endif
     }
 
+    // System-level fence: ensures stores are visible across all system agents
+    // (including other processes via IPC). Maps to PTX membar.sys.
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceSystem() {
+      __threadfence_system();
+    }
+
 #else
     // Host-compiler stubs (allow template instantiation, never called at
     // runtime)
@@ -105,6 +111,9 @@ struct PlatformTraits<NvidiaPlatform> {
     static inline void spinBackoff(int iter) {
       (void)iter;
       assert(false && "spinBackoff() called on host");
+    }
+    static inline void threadfenceSystem() {
+      assert(false && "threadfenceSystem() called on host");
     }
 #endif // __CUDACC__
   };

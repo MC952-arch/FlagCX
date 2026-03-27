@@ -344,6 +344,16 @@ flagcxResult_t ducudaAdaptorEventElapsedTime(float *, flagcxEvent_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t ducudaAdaptorHostRegister(void *ptr, size_t size) {
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
+  return flagcxSuccess;
+}
+
+flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -402,6 +412,9 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
+      ducudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                   // size_t);
+      ducudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_DU_ADAPTOR
