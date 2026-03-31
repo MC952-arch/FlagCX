@@ -326,6 +326,11 @@ flagcxResult_t musaAdaptorEventElapsedTime(float *, flagcxEvent_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t musaAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
 struct flagcxDeviceAdaptor musaAdaptor {
   "MUSA",
       // Basic functions
@@ -379,6 +384,9 @@ struct flagcxDeviceAdaptor musaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
+      musaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_MUSA_ADAPTOR

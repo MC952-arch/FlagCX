@@ -475,6 +475,16 @@ cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorHostRegister(void *ptr, size_t size) {
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorHostUnregister(void *ptr) {
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -533,6 +543,9 @@ struct flagcxDeviceAdaptor cudaAdaptor {
                                               // *handleOut, void *buffer,
                                               // size_t size, unsigned long long
                                               // flags);
+      cudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      cudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_NVIDIA_ADAPTOR

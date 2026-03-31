@@ -351,6 +351,11 @@ flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t macaAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -404,6 +409,9 @@ struct flagcxDeviceAdaptor macaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
+      macaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_METAX_ADAPTOR

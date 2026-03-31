@@ -385,6 +385,11 @@ flagcxResult_t topsAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
   return flagcxNotSupported;
 }
 
+flagcxResult_t topsAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
 struct flagcxDeviceAdaptor topsAdaptor {
   "TOPS",
       // Basic functions
@@ -443,6 +448,9 @@ struct flagcxDeviceAdaptor topsAdaptor {
                                               // *handleOut, void *buffer,
                                               // size_t size, unsigned long long
                                               // flags);
+      topsAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      topsAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_ENFLAME_ADAPTOR

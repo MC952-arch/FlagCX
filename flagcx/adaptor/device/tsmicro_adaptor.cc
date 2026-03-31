@@ -361,6 +361,13 @@ flagcxResult_t tsmicroAdaptorStreamWriteValue64(flagcxStream_t, void *,
   return flagcxNotSupported;
 }
 
+flagcxResult_t tsmicroAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorHostUnregister(void *) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor tsmicroAdaptor {
   "TSM",
       // Basic functions
@@ -422,6 +429,9 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
                                                  // *handleOut, void *buffer,
                                                  // size_t size, unsigned long
                                                  // long flags);
+      tsmicroAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                    // size_t);
+      tsmicroAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_TSM_ADAPTOR

@@ -1,28 +1,22 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
- * Copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
  *
- * NVIDIA Platform Traits — CUDA SIMT intrinsics and cuda::atomic_ref.
- *
- * Provides PlatformTraits<NvidiaPlatform> with:
+ * Provides PlatformTraits<DuPlatform> with:
  *   - Intrin: lane(), activemask(), syncwarp(), popc(), spinBackoff(), ...
  *   - Atomic: load(), store(), fetchAdd(), compareExchange(), ...
- *
- * Both __CUDACC__ (device) and host-compiler paths are NVIDIA-specific;
- * the #ifdef __CUDACC__ split is device-vs-host, NOT vendor-vs-fallback.
  ************************************************************************/
 
-#ifndef FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
-#define FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
+#ifndef FLAGCX_DU_PLATFORM_TRAITS_H_
+#define FLAGCX_DU_PLATFORM_TRAITS_H_
 
 #include <cassert>
 #include <cstdint>
 #include <cuda/atomic>
 
-struct NvidiaPlatform {};
+struct DuPlatform {};
 
 template <>
-struct PlatformTraits<NvidiaPlatform> {
+struct PlatformTraits<DuPlatform> {
 
   // ==============================================================
   // Intrin — CUDA SIMT intrinsics
@@ -58,7 +52,7 @@ struct PlatformTraits<NvidiaPlatform> {
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void namedBarrierSync(int id,
                                                                 int nThreads) {
-      __barrier_sync_count(id, nThreads);
+      // __barrier_sync_count(id, nThreads);
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
@@ -299,4 +293,4 @@ struct PlatformTraits<NvidiaPlatform> {
   using CoopAny = PlatformCoop;
 };
 
-#endif // FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
+#endif // FLAGCX_DU_PLATFORM_TRAITS_H_

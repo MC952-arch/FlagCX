@@ -1,5 +1,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "flagcx_net.h"
 #include "tools.h"
 
 #include <algorithm>
@@ -146,7 +147,8 @@ int main(int argc, char *argv[]) {
   fatal(res, "flagcxOneSideRegister (data) failed", proc);
 
   // Register signal buffer for one-sided operations
-  res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes);
+  res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes,
+                                    FLAGCX_PTR_CUDA);
   fatal(res, "flagcxOneSideSignalRegister failed", proc);
 
   flagcxStream_t stream;
