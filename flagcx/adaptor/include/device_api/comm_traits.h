@@ -83,10 +83,13 @@ template <typename Backend, typename BarrierTag, typename Coop>
 struct DevBarrier;
 
 // Vendor specializations + DeviceAPI selection
-#ifdef USE_NVIDIA_ADAPTOR
+#if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_comm_traits.h"
-#elif USE_DU_ADAPTOR
+#elif defined(USE_DU_ADAPTOR)
 #include "du_comm_traits.h"
+#else
+#include "fallback_comm_traits.h"
+using DeviceAPI = CommTraits<Fallback<FallbackPlatform>>;
 #endif
 
 #endif // FLAGCX_COMM_TRAITS_H_

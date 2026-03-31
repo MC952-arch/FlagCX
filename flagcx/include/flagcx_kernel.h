@@ -432,7 +432,20 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
 // Release data buffer resources (MR, network connections, handle arrays).
 flagcxResult_t flagcxOneSideDeregister(const flagcxComm_t comm);
 
-// One-sided signal buffer registration (GPU memory with FORCE_SO).
+// One-sided signal buffer registration.
+// Registers a per-rank signal buffer used by one-sided operations.
+//   - buff: pointer to the signal buffer. The pointer type is selected by
+//     ptrType and may be either device memory or host-pinned memory.
+//   - size: size in bytes of the signal buffer.
+//   - ptrType: indicates the type of pointer passed in buff and controls the
+//     MR registration flags / ordering semantics:
+//       * FLAGCX_PTR_CUDA : buff is a CUDA device pointer. The MR is
+//         registered with FORCE_SO to guarantee that remote visibility of
+//         signal updates is ordered after prior GPU writes to the buffer.
+//       * FLAGCX_PTR_HOST : buff is host-pinned memory (e.g., cudaHostAlloc
+//         or other pinned allocation). The MR is registered without FORCE_SO;
+//         the caller is responsible for using appropriate host/device
+//         synchronization to ensure ordering and visibility of signal writes.
 // Must be called after flagcxCommInitRank and before one-sided operations.
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType);

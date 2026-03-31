@@ -111,10 +111,12 @@ private:
 };
 
 // Include platform specializations
-#ifdef USE_NVIDIA_ADAPTOR
+#if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_platform_traits.h"
-#elif USE_DU_ADAPTOR
+#elif defined(USE_DU_ADAPTOR)
 #include "du_platform_traits.h"
+#else
+#include "fallback_platform_traits.h"
 #endif
 
 #endif // FLAGCX_PLATFORM_TRAITS_H_

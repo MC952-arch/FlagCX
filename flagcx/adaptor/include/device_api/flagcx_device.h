@@ -21,6 +21,7 @@
 #include "device_utils.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "shmutils.h" // flagcxShmHandle_t
 
 // Device traits — provides DeviceAPI with all type/function dispatch.
 // Also defines FLAGCX_DEVICE_API_VENDOR when vendor backend is active.
@@ -60,14 +61,16 @@ struct flagcxDevCommInternal {
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
-  // POSIX shm barrier path (non-null when FLAGCX_BARRIER_IPC_DISABLE=1)
-  void *localBarrierShmPtr;  // CPU VA of own shm mapping (hipHostUnregister +
-                             // munmap)
+  // flagcxShm barrier path (non-null when FLAGCX_SIGNAL_HOST_ENABLE=1)
+  void *localBarrierShmPtr;  // CPU VA of own shm mapping (hostUnregister +
+                             // flagcxShmClose)
   void **peerBarrierShmPtrs; // CPU VA array [nLocalRanks] for each peer's shm
-                             // mapping
-  size_t barrierShmSize;     // size in bytes (for munmap)
-  uint64_t **barrierDevPeerPtrsRaw; // standalone device array (deviceFree; shm
-                                    // path only)
+                             // mapping (hostUnregister + flagcxShmClose)
+  size_t barrierShmSize;     // size in bytes (for hostUnregister)
+  uint64_t **barrierDevPeerPtrsRaw;  // standalone device array (deviceFree; shm
+                                     // path only)
+  flagcxShmHandle_t myShmHandle;     // own shm handle (flagcxShmClose)
+  flagcxShmHandle_t *peerShmHandles; // peer shm handles [nLocalRanks]
 
   // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
   uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
@@ -872,10 +875,10 @@ struct flagcxDevNet {
       Coop coop = flagcxCoopBlock{},
       DescriptorSmem descriptor = flagcxDevNet_None{},
       flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
-      flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
+      flagcxDeviceScope_t expectedScope = flagcxDeviceScopeDevice) const {
     _netBase.put(team._teamBase, peer, dstMem._winBase, dstOffset,
                  srcMem._winBase, srcOffset, bytes, remoteAction, localAction,
-                 coop._base, descriptor, alreadyReleased, expected_scope);
+                 coop._base, descriptor, alreadyReleased, expectedScope);
   }
 
   // ---- One-sided: put (SymPtr) ----
@@ -890,10 +893,10 @@ struct flagcxDevNet {
       Coop coop = flagcxCoopBlock{},
       DescriptorSmem descriptor = flagcxDevNet_None{},
       flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
-      flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
+      flagcxDeviceScope_t expectedScope = flagcxDeviceScopeDevice) const {
     this->put(team, peer, dst.mem, dst.offset, src.mem, src.offset,
               nElts * sizeof(T), remoteAction, localAction, coop, descriptor,
-              alreadyReleased, expected_scope);
+              alreadyReleased, expectedScope);
   }
 
   // ---- One-sided: putValue (raw ptr) ----
@@ -907,10 +910,10 @@ struct flagcxDevNet {
            Coop coop = flagcxCoopBlock{},
            DescriptorSmem descriptor = flagcxDevNet_None{},
            flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
-           flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
+           flagcxDeviceScope_t expectedScope = flagcxDeviceScopeDevice) const {
     _netBase.putValue(team._teamBase, peer, dstMem._winBase, dstOffset, value,
                       remoteAction, coop._base, descriptor, alreadyReleased,
-                      expected_scope);
+                      expectedScope);
   }
 
   // ---- One-sided: putValue (SymPtr) ----
@@ -923,9 +926,9 @@ struct flagcxDevNet {
            Coop coop = flagcxCoopBlock{},
            DescriptorSmem descriptor = flagcxDevNet_None{},
            flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
-           flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
+           flagcxDeviceScope_t expectedScope = flagcxDeviceScopeDevice) const {
     this->putValue(team, peer, dst.mem, dst.offset, value, remoteAction, coop,
-                   descriptor, alreadyReleased, expected_scope);
+                   descriptor, alreadyReleased, expectedScope);
   }
 
   // ---- One-sided: signal ----
@@ -936,9 +939,9 @@ struct flagcxDevNet {
          Coop coop = flagcxCoopBlock{},
          DescriptorSmem descriptor = flagcxDevNet_None{},
          flagcxDeviceScope_t alreadyReleased = flagcxDeviceScopeThread,
-         flagcxDeviceScope_t expected_scope = flagcxDeviceScopeDevice) const {
+         flagcxDeviceScope_t expectedScope = flagcxDeviceScopeDevice) const {
     _netBase.signal(team._teamBase, peer, remoteAction, coop._base, descriptor,
-                    alreadyReleased, expected_scope);
+                    alreadyReleased, expectedScope);
   }
 
   // ---- One-sided: flush ----

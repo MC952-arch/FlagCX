@@ -4,18 +4,19 @@
 
 #include "adaptor.h"
 #include "adaptor_plugin_load.h"
+#include "alloc.h"
 #include "core.h"
 #include "flagcx_device_adaptor.h"
 
 #include <dlfcn.h>
 #include <mutex>
-#include <stdlib.h>
 #include <string.h>
 
 static void *devicePluginDlHandle = NULL;
 static int devicePluginRefCount = 0;
 static std::mutex devicePluginMutex;
 static struct flagcxDeviceAdaptor *defaultDeviceAdaptor = NULL;
+static struct flagcxDeviceAdaptor *upgradedPluginAdaptor = NULL;
 extern struct flagcxDeviceAdaptor *deviceAdaptor;
 
 // Defined in flagcx.cc — rebuilds globalDeviceHandle from current deviceAdaptor
@@ -38,6 +39,7 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
+  // Try latest symbol first; fall back to v1 and upgrade.
   struct flagcxDeviceAdaptor *plugin = (struct flagcxDeviceAdaptor *)dlsym(
       devicePluginDlHandle, "flagcxDeviceAdaptorPlugin_v1");
   if (plugin == NULL) {
@@ -48,6 +50,18 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
+  // Upgrade v1 plugin to latest: copy v1 fields, zero any fields added beyond
+  // v1 (e.g. hostRegister/hostUnregister). Always required since plugins only
+  // ever export versioned symbols and _latest is an internal-only struct.
+  if (flagcxCalloc(&upgradedPluginAdaptor, 1) != flagcxSuccess) {
+    WARN("ADAPTOR/Plugin: Failed to allocate upgraded adaptor struct");
+    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    devicePluginDlHandle = NULL;
+    return flagcxSystemError;
+  }
+  flagcxDeviceAdaptorUpgradeV1((const struct flagcxDeviceAdaptor_v1 *)plugin,
+                               upgradedPluginAdaptor);
+  plugin = upgradedPluginAdaptor;
 
   // Validate function pointers that all built-in adaptors implement.
   // Fields that some adaptors leave NULL (hostGetDevicePointer, memHandleInit,
@@ -93,6 +107,10 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
     deviceAdaptor = defaultDeviceAdaptor;
     defaultDeviceAdaptor = NULL;
     flagcxRebuildGlobalDeviceHandle();
+  }
+  if (upgradedPluginAdaptor != NULL) {
+    free(upgradedPluginAdaptor);
+    upgradedPluginAdaptor = NULL;
   }
   flagcxAdaptorClosePluginLib(devicePluginDlHandle);
   devicePluginDlHandle = NULL;
