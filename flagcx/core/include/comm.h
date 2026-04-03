@@ -350,8 +350,8 @@ struct flagcxHeteroComm {
   struct flagcxRegCache regCache;
   uint64_t groupHash;
   uint64_t endMagic;
-  // Kernel FIFO buffer for device side communication
-  void *fifoBuffer;
+  // Kernel FIFO buffers for device side communication (one per context)
+  void *fifoBuffers[FLAGCX_DEVICE_CTA_COUNT];
   // uniRunner FIFO buffer
   void *uniRunnerFifoBuffer;
   // Device communicator (set by flagcxDevCommCreate).

@@ -129,7 +129,8 @@ struct CommTraits<NvidiaVendor> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int getRank() const { return _impl.rank; }
     FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const { return _impl.nRanks; }
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getFifoBuffer(int /*contextId*/) const {
       return nullptr;
     }
 

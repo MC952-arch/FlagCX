@@ -92,7 +92,7 @@ struct CommTraits<Fallback<PlatformTag>> {
     // Baseline
     int rank, nRanks;
     int intraRank, intraSize;
-    void *fifoBuffer;
+    void *fifoBuffers[FLAGCX_DEVICE_CTA_COUNT];
 
     // IPC barriers
     uint64_t **barrierPeers;
@@ -121,8 +121,8 @@ struct CommTraits<Fallback<PlatformTag>> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int getRank() const { return rank; }
     FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const { return nRanks; }
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
-      return fifoBuffer;
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
+      return fifoBuffers[contextId];
     }
 
     // Populate from host-side handle (deferred template avoids forward-decl)
@@ -133,7 +133,8 @@ struct CommTraits<Fallback<PlatformTag>> {
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
       dc.intraSize = di.intraSize;
-      dc.fifoBuffer = di.fifoBuffer;
+      for (int i = 0; i < di.contextCount; i++)
+        dc.fifoBuffers[i] = di.fifoBuffers[i];
       dc.barrierPeers = di.barrierPeers;
       dc.intraBarrierEpoch = di.intraBarrierEpoch;
       dc.nBarriers = di.nBarriers;
@@ -268,9 +269,13 @@ struct CommTraits<Fallback<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR
     Transport(const Comm &dc, int contextIndex)
-        : _dc(dc), fifoBuffer(dc.fifoBuffer), signalBuffer(dc.signalBuffer),
-          shadowBuffer(dc.shadowBuffer), counterBuffer(dc.counterBuffer),
-          signalCount(dc.signalCount), counterCount(dc.counterCount) {
+        : _dc(dc),
+          fifoBuffer(
+              dc.fifoBuffers[contextIndex %
+                             ((dc.contextCount > 0) ? dc.contextCount : 1)]),
+          signalBuffer(dc.signalBuffer), shadowBuffer(dc.shadowBuffer),
+          counterBuffer(dc.counterBuffer), signalCount(dc.signalCount),
+          counterCount(dc.counterCount) {
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       contextId = contextIndex % cnt;
     }
@@ -837,10 +842,10 @@ struct Barrier<Fallback<P>, flagcxTeamTagInter, Coop> {
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Transport &, const Comm &dc, Team, uint32_t index,
-          int nInterPeers)
+  Barrier(Coop coop, const Transport &trans, const Comm &dc, Team,
+          uint32_t index, int nInterPeers)
       : _coop(coop), _interSignals(dc.interSignalFlags),
-        _fifoBuffer(dc.fifoBuffer), _nInterPeers(nInterPeers),
+        _fifoBuffer(trans.fifoBuffer), _nInterPeers(nInterPeers),
         _isLeader(dc.isInterLeader), _ctaIndex(index),
         _epoch(dc.interBarrierEpoch) {}
 

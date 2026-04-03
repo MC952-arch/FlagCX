@@ -47,7 +47,9 @@ struct flagcxDevCommInternal {
   // ---- Baseline (always set) ----
   int rank, nRanks;
   int intraRank, intraSize;
-  void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
+  void *fifoBuffers[FLAGCX_DEVICE_CTA_COUNT]; // Device-accessible FIFOs (one
+                                              // per context, from heteroComm,
+                                              // may be null)
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
   uint64_t *
@@ -194,8 +196,8 @@ struct flagcxDevComm {
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const {
     return _commBase.getSize();
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer() const {
-    return _commBase.getFifoBuffer();
+  FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
+    return _commBase.getFifoBuffer(contextId);
   }
 };
 

@@ -333,12 +333,18 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   // entries (including BarrierSignal RDMA atomics) before closing connections.
   {
     struct flagcxHeteroComm *hetero = comm->heteroComm;
-    if (hetero && hetero->proxyState && hetero->proxyState->kernelState.fifo) {
-      volatile uint64_t *buf =
-          (volatile uint64_t *)hetero->proxyState->kernelState.fifo->buffer;
-      if (buf) {
-        while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced]) {
-          sched_yield();
+    if (hetero && hetero->proxyState) {
+      int ctxCount = hetero->proxyState->kernelState.contextCount;
+      for (int i = 0; i < ctxCount; i++) {
+        if (hetero->proxyState->kernelState.fifos[i]) {
+          volatile uint64_t *buf =
+              (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
+                  ->buffer;
+          if (buf) {
+            while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced]) {
+              sched_yield();
+            }
+          }
         }
       }
     }
@@ -679,8 +685,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->nRanks = comm->nranks;
   handle->intraRank = comm->localRank;
   handle->intraSize = comm->localRanks;
-  handle->fifoBuffer =
-      (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
+  {
+    int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 1;
+    for (int i = 0; i < ctxCount; i++) {
+      handle->fifoBuffers[i] = (comm->heteroComm != nullptr)
+                                   ? comm->heteroComm->fifoBuffers[i]
+                                   : nullptr;
+    }
+  }
 
   // ---- Vendor path: try devCommCreate via adaptor ----
   flagcxInnerComm_t innerComm = comm->homoComm;
