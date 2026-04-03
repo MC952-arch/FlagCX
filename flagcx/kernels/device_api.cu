@@ -79,9 +79,9 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   for (size_t o = globalTid; o < count; o += globalNthreads) {
     T v = T(0);
     for (int peer = 0; peer < nRanks; peer++)
-      v += trans.load<T>(mem, offset, o, peer);
+      v += trans.load<T>(mem, offset + o * sizeof(T), peer);
     for (int peer = 0; peer < nRanks; peer++)
-      trans.store(mem, offset, o, peer, v);
+      trans.store(mem, offset + o * sizeof(T), peer, v);
   }
 
   // Post-reduce barrier (release ordering — ensure writes are visible)

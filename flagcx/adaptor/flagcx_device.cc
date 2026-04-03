@@ -696,9 +696,16 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     if (ret == flagcxSuccess)
       handle->devComm = innerDevComm;
   }
-  if (handle->devComm != nullptr && handle->intraSize > 0) {
-    int nNodes = handle->nRanks / handle->intraSize;
-    handle->nInterPeers = nNodes - 1;
+  if (handle->devComm != nullptr) {
+    int nNodes = 0;
+    if (comm->heteroComm != nullptr && comm->heteroComm->nNodes > 0) {
+      nNodes = comm->heteroComm->nNodes;
+    } else if (handle->intraSize > 0 &&
+               handle->nRanks % handle->intraSize == 0) {
+      nNodes = handle->nRanks / handle->intraSize;
+    }
+    if (nNodes > 0)
+      handle->nInterPeers = nNodes - 1;
   }
   if (handle->devComm == nullptr) {
     // ---- Fallback path: IPC barriers + inter-node signal relay + one-sided

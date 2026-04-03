@@ -5,7 +5,7 @@
  *
  * Architecture:
  *   PlatformTraits<P>         — platform-level: Intrin, Atomic
- *   CommTraits<D>             — backend-level:  Window, DevComm, Team, ...
+ *   CommTraits<D>             — backend-level:  Window, Comm, Team, ...
  *   Fallback<PlatformTag>     — common IPC fallback (partial specialization)
  *
  * CommTraits pulls in platform capabilities via using-aliases (not
@@ -14,7 +14,7 @@
  * types that work with any platform.
  *
  * Selection:
- *   NVIDIA + NCCL > 2.28:   DeviceAPI = CommTraits<NvidiaVendor>
+ *   NVIDIA + NCCL > 2.28:    DeviceAPI = CommTraits<NvidiaVendor>
  *   NVIDIA + fallback:       DeviceAPI = CommTraits<Fallback<NvidiaPlatform>>
  *
  * Kernel code uses DeviceAPI::* exclusively, no #ifdef branches.
@@ -65,11 +65,11 @@ struct flagcxDevTransport_DescriptorSmem {
 };
 
 // Fence level enum — available on all tiers for unified barrier API
-enum class flagcxGinFenceLevel { Relaxed };
+enum class flagcxTransportFenceLevel { Relaxed };
 
 // ============================================================
 // Unified team/barrier tag types.
-// Used as both DevBarrier<Backend, Tag> template parameter
+// Used as both Barrier<Backend, Tag> template parameter
 // and as ctor dispatch tags — eliminating the old two-tag redundancy.
 // ============================================================
 struct flagcxTeamTagIntra {};
@@ -78,7 +78,7 @@ struct flagcxTeamTagWorld {};
 
 // Primary template — each backend provides specializations
 template <typename Backend, typename Tag, typename Coop>
-struct DevBarrier;
+struct Barrier;
 
 // Vendor specializations + DeviceAPI selection
 #if defined(USE_NVIDIA_ADAPTOR)

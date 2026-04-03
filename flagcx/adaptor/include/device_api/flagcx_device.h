@@ -150,12 +150,12 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 // Section 3: flagcxDevComm — Device Communicator (kernel-facing)
 //
 // Value type passed to kernels by value.
-// Pure wrapper around DeviceAPI::DevComm which contains all fields.
-// On Vendor: DevComm = vendor DevComm
-// On default: DevComm = {rank, nRanks, fifoBuffer, barrierPeers, ...}
+// Pure wrapper around DeviceAPI::Comm which contains all fields.
+// On Vendor: Comm = vendor Comm
+// On default: Comm = {rank, nRanks, fifoBuffer, barrierPeers, ...}
 // ============================================================
 struct flagcxDevComm {
-  typename DeviceAPI::DevComm _commBase;
+  typename DeviceAPI::Comm _commBase;
 
   // Wrapper-level fields needed by FIFO encoding on all paths.
   // Populated from flagcxDevCommInternal; safe to be 0 when unused.
@@ -172,12 +172,12 @@ struct flagcxDevComm {
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers) {
     if (di.devComm) {
-      _commBase = *(typename DeviceAPI::DevComm *)di.devComm;
+      _commBase = *(typename DeviceAPI::Comm *)di.devComm;
     } else {
       // Fallback: populate _commBase directly from handle fields.
       // Vendor path: no-op (devComm pointer always set).
-      // Dispatch resolved at compile time via DeviceAPI::DevComm.
-      DeviceAPI::DevComm::populateFromInternal(_commBase, di);
+      // Dispatch resolved at compile time via DeviceAPI::Comm.
+      DeviceAPI::Comm::populateFromInternal(_commBase, di);
     }
   }
 
@@ -390,7 +390,7 @@ FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankInDifference(flagcxTeam_t parent,
   }
 }
 
-// ---- DevComm-dependent team conversions ----
+// ---- Comm-dependent team conversions ----
 
 // Convert team rank to world rank.
 FLAGCX_DEVICE_INLINE_DECORATOR int
@@ -578,7 +578,7 @@ flagcxCoopCoalesced(flagcxCoopTile<N> coop) {
 // ============================================================
 // Section 7: flagcxDevBarrier — Barrier Session Wrappers
 //
-// Thin wrappers delegating to DeviceAPI::DevBarrier<Tag>.
+// Thin wrappers delegating to DeviceAPI::Barrier<Tag>.
 // No #ifdef FLAGCX_DEVICE_API_VENDOR — dispatch resolved by CommTraits.
 // ============================================================
 
@@ -589,7 +589,7 @@ struct flagcxDevBarrier;
 // ---- Intra ----
 template <typename Coop>
 struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
-  typename DeviceAPI::template DevBarrier<flagcxTeamTagIntra, Coop> _impl;
+  typename DeviceAPI::template Barrier<flagcxTeamTagIntra, Coop> _impl;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevBarrier() : _impl() {}
@@ -828,21 +828,21 @@ struct flagcxDevTransport : DeviceAPI::Transport {
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevTransport(const flagcxDevComm &devComm, int idx)
-      : DeviceAPI::Transport(devComm._commBase, idx),
+      : DeviceAPI::Transport(
+            devComm._commBase,
+            devComm._contextCount > 0 ? idx % devComm._contextCount : 0),
         _nInterPeers(devComm._nInterPeers) {}
 
   template <typename T>
   FLAGCX_DEVICE_INLINE_DECORATOR T load(const flagcxDevMem &mem,
-                                        size_t baseOffset, size_t idx,
-                                        int peer) const {
-    return DeviceAPI::Transport::load<T>(mem._winBase, baseOffset, idx, peer);
+                                        size_t byteOffset, int peer) const {
+    return DeviceAPI::Transport::load<T>(mem._winBase, byteOffset, peer);
   }
 
   template <typename T>
-  FLAGCX_DEVICE_INLINE_DECORATOR void store(const flagcxDevMem &mem,
-                                            size_t baseOffset, size_t idx,
-                                            int peer, T val) const {
-    DeviceAPI::Transport::store(mem._winBase, baseOffset, idx, peer, val);
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  store(const flagcxDevMem &mem, size_t byteOffset, int peer, T val) const {
+    DeviceAPI::Transport::store(mem._winBase, byteOffset, peer, val);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
@@ -988,7 +988,7 @@ struct flagcxDevTransport : DeviceAPI::Transport {
 // ---- Inter ----
 template <typename Coop>
 struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
-  typename DeviceAPI::template DevBarrier<flagcxTeamTagInter, Coop> _impl;
+  typename DeviceAPI::template Barrier<flagcxTeamTagInter, Coop> _impl;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevBarrier() : _impl() {}
@@ -1001,19 +1001,19 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.wait(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.sync(order, fence);
   }
 };
@@ -1021,7 +1021,7 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
 // ---- World ----
 template <typename Coop>
 struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
-  typename DeviceAPI::template DevBarrier<flagcxTeamTagWorld, Coop> _impl;
+  typename DeviceAPI::template Barrier<flagcxTeamTagWorld, Coop> _impl;
 
   // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1049,19 +1049,19 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.wait(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
+       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
     _impl.sync(order, fence);
   }
 };
