@@ -357,6 +357,17 @@ struct flagcxHeteroComm {
   // Device communicator (set by flagcxDevCommCreate).
   // Used by proxy for BarrierSignal, WaitSignal, PutValue handlers.
   flagcxDevComm_t devCommHandle;
+  // Inter-node signal relay — established once, shared across devComms.
+  bool relayInitialized;
+  bool isInterLeader;
+  int nInterPeers;
+  int *interPeerRanks;
+  uint64_t *interSignalFlags;
+  uint64_t *interSignalFlagsHost;
+  void **signalSendComms;
+  void **barrierRecvComms;
+  void *barrierHandleInfo;
+  void *netAdaptorPtr;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;

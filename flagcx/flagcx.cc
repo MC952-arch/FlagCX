@@ -1593,6 +1593,8 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   if (!useHomoComm(comm)) {
+    // Tear down inter-node signal relay before proxy threads are freed
+    FLAGCXCHECK(flagcxCommRelayDestroy(comm));
     // Destroy hetero comm
     FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
     // Destroy host comm
