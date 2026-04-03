@@ -72,6 +72,7 @@ struct CommTraits<NvidiaVendor> {
 
     FLAGCX_HOST_DEVICE_INLINE Window() : _impl() {}
 
+#if NCCL_CHECK_CUDACC
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
       return ncclGetPeerPointer(_impl, offset, (ncclTeam_t)team, peer);
@@ -90,20 +91,21 @@ struct CommTraits<NvidiaVendor> {
     getMulticastPointer(size_t offset, const Multimem &mm) const {
       return ncclGetMultimemPointer(_impl, offset, mm._impl);
     }
+#endif // NCCL_CHECK_CUDACC
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
-      return _impl.base != 0 || _impl.size != 0;
+      return _impl != nullptr;
     }
     FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const {
-      return (void *)_impl.base;
+      return _impl ? _impl->winHost : nullptr;
     }
     FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const { return nullptr; }
     FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return -1; }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
-      return _impl.base == o._impl.base && _impl.size == o._impl.size;
+    FLAGCX_HOST_DEVICE_INLINE bool operator==(const Window &o) const {
+      return _impl == o._impl;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR bool operator!=(const Window &o) const {
+    FLAGCX_HOST_DEVICE_INLINE bool operator!=(const Window &o) const {
       return !(*this == o);
     }
   };
@@ -137,6 +139,7 @@ struct CommTraits<NvidiaVendor> {
                                                                const DI &) {}
   };
 
+#if NCCL_CHECK_CUDACC
   // ---- CoopBlock: wraps ncclCoopCta ----
   struct CoopBlock {
     ncclCoopCta _impl;
@@ -218,6 +221,7 @@ struct CommTraits<NvidiaVendor> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
   };
+#endif // NCCL_CHECK_CUDACC
 
   // ---- Barrier handles ----
   struct IntraBarrierHandle {
@@ -227,10 +231,8 @@ struct CommTraits<NvidiaVendor> {
     ncclGinBarrierHandle _impl;
   };
 
+#if NCCL_CHECK_CUDACC
   // ---- Barrier / GIN type aliases ----
-  using Barrier = ncclLsaBarrier;
-  using RemoteAction = ncclGinRemoteAction;
-  using LocalAction = ncclGinLocalAction;
   using FenceLevel = ncclGinFenceLevel;
 
   // ---- DevBarrier alias: delegates to standalone DevBarrier<Backend, Tag>
@@ -239,34 +241,60 @@ struct CommTraits<NvidiaVendor> {
   using DevBarrier = ::DevBarrier<NvidiaVendor, Tag, Coop>;
 
   // ---- Action type conversion helpers (flagcx -> NCCL) ----
-  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None toNccl(flagcxDevNet_None) {
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None
+  toNccl(flagcxDevTransport_None) {
     return {};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalInc
-  toNccl(flagcxDevNet_SignalInc a) {
+  toNccl(flagcxDevTransport_SignalInc a) {
     return {a.signal};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalAdd
-  toNccl(flagcxDevNet_SignalAdd a) {
+  toNccl(flagcxDevTransport_SignalAdd a) {
     return {a.signal, a.value};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_CounterInc
-  toNccl(flagcxDevNet_CounterInc a) {
+  toNccl(flagcxDevTransport_CounterInc a) {
     return {a.counter};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_DescriptorSmem
-  toNccl(flagcxDevNet_DescriptorSmem a) {
+  toNccl(flagcxDevTransport_DescriptorSmem a) {
     return {(ncclGinDescriptorSmem *)a.smem._impl};
   }
 
-  // ---- Net: wraps ncclGin for one-sided operations ----
-  struct Net {
+  // ---- Transport: wraps ncclGin for one-sided operations ----
+  struct Transport {
+    DevComm _dc;
     ncclGin _gin;
     int _contextId;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
-    Net(const DevComm &dc, int contextIndex)
-        : _gin(dc, contextIndex), _contextId(contextIndex) {}
+    Transport(const DevComm &dc, int contextIndex)
+        : _dc(dc), _gin(dc, contextIndex), _contextId(contextIndex) {}
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isIntraPeer(int peer) const {
+      int intraBase = _dc.getRank() - _dc.getIntraRank();
+      return peer >= intraBase && peer < intraBase + _dc.getIntraSize();
+    }
+
+    // ---- store: write to peer's LSA pointer ----
+    template <typename T>
+    FLAGCX_DEVICE_INLINE_DECORATOR void store(const Window &win,
+                                              size_t baseOffset, size_t idx,
+                                              int peer, T val) const {
+      T *ptr = (T *)win.getIntraPointer(baseOffset + idx * sizeof(T), peer);
+      if (ptr)
+        *ptr = val;
+    }
+
+    // ---- load: read from peer's LSA pointer ----
+    template <typename T>
+    FLAGCX_DEVICE_INLINE_DECORATOR T load(const Window &win, size_t baseOffset,
+                                          size_t idx, int peer) const {
+      const T *ptr =
+          (const T *)win.getIntraPointer(baseOffset + idx * sizeof(T), peer);
+      return ptr ? *ptr : T{};
+    }
 
     // --- One-sided: put (raw Window) ---
     template <typename RA, typename LA, typename Coop, typename Desc>
@@ -309,15 +337,15 @@ struct CommTraits<NvidiaVendor> {
     // --- One-sided: waitSignal ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevNetSignal_t signal, uint64_t least, int bits,
-               flagcxDeviceMemoryOrder_t order) const {
+    waitSignal(Coop coop, flagcxDevTransportSignal_t signal, uint64_t least,
+               int bits, flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignal(coop._impl, signal, least, bits,
                       Atomic::toNativeOrder(order));
     }
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signal, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevTransportSignal_t signal, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalMeetShadow(coop._impl, signal, bits,
                                 Atomic::toNativeOrder(order));
@@ -325,7 +353,7 @@ struct CommTraits<NvidiaVendor> {
 
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signal,
+    waitSignalFollowShadow(Coop coop, flagcxDevTransportSignal_t signal,
                            Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalFollowShadow(coop._impl, signal, leastDelta, before, delta,
@@ -334,43 +362,44 @@ struct CommTraits<NvidiaVendor> {
 
     // --- Shadow manipulation ---
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevNetSignal_t signal) const {
+    getSignalShadowPtr(flagcxDevTransportSignal_t signal) const {
       return _gin.getSignalShadowPtr(signal);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevNetSignal_t signal, uint64_t delta) const {
+    increaseSignalShadow(flagcxDevTransportSignal_t signal,
+                         uint64_t delta) const {
       _gin.increaseSignalShadow(signal, delta);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevNetSignal_t signal, int bits,
+    readSignal(flagcxDevTransportSignal_t signal, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       return _gin.readSignal(signal, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevNetSignal_t signal) const {
+    resetSignal(flagcxDevTransportSignal_t signal) const {
       _gin.resetSignal(signal);
     }
 
     // --- Counter ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevNetCounter_t counter, uint64_t least,
+    waitCounter(Coop coop, flagcxDevTransportCounter_t counter, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       _gin.waitCounter(coop._impl, counter, least, bits,
                        Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevNetCounter_t counter, int bits,
+    readCounter(flagcxDevTransportCounter_t counter, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       return _gin.readCounter(counter, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevNetCounter_t counter) const {
+    resetCounter(flagcxDevTransportCounter_t counter) const {
       _gin.resetCounter(counter);
     }
 
@@ -401,10 +430,11 @@ struct CommTraits<NvidiaVendor> {
     FLAGCX_DEVICE_INLINE_DECORATOR void get(Team, int, Window, size_t, Window,
                                             size_t, size_t, Coop) const {}
   };
+#endif // NCCL_CHECK_CUDACC
 };
 
 // Fence level mapping (file scope for CUDA __constant__ compatibility)
-#ifdef FLAGCX_DEVICE_COMPILE
+#if defined(FLAGCX_DEVICE_COMPILE) && NCCL_CHECK_CUDACC
 FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
     flagcxGinFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
 static_assert(
@@ -416,71 +446,92 @@ static_assert(
 // ============================================================
 // DevBarrier specializations for NvidiaVendor
 // ============================================================
+#if NCCL_CHECK_CUDACC
 
-// ---- DevBarrier<NvidiaVendor, flagcxBarrierIntra, Coop> ----
-// Wraps ncclLsaBarrierSession<ncclCoopCta>.
+// ---- DevBarrier<NvidiaVendor, flagcxTeamTagIntra, Coop> ----
+// Wraps ncclLsaBarrierSession<ncclCoopCta> via placement new.
 template <typename Coop>
-struct DevBarrier<NvidiaVendor, flagcxBarrierIntra, Coop> {
+struct DevBarrier<NvidiaVendor, flagcxTeamTagIntra, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
   using DevComm = CommTraits<NvidiaVendor>::DevComm;
   using Team = CommTraits<NvidiaVendor>::Team;
   using Multimem = CommTraits<NvidiaVendor>::Multimem;
 
   Coop _coop;
-  ncclLsaBarrierSession<ncclCoopCta> _impl;
+  alignas(ncclLsaBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
+      ncclLsaBarrierSession<ncclCoopCta>)];
+  bool _active;
 
-  // Default ctor
+  // Default ctor — inactive
   FLAGCX_DEVICE_INLINE_DECORATOR
-  DevBarrier() : _coop(), _impl() {}
+  DevBarrier() : _coop(), _active(false) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
   DevBarrier(Coop coop, const DevComm &dc, Team team, uint32_t index,
              bool multimem = false, const Multimem &mm = {})
-      : _coop(coop), _impl(ncclCoopCta(), dc, ncclTeamLsa(dc),
-                           dc._impl.lsaBarrier, index, multimem, mm._impl) {}
+      : _coop(coop), _active(true) {
+    new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), dc, ncclTeamLsa(dc), dc._impl.lsaBarrier, index,
+        multimem, mm._impl);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  ~DevBarrier() {
+    if (_active)
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->~ncclLsaBarrierSession();
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.arrive(ncclCoopCta(), Atomic::toNativeOrder(order));
+    reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+        ->arrive(ncclCoopCta(), Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.wait(ncclCoopCta(), Atomic::toNativeOrder(order));
+    reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+        ->wait(ncclCoopCta(), Atomic::toNativeOrder(order));
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _impl.sync(ncclCoopCta(), Atomic::toNativeOrder(order));
+    reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+        ->sync(ncclCoopCta(), Atomic::toNativeOrder(order));
   }
 };
 
-// ---- DevBarrier<NvidiaVendor, flagcxBarrierInter, Coop> ----
+// ---- DevBarrier<NvidiaVendor, flagcxTeamTagInter, Coop> ----
 // Wraps ncclGinBarrierSession<ncclCoopCta> via placement new.
 template <typename Coop>
-struct DevBarrier<NvidiaVendor, flagcxBarrierInter, Coop> {
+struct DevBarrier<NvidiaVendor, flagcxTeamTagInter, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
   using DevComm = CommTraits<NvidiaVendor>::DevComm;
   using Team = CommTraits<NvidiaVendor>::Team;
-  using Net = CommTraits<NvidiaVendor>::Net;
+  using Transport = CommTraits<NvidiaVendor>::Transport;
 
   Coop _coop;
   alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
       ncclGinBarrierSession<ncclCoopCta>)];
   int _nInterPeers;
 
-  // Default ctor (no-op barrier)
   FLAGCX_DEVICE_INLINE_DECORATOR
   DevBarrier() : _coop(), _nInterPeers(0) {}
 
-  // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
-  DevBarrier(Coop coop, const Net &net, const DevComm &dc, Team team,
+  DevBarrier(Coop coop, const Transport &trans, const DevComm &dc, Team team,
              uint32_t index, int nInterPeers)
       : _coop(coop), _nInterPeers(nInterPeers) {
     new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), net._gin, team, net._gin.comm.railGinBarrier, index);
+        ncclCoopCta(), trans._gin, team, trans._gin.comm.railGinBarrier, index);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  ~DevBarrier() {
+    if (_nInterPeers > 0)
+      reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->~ncclGinBarrierSession();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -506,14 +557,14 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierInter, Coop> {
   }
 };
 
-// ---- DevBarrier<NvidiaVendor, flagcxBarrierWorld, Coop> ----
+// ---- DevBarrier<NvidiaVendor, flagcxTeamTagWorld, Coop> ----
 // World: wraps ncclBarrierSession. Intra: wraps ncclLsaBarrierSession.
 // Uses placement new for the union of both types.
 template <typename Coop>
-struct DevBarrier<NvidiaVendor, flagcxBarrierWorld, Coop> {
+struct DevBarrier<NvidiaVendor, flagcxTeamTagWorld, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
   using DevComm = CommTraits<NvidiaVendor>::DevComm;
-  using Net = CommTraits<NvidiaVendor>::Net;
+  using Transport = CommTraits<NvidiaVendor>::Transport;
 
   // Storage large enough for the larger of the two session types
   static constexpr size_t kWorldSize = sizeof(ncclBarrierSession<ncclCoopCta>);
@@ -534,16 +585,16 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierWorld, Coop> {
 
   // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  DevBarrier(Coop coop, flagcxBarrierWorld::World, const Net &net,
+  DevBarrier(Coop coop, flagcxTeamTagWorld, const Transport &trans,
              const DevComm &dc, uint32_t index, bool multimem, int)
       : _coop(coop), _intraOnly(false) {
     new (_implStorage) ncclBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), ncclTeamTagWorld(), net._gin, index, multimem);
+        ncclCoopCta(), ncclTeamTagWorld(), trans._gin, index, multimem);
   }
 
   // Intra-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
-  DevBarrier(Coop coop, flagcxBarrierWorld::Intra, const Net &,
+  DevBarrier(Coop coop, flagcxTeamTagIntra, const Transport &,
              const DevComm &dc, uint32_t index, bool multimem, int)
       : _coop(coop), _intraOnly(true) {
     new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
@@ -553,11 +604,21 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierWorld, Coop> {
 
   // Inter-only barrier (ncclTeamTagRail)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  DevBarrier(Coop coop, flagcxBarrierWorld::Inter, const Net &net,
+  DevBarrier(Coop coop, flagcxTeamTagInter, const Transport &trans,
              const DevComm &, uint32_t index, bool, int)
       : _coop(coop), _intraOnly(false) {
     new (_implStorage) ncclBarrierSession<ncclCoopCta>(
-        ncclCoopCta(), ncclTeamTagRail(), net._gin, index);
+        ncclCoopCta(), ncclTeamTagRail(), trans._gin, index);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  ~DevBarrier() {
+    if (_intraOnly)
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->~ncclLsaBarrierSession();
+    else
+      reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->~ncclBarrierSession();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -593,6 +654,7 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierWorld, Coop> {
     }
   }
 };
+#endif // NCCL_CHECK_CUDACC
 
 #define FLAGCX_DEVICE_API_VENDOR 1
 using DeviceAPI = CommTraits<NvidiaVendor>;

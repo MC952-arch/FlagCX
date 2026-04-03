@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "nvidia_adaptor.h"
+#include "device_utils.h"
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 #include "nccl_device.h"
 #include <cuda_runtime.h>
