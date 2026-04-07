@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
   if (localRegister == 1) {
     devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL);
   } else {
-    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, comm));
+    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes));
   }
   if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only)
@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numWarmupIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(devMem, count, DATATYPE, devComm, stream);
+      flagcxIntraAllReduce(devMem, count, DATATYPE, devComm, stream);
       devHandle->deviceMemcpy(recvbuff, regBuff, count * sizeof(float),
                               flagcxMemcpyDeviceToDevice, stream);
     }
@@ -149,7 +149,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < numIters; i++) {
       devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
-      flagcxIntraAllReduceDemo(devMem, count, DATATYPE, devComm, stream);
+      flagcxIntraAllReduce(devMem, count, DATATYPE, devComm, stream);
       devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
                               flagcxMemcpyDeviceToDevice, stream);
     }
@@ -210,7 +210,7 @@ int main(int argc, char *argv[]) {
   if (localRegister == 1) {
     devHandle->deviceFree(regBuff, flagcxMemDevice, NULL);
   } else {
-    FLAGCXCHECK(flagcxMemFree(regBuff, comm));
+    FLAGCXCHECK(flagcxMemFree(regBuff));
   }
   devHandle->streamDestroy(stream);
   devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);

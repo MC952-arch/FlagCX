@@ -1593,6 +1593,8 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   if (!useHomoComm(comm)) {
+    // Tear down inter-node signal relay before proxy threads are freed
+    FLAGCXCHECK(flagcxCommRelayDestroy(comm));
     // Destroy hetero comm
     FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
     // Destroy host comm
@@ -1679,11 +1681,15 @@ flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
   return flagcxHeteroCommUserRank(comm->heteroComm, rank);
 }
 
-flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, void **buffer) {
-  if (comm->heteroComm->fifoBuffer == NULL) {
+flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
+                                    void **buffer) {
+  if (contextId < 0 || contextId >= FLAGCX_DEVICE_CTA_COUNT) {
+    return flagcxInvalidArgument;
+  }
+  if (comm->heteroComm->fifoBuffers[contextId] == NULL) {
     return flagcxInvalidUsage;
   }
-  *buffer = comm->heteroComm->fifoBuffer;
+  *buffer = comm->heteroComm->fifoBuffers[contextId];
   return flagcxSuccess;
 }
 
