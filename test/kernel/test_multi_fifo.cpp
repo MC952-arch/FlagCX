@@ -68,6 +68,10 @@ static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
                                               devComm, stream));
     }
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    if (numIters == 0) {
+      MPI_Barrier(MPI_COMM_WORLD);
+      continue;
+    }
     double elapsedTime = tim.elapsed() / numIters;
 
     // Verify
@@ -119,6 +123,14 @@ int main(int argc, char *argv[]) {
   int numIters = args.getTestIters();
   uint64_t splitMask = args.getSplitMask();
   int localRegister = args.getLocalRegister();
+
+  if (stepFactor <= 1) {
+    fprintf(stderr,
+            "Error: stepFactor must be > 1 to avoid infinite loop in "
+            "size-sweep (got %d)\n",
+            stepFactor);
+    return 1;
+  }
 
   flagcxHandlerGroup_t handler;
   FLAGCXCHECK(flagcxHandleInit(&handler));

@@ -895,19 +895,33 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
     nKernelProxies = FLAGCX_DEVICE_CTA_COUNT;
   comm->proxyState->kernelState.contextCount = nKernelProxies;
 
+  int nStarted = 0;
   for (int i = 0; i < nKernelProxies; i++) {
     flagcxProxyKernelServiceArg *arg = new flagcxProxyKernelServiceArg{comm, i};
-    pthread_create(&comm->proxyState->kernelState.threads[i], NULL,
-                   flagcxProxyKernelService, arg);
+    if (pthread_create(&comm->proxyState->kernelState.threads[i], NULL,
+                       flagcxProxyKernelService, arg) != 0) {
+      WARN("flagcxProxyInit: failed to create kernel proxy thread %d", i);
+      delete arg;
+      break;
+    }
+    nStarted++;
   }
+  // Adjust contextCount to the number of threads actually started so the
+  // cond-wait below and the stop/join loop use a consistent count.
+  comm->proxyState->kernelState.contextCount = nStarted;
 
-  // Wait for all kernel proxy threads to finish initialization
+  // Wait for all started kernel proxy threads to finish initialization
   pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
-  while (comm->proxyState->kernelState.ready < nKernelProxies) {
+  while (comm->proxyState->kernelState.ready < nStarted) {
     pthread_cond_wait(&comm->proxyState->kernelState.initCond,
                       &comm->proxyState->kernelState.initMutex);
   }
   pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
+
+  if (nStarted == 0) {
+    WARN("flagcxProxyInit: no kernel proxy threads started");
+    return flagcxSystemError;
+  }
 #endif
 
   comm->proxyState->initialized = 1;
@@ -1074,6 +1088,7 @@ void *flagcxProxyKernelService(void *args) {
   int termCount = 0;
   flagcxDeviceTrigger_t ptr = NULL;
   flagcxFifo_t fifo = NULL;
+  flagcxStream_t stream = NULL;
   flagcxProxyKernelServiceArg *arg = (flagcxProxyKernelServiceArg *)args;
   struct flagcxHeteroComm *comm = arg->comm;
   int contextId = arg->contextId;
@@ -1113,7 +1128,6 @@ void *flagcxProxyKernelService(void *args) {
       res, out);
 
   // Create a dedicated stream
-  flagcxStream_t stream;
   FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
   INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank, (uintptr_t)stream);
 
@@ -1363,16 +1377,20 @@ void *flagcxProxyKernelService(void *args) {
     if (res != flagcxSuccess)
       break;
   }
-  // destroy stream
-  res = deviceAdaptor->streamSynchronize(stream);
-  res = deviceAdaptor->streamDestroy(stream);
-  // deallocate trigger structure
-  free(ptr);
-
 out:
-  // destroy fifo
-  res = comm->proxyState->kernelState.fifos[contextId]->flagcxFifoDestroy();
-  delete comm->proxyState->kernelState.fifos[contextId];
+  // destroy stream (only if created)
+  if (stream != nullptr) {
+    deviceAdaptor->streamSynchronize(stream);
+    deviceAdaptor->streamDestroy(stream);
+  }
+  // deallocate trigger structure (only if allocated)
+  free(ptr);
+  // destroy fifo (only if created)
+  if (comm->proxyState->kernelState.fifos[contextId] != nullptr) {
+    comm->proxyState->kernelState.fifos[contextId]->flagcxFifoDestroy();
+    delete comm->proxyState->kernelState.fifos[contextId];
+    comm->proxyState->kernelState.fifos[contextId] = nullptr;
+  }
   comm->fifoBuffers[contextId] = NULL;
   return NULL;
 }

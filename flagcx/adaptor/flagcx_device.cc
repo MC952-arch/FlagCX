@@ -20,6 +20,7 @@
 #include "shmutils.h" // flagcxShmOpen, flagcxShmClose, flagcxShmUnlink
 #include "utils.h"    // flagcxParamSignalHostEnable
 #include <algorithm>  // std::min, std::max
+#include <sched.h>    // sched_yield
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -349,7 +350,38 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   return flagcxSuccess;
 
 fail:
-  // Partial cleanup on error (DevCommDestroy will handle the rest)
+  // Clean up any partially-allocated relay state so that
+  // flagcxCommRelayDestroy (which skips when relayInitialized==false) doesn't
+  // leave dangling allocations.
+  if (hetero->isInterLeader) {
+    struct flagcxNetAdaptor *net = hetero->netAdaptor;
+    if (hetero->signalSendComms) {
+      for (int p = 0; p < nInterPeers; p++) {
+        if (hetero->signalSendComms[p])
+          net->closeSend(hetero->signalSendComms[p]);
+      }
+      free(hetero->signalSendComms);
+      hetero->signalSendComms = nullptr;
+    }
+    if (hetero->barrierRecvComms) {
+      for (int p = 0; p < nInterPeers; p++) {
+        if (hetero->barrierRecvComms[p])
+          net->closeRecv(hetero->barrierRecvComms[p]);
+      }
+      free(hetero->barrierRecvComms);
+      hetero->barrierRecvComms = nullptr;
+    }
+    if (hetero->interSignalFlagsHost) {
+      deviceAdaptor->deviceFree(hetero->interSignalFlagsHost, flagcxMemHost,
+                                NULL);
+      hetero->interSignalFlagsHost = nullptr;
+      hetero->interSignalFlags = nullptr;
+    }
+  }
+  free(hetero->interPeerRanks);
+  hetero->interPeerRanks = nullptr;
+  hetero->nInterPeers = 0;
+  hetero->isInterLeader = false;
   return res;
 }
 

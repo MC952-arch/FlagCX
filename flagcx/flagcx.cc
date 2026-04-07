@@ -1593,9 +1593,12 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   if (!useHomoComm(comm)) {
-    // Tear down inter-node signal relay before proxy threads are freed
+    // Tear down inter-node signal relay first: drains FIFOs and closes RDMA
+    // connections. Must run before flagcxHeteroCommDestroy, which frees
+    // proxyState and heteroComm. Proxy threads are stopped inside
+    // flagcxCommRelayDestroy via the bootstrap barrier before any teardown.
     FLAGCXCHECK(flagcxCommRelayDestroy(comm));
-    // Destroy hetero comm
+    // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
     FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
     // Destroy host comm
     if (useHostComm()) {
@@ -1683,12 +1686,29 @@ flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
 
 flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
                                     void **buffer) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+
+  if (buffer == nullptr) {
+    return flagcxInvalidArgument;
+  }
+
   if (contextId < 0 || contextId >= FLAGCX_DEVICE_CTA_COUNT) {
     return flagcxInvalidArgument;
   }
-  if (comm->heteroComm->fifoBuffers[contextId] == NULL) {
+
+  // FIFO buffers are only available on hetero communicators
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxNotSupported;
+  }
+
+  if (comm->heteroComm == nullptr) {
+    return flagcxNotSupported;
+  }
+
+  if (comm->heteroComm->fifoBuffers[contextId] == nullptr) {
     return flagcxInvalidUsage;
   }
+
   *buffer = comm->heteroComm->fifoBuffers[contextId];
   return flagcxSuccess;
 }

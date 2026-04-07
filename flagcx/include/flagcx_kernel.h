@@ -421,7 +421,9 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
 // Tear down inter-node signal relay stored on heteroComm.
-// Must be called after proxy threads are stopped (FIFOs drained).
+// Must be called before flagcxHeteroCommDestroy (which frees proxyState and
+// heteroComm). Internally drains FIFOs and performs a cross-rank barrier
+// before closing RDMA connections.
 flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm);
 
 // Deferred device/host-pinned memory free.

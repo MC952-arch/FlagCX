@@ -262,11 +262,6 @@ flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device);
 /* Returns the user-ordered "rank" associated with the communicator. */
 flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank);
 
-/* Returns `(void *)fifoBuffers[contextId]` associated with the `heteroComm` of
- * the input communicator */
-flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
-                                    void **buffer);
-
 /*
  * Collective communication operations
  *
