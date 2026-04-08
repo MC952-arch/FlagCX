@@ -56,11 +56,14 @@ struct flagcxP2pSyncSlot {
 };
 
 struct p2pRegInfo {
-  int copyDone;    // Indicates if the copy operation is complete
-  int copyStarted; // Indicates if the copy operation has started
-  uintptr_t
-      ipcUserOffset; // Per-slot IPC offset (recv-side writes, send-side reads)
-  int ipcRegReady;   // 1 = ipcUserOffset is valid for current op
+  int copyDone;            // Indicates if the copy operation is complete
+  int copyStarted;         // Indicates if the copy operation has started
+  uintptr_t ipcUserOffset; // Per-slot: recv writes, send reads
+  uintptr_t ipcPageGap;    // Per-registration: base-to-regAddr offset
+  flagcxIpcHandleData
+      ipcHandleData; // IPC handle bytes (recv writes, send reads)
+  int ipcRegReady;   // 1 = above fields valid; recv sets, send clears
+  uint64_t seqNum;   // Monotonic sequence number per slot for disambiguation
 };
 
 struct flagcxP2pShm {

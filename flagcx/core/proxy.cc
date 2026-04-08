@@ -652,7 +652,9 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
     if (op->connection->transport == TRANSPORT_P2P) {
-      ;
+      FLAGCXCHECK(flagcxP2pProxyRegister(op->connection, NULL, op->reqBuff,
+                                         op->reqSize, op->respBuff,
+                                         op->respSize, &done));
     } else if (op->connection->transport == TRANSPORT_NET) {
       void *handle;
       struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
@@ -702,7 +704,8 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
     if (op->connection->transport == TRANSPORT_P2P) {
-      ;
+      FLAGCXCHECK(flagcxP2pProxyDeregister(op->connection, NULL, op->reqBuff,
+                                           op->reqSize, &done));
     } else if (op->connection->transport == TRANSPORT_NET) {
       void *handle;
       assert(op->reqSize == sizeof(void *));

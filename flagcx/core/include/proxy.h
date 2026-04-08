@@ -374,6 +374,7 @@ enum proxyConnectState {
 struct flagcxProxyConnection {
   int send, transport, shared;
   int tpLocalRank, sameProcess;
+  int cudaDev;
   struct flagcxSocket *sock;
   struct flagcxTransportComm *tcomm;
   struct flagcxProxyArgs *proxyAppend;
