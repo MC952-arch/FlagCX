@@ -704,19 +704,9 @@ static flagcxResult_t p2pRegisterBuffer(
       if (existingInfo && existingInfo->handleReady) {
         // Cache hit: write fresh userOffset to per-slot SHM, zero bootstrap
         if (shm) {
-          // Wait for send-side to consume previous entry before overwriting
-          int spinCount = 0;
-          while (__atomic_load_n(&shm->regInfos[shmRegSlotIdx].ipcRegReady,
-                                 __ATOMIC_ACQUIRE) != 0) {
-            if (++spinCount > 10000000) {
-              WARN("rank %d - recv cache-hit spin timeout waiting for slot "
-                   "clear (peer %d, slot %zu)",
-                   comm->rank, peerRank, shmRegSlotIdx);
-              ret = flagcxInternalError;
-              goto fail;
-            }
-            sched_yield();
-          }
+          // No spin-wait needed: within a groupLaunch, recv is always
+          // processed before send for the same peer pair, and between
+          // groupLaunches the previous send has already consumed.
           __atomic_store_n(&shm->regInfos[shmRegSlotIdx].ipcUserOffset,
                            userOffset, __ATOMIC_RELAXED);
           __atomic_store_n(&shm->regInfos[shmRegSlotIdx].ipcRegReady, 1,
@@ -771,19 +761,9 @@ static flagcxResult_t p2pRegisterBuffer(
 
         // Write handle + offsets to SHM; send-side will spin on ipcRegReady
         if (shm) {
-          // Wait for send-side to consume previous entry before overwriting
-          int spinCount = 0;
-          while (__atomic_load_n(&shm->regInfos[shmRegSlotIdx].ipcRegReady,
-                                 __ATOMIC_ACQUIRE) != 0) {
-            if (++spinCount > 10000000) {
-              WARN("rank %d - recv-side spin timeout waiting for slot clear "
-                   "(peer %d, slot %zu)",
-                   comm->rank, peerRank, shmRegSlotIdx);
-              ret = flagcxInternalError;
-              goto fail;
-            }
-            sched_yield();
-          }
+          // No spin-wait needed: within a groupLaunch, recv is always
+          // processed before send for the same peer pair, and between
+          // groupLaunches the previous send has already consumed.
           memcpy(&shm->regInfos[shmRegSlotIdx].ipcHandleData, &handleData,
                  sizeof(flagcxIpcHandleData));
           __atomic_store_n(&shm->regInfos[shmRegSlotIdx].ipcPageGap, pageGap,
