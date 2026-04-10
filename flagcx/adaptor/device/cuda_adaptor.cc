@@ -352,13 +352,8 @@ flagcxResult_t cudaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   if (handle == NULL || devPtr == NULL || *devPtr != NULL) {
     return flagcxInvalidArgument;
   }
-  cudaError_t err = cudaIpcOpenMemHandle(devPtr, handle->base,
-                                         cudaIpcMemLazyEnablePeerAccess);
-  if (err != cudaSuccess) {
-    INFO(FLAGCX_REG, "cudaIpcOpenMemHandle failed: cudaError=%d (%s)", (int)err,
-         cudaGetErrorString(err));
-    return flagcxUnhandledDeviceError;
-  }
+  DEVCHECK(cudaIpcOpenMemHandle(devPtr, handle->base,
+                                cudaIpcMemLazyEnablePeerAccess));
   return flagcxSuccess;
 }
 

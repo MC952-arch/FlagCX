@@ -806,6 +806,7 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
         newInfo->peerRank = peerRank;
         newInfo->baseAddr = (void *)baseAddr;
         newInfo->ipcProxyconn = proxyConn;
+        newInfo->sameProcess = sameProcess;
         FLAGCXCHECKGOTO(
             globalRegPool.addP2pHandle(comm, regItem, newInfo, proxyConn), ret,
             fail);
@@ -895,7 +896,7 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
   // Close IPC handle via proxy if it was opened by proxy (send side),
   // or directly if opened inline (legacy path).
   if (info->impInfo.rmtRegAddr && info->impInfo.legacyIpcCap) {
-    if (info->ipcProxyconn && !info->ipcProxyconn->connection->sameProcess) {
+    if (info->ipcProxyconn && !info->sameProcess) {
       // Only call proxy if the peer socket is still alive.
       // During comm destroy, the proxy is torn down before reg pool cleanup.
       bool sockReady = false;
