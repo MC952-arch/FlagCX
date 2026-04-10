@@ -283,23 +283,15 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                          peer, comm->rank, op->args.p2pPeerSlotIdx,
                          op->args.p2pPeerOpHash);
 
-              flagcxConnector *recvConn =
-                  &comm->channels[op->channelId].peers[peer]->recv[0];
-              flagcxConnector *peerConns[] = {recvConn};
               int peerRanks[] = {peer};
               uintptr_t regOffset = 0;
               uintptr_t *peerRmtAddr = NULL;
               op->args.regBufFlag = 0;
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
-                  /*isSender=*/false, &op->args.regBufFlag, &regOffset,
-                  &peerRmtAddr, 0));
-              if (op->args.regBufFlag) {
-                INFO(FLAGCX_REG,
-                     "flagcxGroup P2P recv reg rank %d <- %d buff %p size %zu "
-                     "offset %zu remote %p",
-                     comm->rank, peer, p2p->buff, p2p->bytes, (size_t)regOffset,
-                     peerRmtAddr ? (void *)(*peerRmtAddr) : NULL);
+                  comm, p2p->buff, p2p->bytes, peerRanks, 1,
+                  &op->args.regBufFlag, &regOffset, &peerRmtAddr));
+              if (op->args.regBufFlag && peerRmtAddr) {
+                op->args.p2pRmtAddr = (void *)peerRmtAddr;
               }
             } else if (op->connection->transport == TRANSPORT_NET) {
               op->args.chunkSize = flagcxNetChunkSize;
@@ -375,19 +367,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   "peerOpHash(%ld)]",
                   peer, comm->rank, op->args.p2pPeerSlotIdx,
                   op->args.p2pPeerOpHash);
-              flagcxConnector *peerConns[] = {
-                  comm->channels[op->channelId].peers[peer]->send};
-              int peerRanks[] = {peer};
-              uintptr_t regOffset = 0;
-              uintptr_t *peerRmtAddr = NULL;
-              FLAGCXCHECK(flagcxP2pRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
-                  /*isSender=*/true, &op->args.regBufFlag, &regOffset,
-                  &peerRmtAddr, 0));
-              // peerRmtAddr is fully resolved (rmtRegAddr + peer's userOffset)
-              if (op->args.regBufFlag && peerRmtAddr) {
-                op->args.p2pRmtAddr = (void *)peerRmtAddr;
-              }
+              // Send side: don't register (recv side does it in WRITE mode).
+              // Set regBufFlag=1 so send proxy enters zero-copy path and reads
+              // ipcRmtAddr from SHM once recv publishes it.
+              op->args.regBufFlag = 1;
+              op->args.p2pRmtAddr = nullptr;
             } else if (op->connection->transport == TRANSPORT_NET) {
               op->args.chunkSize = flagcxNetChunkSize;
               op->args.chunkSteps =

@@ -64,6 +64,8 @@ struct p2pRegInfo {
       ipcHandleData; // IPC handle bytes (recv writes, send reads)
   int ipcRegReady;   // 1 = above fields valid; recv sets, send clears
   uint64_t seqNum;   // Monotonic sequence number per slot for disambiguation
+  volatile uintptr_t
+      ipcRmtAddr; // Recv publishes mapped remote addr here; sender reads it
 };
 
 struct flagcxP2pShm {
@@ -152,12 +154,11 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr);
 
-flagcxResult_t
-flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm, const void *userbuff,
-                        size_t buffSize, struct flagcxConnector **peerConns,
-                        int *peerRanks, int nPeers, bool isSender,
-                        int *regBufFlag, uintptr_t *offsetOut,
-                        uintptr_t **peerRmtAddrsOut, size_t shmRegSlotIdx);
+flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
+                                       const void *userbuff, size_t buffSize,
+                                       int *peerRanks, int nPeers,
+                                       int *regBufFlag, uintptr_t *offsetOut,
+                                       uintptr_t **peerRmtAddrsOut);
 
 flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
                                          struct flagcxIpcRegInfo *info);

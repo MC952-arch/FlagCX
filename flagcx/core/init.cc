@@ -339,6 +339,16 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     INFO(FLAGCX_INIT, "Flagcx RuntimeProxy flag set to %d", runtimeProxy);
     if (!runtimeProxy) {
       FLAGCXCHECK(flagcxProxyInit(comm));
+
+      // Allocate gproxyConn array and populate peerAddresses for peer proxy
+      // connections
+      FLAGCXCHECK(flagcxCalloc(&comm->gproxyConn, comm->nRanks));
+      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
+      comm->proxyState->peerAddresses[comm->rank] =
+          comm->proxyState->listenSock.addr;
+      FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
+                                     comm->proxyState->peerAddresses,
+                                     sizeof(union flagcxSocketAddress)));
     }
   }
 
@@ -477,6 +487,9 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
 
   free(comm->connectSend);
   free(comm->connectRecv);
+  free(comm->gproxyConn);
+  free(comm->proxyState->peerAddresses);
+  free(comm->proxyState->peerSocks);
   free(comm->proxyState);
   free(comm->tasks.peers);
   free(comm->tasks.p2pOrder);
