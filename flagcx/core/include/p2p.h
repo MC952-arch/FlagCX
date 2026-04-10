@@ -59,12 +59,8 @@ struct p2pRegInfo {
   int copyDone;            // Indicates if the copy operation is complete
   int copyStarted;         // Indicates if the copy operation has started
   uintptr_t ipcUserOffset; // Per-slot: recv writes, send reads
-  uintptr_t ipcPageGap;    // Per-registration: base-to-regAddr offset
-  flagcxIpcHandleData
-      ipcHandleData; // IPC handle bytes (recv writes, send reads)
-  int ipcRegReady;   // 1 = above fields valid; recv sets, send clears
-  uint64_t seqNum;   // Monotonic sequence number per slot for disambiguation
-  volatile uintptr_t
+  int ipcRegReady;         // 1 = ipcRmtAddr valid; recv sets, send clears
+  uintptr_t
       ipcRmtAddr; // Recv publishes mapped remote addr here; sender reads it
 };
 

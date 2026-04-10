@@ -12,6 +12,7 @@
 #include "group.h"
 #include "net.h"
 #include "p2p.h"
+#include "reg_pool.h"
 #include "topo.h"
 #include "transport.h"
 #include "type.h"
@@ -471,6 +472,8 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
+  // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
+  globalRegPool.removeAllP2pHandles(comm);
   flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {

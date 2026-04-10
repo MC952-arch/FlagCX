@@ -898,7 +898,10 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
   if (info->impInfo.rmtRegAddr && info->impInfo.legacyIpcCap) {
     if (info->ipcProxyconn && !info->sameProcess) {
       // Only call proxy if the peer socket is still alive.
-      // During comm destroy, the proxy is torn down before reg pool cleanup.
+      // Primary guarantee: flagcxHeteroCommDestroy calls
+      // globalRegPool.removeAllP2pHandles() before flagcxProxyDestroy(),
+      // so peerSocks is valid during normal destroy. This check is a
+      // safety net for edge cases (e.g., late deregister after destroy).
       bool sockReady = false;
       struct flagcxProxyState *ps = comm->proxyState;
       if (ps && ps->peerSocks && info->ipcProxyconn->tpRank >= 0 &&
