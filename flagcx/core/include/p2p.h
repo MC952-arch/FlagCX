@@ -59,9 +59,13 @@ struct p2pRegInfo {
   int copyDone;            // Indicates if the copy operation is complete
   int copyStarted;         // Indicates if the copy operation has started
   uintptr_t ipcUserOffset; // Per-slot: recv writes, send reads
-  int ipcRegReady;         // 1 = ipcRmtAddr valid; recv sets, send clears
+  // WRITE mode: recv publishes into sender's slot
+  int ipcRecvRegReady;      // 1 = ipcRecvRmtAddr valid; recv sets
+  uintptr_t ipcRecvRmtAddr; // Recv's buffer mapped in sender's address space
+  // READ mode: sender publishes into receiver's slot
+  int ipcSendRegReady; // 1 = ipcSendRmtAddr valid; sender sets
   uintptr_t
-      ipcRmtAddr; // Recv publishes mapped remote addr here; sender reads it
+      ipcSendRmtAddr; // Sender's buffer mapped in receiver's address space
 };
 
 struct flagcxP2pShm {

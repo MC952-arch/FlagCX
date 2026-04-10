@@ -367,8 +367,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   "peerOpHash(%ld)]",
                   peer, comm->rank, op->args.p2pPeerSlotIdx,
                   op->args.p2pPeerOpHash);
-              // Send side: call register to check if recv side has a cached
-              // IPC handle for this peer. If so, enter zero-copy mode.
+              // Send side: register own buffer to peer's proxy for READ mode.
               // The actual IPC address comes from SHM at proxy time.
               int peerRanks[] = {peer};
               uintptr_t regOffset = 0;
@@ -377,7 +376,9 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
                   comm, p2p->buff, p2p->bytes, peerRanks, 1,
                   &op->args.regBufFlag, &regOffset, &peerRmtAddr));
-              op->args.p2pRmtAddr = nullptr;
+              if (op->args.regBufFlag && peerRmtAddr) {
+                op->args.p2pRmtAddr = (void *)peerRmtAddr;
+              }
             } else if (op->connection->transport == TRANSPORT_NET) {
               op->args.chunkSize = flagcxNetChunkSize;
               op->args.chunkSteps =

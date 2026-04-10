@@ -126,8 +126,10 @@ static inline void resetSlot(flagcxP2pSyncSlot *slotPtr,
     __atomic_store_n(&regPtr->copyStarted, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->copyDone, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->ipcUserOffset, (uintptr_t)0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->ipcRmtAddr, (uintptr_t)0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->ipcRegReady, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&regPtr->ipcRecvRmtAddr, (uintptr_t)0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->ipcRecvRegReady, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->ipcSendRmtAddr, (uintptr_t)0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->ipcSendRegReady, 0, __ATOMIC_RELEASE);
   }
   if (slotPtr != NULL) {
     __atomic_store_n(&slotPtr->sendHead, 0, __ATOMIC_RELAXED);
@@ -154,6 +156,9 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
       &resources->proxyInfo.shm->slots[args->p2pPeerSlotIdx];
   struct p2pRegInfo *regInfoPtr =
       &resources->proxyInfo.shm->regInfos[args->p2pSlotIdx];
+  // For READ mode, sender publishes into receiver's regInfo
+  struct p2pRegInfo *peerRegInfoPtr =
+      &resources->proxyInfo.shm->regInfos[args->p2pPeerSlotIdx];
 
   // Reset slot for new operation, only if previous operation
   // is done for both sides
@@ -171,52 +176,75 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
       __atomic_load_n(&slotPtr->peerDone, __ATOMIC_ACQUIRE) == 0)
     return flagcxSuccess;
 
-  // Zero-copy mode: sender reads ipcRmtAddr from SHM (published by recv proxy),
-  // then copies directly to receiver's buffer via IPC.
+  // Zero-copy mode
   if (args->regBufFlag) {
-    // Wait for recv proxy to publish ipcRmtAddr
-    if (!args->p2pRmtAddr) {
-      if (__atomic_load_n(&regInfoPtr->ipcRegReady, __ATOMIC_ACQUIRE) == 1) {
-        args->p2pRmtAddr =
-            (void *)__atomic_load_n(&regInfoPtr->ipcRmtAddr, __ATOMIC_RELAXED);
+    // Try WRITE first: recv registered → ipcRecvRegReady in own regInfo
+    if (__atomic_load_n(&regInfoPtr->ipcRecvRegReady, __ATOMIC_ACQUIRE) == 1) {
+      // WRITE mode: sender copies to receiver's buffer
+      void *rmtAddr = (void *)__atomic_load_n(&regInfoPtr->ipcRecvRmtAddr,
+                                              __ATOMIC_RELAXED);
+      if (args->transmitted < args->chunkSteps) {
+        if (args->copied == 0) {
+          __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
+          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+              rmtAddr, data, size, flagcxMemcpyDeviceToDevice,
+              resources->proxyInfo.stream, NULL));
+          FLAGCXCHECK(deviceAdaptor->eventRecord(resources->proxyInfo.events[0],
+                                                 resources->proxyInfo.stream));
+          args->copied = args->chunkSteps;
+          args->totalCopySize = size;
+        }
+        if (args->transmitted < args->copied) {
+          flagcxResult_t res =
+              deviceAdaptor->eventQuery(resources->proxyInfo.events[0]);
+          if (res == flagcxSuccess) {
+            args->transmitted = args->chunkSteps;
+            __atomic_store_n(&regInfoPtr->copyDone, 1, __ATOMIC_RELEASE);
+          }
+        }
       } else {
-        return flagcxSuccess; // Retry later
+        if (args->done != 1) {
+          if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
+            __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+          }
+          if (slotIsComplete(slotPtr)) {
+            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+            args->semaphore->subCounter(args->opId);
+            args->done = 1;
+          }
+        }
       }
-    }
-    void *rmtAddr = args->p2pRmtAddr;
-    if (args->transmitted < args->chunkSteps) {
-      // Single-step copy directly to receiver's buffer
-      if (args->copied == 0) {
-        __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-            rmtAddr, data, size, flagcxMemcpyDeviceToDevice,
-            resources->proxyInfo.stream, NULL));
-        FLAGCXCHECK(deviceAdaptor->eventRecord(resources->proxyInfo.events[0],
-                                               resources->proxyInfo.stream));
-        args->copied = args->chunkSteps;
-        args->totalCopySize = size;
+    } else if (args->p2pRmtAddr != nullptr) {
+      // READ mode: sender registered its buffer, publish addr for receiver
+      if (__atomic_load_n(&peerRegInfoPtr->ipcSendRegReady, __ATOMIC_ACQUIRE) ==
+          0) {
+        __atomic_store_n(&peerRegInfoPtr->ipcSendRmtAddr,
+                         (uintptr_t)args->p2pRmtAddr, __ATOMIC_RELAXED);
+        __atomic_store_n(&peerRegInfoPtr->ipcSendRegReady, 1, __ATOMIC_RELEASE);
       }
-
-      if (args->transmitted < args->copied) {
-        flagcxResult_t res =
-            deviceAdaptor->eventQuery(resources->proxyInfo.events[0]);
-        if (res == flagcxSuccess) {
+      // Wait for receiver to signal copyDone
+      if (args->transmitted < args->chunkSteps) {
+        if (__atomic_load_n(&peerRegInfoPtr->copyDone, __ATOMIC_ACQUIRE) == 1) {
+          args->copied = args->chunkSteps;
           args->transmitted = args->chunkSteps;
-          __atomic_store_n(&regInfoPtr->copyDone, 1, __ATOMIC_RELEASE);
+          args->totalCopySize = size;
+        }
+      } else {
+        if (args->done != 1) {
+          if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
+            __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+          }
+          if (slotIsComplete(slotPtr)) {
+            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+            args->semaphore->subCounter(args->opId);
+            args->done = 1;
+          }
         }
       }
     } else {
-      if (args->done != 1) {
-        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
-          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
-          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
-        }
-        if (slotIsComplete(slotPtr)) {
-          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(args->opId);
-          args->done = 1;
-        }
-      }
+      return flagcxSuccess; // Retry later
     }
     return flagcxSuccess;
   }
@@ -289,14 +317,17 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
       &resources->proxyInfo.shm->slots[args->p2pSlotIdx];
   struct flagcxP2pSyncSlot *peerSlotPtr =
       &resources->proxyInfo.shm->slots[args->p2pPeerSlotIdx];
-  // For zero-copy, receiver checks sender's regInfo (using peerSlotIdx)
+  // For zero-copy WRITE, receiver publishes into sender's regInfo (peerSlotIdx)
   struct p2pRegInfo *peerRegInfoPtr =
       &resources->proxyInfo.shm->regInfos[args->p2pPeerSlotIdx];
+  // For zero-copy READ, receiver reads from own regInfo (slotIdx)
+  struct p2pRegInfo *regInfoPtr =
+      &resources->proxyInfo.shm->regInfos[args->p2pSlotIdx];
 
   // Reset slot for new operation, only if previous operation
-  // is done for both sides
+  // is done for both sides. Recv resets own regInfo (clears READ fields).
   if (slotIsReusable(slotPtr)) {
-    resetSlot(slotPtr, NULL, args->p2pOpHash);
+    resetSlot(slotPtr, regInfoPtr, args->p2pOpHash);
   }
 
   // Return and retry later since the slot is still in use
@@ -309,35 +340,75 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
       __atomic_load_n(&slotPtr->peerDone, __ATOMIC_ACQUIRE) == 0)
     return flagcxSuccess;
 
-  // Zero-copy mode: publish rmtAddr into sender's SHM, then wait for copy.
+  // Zero-copy mode
   if (args->regBufFlag) {
-    // On first entry, publish rmtAddr into sender's regInfo slot
-    if (__atomic_load_n(&peerRegInfoPtr->ipcRegReady, __ATOMIC_ACQUIRE) == 0 &&
-        args->p2pRmtAddr != nullptr) {
-      __atomic_store_n(&peerRegInfoPtr->ipcRmtAddr, (uintptr_t)args->p2pRmtAddr,
-                       __ATOMIC_RELAXED);
-      __atomic_store_n(&peerRegInfoPtr->ipcRegReady, 1, __ATOMIC_RELEASE);
-    }
-    if (args->transmitted < args->chunkSteps) {
+    if (args->p2pRmtAddr != nullptr) {
+      // WRITE mode: recv registered, publish ipcRecvRmtAddr for sender
+      if (__atomic_load_n(&peerRegInfoPtr->ipcRecvRegReady, __ATOMIC_ACQUIRE) ==
+          0) {
+        __atomic_store_n(&peerRegInfoPtr->ipcRecvRmtAddr,
+                         (uintptr_t)args->p2pRmtAddr, __ATOMIC_RELAXED);
+        __atomic_store_n(&peerRegInfoPtr->ipcRecvRegReady, 1, __ATOMIC_RELEASE);
+      }
       // Wait for sender to signal copyDone
-      if (__atomic_load_n(&peerRegInfoPtr->copyDone, __ATOMIC_ACQUIRE) == 1) {
-        args->copied = args->chunkSteps;
-        args->transmitted = args->chunkSteps;
-        args->totalCopySize = size;
+      if (args->transmitted < args->chunkSteps) {
+        if (__atomic_load_n(&peerRegInfoPtr->copyDone, __ATOMIC_ACQUIRE) == 1) {
+          args->copied = args->chunkSteps;
+          args->transmitted = args->chunkSteps;
+          args->totalCopySize = size;
+        }
+      } else {
+        if (args->done != 1) {
+          if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
+            __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+          }
+          if (slotIsComplete(slotPtr)) {
+            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+            args->semaphore->subCounter(args->opId);
+            args->done = 1;
+          }
+        }
+      }
+    } else if (__atomic_load_n(&regInfoPtr->ipcSendRegReady,
+                               __ATOMIC_ACQUIRE) == 1) {
+      // READ mode: sender registered, receiver copies from sender's buffer
+      void *rmtAddr = (void *)__atomic_load_n(&regInfoPtr->ipcSendRmtAddr,
+                                              __ATOMIC_RELAXED);
+      if (args->transmitted < args->chunkSteps) {
+        if (args->copied == 0) {
+          __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
+          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+              data, rmtAddr, size, flagcxMemcpyDeviceToDevice,
+              resources->proxyInfo.stream, NULL));
+          FLAGCXCHECK(deviceAdaptor->eventRecord(resources->proxyInfo.events[0],
+                                                 resources->proxyInfo.stream));
+          args->copied = args->chunkSteps;
+          args->totalCopySize = size;
+        }
+        if (args->transmitted < args->copied) {
+          flagcxResult_t res =
+              deviceAdaptor->eventQuery(resources->proxyInfo.events[0]);
+          if (res == flagcxSuccess) {
+            args->transmitted = args->chunkSteps;
+            __atomic_store_n(&regInfoPtr->copyDone, 1, __ATOMIC_RELEASE);
+          }
+        }
+      } else {
+        if (args->done != 1) {
+          if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
+            __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+          }
+          if (slotIsComplete(slotPtr)) {
+            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+            args->semaphore->subCounter(args->opId);
+            args->done = 1;
+          }
+        }
       }
     } else {
-      // Cleanup phase
-      if (args->done != 1) {
-        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
-          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELAXED);
-          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
-        }
-        if (slotIsComplete(slotPtr)) {
-          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(args->opId);
-          args->done = 1;
-        }
-      }
+      return flagcxSuccess; // Retry later
     }
     return flagcxSuccess;
   }
