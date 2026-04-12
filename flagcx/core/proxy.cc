@@ -908,6 +908,7 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
                                   int send, int proxyRank,
                                   struct flagcxProxyConnector *proxyConn) {
   struct flagcxProxyState *sharedProxyState = comm->proxyState;
+  flagcxResult_t res = flagcxSuccess;
 
   proxyConn->sameProcess = ((comm->peerInfo[proxyRank].hostHash ==
                              comm->peerInfo[comm->rank].hostHash) &&
@@ -919,24 +920,33 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
   proxyConn->tpRank = proxyRank;
   proxyConn->tpLocalRank = 0; // simplified: one socket per rank
 
-  // Lazy-allocate peerSocks array
+  // Lazy-allocate peerSocks array and per-rank connect under mutex
+  pthread_mutex_lock(&sharedProxyState->mutex);
   if (sharedProxyState->peerSocks == NULL) {
-    FLAGCXCHECK(flagcxCalloc(&sharedProxyState->peerSocks, comm->nRanks));
+    FLAGCXCHECKGOTO(flagcxCalloc(&sharedProxyState->peerSocks, comm->nRanks),
+                    res, unlock);
     sharedProxyState->nPeerSocks = comm->nRanks;
     for (int i = 0; i < comm->nRanks; i++) {
-      FLAGCXCHECK(flagcxSocketSetFd(-1, &sharedProxyState->peerSocks[i]));
+      FLAGCXCHECKGOTO(flagcxSocketSetFd(-1, &sharedProxyState->peerSocks[i]),
+                      res, unlock);
     }
   }
-
-  struct flagcxSocket *sock = &sharedProxyState->peerSocks[proxyRank];
-  int ready = 0;
-  FLAGCXCHECK(flagcxSocketReady(sock, &ready));
-  if (!ready) {
-    FLAGCXCHECK(flagcxSocketInit(sock,
-                                 sharedProxyState->peerAddresses + proxyRank,
-                                 comm->magic, flagcxSocketTypeProxy));
-    FLAGCXCHECK(flagcxSocketConnect(sock));
+  {
+    struct flagcxSocket *sock = &sharedProxyState->peerSocks[proxyRank];
+    int ready = 0;
+    FLAGCXCHECKGOTO(flagcxSocketReady(sock, &ready), res, unlock);
+    if (!ready) {
+      FLAGCXCHECKGOTO(
+          flagcxSocketInit(sock, sharedProxyState->peerAddresses + proxyRank,
+                           comm->magic, flagcxSocketTypeProxy),
+          res, unlock);
+      FLAGCXCHECKGOTO(flagcxSocketConnect(sock), res, unlock);
+    }
   }
+unlock:
+  pthread_mutex_unlock(&sharedProxyState->mutex);
+  if (res != flagcxSuccess)
+    return res;
 
   struct flagcxProxyInitReq req = {};
   req.transport = transport;
