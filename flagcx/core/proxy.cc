@@ -475,16 +475,10 @@ flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
     // Attempt to read in a new response header from the proxy thread
     struct flagcxSocket *sock;
     // Route to the same socket that the request was sent on
-    if (sharedProxyState->peerSocks != NULL && proxyConn->tpRank >= 0 &&
+    if (sharedProxyState->peerSocks != NULL && proxyConn != NULL &&
+        proxyConn->initialized && proxyConn->tpRank >= 0 &&
         proxyConn->tpRank < sharedProxyState->nPeerSocks) {
-      int ready = 0;
-      flagcxSocketReady(&sharedProxyState->peerSocks[proxyConn->tpRank],
-                        &ready);
-      if (ready) {
-        sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
-      } else {
-        sock = &sharedProxyState->peerSock;
-      }
+      sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
     } else {
       sock = &sharedProxyState->peerSock;
     }
@@ -799,16 +793,11 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
   flagcxResult_t ret = flagcxSuccess;
   struct flagcxProxyState *sharedProxyState = comm->proxyState;
 
-  // Route to peer proxy socket if available for this rank
-  if (sharedProxyState->peerSocks != NULL && proxyConn->tpRank >= 0 &&
+  // Route to peer proxy socket if this is a peer-proxy connector
+  if (sharedProxyState->peerSocks != NULL && proxyConn != NULL &&
+      proxyConn->initialized && proxyConn->tpRank >= 0 &&
       proxyConn->tpRank < sharedProxyState->nPeerSocks) {
-    int ready = 0;
-    flagcxSocketReady(&sharedProxyState->peerSocks[proxyConn->tpRank], &ready);
-    if (ready) {
-      sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
-    } else {
-      sock = &sharedProxyState->peerSock;
-    }
+    sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
   } else {
     sock = &sharedProxyState->peerSock;
   }
@@ -955,11 +944,13 @@ unlock:
   req.tpRank = comm->rank;
   req.sameProcess = proxyConn->sameProcess;
 
+  // Mark initialized before the Init RPC so routing uses the peer socket
+  proxyConn->initialized = true;
+
   struct flagcxProxyInitResp resp = {};
   FLAGCXCHECK(flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgInit, &req,
                                       sizeof(req), &resp, sizeof(resp)));
   proxyConn->connection = resp.connection;
-  proxyConn->initialized = true;
   INFO(FLAGCX_PROXY,
        "flagcxProxyConnect rank %d -> peer %d connection %p sameProcess %d",
        comm->rank, proxyRank, proxyConn->connection, proxyConn->sameProcess);
