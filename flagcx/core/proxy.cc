@@ -478,7 +478,13 @@ flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
     if (sharedProxyState->peerSocks != NULL && proxyConn != NULL &&
         proxyConn->initialized && proxyConn->tpRank >= 0 &&
         proxyConn->tpRank < sharedProxyState->nPeerSocks) {
-      sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
+      struct flagcxSocket *peerSock =
+          &sharedProxyState->peerSocks[proxyConn->tpRank];
+      int ready = 0;
+      while (!ready) {
+        FLAGCXCHECK(flagcxSocketReady(peerSock, &ready));
+      }
+      sock = peerSock;
     } else {
       sock = &sharedProxyState->peerSock;
     }
@@ -797,7 +803,13 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
   if (sharedProxyState->peerSocks != NULL && proxyConn != NULL &&
       proxyConn->initialized && proxyConn->tpRank >= 0 &&
       proxyConn->tpRank < sharedProxyState->nPeerSocks) {
-    sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
+    struct flagcxSocket *peerSock =
+        &sharedProxyState->peerSocks[proxyConn->tpRank];
+    int ready = 0;
+    while (!ready) {
+      FLAGCXCHECK(flagcxSocketReady(peerSock, &ready));
+    }
+    sock = peerSock;
   } else {
     sock = &sharedProxyState->peerSock;
   }
