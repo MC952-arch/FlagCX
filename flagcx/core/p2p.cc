@@ -794,6 +794,10 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
       // proxy. The sender's proxy opens the handle → rmtAddr valid in sender's
       // address space. We store rmtAddr and publish it into the sender's SHM
       // slot via flagcxP2pProxyRecv.
+      if (comm->gproxyConn == NULL || comm->proxyState == NULL ||
+          comm->proxyState->peerAddresses == NULL) {
+        return flagcxSuccess; // fall back to FIFO
+      }
       flagcxIpcHandleData handleData = {};
       struct flagcxProxyConnector *proxyConn = &comm->gproxyConn[peerRank];
 

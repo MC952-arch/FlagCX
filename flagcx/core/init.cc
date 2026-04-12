@@ -473,7 +473,7 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
   // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
-  globalRegPool.removeAllP2pHandles(comm);
+  FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
   flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
@@ -490,9 +490,19 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
 
   free(comm->connectSend);
   free(comm->connectRecv);
-  free(comm->gproxyConn);
+  if (comm->gproxyConn) {
+    for (int i = 0; i < comm->nRanks; i++) {
+      free(comm->gproxyConn[i].connection);
+    }
+    free(comm->gproxyConn);
+  }
   free(comm->proxyState->peerAddresses);
-  free(comm->proxyState->peerSocks);
+  if (comm->proxyState->peerSocks != NULL) {
+    for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
+      flagcxSocketClose(&comm->proxyState->peerSocks[i]);
+    }
+    free(comm->proxyState->peerSocks);
+  }
   free(comm->proxyState);
   free(comm->tasks.peers);
   free(comm->tasks.p2pOrder);
