@@ -46,9 +46,11 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   std::unordered_map<int, int> stepInfo;    // opId -> sigalId
   std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
   std::vector<flagcxEvent_t> events;
+  bool frozen; // true during execution phase
 
   flagcxHostSemaphore() {
     counter = 0;
+    frozen = false;
     stepInfo.reserve(FLAGCX_OPS_PER_SEMAPHORE);
     signals.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
     events.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
@@ -65,6 +67,8 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return event;
   }
   void signalStart() override {
+    frozen =
+        true; // freeze: no more structural mutations until wait() completes
     for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
       __atomic_store_n(&signals[it->second].first, 0, __ATOMIC_RELEASE);
     }
@@ -72,15 +76,17 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   void *getSignals() override { return nullptr; }
   void subCounter(int opId = 0) override {
     assert(stepInfo.find(opId) != stepInfo.end());
-    __atomic_fetch_add(&signals[stepInfo[opId]].first, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&signals[stepInfo.at(opId)].first, 1, __ATOMIC_RELEASE);
     INFO(FLAGCX_PROXY,
          "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
-         signals[stepInfo[opId]].first, opId, signals[stepInfo[opId]].second,
-         counter);
+         signals[stepInfo.at(opId)].first, opId,
+         signals[stepInfo.at(opId)].second, counter);
   }
   void addCounter(int opId = 0) override {
+    assert(!frozen); // must not mutate during execution phase
     if (stepInfo.find(opId) != stepInfo.end()) {
-      __atomic_fetch_add(&signals[stepInfo[opId]].second, 1, __ATOMIC_RELEASE);
+      __atomic_fetch_add(&signals[stepInfo.at(opId)].second, 1,
+                         __ATOMIC_RELEASE);
     } else {
       signals.emplace_back(-1, 1);
       stepInfo[opId] = (int)signals.size() - 1;
@@ -90,7 +96,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   int getCounter() override { return counter; }
   int pollStart(int opId = 0, int step = 0) override {
     assert(stepInfo.find(opId) != stepInfo.end());
-    return (signals[stepInfo[opId]].first >= step);
+    return (signals[stepInfo.at(opId)].first >= step);
   }
   int pollEnd() override {
     return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
@@ -109,6 +115,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
       sched_yield();
     }
     __atomic_store_n(&counter, 0, __ATOMIC_RELEASE);
+    frozen = false; // unfreeze: allow addCounter for next round
   }
 };
 
