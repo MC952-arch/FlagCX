@@ -295,8 +295,19 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     int nranks = comm->nRanks;
     for (int i = 0; i < MAXCHANNELS; i++) {
       FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers, nranks));
-      for (int r = 0; r < nranks; r++)
+      for (int r = 0; r < nranks; r++) {
         FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers[r], nranks));
+      }
+    }
+    // Set tpRank = comm->rank for all channel connectors so local RPCs
+    // route through peerSocks[myRank] to the local service thread
+    for (int i = 0; i < MAXCHANNELS; i++) {
+      for (int r = 0; r < nranks; r++) {
+        for (int c = 0; c < FLAGCX_MAX_CONNS; c++) {
+          comm->channels[i].peers[r]->send[c].proxyConn.tpRank = comm->rank;
+          comm->channels[i].peers[r]->recv[c].proxyConn.tpRank = comm->rank;
+        }
+      }
     }
     FLAGCXCHECK(flagcxCalloc(&comm->connectSend, nranks));
     FLAGCXCHECK(flagcxCalloc(&comm->connectRecv, nranks));
@@ -350,6 +361,23 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
       FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
                                      comm->proxyState->peerAddresses,
                                      sizeof(union flagcxSocketAddress)));
+
+      // Pre-connect all peer sockets (including self)
+      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
+      comm->proxyState->nPeerSocks = comm->nRanks;
+      for (int i = 0; i < comm->nRanks; i++) {
+        FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
+      }
+      for (int i = 0; i < comm->nRanks; i++) {
+        struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
+        FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
+                                     comm->magic, flagcxSocketTypeProxy));
+        FLAGCXCHECK(flagcxSocketConnect(sock));
+        int ready = 0;
+        while (!ready) {
+          FLAGCXCHECK(flagcxSocketReady(sock, &ready));
+        }
+      }
     }
   }
 

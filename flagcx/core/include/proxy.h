@@ -337,8 +337,7 @@ struct flagcxProxyState {
   pthread_mutex_t mutex;
   pthread_cond_t cond;
   union flagcxSocketAddress *peerAddresses;
-  struct flagcxSocket peerSock;
-  struct flagcxSocket *peerSocks; // Array[nRanks] for peer proxy connections
+  struct flagcxSocket *peerSocks; // Array[nRanks], indexed by rank
   int nPeerSocks;                 // Number of allocated peerSocks entries
   struct flagcxProxyOps proxyOps[MAXCHANNELS];
 
