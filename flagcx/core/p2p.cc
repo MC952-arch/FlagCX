@@ -125,7 +125,6 @@ static inline void resetSlot(flagcxP2pSyncSlot *slotPtr,
   if (regPtr != NULL) {
     __atomic_store_n(&regPtr->copyStarted, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->copyDone, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->ipcUserOffset, (uintptr_t)0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->ipcRecvRmtAddr, (uintptr_t)0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->ipcRecvRegReady, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&regPtr->ipcSendRmtAddr, (uintptr_t)0, __ATOMIC_RELAXED);
@@ -779,16 +778,19 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
 
     if (existingInfo && existingInfo->handleReady) {
       // Cache hit: reuse rmtRegAddr + new userOffset. No exchange needed.
+      // rmtRegAddr already includes pageGap (applied in
+      // flagcxP2pProxyRegister), so only add userOffset here.
       *regBufFlag = 1;
       *peerRmtAddrsOut =
           (uintptr_t *)((uintptr_t)existingInfo->impInfo.rmtRegAddr +
-                        userOffset + pageGap);
+                        userOffset);
       *offsetOut = 0;
       INFO(FLAGCX_REG,
-           "rank %d - IPC cache HIT: buff %p peer %d rmtAddr=%p + offset=%zu = "
+           "rank %d - IPC cache HIT: buff %p peer %d rmtAddr=%p + "
+           "userOffset=%zu = "
            "%p",
            comm->rank, userbuff, peerRank, existingInfo->impInfo.rmtRegAddr,
-           userOffset + pageGap, *peerRmtAddrsOut);
+           userOffset, *peerRmtAddrsOut);
     } else {
       // Cache miss: get IPC handle for OWN (recv) buffer, send to SENDER's
       // proxy. The sender's proxy opens the handle → rmtAddr valid in sender's
@@ -895,14 +897,14 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
         existingInfo->handleReady = true;
         regRecord->state |= IPC_REG_COMPLETE;
         *regBufFlag = 1;
-        *peerRmtAddrsOut =
-            (uintptr_t *)((uintptr_t)rmtRegAddr + userOffset + pageGap);
+        // rmtRegAddr already includes pageGap (applied in
+        // flagcxP2pProxyRegister), so only add userOffset here.
+        *peerRmtAddrsOut = (uintptr_t *)((uintptr_t)rmtRegAddr + userOffset);
         *offsetOut = 0;
         INFO(FLAGCX_REG,
              "rank %d - proxy register got IPC for peer %d "
-             "rmtAddr=%p + offset=%zu = %p",
-             comm->rank, peerRank, rmtRegAddr, userOffset + pageGap,
-             *peerRmtAddrsOut);
+             "rmtAddr=%p + userOffset=%zu = %p",
+             comm->rank, peerRank, rmtRegAddr, userOffset, *peerRmtAddrsOut);
       }
     }
   }
@@ -1096,6 +1098,7 @@ flagcxP2pProxyDeregister(struct flagcxProxyConnection *connection,
   }
 
   if (ipcInfo->legacyIpcCap && !connection->sameProcess) {
+    FLAGCXCHECKGOTO(deviceAdaptor->setDevice(connection->cudaDev), ret, exit);
     void *baseAddr = (void *)((uintptr_t)ipcInfo->rmtRegAddr - ipcInfo->offset);
     FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleClose(baseAddr), ret, exit);
   }

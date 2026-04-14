@@ -56,9 +56,8 @@ struct flagcxP2pSyncSlot {
 };
 
 struct p2pRegInfo {
-  int copyDone;            // Indicates if the copy operation is complete
-  int copyStarted;         // Indicates if the copy operation has started
-  uintptr_t ipcUserOffset; // Per-slot: recv writes, send reads
+  int copyDone;    // Indicates if the copy operation is complete
+  int copyStarted; // Indicates if the copy operation has started
   // WRITE mode: recv publishes into sender's slot
   int ipcRecvRegReady;      // 1 = ipcRecvRmtAddr valid; recv sets
   uintptr_t ipcRecvRmtAddr; // Recv's buffer mapped in sender's address space

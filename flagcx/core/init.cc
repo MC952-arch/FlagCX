@@ -519,9 +519,9 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->connectSend);
   free(comm->connectRecv);
   if (comm->gproxyConn) {
-    for (int i = 0; i < comm->nRanks; i++) {
-      free(comm->gproxyConn[i].connection);
-    }
+    // gproxyConn[i].connection is an opaque handle pointing to a
+    // flagcxProxyConnection allocated and owned by the peer's service thread.
+    // Do NOT free it here — the peer frees it when its service thread exits.
     free(comm->gproxyConn);
   }
   free(comm->proxyState->peerAddresses);
