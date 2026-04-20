@@ -244,7 +244,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Recv connect: rank %d <- peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, NULL, NULL, conn) ==
+          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
                  flagcxInProgress)
             ;
         }
@@ -287,7 +287,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Send connect: rank %d -> peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, NULL, NULL, conn) ==
+          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
                  flagcxInProgress)
             ;
         }
