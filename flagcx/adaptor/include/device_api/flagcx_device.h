@@ -239,7 +239,7 @@ struct flagcxDevMem {
 };
 
 // ============================================================
-// Section 4b: flagcxTeam_t — Team Descriptor
+// Section 4b: flagcxTeam — Team Descriptor
 //
 // Represents a subset of ranks (intra-node, inter-node, etc.).
 // Pure wrapper around DeviceAPI::Team.

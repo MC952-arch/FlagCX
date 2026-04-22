@@ -11,6 +11,22 @@
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
+// Device compiler check (for conditional compilation in headers)
+#ifndef FLAGCX_CHECK_DEVICE_CC
+#ifdef __CUDACC__
+#define FLAGCX_CHECK_DEVICE_CC 1
+#else
+#define FLAGCX_CHECK_DEVICE_CC 0
+#endif
+#endif
+
+// IR extern "C" linkage — active only when building LLVM bitcode with clang
+#ifdef __clang_llvm_bitcode_lib__
+#define FLAGCX_IR_EXTERN_C extern "C"
+#else
+#define FLAGCX_IR_EXTERN_C
+#endif
+
 // Suppress unused-variable warnings for static arrays in headers
 #define FLAGCX_MAYBE_UNUSED __attribute__((unused))
 
@@ -19,12 +35,19 @@
 #include <cuda_runtime.h>
 
 #if defined(__CUDACC__)
-// Compiling with nvcc — full CUDA qualifiers
+// Compiling with nvcc or clang CUDA — full CUDA qualifiers
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+// clang bitcode mode: use always_inline (clang doesn't support __forceinline__)
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
 #define FLAGCX_DEVICE_INLINE_DECORATOR __forceinline__ __device__
 #define FLAGCX_HOST_DEVICE_INLINE __forceinline__ __host__ __device__
+#endif
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
 #define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
