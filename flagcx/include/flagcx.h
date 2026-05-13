@@ -1,12 +1,12 @@
 #ifndef FLAGCX_H_
 #define FLAGCX_H_
 
+#include <stddef.h> // size_t
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <stdint.h>
-#include <stdlib.h>
 
 /* Error type */
 typedef enum {

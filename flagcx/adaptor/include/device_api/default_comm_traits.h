@@ -340,23 +340,6 @@ struct CommTraits<Default<PlatformTag>> {
       return peer >= intraBase && peer < intraBase + _dc.intraSize;
     }
 
-    // ---- store: write to peer's IPC pointer ----
-    template <typename T>
-    FLAGCX_DEVICE_INLINE_DECORATOR void
-    store(const Window &win, size_t byteOffset, int peer, T val) const {
-      T *ptr = (T *)win.getIntraPointer(byteOffset, peer);
-      if (ptr)
-        *ptr = val;
-    }
-
-    // ---- load: read from peer's IPC pointer ----
-    template <typename T>
-    FLAGCX_DEVICE_INLINE_DECORATOR T load(const Window &win, size_t byteOffset,
-                                          int peer) const {
-      const T *ptr = (const T *)win.getIntraPointer(byteOffset, peer);
-      return ptr ? *ptr : T{};
-    }
-
     // ---- Two-sided FIFO encoders ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     enqueueFifoSend(const Window &mem, size_t offset, size_t count,
