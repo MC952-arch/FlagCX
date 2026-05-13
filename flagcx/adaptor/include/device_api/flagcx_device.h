@@ -16,7 +16,7 @@
 #ifndef FLAGCX_DEVICE_API_H_
 #define FLAGCX_DEVICE_API_H_
 
-#include <cstddef> // ptrdiff_t, size_t
+#include <stddef.h> // ptrdiff_t, size_t
 
 #include "device_utils.h"
 #include "flagcx.h"
