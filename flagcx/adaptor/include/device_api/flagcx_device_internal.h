@@ -1,0 +1,139 @@
+/*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
+ * FlagCX Device API Internal — Host-side internal structs.
+ *
+ * This header contains host-side backing structs (flagcxDevCommInternal,
+ * flagcxDevMemInternal) that are populated by host code and passed to
+ * device constructors.
+ *
+ * This header is NOT safe for LLVM bitcode compilation — it pulls in
+ * host infrastructure headers (shmutils.h, flagcx_kernel.h).
+ ************************************************************************/
+
+#ifndef FLAGCX_DEVICE_API_INTERNAL_H_
+#define FLAGCX_DEVICE_API_INTERNAL_H_
+
+#include "flagcx_kernel.h"
+#include "shmutils.h"
+
+// Forward declaration for typed vendor device comm handle
+struct flagcxInnerDevComm;
+typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
+
+// ============================================================
+// Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
+//
+#define FLAGCX_MAX_INTER_PEERS 256
+
+// Backing struct for flagcxDevComm_t (declared in flagcx_kernel.h).
+// Populated by flagcxDevCommCreate, freed by flagcxDevCommDestroy.
+// Unified capability-based design: baseline always populated,
+// IPC and Vendor layers added when available.
+// ============================================================
+struct flagcxDevCommInternal {
+  // ---- Baseline (always set) ----
+  int rank, nRanks;
+  int intraRank, intraSize;
+  void *fifoBuffers[FLAGCX_DEVICE_CTA_COUNT]; // Device-accessible FIFOs (one
+                                              // per context, from heteroComm,
+                                              // may be null)
+  // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
+  // ----
+  uint64_t *
+      *barrierPeers; // device pointer to array of nLocalRanks device pointers
+  uint64_t
+      *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
+  uint64_t
+      intraBarrierEpoch; // monotonically increasing, set by host before launch
+  int nBarriers;         // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
+  // Host-side cleanup bookkeeping (not passed to kernel)
+  int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
+  int *localRankToRank; // intra-node rank mapping (for IPC exchange)
+  int nLocalRanks;
+  // flagcxShm barrier path (non-null when FLAGCX_SIGNAL_HOST_ENABLE=1)
+  void *localBarrierShmPtr;  // CPU VA of own shm mapping (hostUnregister +
+                             // flagcxShmClose)
+  void **peerBarrierShmPtrs; // CPU VA array [nLocalRanks] for each peer's shm
+                             // mapping (hostUnregister + flagcxShmClose)
+  size_t barrierShmSize;     // size in bytes (for hostUnregister)
+  uint64_t **barrierDevPeerPtrsRaw;  // standalone device array (deviceFree; shm
+                                     // path only)
+  flagcxShmHandle_t myShmHandle;     // own shm handle (flagcxShmClose)
+  flagcxShmHandle_t *peerShmHandles; // peer shm handles [nLocalRanks]
+
+  // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
+  uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
+  uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
+  uint64_t
+      interBarrierEpoch; // inter-node epoch (separate from intraBarrierEpoch)
+  int nInterPeers;       // number of inter-node peers (set on ALL ranks)
+  bool isInterLeader;    // true only on localRank 0 (manages connections)
+  int *interPeerRanks;   // global ranks of inter-node peers
+  // netAdaptor connections for signal relay (one-sided RDMA atomic)
+  void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
+  void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
+  void *barrierHandleInfo; // flagcxOneSideHandleInfo* with rkeys/baseVas
+  // netAdaptor pointer (cached for proxy)
+  void *netAdaptorPtr;
+
+  // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
+  // 0)
+  // ----
+  uint64_t *signalBuffer; // GPU memory (flagcxMemAlloc), [signalCount] entries
+  uint64_t
+      *shadowBuffer; // GPU memory (local only, no MR), [signalCount] entries
+  uint64_t
+      *counterBuffer; // GPU memory (flagcxMemAlloc), [counterCount] entries
+  int signalCount;
+  int counterCount;
+  int contextCount; // = reqs.interContextCount (default 4)
+  // Host-only: MR handles + staging for cleanup
+  void *signalBufferMr;        // MR handle for signalBuffer
+  void *counterBufferMr;       // MR handle for counterBuffer
+  void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
+  void *putValueStagingMr;     // MR handle for staging buffer
+
+  // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
+  // ----
+  flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
+};
+
+// ============================================================
+// Section 2: flagcxDevMemInternal — Host-Side Memory Handle
+//
+// Backing struct for flagcxDevMem_t.
+// Created by flagcxDevMemCreate, freed by flagcxDevMemDestroy.
+// Unified capability-based design: rawPtr always populated,
+// IPC and Window layers added when available.
+// Capabilities detected by Window mode:
+//   SYMMETRIC + flatBasePtr  → VMM flat VA available
+//   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
+//   window != nullptr        → Window available (Vendor or default)
+// ============================================================
+struct flagcxDevMemInternal {
+  // ---- Baseline (always set) ----
+  void *rawPtr;   // = buff parameter
+  bool hasWindow; // true if any window layer is available (basic or symmetric)
+  bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
+                    // one-sided)
+
+  // ---- Per-comm MR layer (set by flagcxDevMemCreate from handle table) ----
+  int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)
+  uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
+
+  // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
+  int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
+  int intraRank; // this rank's local rank index (for IPC local pointer)
+
+  // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
+  void *window;    // Points to vendor Window or defaultDeviceImpl::Window
+                   // (fallback)
+  void *winHandle; // Host-side handle for cleanup
+};
+#ifndef FLAGCX_DEV_MEM_T_DEFINED
+#define FLAGCX_DEV_MEM_T_DEFINED
+typedef struct flagcxDevMemInternal *flagcxDevMem_t;
+#endif
+
+#endif // FLAGCX_DEVICE_API_INTERNAL_H_
