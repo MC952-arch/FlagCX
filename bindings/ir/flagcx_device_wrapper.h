@@ -12,7 +12,7 @@
 #ifndef FLAGCX_DEVICE_WRAPPER_H_
 #define FLAGCX_DEVICE_WRAPPER_H_
 
-#include "flagcx_device.h"
+#include "flagcx_device_core.h"
 
 /* ================================================================
  * X-macro: typed load/store generation (NVSHMEM pattern)
