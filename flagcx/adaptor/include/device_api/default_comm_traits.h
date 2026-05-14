@@ -17,7 +17,7 @@
 #ifndef FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_core.h"
 #ifndef __CUDACC__
 #include "sym_heap.h"
 #endif
