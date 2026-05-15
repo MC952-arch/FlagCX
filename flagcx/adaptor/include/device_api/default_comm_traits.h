@@ -146,14 +146,13 @@ struct CommTraits<Default<PlatformTag>> {
 
     // IPC barriers
     uint64_t **barrierPeers;
-    uint64_t intraBarrierEpoch;
+    uint64_t *epochBuffer; // Device pointer: [CTA_COUNT intra, CTA_COUNT inter]
     int nBarriers;
 
     // Inter-node signal relay
     uint64_t *interSignalFlags;
     int nInterPeers;
     bool isInterLeader;
-    uint64_t interBarrierEpoch;
 
     // One-sided fallback
     uint64_t *signalBuffer;
@@ -191,12 +190,11 @@ struct CommTraits<Default<PlatformTag>> {
       for (int i = 0; i < di.contextCount; i++)
         dc.fifoBuffers[i] = di.fifoBuffers[i];
       dc.barrierPeers = di.barrierPeers;
-      dc.intraBarrierEpoch = di.intraBarrierEpoch;
+      dc.epochBuffer = di.epochBuffer;
       dc.nBarriers = di.nBarriers;
       dc.interSignalFlags = di.interSignalFlags;
       dc.nInterPeers = di.nInterPeers;
       dc.isInterLeader = di.isInterLeader;
-      dc.interBarrierEpoch = di.interBarrierEpoch;
       dc.signalBuffer = di.signalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
       dc.counterBuffer = di.counterBuffer;
@@ -796,13 +794,14 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
   int _nRanks, _myRank;
   int _nBarriers;
   uint32_t _ctaIndex;
+  uint64_t *_epochBuffer;
   uint64_t _epoch;
 
   // Default ctor (no-op, for barrier composition)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
-        _ctaIndex(0), _epoch(0) {}
+        _ctaIndex(0), _epochBuffer(nullptr), _epoch(0) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -810,7 +809,9 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
           const Multimem & = {})
       : _coop(coop), _peerBuffers(dc.barrierPeers), _nRanks(team.nRanks),
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
-        _epoch(dc.intraBarrierEpoch) {}
+        _epochBuffer(dc.epochBuffer),
+        _epoch(Atomic::load(&dc.epochBuffer[index],
+                            flagcxDeviceMemoryOrderRelaxed)) {}
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -839,6 +840,8 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       }
     }
     _epoch += 1;
+    Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                  flagcxDeviceMemoryOrderRelaxed);
     _coop.sync();
   }
 
@@ -867,13 +870,14 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   int _nInterPeers;
   bool _isLeader;
   uint32_t _ctaIndex;
+  uint64_t *_epochBuffer;
   uint64_t _epoch;
 
   // Default ctor (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _interSignals(nullptr), _fifoBuffer(nullptr), _nInterPeers(0),
-        _isLeader(false), _ctaIndex(0), _epoch(0) {}
+        _isLeader(false), _ctaIndex(0), _epochBuffer(nullptr), _epoch(0) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -882,13 +886,16 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
       : _coop(coop), _interSignals(dc.interSignalFlags),
         _fifoBuffer(net.fifoBuffer), _nInterPeers(nInterPeers),
         _isLeader(dc.isInterLeader), _ctaIndex(index),
-        _epoch(dc.interBarrierEpoch) {}
+        _epochBuffer(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index]),
+        _epoch(Atomic::load(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index],
+                            flagcxDeviceMemoryOrderRelaxed)) {}
 
   // arrive: FIFO BarrierSignal (leader only)
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _epoch += _nInterPeers;
+    Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelaxed);
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
       CommTraits<Default<P>>::fifoEnqueue(
