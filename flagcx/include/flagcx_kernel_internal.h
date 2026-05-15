@@ -234,6 +234,16 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
 // Destroy a device memory handle created by flagcxDevMemCreate.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 
+// ---- Device Pointer API (for Triton integration) ----
+// Allocate device memory, copy the DevComm/DevMem struct, return device
+// pointer. The returned pointer is immutable (epoch lives in persistent buffer)
+// and cached. Calling multiple times returns the same pointer.
+flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
+                                         void **devPtr);
+flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm);
+flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr);
+flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
+
 // Clean up IPC peer pointer table on comm.
 // Must be called after homoComm destroy.
 // so that cudaFree does not deadlock on device synchronization.

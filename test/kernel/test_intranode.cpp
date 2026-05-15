@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) {
   if (localRegister == 2) {
     // Window mode (NCCL > 2.28 only; graceful fallback on Default path)
     FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
-                                         FLAGCX_WIN_DEFAULT));
+                                         FLAGCX_WIN_COLL_SYMMETRIC));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
   } else if (localRegister == 1) {
     // IPC mode: explicit NIC registration + implicit IPC peer exchange

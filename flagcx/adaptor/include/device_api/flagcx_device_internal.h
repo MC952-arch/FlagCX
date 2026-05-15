@@ -44,9 +44,10 @@ struct flagcxDevCommInternal {
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
   uint64_t
       *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
-  uint64_t
-      intraBarrierEpoch; // monotonically increasing, set by host before launch
-  int nBarriers;         // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
+  uint64_t *epochBuffer;  // Device memory: per-CTA epoch counters
+                          // Layout: [CTA_COUNT intra epochs, CTA_COUNT inter
+                          // epochs]
+  int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
@@ -65,11 +66,9 @@ struct flagcxDevCommInternal {
   // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
   uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
   uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
-  uint64_t
-      interBarrierEpoch; // inter-node epoch (separate from intraBarrierEpoch)
-  int nInterPeers;       // number of inter-node peers (set on ALL ranks)
-  bool isInterLeader;    // true only on localRank 0 (manages connections)
-  int *interPeerRanks;   // global ranks of inter-node peers
+  int nInterPeers;     // number of inter-node peers (set on ALL ranks)
+  bool isInterLeader;  // true only on localRank 0 (manages connections)
+  int *interPeerRanks; // global ranks of inter-node peers
   // netAdaptor connections for signal relay (one-sided RDMA atomic)
   void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
   void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
@@ -97,6 +96,9 @@ struct flagcxDevCommInternal {
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
+
+  // ---- Device pointer cache (for Triton integration) ----
+  void *cachedDevicePtr; // Lazily allocated by flagcxDevCommGetDevicePtr
 };
 
 // ============================================================
@@ -130,6 +132,9 @@ struct flagcxDevMemInternal {
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
                    // (fallback)
   void *winHandle; // Host-side handle for cleanup
+
+  // ---- Device pointer cache (for Triton integration) ----
+  void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED

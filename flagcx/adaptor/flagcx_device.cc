@@ -737,13 +737,22 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     }
 
     // Reset inter-node barrier signal flags so that the new DevComm's
-    // interBarrierEpoch (starting at 0) doesn't see stale values from a
+    // epoch buffer (starting at 0) doesn't see stale values from a
     // previous DevComm, which would cause barriers to pass without waiting
     // for the peer.
     if (comm->heteroComm != nullptr &&
         comm->heteroComm->interSignalFlagsHost != nullptr) {
       size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
       memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
+    }
+
+    // Allocate persistent epoch buffer (per-CTA intra + inter epochs)
+    {
+      size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+      FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+          (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL));
+      FLAGCXCHECK(deviceAdaptor->deviceMemset(
+          handle->epochBuffer, 0, epochBufSize, flagcxMemDevice, NULL));
     }
 
     // One-sided Default layer: if signals or counters requested
@@ -933,6 +942,16 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
 
+  // Epoch buffer cleanup
+  if (devComm->epochBuffer) {
+    flagcxCommDeferFree(comm, devComm->epochBuffer, flagcxMemDevice);
+  }
+
+  // Device pointer cache cleanup
+  if (devComm->cachedDevicePtr) {
+    deviceAdaptor->deviceFree(devComm->cachedDevicePtr, flagcxMemDevice, NULL);
+  }
+
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;
@@ -1080,7 +1099,89 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
   }
 
+  // Free cached device pointer if present
+  if (devMem->cachedDevicePtr) {
+    deviceAdaptor->deviceFree(devMem->cachedDevicePtr, flagcxMemDevice, NULL);
+  }
+
   free(devMem);
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Device Pointer API — for Triton integration
+// ==========================================================================
+
+flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
+                                         void **devPtr) {
+  if (!devComm || !devPtr)
+    return flagcxInvalidArgument;
+
+  if (devComm->cachedDevicePtr) {
+    *devPtr = devComm->cachedDevicePtr;
+    return flagcxSuccess;
+  }
+
+  // Construct value struct on host stack
+  flagcxDevComm hostCopy(*devComm);
+
+  // Allocate device memory and copy
+  void *dPtr = nullptr;
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
+                                          flagcxMemDevice, NULL));
+  FLAGCXCHECK(
+      deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevComm),
+                                  flagcxMemcpyHostToDevice, NULL, NULL));
+
+  devComm->cachedDevicePtr = dPtr;
+  *devPtr = dPtr;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
+  if (!devComm)
+    return flagcxInvalidArgument;
+  if (devComm->cachedDevicePtr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedDevicePtr,
+                                          flagcxMemDevice, NULL));
+    devComm->cachedDevicePtr = nullptr;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr) {
+  if (!devMem || !devPtr)
+    return flagcxInvalidArgument;
+
+  if (devMem->cachedDevicePtr) {
+    *devPtr = devMem->cachedDevicePtr;
+    return flagcxSuccess;
+  }
+
+  // Construct value struct on host stack
+  flagcxDevMem hostCopy(*devMem);
+
+  // Allocate device memory and copy
+  void *dPtr = nullptr;
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevMem),
+                                          flagcxMemDevice, NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevMem),
+                                          flagcxMemcpyHostToDevice, NULL,
+                                          NULL));
+
+  devMem->cachedDevicePtr = dPtr;
+  *devPtr = dPtr;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
+  if (!devMem)
+    return flagcxInvalidArgument;
+  if (devMem->cachedDevicePtr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->cachedDevicePtr,
+                                          flagcxMemDevice, NULL));
+    devMem->cachedDevicePtr = nullptr;
+  }
   return flagcxSuccess;
 }
 
