@@ -90,11 +90,19 @@ COMMON_CLANG_FLAGS := \
 
 CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
 
-# Optimization passes
-OPT_PASSES := --passes='internalize,inline,globaldce' \
-	-internalize-public-api-list='*flagcx*'
+# Optimization passes — use file-based API list to avoid shell quoting issues
+SYMBOLS_FILE := $(abspath ../public_symbols.txt)
+OPT_PASSES := --passes=internalize,inline,globaldce \
+	-internalize-public-api-file=$(SYMBOLS_FILE)
+
+# Intermediate files
+STRIPPED_LL := $(OBJDIR)/libflagcx_device.stripped.ll
+STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
 
 # ---- Build rules ----
+
+# Default target
+all: llvm_ir
 
 $(WRAPPER_HEADER): ../flagcx_device_wrapper.h
 	@mkdir -p $(INCLUDEDIR)
@@ -105,7 +113,17 @@ $(UNOPTIMIZED_BC): $(LLVM_SRC)
 	@echo "Generating unoptimized LLVM bitcode..."
 	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
 
-$(OPTIMIZED_BC): $(UNOPTIMIZED_BC)
+# Strip @llvm.used/@llvm.compiler.used so internalize can remove internal symbols
+$(STRIPPED_LL): $(UNOPTIMIZED_BC)
+	@echo "Stripping @llvm.used metadata..."
+	$(LLVM_DIS) $< -o $@.tmp
+	sed -e '/@llvm\.used/d' -e '/@llvm\.compiler\.used/d' $@.tmp > $@
+	@rm -f $@.tmp
+
+$(STRIPPED_BC): $(STRIPPED_LL)
+	$(LLVM_AS) $< -o $@
+
+$(OPTIMIZED_BC): $(STRIPPED_BC)
 	@echo "Optimizing LLVM bitcode..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
@@ -143,4 +161,4 @@ build: llvm_ir
 clean:
 	rm -rf $(OBJDIR) $(FINAL_BC) $(WRAPPER_HEADER)
 
-.PHONY: llvm_ir build clean
+.PHONY: all llvm_ir build clean

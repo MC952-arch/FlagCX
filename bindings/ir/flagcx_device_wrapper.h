@@ -66,11 +66,11 @@ FLAGCX_IR_EXTERN_C __device__ void flagcxCoopSyncC(void *coop);
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C __device__ void flagcxGetTeamIntra(const void *comm,
-                                                      void *out);
+                                                      void *team);
 FLAGCX_IR_EXTERN_C __device__ void flagcxGetTeamWorld(const void *comm,
-                                                      void *out);
+                                                      void *team);
 FLAGCX_IR_EXTERN_C __device__ void flagcxGetTeamInter(const void *comm,
-                                                      void *out);
+                                                      void *team);
 FLAGCX_IR_EXTERN_C __device__ int
 flagcxTeamRankToWorldC(const void *comm, const void *team, int rank);
 FLAGCX_IR_EXTERN_C __device__ int
