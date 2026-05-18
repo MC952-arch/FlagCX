@@ -27,6 +27,29 @@ flagcxEvent_t = ctypes.c_void_p
 flagcxStream_t = ctypes.c_void_p
 buffer_type = ctypes.c_void_p
 
+# Device API types
+flagcxDevComm_t = ctypes.c_void_p
+flagcxDevMem_t = ctypes.c_void_p
+flagcxWindow_t = ctypes.c_void_p
+
+# Window flags
+FLAGCX_WIN_DEFAULT = 0x00
+FLAGCX_WIN_COLL_SYMMETRIC = 0x01
+
+class flagcxDevCommRequirements(ctypes.Structure):
+    _fields_ = [
+        ("intraMulticast", ctypes.c_bool),
+        ("barrierCount", ctypes.c_int),
+        ("intraBarrierCount", ctypes.c_int),
+        ("interBarrierCount", ctypes.c_int),
+        ("intraLLA2ABlockCount", ctypes.c_int),
+        ("intraLLA2ASlotCount", ctypes.c_int),
+        ("interForceEnable", ctypes.c_bool),
+        ("interContextCount", ctypes.c_int),
+        ("interSignalCount", ctypes.c_int),
+        ("interCounterCount", ctypes.c_int),
+    ]
+
 class flagcxUniqueId(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * 256)]
 flagcxUniqueId_t = ctypes.POINTER(flagcxUniqueId)
@@ -328,6 +351,62 @@ class FLAGCXLibrary:
         Function("flagcxWaitCounter", flagcxResult_t, [
             flagcxComm_t, ctypes.c_uint64
         ]),
+
+        # Device API — Memory Management
+        Function("flagcxMemAlloc", flagcxResult_t, [
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t
+        ]),
+
+        Function("flagcxMemFree", flagcxResult_t, [ctypes.c_void_p]),
+
+        # Device API — Window Registration
+        Function("flagcxCommWindowRegister", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.POINTER(flagcxWindow_t), ctypes.c_int
+        ]),
+
+        Function("flagcxCommWindowDeregister", flagcxResult_t, [
+            flagcxComm_t, flagcxWindow_t
+        ]),
+
+        # Device API — DevComm Lifecycle
+        Function("flagcxDevCommCreate", flagcxResult_t, [
+            flagcxComm_t, ctypes.POINTER(flagcxDevCommRequirements),
+            ctypes.POINTER(flagcxDevComm_t)
+        ]),
+
+        Function("flagcxDevCommDestroy", flagcxResult_t, [
+            flagcxComm_t, flagcxDevComm_t
+        ]),
+
+        # Device API — DevMem Lifecycle
+        Function("flagcxDevMemCreate", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
+            flagcxWindow_t, ctypes.POINTER(flagcxDevMem_t)
+        ]),
+
+        Function("flagcxDevMemDestroy", flagcxResult_t, [
+            flagcxComm_t, flagcxDevMem_t
+        ]),
+
+        # Device API — Device Pointer Retrieval
+        Function("flagcxDevCommGetDevicePtr", flagcxResult_t, [
+            flagcxDevComm_t, ctypes.POINTER(ctypes.c_void_p)
+        ]),
+
+        Function("flagcxDevCommFreeDevicePtr", flagcxResult_t, [flagcxDevComm_t]),
+
+        Function("flagcxDevMemGetDevicePtr", flagcxResult_t, [
+            flagcxDevMem_t, ctypes.POINTER(ctypes.c_void_p)
+        ]),
+
+        Function("flagcxDevMemFreeDevicePtr", flagcxResult_t, [flagcxDevMem_t]),
+
+        # Device API — Collective Operations
+        Function("flagcxIntraAllReduce", flagcxResult_t, [
+            flagcxDevMem_t, ctypes.c_size_t, flagcxDataType_t,
+            flagcxDevComm_t, flagcxStream_t
+        ]),
     ]
 
     # class attribute to store the mapping from the path to the library
@@ -582,6 +661,69 @@ class FLAGCXLibrary:
     def flagcxWaitCounter(self, comm: flagcxComm_t, target: int) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxWaitCounter"](
             comm, ctypes.c_uint64(target)))
+
+    def flagcxMemAlloc(self, size: int) -> ctypes.c_void_p:
+        ptr = ctypes.c_void_p()
+        self.FLAGCX_CHECK(self._funcs["flagcxMemAlloc"](ctypes.byref(ptr), ctypes.c_size_t(size)))
+        return ptr
+
+    def flagcxMemFree(self, ptr: ctypes.c_void_p) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxMemFree"](ptr))
+
+    def flagcxCommWindowRegister(self, comm: flagcxComm_t, buff: int, size: int,
+                                  flags: int = 0) -> flagcxWindow_t:
+        win = flagcxWindow_t()
+        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowRegister"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+            ctypes.byref(win), ctypes.c_int(flags)))
+        return win
+
+    def flagcxCommWindowDeregister(self, comm: flagcxComm_t, win: flagcxWindow_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowDeregister"](comm, win))
+
+    def flagcxDevCommCreate(self, comm: flagcxComm_t,
+                             reqs: flagcxDevCommRequirements) -> flagcxDevComm_t:
+        dev_comm = flagcxDevComm_t()
+        self.FLAGCX_CHECK(self._funcs["flagcxDevCommCreate"](
+            comm, ctypes.byref(reqs), ctypes.byref(dev_comm)))
+        return dev_comm
+
+    def flagcxDevCommDestroy(self, comm: flagcxComm_t, dev_comm: flagcxDevComm_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxDevCommDestroy"](comm, dev_comm))
+
+    def flagcxDevMemCreate(self, comm: flagcxComm_t, buff: int, size: int,
+                            win: flagcxWindow_t = None) -> flagcxDevMem_t:
+        dev_mem = flagcxDevMem_t()
+        self.FLAGCX_CHECK(self._funcs["flagcxDevMemCreate"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+            win if win is not None else flagcxWindow_t(),
+            ctypes.byref(dev_mem)))
+        return dev_mem
+
+    def flagcxDevMemDestroy(self, comm: flagcxComm_t, dev_mem: flagcxDevMem_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxDevMemDestroy"](comm, dev_mem))
+
+    def flagcxDevCommGetDevicePtr(self, dev_comm: flagcxDevComm_t) -> ctypes.c_void_p:
+        ptr = ctypes.c_void_p()
+        self.FLAGCX_CHECK(self._funcs["flagcxDevCommGetDevicePtr"](dev_comm, ctypes.byref(ptr)))
+        return ptr
+
+    def flagcxDevCommFreeDevicePtr(self, dev_comm: flagcxDevComm_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxDevCommFreeDevicePtr"](dev_comm))
+
+    def flagcxDevMemGetDevicePtr(self, dev_mem: flagcxDevMem_t) -> ctypes.c_void_p:
+        ptr = ctypes.c_void_p()
+        self.FLAGCX_CHECK(self._funcs["flagcxDevMemGetDevicePtr"](dev_mem, ctypes.byref(ptr)))
+        return ptr
+
+    def flagcxDevMemFreeDevicePtr(self, dev_mem: flagcxDevMem_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxDevMemFreeDevicePtr"](dev_mem))
+
+    def flagcxIntraAllReduce(self, dev_mem: flagcxDevMem_t, count: int,
+                              datatype: int, dev_comm: flagcxDevComm_t,
+                              stream: flagcxStream_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxIntraAllReduce"](
+            dev_mem, ctypes.c_size_t(count), datatype, dev_comm, stream))
 
     def adaptor_stream_create(self):
         new_stream = flagcxStream_t()
