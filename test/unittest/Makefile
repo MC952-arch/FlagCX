@@ -10,7 +10,11 @@
 #   make run          Run everything
 #   make clean        Clean all build artifacts
 
-COMPONENTS := adaptor core kernel service runner p2p topo symmem deviceapi
+COMPONENTS := adaptor core service runner p2p topo symmem
+
+ifeq ($(COMPILE_KERNEL), 1)
+COMPONENTS += kernel
+endif
 
 .PHONY: all $(COMPONENTS) clean run-unit run-mpi run
 

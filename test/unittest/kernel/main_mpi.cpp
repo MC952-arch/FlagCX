@@ -1,6 +1,7 @@
-// MPI test runner entry point for kernel tests.
+// MPI test runner entry point for kernel + device API tests.
 // Provides main(), FlagCXTest::SetUp().
 
+#include "deviceapi_test.hpp"
 #include "flagcx_kernel_test.hpp"
 
 void FlagCXTest::SetUp() {
