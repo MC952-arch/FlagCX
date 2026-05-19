@@ -746,13 +746,22 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
     }
 
-    // Allocate persistent epoch buffer (per-CTA intra + inter epochs)
+    // Allocate persistent epoch buffer (per-CTA intra + inter epochs).
+    // Layout: [intra epochs (CTA_COUNT)] [inter epochs (CTA_COUNT)]
     {
       size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
-      FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-          (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(
-          handle->epochBuffer, 0, epochBufSize, flagcxMemDevice, NULL));
+      flagcxResult_t res = deviceAdaptor->deviceMalloc(
+          (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
+      if (res != flagcxSuccess) {
+        flagcxDevCommDestroy(comm, handle);
+        return res;
+      }
+      res = deviceAdaptor->deviceMemset(handle->epochBuffer, 0, epochBufSize,
+                                        flagcxMemDevice, NULL);
+      if (res != flagcxSuccess) {
+        flagcxDevCommDestroy(comm, handle);
+        return res;
+      }
     }
 
     // One-sided Default layer: if signals or counters requested
@@ -767,67 +776,97 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       if (bufCtxCount < handle->contextCount)
         bufCtxCount = handle->contextCount;
 
+      flagcxResult_t res;
+
       // Allocate signal buffer (host-pinned or GDR device memory)
       if (reqs->interSignalCount > 0) {
         handle->signalCount = reqs->interSignalCount;
         size_t sigSize =
             (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t);
         if (flagcxParamSignalHostEnable()) {
-          FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-              (void **)&handle->signalBuffer, sigSize, flagcxMemHost, NULL));
+          res = deviceAdaptor->deviceMalloc((void **)&handle->signalBuffer,
+                                            sigSize, flagcxMemHost, NULL);
+          if (res != flagcxSuccess) {
+            flagcxDevCommDestroy(comm, handle);
+            return res;
+          }
           memset(handle->signalBuffer, 0, sigSize);
         } else {
-          FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
-                                                 sigSize, NULL));
-          FLAGCXCHECK(deviceAdaptor->deviceMemset(
-              handle->signalBuffer, 0, sigSize, flagcxMemDevice, NULL));
+          res = deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+                                           sigSize, NULL);
+          if (res != flagcxSuccess) {
+            flagcxDevCommDestroy(comm, handle);
+            return res;
+          }
+          res = deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
+                                            flagcxMemDevice, NULL);
+          if (res != flagcxSuccess) {
+            flagcxDevCommDestroy(comm, handle);
+            return res;
+          }
         }
-        FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-            (void **)&handle->shadowBuffer, sigSize, flagcxMemDevice, NULL));
-        FLAGCXCHECK(deviceAdaptor->deviceMemset(
-            handle->shadowBuffer, 0, sigSize, flagcxMemDevice, NULL));
+        res = deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer,
+                                          sigSize, flagcxMemDevice, NULL);
+        if (res != flagcxSuccess) {
+          flagcxDevCommDestroy(comm, handle);
+          return res;
+        }
+        res = deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
+                                          flagcxMemDevice, NULL);
+        if (res != flagcxSuccess) {
+          flagcxDevCommDestroy(comm, handle);
+          return res;
+        }
       }
       // Allocate counter buffer (host-pinned)
       if (reqs->interCounterCount > 0) {
         handle->counterCount = reqs->interCounterCount;
         size_t cntSize =
             (size_t)handle->counterCount * bufCtxCount * sizeof(uint64_t);
-        FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
-                                                cntSize, flagcxMemHost, NULL));
+        res = deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
+                                          cntSize, flagcxMemHost, NULL);
+        if (res != flagcxSuccess) {
+          flagcxDevCommDestroy(comm, handle);
+          return res;
+        }
         memset(handle->counterBuffer, 0, cntSize);
       }
       // PutValue staging buffer (8 bytes host-pinned)
-      FLAGCXCHECK(
-          deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
-                                      sizeof(uint64_t), flagcxMemHost, NULL));
+      res = deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
+                                        sizeof(uint64_t), flagcxMemHost, NULL);
+      if (res != flagcxSuccess) {
+        flagcxDevCommDestroy(comm, handle);
+        return res;
+      }
       memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
 
       // Auto-register signal buffer for RDMA one-sided access
       if (handle->signalBuffer) {
         int sigPtrType =
             flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
-        flagcxResult_t regRes = flagcxOneSideSignalRegister(
-            comm, handle->signalBuffer,
-            (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t),
-            sigPtrType);
-        if (regRes != flagcxSuccess) {
+        res = flagcxOneSideSignalRegister(comm, handle->signalBuffer,
+                                          (size_t)handle->signalCount *
+                                              bufCtxCount * sizeof(uint64_t),
+                                          sigPtrType);
+        if (res != flagcxSuccess) {
           WARN(
               "flagcxDevCommCreate: signal buffer MR registration failed (%d), "
               "one-sided operations will not work",
-              regRes);
-          return regRes;
+              res);
+          flagcxDevCommDestroy(comm, handle);
+          return res;
         }
       }
 
       // Auto-register staging buffer for PutValue RDMA source
       if (handle->putValueStagingBuffer) {
-        flagcxResult_t regRes = flagcxOneSideStagingRegister(
-            comm, handle->putValueStagingBuffer, sizeof(uint64_t));
-        if (regRes != flagcxSuccess) {
+        res = flagcxOneSideStagingRegister(comm, handle->putValueStagingBuffer,
+                                           sizeof(uint64_t));
+        if (res != flagcxSuccess) {
           WARN("flagcxDevCommCreate: staging buffer MR registration failed "
                "(%d), "
                "putValue will not work",
-               regRes);
+               res);
         }
       }
 

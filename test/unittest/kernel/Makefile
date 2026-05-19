@@ -3,9 +3,9 @@ include ../../make.inc
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
-# device_api.cu object (compiled in test/kernel/build/)
+# device_api.cu object (compiled in test/kernel/build/obj/)
 KERNEL_DIR     := $(PROJECT_ROOT)/test/kernel
-DEVICE_API_OBJ := $(KERNEL_DIR)/build/device_api.o
+DEVICE_API_OBJ := $(KERNEL_DIR)/build/obj/device_api.o
 DEVICE_API_INCLUDE := -I$(KERNEL_DIR)
 
 # Platform-aware device library linking

@@ -23,9 +23,11 @@
 #include "flagcx_device_internal.h"
 #include "tools.h"
 
-// Include IR wrapper header + implementations (impl needed for nvcc linkage)
-#include "../../bindings/ir/flagcx_device_wrapper.h"
-#include "../../bindings/ir/flagcx_device_wrapper_impl.h"
+// Include IR wrapper header + implementations.
+// The impl header is needed because nvcc compiles the wrappers inline (no
+// separate bitcode link step like the Triton/LLVM path uses).
+#include "flagcx_device_wrapper.h"
+#include "flagcx_device_wrapper_impl.h"
 
 #include <cassert>
 #include <cmath>

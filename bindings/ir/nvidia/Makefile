@@ -58,7 +58,7 @@ FLAGCX_ROOT := $(abspath ../../..)
 
 # Include paths
 #   -I..  : shared wrapper headers (flagcx_device_wrapper.h, flagcx_device_wrapper_impl.h)
-#   -I.   : platform-specific headers (flagcx_device_types.h)
+#   -I.   : platform-specific headers
 FLAGCX_INCLUDES := \
 	-I.. \
 	-I. \
