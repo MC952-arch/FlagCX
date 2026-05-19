@@ -23,6 +23,7 @@
  *   One-sided ops require -R 1 or -R 2.
  ************************************************************************/
 
+#include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"

@@ -50,9 +50,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
 
-FLAGCX_DEVICE_DECORATOR size_t
-getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
-
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
@@ -150,66 +147,6 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-// Inter-node one-sided AlltoAll (put + waitSignal + flush).
-flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
-                                           flagcxDevMem_t recvMem, size_t count,
-                                           flagcxDataType_t datatype,
-                                           flagcxDevComm_t devComm,
-                                           flagcxStream_t stream);
-
-// Inter-node two-sided AlltoAll (send/recv + term/wait via FIFO).
-flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
-                                           flagcxDevMem_t recvMem, size_t count,
-                                           flagcxDataType_t datatype,
-                                           flagcxDevComm_t devComm,
-                                           flagcxStream_t stream);
-
-// Inter-node Device API test kernels.
-// Each kernel tests one API facet; host verifies after streamSynchronize.
-flagcxResult_t flagcxInterTestPutSignalInc(flagcxDevMem_t sendMem,
-                                           flagcxDevMem_t recvMem, size_t count,
-                                           flagcxDataType_t datatype,
-                                           flagcxDevComm_t devComm,
-                                           flagcxStream_t stream);
-
-flagcxResult_t flagcxInterTestPutSignalAddDecoupled(
-    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
-    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream);
-
-flagcxResult_t
-flagcxInterTestCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
-                               size_t count, flagcxDataType_t datatype,
-                               flagcxDevComm_t devComm, flagcxStream_t stream,
-                               uint64_t *resultBuf);
-
-flagcxResult_t flagcxInterTestPutValue(flagcxDevMem_t recvMem,
-                                       flagcxDevComm_t devComm,
-                                       flagcxStream_t stream,
-                                       size_t putValBase);
-
-flagcxResult_t flagcxInterTestSignal(flagcxDevComm_t devComm,
-                                     flagcxStream_t stream);
-
-flagcxResult_t
-flagcxInterTestFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
-                             size_t count, flagcxDataType_t datatype,
-                             flagcxDevComm_t devComm, flagcxStream_t stream);
-
-flagcxResult_t flagcxInterTestFollowShadow(flagcxDevComm_t devComm,
-                                           flagcxStream_t stream);
-
-flagcxResult_t flagcxInterTestMeetShadow(flagcxDevComm_t devComm,
-                                         flagcxStream_t stream);
-
-flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
-                                    flagcxStream_t stream, uint64_t *resultBuf);
-
-flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
-                                  flagcxDevMem_t recvMem, size_t count,
-                                  flagcxDataType_t datatype,
-                                  flagcxDevComm_t devComm,
-                                  flagcxStream_t stream);
-
 // Create a device communicator for custom kernel usage.
 // On NVIDIA backend (Vendor), internally calls pncclDevCommCreate.
 // On default path (Default), sets up IPC-based barrier across intra-node peers.
@@ -280,15 +217,5 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
 flagcxResult_t
 flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
                                struct flagcxOneSideHandleInfo *info);
-
-// Intra-node AllReduce using FlagCX Device API.
-// The caller provides a registered buffer (via flagcxDevMemCreate)
-// already containing the input data.  The kernel runs an in-place
-// AllReduce across all intra-node GPUs.
-// devComm must be created via flagcxDevCommCreate beforehand.
-flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
-                                    flagcxDataType_t datatype,
-                                    flagcxDevComm_t devComm,
-                                    flagcxStream_t stream);
 
 #endif // FLAGCX_KERNEL_INTERNAL_H_

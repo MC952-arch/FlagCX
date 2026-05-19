@@ -1,3 +1,4 @@
+#include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"

@@ -401,12 +401,6 @@ class FLAGCXLibrary:
         ]),
 
         Function("flagcxDevMemFreeDevicePtr", flagcxResult_t, [flagcxDevMem_t]),
-
-        # Device API — Collective Operations
-        Function("flagcxIntraAllReduce", flagcxResult_t, [
-            flagcxDevMem_t, ctypes.c_size_t, flagcxDataType_t,
-            flagcxDevComm_t, flagcxStream_t
-        ]),
     ]
 
     # class attribute to store the mapping from the path to the library
@@ -718,12 +712,6 @@ class FLAGCXLibrary:
 
     def flagcxDevMemFreeDevicePtr(self, dev_mem: flagcxDevMem_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxDevMemFreeDevicePtr"](dev_mem))
-
-    def flagcxIntraAllReduce(self, dev_mem: flagcxDevMem_t, count: int,
-                              datatype: int, dev_comm: flagcxDevComm_t,
-                              stream: flagcxStream_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxIntraAllReduce"](
-            dev_mem, ctypes.c_size_t(count), datatype, dev_comm, stream))
 
     def adaptor_stream_create(self):
         new_stream = flagcxStream_t()

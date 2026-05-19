@@ -11,6 +11,7 @@
  *   -w <warmup>    -n <iters>     -p <printbuffer 0/1>
  ************************************************************************/
 
+#include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"

@@ -39,32 +39,37 @@ COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK
 
 all: test-intranode test-internode-twosided test-internode-onesided test-device-api test-multi-fifo test-device-ir-functions
 
-test-intranode: test_intranode.cpp
-	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_intranode test_intranode.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+# Compile device_api.cu (test kernels) into object file
+device_api.o: device_api.cu
+	@echo "Compiling $@ (CUDA)"
+	@$(DEVICE_COMPILER) -std=c++11 -arch=sm_80 -c -o device_api.o device_api.cu $(COMMON_INCLUDES) $(PLATFORM_INCLUDES) -DCOMPILE_KERNEL -DUSE_NVIDIA_ADAPTOR
 
-test-internode-twosided: test_internode_twosided.cpp
+test-intranode: test_intranode.cpp device_api.o
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_internode_twosided test_internode_twosided.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_intranode test_intranode.cpp device_api.o $(LIBSRCFILES) $(COMMON_INCLUDES) -I. $(COMMON_LIBS) -DCOMPILE_KERNEL
 
-test-internode-onesided: test_internode_onesided.cpp
+test-internode-twosided: test_internode_twosided.cpp device_api.o
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_internode_onesided test_internode_onesided.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_internode_twosided test_internode_twosided.cpp device_api.o $(LIBSRCFILES) $(COMMON_INCLUDES) -I. $(COMMON_LIBS) -DCOMPILE_KERNEL
 
-test-device-api: test_device_api.cpp
+test-internode-onesided: test_internode_onesided.cpp device_api.o
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_device_api test_device_api.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_internode_onesided test_internode_onesided.cpp device_api.o $(LIBSRCFILES) $(COMMON_INCLUDES) -I. $(COMMON_LIBS) -DCOMPILE_KERNEL
 
-test-multi-fifo: test_multi_fifo.cpp
+test-device-api: test_device_api.cpp device_api.o
+	@echo "Compiling $@ (CUDA)"
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_device_api test_device_api.cpp device_api.o $(LIBSRCFILES) $(COMMON_INCLUDES) -I. $(COMMON_LIBS) -DCOMPILE_KERNEL
+
+test-multi-fifo: test_multi_fifo.cpp device_api.o
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_multi_fifo test_multi_fifo.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_multi_fifo test_multi_fifo.cpp device_api.o $(LIBSRCFILES) $(COMMON_INCLUDES) -I. $(COMMON_LIBS) -DCOMPILE_KERNEL
 
 test-device-ir-functions: test_device_ir_functions.cu
 	@echo "Compiling $@ (CUDA)"
 	@$(DEVICE_COMPILER) -std=c++11 -arch=sm_80 -Xlinker -rpath -Xlinker ../../build/lib -o test_device_ir_functions test_device_ir_functions.cu $(LIBSRCFILES) $(COMMON_INCLUDES) $(PLATFORM_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL -DUSE_NVIDIA_ADAPTOR
 
 clean:
-	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api test_multi_fifo test_device_ir_functions
+	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api test_multi_fifo test_device_ir_functions device_api.o
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

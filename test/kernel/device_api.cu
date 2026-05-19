@@ -32,6 +32,35 @@
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
 
+// Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
+FLAGCX_DEVICE_DECORATOR size_t
+getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
+  switch (dtype) {
+    case flagcxChar:
+      return sizeof(char);
+    case flagcxUint8:
+      return sizeof(unsigned char);
+    case flagcxInt:
+      return sizeof(int);
+    case flagcxUint32:
+      return sizeof(unsigned int);
+    case flagcxInt64:
+      return sizeof(long long);
+    case flagcxUint64:
+      return sizeof(unsigned long long);
+    case flagcxHalf:
+      return 2;
+    case flagcxFloat:
+      return sizeof(float);
+    case flagcxDouble:
+      return sizeof(double);
+    case flagcxBfloat16:
+      return 2;
+    default:
+      return 0;
+  }
+}
+
 
 
 // ==========================================================================

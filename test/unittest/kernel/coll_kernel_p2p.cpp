@@ -7,6 +7,7 @@
 // test to pass proper flagcxDevCommRequirements and register buffers with comm
 // (flagcxDevMemCreate with non-NULL comm).
 
+#include "device_api.h"
 #include "flagcx_kernel_test.hpp"
 #include <cstring>
 #include <iostream>

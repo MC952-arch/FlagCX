@@ -2,6 +2,7 @@
 // Full end-to-end test: DevComm + DevMem + DevicePtr + IntraAllReduce.
 // Requires MPI + GPUs.
 
+#include "device_api.h"
 #include "deviceapi_test.hpp"
 #include <cstring>
 

@@ -1,3 +1,4 @@
+#include "device_api.h"
 #include "flagcx_coll_test.hpp"
 #include "flagcx_kernel_test.hpp"
 #include "flagcx_topo_test.hpp"

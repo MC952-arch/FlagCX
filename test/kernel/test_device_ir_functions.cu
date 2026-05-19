@@ -465,8 +465,6 @@ int main(int argc, char *argv[]) {
   bool k7Pass = true;
   for (int i = 0; i < N; i++) {
     if (fabsf(hostBarrierResult[i] - (float)peer) > 1e-3f) {
-      printf("[rank %d] K7 FAIL at i=%d: got %f, expected %f (peer=%d)\n",
-             proc, i, hostBarrierResult[i], (float)peer, peer);
       k7Pass = false;
       break;
     }
@@ -505,8 +503,6 @@ int main(int argc, char *argv[]) {
   bool k8Pass = true;
   for (int i = 0; i < N; i++) {
     if (fabsf(hostArriveWaitResult[i] - expectedK8) > 1e-3f) {
-      printf("[rank %d] K8 FAIL at i=%d: got %f, expected %f (peer=%d)\n",
-             proc, i, hostArriveWaitResult[i], expectedK8, peer);
       k8Pass = false;
       break;
     }
@@ -527,10 +523,6 @@ int main(int argc, char *argv[]) {
 
   int allPass = k1Pass && k2Pass && k3Pass && k4Pass && k5Pass && k6Pass &&
                 k7Pass && k8Pass;
-  if (!allPass) {
-    printf("[rank %d] FAIL: k1=%d k2=%d k3=%d k4=%d k5=%d k6=%d k7=%d k8=%d\n",
-           proc, k1Pass, k2Pass, k3Pass, k4Pass, k5Pass, k6Pass, k7Pass, k8Pass);
-  }
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 
