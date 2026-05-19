@@ -54,7 +54,7 @@ flagcxResult_t ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
   return flagcxNotSupported;
 }
 
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
 static flagcxResult_t ncclDevCommCreateHelper(ncclComm_t comm,
                                               ncclDevCommRequirements *reqs,
                                               ncclDevComm *devComm) {
@@ -94,7 +94,7 @@ static flagcxResult_t ncclDevCommDestroyHelper(ncclComm_t comm,
   dlclose(handle);
   return (flagcxResult_t)ret;
 }
-#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
 
 const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
@@ -401,7 +401,7 @@ flagcxResult_t ncclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
                                         const flagcxDevCommRequirements *reqs,
                                         flagcxInnerDevComm_t *devComm) {
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   flagcxInnerDevComm_t inner =
       (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
   if (!inner)
@@ -436,7 +436,7 @@ flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
 
 flagcxResult_t ncclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
                                          flagcxInnerDevComm_t devComm) {
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   if (!devComm)
     return flagcxSuccess;
   flagcxResult_t ret = ncclDevCommDestroyHelper(comm->base, &devComm->base);
@@ -449,7 +449,7 @@ flagcxResult_t ncclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
 
 flagcxResult_t ncclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
                                           flagcxDevCommRequirements *reqs) {
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   const char *winEnv = flagcxGetEnv("NCCL_WIN_ENABLE");
   const char *cuMemEnv = flagcxGetEnv("NCCL_CUMEM_ENABLE");
   const char *crossNicEnv = flagcxGetEnv("NCCL_CROSS_NIC");

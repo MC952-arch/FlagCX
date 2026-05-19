@@ -60,6 +60,37 @@ USE_DU             ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 
+# ---------------------------------------------------------------------------
+# Device platform resolution (for test components needing nvcc / device libs).
+# Checks USE_NVIDIA first, then USE_DU, then defaults to NVIDIA paths.
+# ---------------------------------------------------------------------------
+ifeq ($(USE_NVIDIA), 1)
+  DEVICE_HOME      ?= /usr/local/cuda
+  DEVICE_LIB       := $(DEVICE_HOME)/lib64
+  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
+  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
+  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
+  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
+else ifeq ($(USE_DU), 1)
+  DEVICE_HOME      ?= $(CUDA_PATH)
+  DEVICE_LIB       := $(DEVICE_HOME)/lib64
+  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
+  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
+  ADAPTOR_DEFINE   := -DUSE_DU_ADAPTOR
+  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/du
+else
+  # Default: NVIDIA paths (same as top-level Makefile fallback)
+  DEVICE_HOME      ?= /usr/local/cuda
+  DEVICE_LIB       := $(DEVICE_HOME)/lib64
+  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
+  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
+  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
+  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
+endif
+
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target
 # in leaf Makefiles). This is just a variable definition.

@@ -5,32 +5,16 @@
 # Each test_*.cpp / test_*.cu produces a separate binary in build/bin/.
 #*************************************************************************
 
-include ../../make.inc
+include ../make.inc
 
 # ---------------------------------------------------------------------------
-# CUDA / Device compiler
+# CUDA / Device compiler (from make.inc device platform resolution)
 # ---------------------------------------------------------------------------
-DEVICE_HOME ?=
-DEVICE_INCLUDE =
-DEVICE_LIB =
-DEVICE_LINK =
-DEVICE_COMPILER =
-PLATFORM_INCLUDES =
+PLATFORM_INCLUDES = -I$(PLATFORM_IR_DIR)
 
+# Auto-detect GPU architectures (same as main Makefile)
 ifeq ($(USE_NVIDIA), 1)
-DEVICE_HOME      ?= /usr/local/cuda
-DEVICE_INCLUDE    = $(DEVICE_HOME)/include
-DEVICE_LIB        = $(DEVICE_HOME)/lib64
-DEVICE_LINK       = -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-DEVICE_COMPILER   = $(DEVICE_HOME)/bin/nvcc
-PLATFORM_INCLUDES = -I$(PROJECT_ROOT)/bindings/ir/nvidia
-else ifeq ($(USE_DU), 1)
-DEVICE_HOME      ?= $(CUDA_PATH)
-DEVICE_INCLUDE    = $(DEVICE_HOME)/include
-DEVICE_LIB        = $(DEVICE_HOME)/lib64
-DEVICE_LINK       = -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-DEVICE_COMPILER   = $(DEVICE_HOME)/bin/nvcc
-PLATFORM_INCLUDES = -I$(PROJECT_ROOT)/bindings/ir/du
+include $(PROJECT_ROOT)/makefiles/nvidia_gencode.mk
 endif
 
 # ---------------------------------------------------------------------------
@@ -60,20 +44,19 @@ CU_INCLUDES := $(ALL_INCLUDES) \
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
 # ---------------------------------------------------------------------------
-# Shared objects: device_api.o + tools.o (compiled once, linked by all targets)
+# Shared objects: device_api.o + device_ir.o + tools.o (compiled once)
 # ---------------------------------------------------------------------------
 DEVICE_API_OBJ := $(OBJDIR)/device_api.o
+DEVICE_IR_OBJ  := $(OBJDIR)/device_ir.o
 TOOLS_OBJ      := $(OBJDIR)/tools.o
 
 # ---------------------------------------------------------------------------
 # Targets — one binary per test source
 # ---------------------------------------------------------------------------
 CPP_TESTS := test_intranode test_internode_twosided test_internode_onesided \
-             test_device_api test_multi_fifo
+             test_device_api test_multi_fifo test_device_ir
 
-CU_TESTS := test_device_ir
-
-ALL_TARGETS := $(CPP_TESTS:%=$(BINDIR)/%) $(CU_TESTS:%=$(BINDIR)/%)
+ALL_TARGETS := $(CPP_TESTS:%=$(BINDIR)/%)
 
 .PHONY: all clean device_api.o
 
@@ -90,8 +73,15 @@ device_api.o: $(DEVICE_API_OBJ)
 $(DEVICE_API_OBJ): device_api.cu device_api.h
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $< (CUDA)"
-	@$(DEVICE_COMPILER) -std=c++17 -arch=sm_80 -c -o $@ $< \
-		$(CU_INCLUDES) -DCOMPILE_KERNEL -DUSE_NVIDIA_ADAPTOR
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c -o $@ $< \
+		$(CU_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
+
+# CUDA kernel object (device_ir.cu — IR wrapper tests)
+$(DEVICE_IR_OBJ): device_ir.cu device_ir.h
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $< (CUDA)"
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c -o $@ $< \
+		$(CU_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 # tools.cc (shared perf infrastructure)
 $(TOOLS_OBJ): $(PROJECT_ROOT)/test/tools.cc
@@ -99,19 +89,19 @@ $(TOOLS_OBJ): $(PROJECT_ROOT)/test/tools.cc
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
 
-# C++ test binaries
+# C++ test binaries (default: link with device_api.o)
 $(BINDIR)/%: %.cpp $(DEVICE_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(TOOLS_OBJ) \
 		$(ALL_INCLUDES) $(ALL_LINK) -DCOMPILE_KERNEL
 
-# CUDA test binary (test_device_ir)
-$(BINDIR)/test_device_ir: test_device_ir.cu
+# test_device_ir links with device_ir.o instead of device_api.o
+$(BINDIR)/test_device_ir: test_device_ir.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
-	@echo "Linking   $@ (CUDA)"
-	@$(DEVICE_COMPILER) -std=c++17 -arch=sm_80 -o $@ $< $(TOOLS_OBJ) \
-		$(CU_INCLUDES) $(ALL_LINK) -DCOMPILE_KERNEL -DUSE_NVIDIA_ADAPTOR
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) \
+		$(ALL_INCLUDES) $(ALL_LINK) -DCOMPILE_KERNEL
 
 # ---------------------------------------------------------------------------
 # Clean

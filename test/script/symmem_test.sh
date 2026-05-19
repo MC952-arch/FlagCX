@@ -21,6 +21,7 @@ mpirun -np "$NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
     -x FLAGCX_MEM_ENABLE=1 \
+    -x FLAGCX_VMM_ENABLE=0 \
     "$BUILD_BIN/symmem_mpi_tests"
 
 echo ""

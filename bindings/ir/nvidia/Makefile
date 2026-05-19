@@ -33,7 +33,7 @@ DEVICE_HOME ?= /usr/local/cuda
 CCL_HOME    ?= /usr/local/nccl/build
 
 # Detect CUDA version for arch selection
-CUDA_MAJOR ?= $(shell $(DEVICE_HOME)/bin/nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+' | head -1)
+CUDA_MAJOR ?= $(shell $(DEVICE_HOME)/bin/nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p' | head -1)
 ifeq ($(CUDA_MAJOR),)
   CUDA_MAJOR := 12
 endif
@@ -132,7 +132,11 @@ $(LLVM_IR_FILE): $(OPTIMIZED_BC)
 	$(LLVM_DIS) $< -o $@.tmp
 	@echo "Cleaning LLVM IR (removing nvvm-reflect-ftz)..."
 	@myVar="$$(cat $@.tmp | grep -E '!([0-9]+) = !\{[^"]*"nvvm-reflect-ftz"' | cut -d ' ' -f 1)"; \
-	awk '!/nvvm-reflect-ftz/' $@.tmp | sed "/^!llvm\.module\.flags = /s/$$myVar, //" > $@
+	if [ -n "$$myVar" ]; then \
+	  awk '!/nvvm-reflect-ftz/' $@.tmp | sed "/^!llvm\.module\.flags = /s/$$myVar, //" > $@; \
+	else \
+	  cp $@.tmp $@; \
+	fi
 	@rm -f $@.tmp
 
 $(FINAL_BC): $(LLVM_IR_FILE)

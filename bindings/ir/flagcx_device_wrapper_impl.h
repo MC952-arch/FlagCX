@@ -751,7 +751,7 @@ flagcxDevNetSignalCtrInc(const void *transOpaque, const void *teamOpaque,
 }
 
 /* ================================================================
- * Category 13: Transport — One-Sided putValue<uint64_t> (16)
+ * Category 13: Transport — One-Sided putValue<uint64_t> (4)
  * ================================================================ */
 
 /* (None, None) */

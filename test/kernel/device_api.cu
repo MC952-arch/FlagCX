@@ -27,7 +27,11 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
+#if defined(USE_DU_ADAPTOR)
+#include "du_adaptor.h"
+#else
 #include "nvidia_adaptor.h"
+#endif
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>

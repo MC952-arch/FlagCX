@@ -14,28 +14,29 @@ void DeviceApiTest::SetUpTestSuite() {
 
   size = DEVICEAPI_TEST_SIZE;
 
-  flagcxHandleInit(&handler);
+  ASSERT_EQ(flagcxHandleInit(&handler), flagcxSuccess);
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   int numDevices;
-  devHandle->getDeviceCount(&numDevices);
-  devHandle->setDevice(rank % numDevices);
+  ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
+  ASSERT_EQ(devHandle->setDevice(rank % numDevices), flagcxSuccess);
 
   flagcxUniqueId_t uniqueId = nullptr;
-  if (rank == 0)
-    flagcxGetUniqueId(&uniqueId);
-  else
+  if (rank == 0) {
+    ASSERT_EQ(flagcxGetUniqueId(&uniqueId), flagcxSuccess);
+  } else {
     uniqueId = (flagcxUniqueId_t)calloc(1, sizeof(flagcxUniqueId));
+    ASSERT_NE(uniqueId, nullptr);
+  }
   MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, nranks, uniqueId, rank);
+  ASSERT_EQ(flagcxCommInitRank(&comm, nranks, uniqueId, rank), flagcxSuccess);
   free(uniqueId);
 
-  devHandle->streamCreate(&stream);
-
-  flagcxMemAlloc(&devBuff, size);
+  ASSERT_EQ(devHandle->streamCreate(&stream), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&devBuff, size), flagcxSuccess);
 }
 
 void DeviceApiTest::TearDownTestSuite() {

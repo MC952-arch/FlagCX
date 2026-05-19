@@ -27,7 +27,7 @@
 // ============================================================
 // NVIDIA Vendor Backend (NCCL device API)
 // ============================================================
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0) &&                              \
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0) &&                             \
     !defined(FLAGCX_FORCE_FALLBACK)
 
 #include "nccl_device.h"

@@ -16,6 +16,7 @@
 
 #include "flagcx_kernel.h"
 #include "shmutils.h"
+#include <pthread.h>
 
 // Forward declaration for typed vendor device comm handle
 struct flagcxInnerDevComm;
@@ -99,6 +100,7 @@ struct flagcxDevCommInternal {
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevCommGetDevicePtr
+  pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
 };
 
 // ============================================================
@@ -135,6 +137,7 @@ struct flagcxDevMemInternal {
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
+  pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED

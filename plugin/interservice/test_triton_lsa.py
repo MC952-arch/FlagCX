@@ -16,12 +16,14 @@ Usage (single-node, 2 GPUs):
 """
 
 import os
-import ctypes
+import tempfile
 
 import torch
 import torch.distributed as dist
 import triton
 import triton.language as tl
+from torch.cuda.memory import CUDAPluggableAllocator
+from torch.utils.cpp_extension import load_inline
 
 from flagcx_wrapper import (
     FLAGCXLibrary,
@@ -35,6 +37,62 @@ FLAGCX_BITCODE_PATH = os.environ.get(
     "FLAGCX_BITCODE_PATH",
     os.path.join(os.path.dirname(__file__), "../../build/lib/libflagcx_device.bc"),
 )
+
+# FlagCX include path for compiling the allocator wrapper
+FLAGCX_INCLUDE_PATH = os.environ.get(
+    "FLAGCX_INCLUDE_PATH",
+    os.path.join(os.path.dirname(__file__), "../../flagcx/include"),
+)
+
+# ============================================================
+# FlagCX pluggable allocator (wraps flagcxMemAlloc/flagcxMemFree)
+# ============================================================
+
+flagcx_allocator_source = """
+#include <flagcx.h>
+extern "C" {
+
+void* flagcx_alloc_plug(size_t size, int device, void* stream) {
+  void* ptr = nullptr;
+  flagcxResult_t err = flagcxMemAlloc(&ptr, size);
+  if (err != flagcxSuccess) {
+    return nullptr;
+  }
+  return ptr;
+}
+
+void flagcx_free_plug(void* ptr, size_t size, int device, void* stream) {
+  if (ptr != nullptr) {
+    flagcxMemFree(ptr);
+  }
+}
+
+}
+"""
+
+
+def get_flagcx_mem_pool():
+    """Compile and return a PyTorch MemPool that uses flagcxMemAlloc."""
+    out_dir = tempfile.gettempdir()
+    lib_name = "flagcx_allocator"
+
+    load_inline(
+        name=lib_name,
+        cpp_sources=flagcx_allocator_source,
+        with_cuda=True,
+        extra_ldflags=["-lflagcx"],
+        verbose=False,
+        is_python_module=False,
+        build_directory=out_dir,
+        extra_include_paths=[FLAGCX_INCLUDE_PATH],
+    )
+
+    allocator_wrapper = CUDAPluggableAllocator(
+        f"{out_dir}/{lib_name}.so",
+        "flagcx_alloc_plug",
+        "flagcx_free_plug",
+    )
+    return torch.cuda.MemPool(allocator_wrapper.allocator())
 
 
 # ============================================================
@@ -118,18 +176,18 @@ def main():
     comm = flagcx.flagcxCommInitRank(world_size, unique_id, rank)
     print(f"[Rank {rank}] FlagCX comm initialized")
 
-    # Allocate buffer: each rank writes its rank value to all N elements
+    # Allocate buffer via flagcxMemAlloc (wrapped in torch pluggable allocator)
     N = 64
     buf_size = N * 4  # float32
-    buf_ptr = flagcx.flagcxMemAlloc(buf_size)
 
-    # Fill buffer with rank value using torch
-    buf_tensor = torch.tensor([float(rank)] * N, dtype=torch.float32, device="cuda")
-    # Copy torch tensor data into flagcx-allocated buffer
-    ctypes.memmove(buf_ptr.value, buf_tensor.data_ptr(), buf_size)
+    flagcx_pool = get_flagcx_mem_pool()
+    with torch.cuda.use_mem_pool(flagcx_pool):
+        buf_tensor = torch.full((N,), float(rank), dtype=torch.float32, device="cuda")
+
+    buf_ptr = buf_tensor.data_ptr()
 
     # Register buffer with symmetric window for LSA
-    win = flagcx.flagcxCommWindowRegister(comm, buf_ptr.value, buf_size,
+    win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size,
                                            flags=FLAGCX_WIN_COLL_SYMMETRIC)
     print(f"[Rank {rank}] Window registered (symmetric)")
 
@@ -150,7 +208,7 @@ def main():
     print(f"[Rank {rank}] DevComm created")
 
     # Create DevMem (with window)
-    dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr.value, buf_size, win)
+    dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)
     print(f"[Rank {rank}] DevMem created")
 
     # Get device pointers for Triton
@@ -172,6 +230,7 @@ def main():
         dev_mem_dptr.value,
         output.data_ptr(),
         N=N,
+        extern_libs={"libflagcx_device": FLAGCX_BITCODE_PATH},
     )
     torch.cuda.synchronize()
 
@@ -190,7 +249,7 @@ def main():
     flagcx.flagcxDevMemDestroy(comm, dev_mem)
     flagcx.flagcxDevCommDestroy(comm, dev_comm)
     flagcx.flagcxCommWindowDeregister(comm, win)
-    flagcx.flagcxMemFree(buf_ptr)
+    # buf_tensor memory is managed by torch, no explicit free needed
     flagcx.flagcxCommDestroy(comm)
 
     dist.destroy_process_group()

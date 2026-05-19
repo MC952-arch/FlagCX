@@ -5,7 +5,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <map>
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
 #include "nccl_device.h"
 
 #define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
@@ -20,7 +20,7 @@ struct flagcxInnerDevComm {
 typedef void ncclDevComm;
 struct flagcxInnerDevComm {};
 
-#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 

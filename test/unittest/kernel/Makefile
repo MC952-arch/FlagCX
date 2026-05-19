@@ -8,20 +8,7 @@ KERNEL_DIR     := $(PROJECT_ROOT)/test/kernel
 DEVICE_API_OBJ := $(KERNEL_DIR)/build/obj/device_api.o
 DEVICE_API_INCLUDE := -I$(KERNEL_DIR)
 
-# Platform-aware device library linking
-DEVICE_HOME ?=
-DEVICE_LINK =
-ifeq ($(USE_NVIDIA), 1)
-DEVICE_HOME = /usr/local/cuda
-DEVICE_LINK = -L$(DEVICE_HOME)/lib64 -lcudart -lcuda
-else ifeq ($(USE_DU), 1)
-DEVICE_HOME = $(CUDA_PATH)
-DEVICE_LINK = -L$(DEVICE_HOME)/lib64 -lcudart -lcuda
-else
-# Default: NVIDIA
-DEVICE_HOME = /usr/local/cuda
-DEVICE_LINK = -L$(DEVICE_HOME)/lib64 -lcudart -lcuda
-endif
+# Device linking provided by make.inc (DEVICE_LINK, DEVICE_HOME, etc.)
 
 # Environment variables to force hetero mode on single node
 HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 FLAGCX_P2P_DISABLE=1

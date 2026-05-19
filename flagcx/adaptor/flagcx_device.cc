@@ -659,6 +659,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevCommInternal));
+  pthread_mutex_init(&handle->cachedPtrMutex, NULL);
   handle->barrierIpcIndex = -1;
 
   // ---- Baseline: always ----
@@ -691,6 +692,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     if (ret != flagcxSuccess && ret != flagcxNotSupported &&
         ret != flagcxInvalidArgument) {
       WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
       free(handle);
       return ret;
     }
@@ -719,6 +721,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
         WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
              "barriers unavailable",
              res);
+        pthread_mutex_destroy(&handle->cachedPtrMutex);
         free(handle);
         return res;
       }
@@ -988,9 +991,10 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   // Device pointer cache cleanup
   if (devComm->cachedDevicePtr) {
-    deviceAdaptor->deviceFree(devComm->cachedDevicePtr, flagcxMemDevice, NULL);
+    flagcxCommDeferFree(comm, devComm->cachedDevicePtr, flagcxMemDevice);
   }
 
+  pthread_mutex_destroy(&devComm->cachedPtrMutex);
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;
@@ -1015,6 +1019,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     return flagcxSystemError;
   }
   memset(handle, 0, sizeof(struct flagcxDevMemInternal));
+  pthread_mutex_init(&handle->cachedPtrMutex, NULL);
 
   // ---- Baseline: always ----
   handle->rawPtr = buff;
@@ -1093,6 +1098,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     auto *kWin = new (std::nothrow) typename DeviceAPI::Window{};
     if (kWin == nullptr) {
       WARN("flagcxDevMemCreate: failed to allocate DeviceAPI::Window");
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
       free(handle);
       return flagcxSystemError;
     }
@@ -1140,9 +1146,10 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
 
   // Free cached device pointer if present
   if (devMem->cachedDevicePtr) {
-    deviceAdaptor->deviceFree(devMem->cachedDevicePtr, flagcxMemDevice, NULL);
+    flagcxCommDeferFree(comm, devMem->cachedDevicePtr, flagcxMemDevice);
   }
 
+  pthread_mutex_destroy(&devMem->cachedPtrMutex);
   free(devMem);
   return flagcxSuccess;
 }
@@ -1156,8 +1163,11 @@ flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
   if (!devComm || !devPtr)
     return flagcxInvalidArgument;
 
+  pthread_mutex_lock(&devComm->cachedPtrMutex);
+
   if (devComm->cachedDevicePtr) {
     *devPtr = devComm->cachedDevicePtr;
+    pthread_mutex_unlock(&devComm->cachedPtrMutex);
     return flagcxSuccess;
   }
 
@@ -1166,24 +1176,39 @@ flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
 
   // Allocate device memory and copy
   void *dPtr = nullptr;
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
-                                          flagcxMemDevice, NULL));
-  FLAGCXCHECK(
+  flagcxResult_t res = flagcxSuccess;
+  FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
+                                              flagcxMemDevice, NULL),
+                  res, fail);
+  FLAGCXCHECKGOTO(
       deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevComm),
-                                  flagcxMemcpyHostToDevice, NULL, NULL));
+                                  flagcxMemcpyHostToDevice, NULL, NULL),
+      res, fail);
 
   devComm->cachedDevicePtr = dPtr;
   *devPtr = dPtr;
+  pthread_mutex_unlock(&devComm->cachedPtrMutex);
   return flagcxSuccess;
+
+fail:
+  pthread_mutex_unlock(&devComm->cachedPtrMutex);
+  if (dPtr) {
+    deviceAdaptor->deviceFree(dPtr, flagcxMemDevice, NULL);
+  }
+  return res;
 }
 
 flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
   if (!devComm)
     return flagcxInvalidArgument;
-  if (devComm->cachedDevicePtr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->cachedDevicePtr,
-                                          flagcxMemDevice, NULL));
-    devComm->cachedDevicePtr = nullptr;
+
+  pthread_mutex_lock(&devComm->cachedPtrMutex);
+  void *ptr = devComm->cachedDevicePtr;
+  devComm->cachedDevicePtr = nullptr;
+  pthread_mutex_unlock(&devComm->cachedPtrMutex);
+
+  if (ptr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL));
   }
   return flagcxSuccess;
 }
@@ -1192,8 +1217,11 @@ flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr) {
   if (!devMem || !devPtr)
     return flagcxInvalidArgument;
 
+  pthread_mutex_lock(&devMem->cachedPtrMutex);
+
   if (devMem->cachedDevicePtr) {
     *devPtr = devMem->cachedDevicePtr;
+    pthread_mutex_unlock(&devMem->cachedPtrMutex);
     return flagcxSuccess;
   }
 
@@ -1202,24 +1230,39 @@ flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr) {
 
   // Allocate device memory and copy
   void *dPtr = nullptr;
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevMem),
-                                          flagcxMemDevice, NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevMem),
-                                          flagcxMemcpyHostToDevice, NULL,
-                                          NULL));
+  flagcxResult_t res = flagcxSuccess;
+  FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevMem),
+                                              flagcxMemDevice, NULL),
+                  res, fail);
+  FLAGCXCHECKGOTO(
+      deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevMem),
+                                  flagcxMemcpyHostToDevice, NULL, NULL),
+      res, fail);
 
   devMem->cachedDevicePtr = dPtr;
   *devPtr = dPtr;
+  pthread_mutex_unlock(&devMem->cachedPtrMutex);
   return flagcxSuccess;
+
+fail:
+  pthread_mutex_unlock(&devMem->cachedPtrMutex);
+  if (dPtr) {
+    deviceAdaptor->deviceFree(dPtr, flagcxMemDevice, NULL);
+  }
+  return res;
 }
 
 flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
   if (!devMem)
     return flagcxInvalidArgument;
-  if (devMem->cachedDevicePtr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->cachedDevicePtr,
-                                          flagcxMemDevice, NULL));
-    devMem->cachedDevicePtr = nullptr;
+
+  pthread_mutex_lock(&devMem->cachedPtrMutex);
+  void *ptr = devMem->cachedDevicePtr;
+  devMem->cachedDevicePtr = nullptr;
+  pthread_mutex_unlock(&devMem->cachedPtrMutex);
+
+  if (ptr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL));
   }
   return flagcxSuccess;
 }
