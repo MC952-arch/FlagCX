@@ -6,19 +6,11 @@
  * This header declares extern "C" device functions that wrap the C++
  * template-based FlagCX Device API. When compiled to LLVM bitcode,
  * these functions can be linked by LLVM-based languages (e.g. Triton).
- *
- * Typed load/store uses NVSHMEM-style X-macro generation.
  ************************************************************************/
 #ifndef FLAGCX_DEVICE_WRAPPER_H_
 #define FLAGCX_DEVICE_WRAPPER_H_
 
 #include "flagcx_device_core.h"
-
-/* ================================================================
- * X-macro: typed load/store generation (NVSHMEM pattern)
- * Platform-specific — defines FLAGCX_REPT_FOR_DEVICE_TYPES(FN).
- * ================================================================ */
-#include "flagcx_device_types.h"
 
 /* ================================================================
  * C-compatible wrapper structs
@@ -80,10 +72,10 @@ flagcxTeamRankToIntraC(const void *comm, const void *team, int rank);
  * Category 4: Pointer Access (4)
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C __device__ void *flagcxGetPeerPointerTeam(const void *mem,
-                                                             size_t offset,
-                                                             const void *team,
-                                                             int peer);
+FLAGCX_IR_EXTERN_C __device__ void *flagcxGetPeerPointerC(const void *mem,
+                                                          size_t offset,
+                                                          const void *team,
+                                                          int peer);
 FLAGCX_IR_EXTERN_C __device__ void *flagcxGetLocalPointerC(const void *mem,
                                                            size_t offset);
 FLAGCX_IR_EXTERN_C __device__ void *

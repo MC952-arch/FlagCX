@@ -141,8 +141,8 @@ flagcxTeamRankToIntraC(const void *commOpaque, const void *teamOpaque,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetPeerPointerTeam(const void *memOpaque, size_t offset,
-                         const void *teamOpaque, int peer) {
+flagcxGetPeerPointerC(const void *memOpaque, size_t offset,
+                      const void *teamOpaque, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   const flagcxTeam *team = (const flagcxTeam *)teamOpaque;
   return flagcxGetPeerPointer(*mem, offset, *team, peer);
