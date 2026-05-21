@@ -48,7 +48,6 @@ flagcxDevNetTerm
 flagcxDevNetWait
 flagcxDevNetWaitCounter
 flagcxDevNetWaitSignal
-flagcxDevNetWaitSignalFollowShadow
 flagcxDevNetWaitSignalMeetShadow
 flagcxGetIntraPointerC
 flagcxGetLocalPointerC

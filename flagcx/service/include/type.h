@@ -5,7 +5,7 @@
  ************************************************************************/
 
 #include "flagcx.h"
-#include <cstddef>
+#include <stddef.h>
 
 #ifndef FLAGCX_TYPE_H_
 #define FLAGCX_TYPE_H_

@@ -5,6 +5,7 @@
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
+#include "utils.h"
 
 #include <map>
 #include <vector>
@@ -46,12 +47,9 @@ struct flagcxDevCommBufferHandle {
   void *shadowBuffer;          // flagcxMemDevice
   void *counterBuffer;         // flagcxMemHost
   void *putValueStagingBuffer; // flagcxMemHost
-  int signalMemType;           // flagcxMemHost or flagcxMemDevice
+  int signalHostEnable; // mirrors flagcxParamSignalHostEnable() at alloc time
   struct flagcxDevCommBufferHandle *next; // intrusive queue link
 };
-
-template <typename T, T *T::*next>
-struct flagcxIntruQueue;
 
 /* Opaque handle to flagcxHeteroComm */
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
@@ -114,8 +112,8 @@ struct flagcxComm {
 
   // Deferred DevComm buffer queue — buffers stashed here during
   // flagcxDevCommDestroy, drained at flagcxCommDestroy.
-  struct flagcxIntruQueue<struct flagcxDevCommBufferHandle,
-                          &flagcxDevCommBufferHandle::next>
+  flagcxIntruQueue<struct flagcxDevCommBufferHandle,
+                   &flagcxDevCommBufferHandle::next>
       deferredBufferQueue;
   int deferredBufferCount;
 
@@ -126,5 +124,13 @@ struct flagcxComm {
   // Custom op state (NULL = not enabled)
   struct flagcxDevCommState *devCommState;
 };
+
+// Function helps init single homo cluster.
+// return homoComm via homoComm parameter.
+flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
+                                  flagcxUniqueId *uniqueIdData,
+                                  struct bootstrapState *state,
+                                  flagcxComm_t comm,
+                                  flagcxInnerComm_t *homoComm /*out*/);
 
 #endif // end include guard

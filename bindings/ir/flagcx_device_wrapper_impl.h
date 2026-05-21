@@ -375,19 +375,6 @@ flagcxDevNetIncreaseSignalShadow(const void *netOpaque,
   net->increaseSignalShadow(slot, delta);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevNetWaitSignalFollowShadow(const void *netOpaque,
-                                   const void *coopOpaque,
-                                   flagcxDevNetSignal_t slot,
-                                   uint64_t leastDelta, uint64_t *before,
-                                   uint64_t *delta, int bits,
-                                   flagcxDeviceMemoryOrder_t order) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  const flagcxCoopAny *coop = (const flagcxCoopAny *)coopOpaque;
-  net->waitSignalFollowShadow(*coop, slot, leastDelta, before, delta, bits,
-                              order);
-}
-
 /* ================================================================
  * Category 10: Transport — Two-Sided (4)
  * ================================================================ */

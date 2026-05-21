@@ -234,8 +234,9 @@ def main():
     )
     torch.cuda.synchronize()
 
-    # Verify: each element should contain the peer's rank value
-    peer_rank = (local_rank + 1) % world_size
+    # Verify: kernel reads from peer = (intra_rank + 1) % intra_size.
+    # Buffer is filled with float(rank). In single-node: intra_rank == rank.
+    peer_rank = (rank + 1) % world_size
     expected = torch.full((N,), float(peer_rank), dtype=torch.float32, device="cuda")
     if torch.allclose(output, expected):
         print(f"[Rank {rank}] PASSED: read peer rank {peer_rank} data correctly")

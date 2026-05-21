@@ -45,6 +45,10 @@ MPI_HOME    ?= /usr/local/mpi
 MPI_INCLUDE := -I$(MPI_HOME)/include
 MPI_LINK    := -L$(MPI_HOME)/lib -lmpi
 
+# CCL (vendor collective library)
+CCL_HOME    ?= /usr/local
+CCL_INCLUDE := -I$(CCL_HOME)/include
+
 # Perf test common infrastructure
 PERF_INCLUDE := -I$(PROJECT_ROOT)/test/include
 

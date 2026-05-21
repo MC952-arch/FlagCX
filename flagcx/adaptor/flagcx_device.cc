@@ -646,9 +646,9 @@ flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 //   Vendor layer: vendor DevComm (if vendor supported)
 // ==========================================================================
 
-flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
-                                   const flagcxDevCommRequirements *reqs,
-                                   flagcxDevComm_t *devComm) {
+extern "C" flagcxResult_t
+flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+                    flagcxDevComm_t *devComm) {
   if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
     return flagcxInvalidArgument;
   }
@@ -903,8 +903,8 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
-                                    flagcxDevComm_t devComm) {
+extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
+                                               flagcxDevComm_t devComm) {
   if (devComm == nullptr) {
     return flagcxSuccess;
   }
@@ -996,9 +996,12 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                     NULL);
         if (h->epochBuffer)
           deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
-        if (h->signalBuffer)
-          deviceAdaptor->deviceFree(h->signalBuffer,
-                                    (flagcxMemType_t)h->signalMemType, NULL);
+        if (h->signalBuffer) {
+          if (h->signalHostEnable)
+            deviceAdaptor->deviceFree(h->signalBuffer, flagcxMemHost, NULL);
+          else
+            deviceAdaptor->gdrMemFree(h->signalBuffer, NULL);
+        }
         if (h->shadowBuffer)
           deviceAdaptor->deviceFree(h->shadowBuffer, flagcxMemDevice, NULL);
         if (h->counterBuffer)
@@ -1023,8 +1026,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     bufHandle->shadowBuffer = devComm->shadowBuffer;
     bufHandle->counterBuffer = devComm->counterBuffer;
     bufHandle->putValueStagingBuffer = devComm->putValueStagingBuffer;
-    bufHandle->signalMemType =
-        flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
+    bufHandle->signalHostEnable = flagcxParamSignalHostEnable();
     bufHandle->next = nullptr;
     flagcxIntruQueueEnqueue(&comm->deferredBufferQueue, bufHandle);
     comm->deferredBufferCount++;
@@ -1048,8 +1050,9 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 //   Window layer: vendor or default Window
 // ==========================================================================
 
-flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxWindow_t win, flagcxDevMem_t *devMem) {
+extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t win,
+                                             flagcxDevMem_t *devMem) {
   if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
@@ -1168,7 +1171,8 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
+extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
+                                              flagcxDevMem_t devMem) {
   if (devMem == nullptr) {
     return flagcxSuccess;
   }
@@ -1199,8 +1203,8 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
 // Device Pointer API — for Triton integration
 // ==========================================================================
 
-flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
-                                         void **devPtr) {
+extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
+                                                    void **devPtr) {
   if (!devComm || !devPtr)
     return flagcxInvalidArgument;
 
@@ -1239,7 +1243,7 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
+extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
   if (!devComm)
     return flagcxInvalidArgument;
 
@@ -1254,7 +1258,8 @@ flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr) {
+extern "C" flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem,
+                                                   void **devPtr) {
   if (!devMem || !devPtr)
     return flagcxInvalidArgument;
 
@@ -1293,7 +1298,7 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
+extern "C" flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
   if (!devMem)
     return flagcxInvalidArgument;
 
@@ -1393,9 +1398,12 @@ flagcxResult_t flagcxCommDrainDeferredBuffers(flagcxComm_t comm) {
       deviceAdaptor->deviceFree(h->localBarrierFlags, flagcxMemDevice, NULL);
     if (h->epochBuffer)
       deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
-    if (h->signalBuffer)
-      deviceAdaptor->deviceFree(h->signalBuffer,
-                                (flagcxMemType_t)h->signalMemType, NULL);
+    if (h->signalBuffer) {
+      if (h->signalHostEnable)
+        deviceAdaptor->deviceFree(h->signalBuffer, flagcxMemHost, NULL);
+      else
+        deviceAdaptor->gdrMemFree(h->signalBuffer, NULL);
+    }
     if (h->shadowBuffer)
       deviceAdaptor->deviceFree(h->shadowBuffer, flagcxMemDevice, NULL);
     if (h->counterBuffer)

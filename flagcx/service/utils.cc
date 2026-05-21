@@ -409,32 +409,6 @@ void *flagcxOpenLib(const char *path, int flags,
   return handle;
 }
 
-flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
-                                  flagcxUniqueId *uniqueIdData,
-                                  struct bootstrapState *state,
-                                  flagcxComm_t comm,
-                                  flagcxInnerComm_t *homoComm /*out*/) {
-  int rank = comm->rank;
-  int nranks = comm->nranks;
-  memset((void *)commId, 0, sizeof(*commId));
-  memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
-  if (comm->homoRank == 0) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
-  }
-  if (comm->homoRank == 0) {
-    memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
-  }
-  FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
-
-  memcpy((void *)commId, (void *)&uniqueIdData[comm->homoRootRank],
-         sizeof(flagcxUniqueId));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-      homoComm, comm->homoRanks, commId, comm->homoRank, NULL));
-  return flagcxSuccess;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // FlagScale configuration functions
 

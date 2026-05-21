@@ -7,11 +7,12 @@
 #ifndef FLAGCX_SOCKET_H_
 #define FLAGCX_SOCKET_H_
 
+#include "type.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "type.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>

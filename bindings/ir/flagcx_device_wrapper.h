@@ -175,12 +175,6 @@ flagcxDevNetResetCounter(const void *net, flagcxDevNetCounter_t slot);
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetIncreaseSignalShadow(const void *net, flagcxDevNetSignal_t slot,
                                  uint64_t delta);
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetWaitSignalFollowShadow(const void *net, const void *coop,
-                                   flagcxDevNetSignal_t slot,
-                                   uint64_t leastDelta, uint64_t *before,
-                                   uint64_t *delta, int bits,
-                                   flagcxDeviceMemoryOrder_t order);
 
 /* ================================================================
  * Category 10: Transport — Two-Sided (4)

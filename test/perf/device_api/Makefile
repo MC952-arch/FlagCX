@@ -21,12 +21,12 @@ ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 # Kernel tests need -DCOMPILE_KERNEL
 CXXFLAGS += -DCOMPILE_KERNEL
 
-.PHONY: all clean device-api-obj
+.PHONY: all clean
 
-all: device-api-obj $(BINS)
+all: $(BINS)
 
-# Build device_api.o from test/kernel/ if not already built
-device-api-obj:
+# Explicit rule to build device_api.o via test/kernel/ Makefile
+$(DEVICE_API_OBJ):
 	@$(MAKE) -C $(PROJECT_ROOT)/test/kernel device_api.o USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU)
 
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS) $(DEVICE_API_OBJ)

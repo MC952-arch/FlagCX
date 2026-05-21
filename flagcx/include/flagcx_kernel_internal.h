@@ -147,6 +147,10 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Create a device communicator for custom kernel usage.
 // On NVIDIA backend (Vendor), internally calls pncclDevCommCreate.
 // On default path (Default), sets up IPC-based barrier across intra-node peers.
@@ -180,6 +184,10 @@ flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
 flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm);
 flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr);
 flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
+
+#ifdef __cplusplus
+}
+#endif
 
 // Clean up IPC peer pointer table on comm.
 // Must be called after homoComm destroy.

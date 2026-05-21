@@ -1,4 +1,5 @@
 #include "deviceapi_test.hpp"
+#include <stdlib.h>
 
 // Static member definitions
 flagcxHandlerGroup_t DeviceApiTest::handler = nullptr;
