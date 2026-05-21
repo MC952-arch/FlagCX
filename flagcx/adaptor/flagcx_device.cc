@@ -13,6 +13,7 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
+#include "alloc.h" // flagcxCalloc
 #include "flagcx_kernel.h"
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
@@ -431,7 +432,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   if (flagcxParamSignalHostEnable() == 0) {
     // ── IPC device memory path (default) ─────────────────────────────────
-    // Allocate device memory, exchange IPC handles, build peer ptr array.
+    // Always allocate fresh barrier state per DevComm.
     void *barrierFlags = nullptr;
     FLAGCXCHECK(deviceAdaptor->deviceMalloc(&barrierFlags, barrierSize,
                                             flagcxMemDevice, NULL));
@@ -919,23 +920,30 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     }
   }
 
-  // IPC barrier cleanup — mark ipcTable entry as unused.
-  // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
-  // (after vendor comm destroy) to avoid implicit device synchronization
-  // deadlock.
+  // ── IPC slot: immediate full cleanup ──────────────────────────────────
+  // Close IPC handles and free slot arrays. After this the slot is fully
+  // empty and reusable by the next buildIpcPeerPointers call.
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
-    comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
+    struct flagcxIpcTableEntry *e = &comm->ipcTable[devComm->barrierIpcIndex];
+    if (e->hostPeerPtrs) {
+      for (int i = 0; i < e->nPeers; i++) {
+        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr)
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
+      }
+      free(e->hostPeerPtrs);
+      e->hostPeerPtrs = nullptr;
+    }
+    if (e->devPeerPtrs) {
+      deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, NULL);
+      e->devPeerPtrs = nullptr;
+    }
+    e->basePtr = nullptr;
+    e->nPeers = 0;
+    e->inUse = false;
   }
-  // IPC path: localBarrierFlags is device-allocated (tracked via ipcTable).
-  // shm path: localBarrierFlags is a device VA alias of localBarrierShmPtr;
-  //   do NOT free it — the CPU mapping is freed below via shmHostUnregister.
-  if (devComm->localBarrierShmPtr == nullptr && devComm->localBarrierFlags &&
-      devComm->barrierIpcIndex < 0) {
-    // Standalone device allocation (not tracked via ipcTable): free directly.
-    flagcxCommDeferFree(comm, devComm->localBarrierFlags, flagcxMemDevice);
-  }
-  // flagcxShm path cleanup: unregister and close all shm mappings.
+
+  // ── shm path cleanup: unregister and close all shm mappings ───────────
   if (devComm->localBarrierShmPtr) {
     shmHostUnregister(devComm->localBarrierShmPtr);
     if (devComm->myShmHandle)
@@ -958,7 +966,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxCommDeferFree(comm, devComm->barrierDevPeerPtrsRaw, flagcxMemDevice);
   }
 
-  // Clear heteroComm->devComm + deregister signal buffer
+  // ── MR deregistration: immediate ─────────────────────────────────────
   if (comm != nullptr && comm->heteroComm != nullptr &&
       comm->heteroComm->devCommHandle == devComm) {
     if (devComm->signalBuffer) {
@@ -966,27 +974,60 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     }
     comm->heteroComm->devCommHandle = nullptr;
   }
-
-  // One-sided Default cleanup
-  if (devComm->signalBuffer) {
-    flagcxMemType_t sigMt =
-        flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
-    flagcxCommDeferFree(comm, devComm->signalBuffer, sigMt);
-  }
-  if (devComm->shadowBuffer) {
-    flagcxCommDeferFree(comm, devComm->shadowBuffer, flagcxMemDevice);
-  }
-  if (devComm->counterBuffer) {
-    flagcxCommDeferFree(comm, devComm->counterBuffer, flagcxMemHost);
-  }
   if (devComm->putValueStagingBuffer) {
     flagcxOneSideStagingDeregister(comm);
-    flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
 
-  // Epoch buffer cleanup
-  if (devComm->epochBuffer) {
-    flagcxCommDeferFree(comm, devComm->epochBuffer, flagcxMemDevice);
+  // ── Stash buffers into deferred queue ─────────────────────────────────
+  // These buffers cannot be freed immediately because peers may still hold
+  // IPC mappings to localBarrierFlags (peer writes via IPC). They are
+  // drained at flagcxCommDestroy time when all peers are guaranteed done.
+  if (comm != nullptr) {
+    // Emergency drain if queue is full (should never happen in practice)
+    if (comm->deferredBufferCount >= FLAGCX_MAX_DEFERRED_BUFFER_HANDLES) {
+      WARN("flagcxDevCommDestroy: deferred buffer queue full (%d), "
+           "draining now",
+           FLAGCX_MAX_DEFERRED_BUFFER_HANDLES);
+      while (!flagcxIntruQueueEmpty(&comm->deferredBufferQueue)) {
+        struct flagcxDevCommBufferHandle *h =
+            flagcxIntruQueueDequeue(&comm->deferredBufferQueue);
+        if (h->localBarrierFlags)
+          deviceAdaptor->deviceFree(h->localBarrierFlags, flagcxMemDevice,
+                                    NULL);
+        if (h->epochBuffer)
+          deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
+        if (h->signalBuffer)
+          deviceAdaptor->deviceFree(h->signalBuffer,
+                                    (flagcxMemType_t)h->signalMemType, NULL);
+        if (h->shadowBuffer)
+          deviceAdaptor->deviceFree(h->shadowBuffer, flagcxMemDevice, NULL);
+        if (h->counterBuffer)
+          deviceAdaptor->deviceFree(h->counterBuffer, flagcxMemHost, NULL);
+        if (h->putValueStagingBuffer)
+          deviceAdaptor->deviceFree(h->putValueStagingBuffer, flagcxMemHost,
+                                    NULL);
+        free(h);
+      }
+      comm->deferredBufferCount = 0;
+    }
+
+    struct flagcxDevCommBufferHandle *bufHandle = nullptr;
+    FLAGCXCHECK(flagcxCalloc(&bufHandle, 1));
+    // IPC path: localBarrierFlags is device-allocated.
+    // shm path: localBarrierFlags is a device VA alias of localBarrierShmPtr;
+    //   already freed above via shmHostUnregister — do NOT stash it.
+    if (devComm->localBarrierShmPtr == nullptr)
+      bufHandle->localBarrierFlags = devComm->localBarrierFlags;
+    bufHandle->epochBuffer = devComm->epochBuffer;
+    bufHandle->signalBuffer = devComm->signalBuffer;
+    bufHandle->shadowBuffer = devComm->shadowBuffer;
+    bufHandle->counterBuffer = devComm->counterBuffer;
+    bufHandle->putValueStagingBuffer = devComm->putValueStagingBuffer;
+    bufHandle->signalMemType =
+        flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
+    bufHandle->next = nullptr;
+    flagcxIntruQueueEnqueue(&comm->deferredBufferQueue, bufHandle);
+    comm->deferredBufferCount++;
   }
 
   // Device pointer cache cleanup
@@ -1339,6 +1380,31 @@ flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm) {
     }
   }
   comm->deferredFreeCount = 0;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommDrainDeferredBuffers(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+  while (!flagcxIntruQueueEmpty(&comm->deferredBufferQueue)) {
+    struct flagcxDevCommBufferHandle *h =
+        flagcxIntruQueueDequeue(&comm->deferredBufferQueue);
+    if (h->localBarrierFlags)
+      deviceAdaptor->deviceFree(h->localBarrierFlags, flagcxMemDevice, NULL);
+    if (h->epochBuffer)
+      deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
+    if (h->signalBuffer)
+      deviceAdaptor->deviceFree(h->signalBuffer,
+                                (flagcxMemType_t)h->signalMemType, NULL);
+    if (h->shadowBuffer)
+      deviceAdaptor->deviceFree(h->shadowBuffer, flagcxMemDevice, NULL);
+    if (h->counterBuffer)
+      deviceAdaptor->deviceFree(h->counterBuffer, flagcxMemHost, NULL);
+    if (h->putValueStagingBuffer)
+      deviceAdaptor->deviceFree(h->putValueStagingBuffer, flagcxMemHost, NULL);
+    free(h);
+  }
+  comm->deferredBufferCount = 0;
   return flagcxSuccess;
 }
 

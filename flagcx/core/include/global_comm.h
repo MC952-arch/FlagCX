@@ -34,6 +34,25 @@ struct flagcxDeferredFree {
   int memType; // flagcxMemDevice, flagcxMemHost, etc.
 };
 
+// Deferred DevComm buffer handle — buffers that cannot be freed immediately
+// in flagcxDevCommDestroy because peers may still hold IPC mappings to them.
+// Drained at flagcxCommDestroy time.
+#define FLAGCX_MAX_DEFERRED_BUFFER_HANDLES 64
+
+struct flagcxDevCommBufferHandle {
+  void *localBarrierFlags;     // flagcxMemDevice — peers write via IPC
+  void *epochBuffer;           // flagcxMemDevice
+  void *signalBuffer;          // flagcxMemHost or flagcxMemDevice (GDR)
+  void *shadowBuffer;          // flagcxMemDevice
+  void *counterBuffer;         // flagcxMemHost
+  void *putValueStagingBuffer; // flagcxMemHost
+  int signalMemType;           // flagcxMemHost or flagcxMemDevice
+  struct flagcxDevCommBufferHandle *next; // intrusive queue link
+};
+
+template <typename T, T *T::*next>
+struct flagcxIntruQueue;
+
 /* Opaque handle to flagcxHeteroComm */
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -92,6 +111,13 @@ struct flagcxComm {
 
   // IPC peer pointer table — deferred cleanup
   struct flagcxIpcTableEntry ipcTable[FLAGCX_MAX_IPC_ENTRIES];
+
+  // Deferred DevComm buffer queue — buffers stashed here during
+  // flagcxDevCommDestroy, drained at flagcxCommDestroy.
+  struct flagcxIntruQueue<struct flagcxDevCommBufferHandle,
+                          &flagcxDevCommBufferHandle::next>
+      deferredBufferQueue;
+  int deferredBufferCount;
 
   // Deferred device/host-pinned memory free list
   struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];

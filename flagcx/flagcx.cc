@@ -1524,6 +1524,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homoInterComm = NULL;
   (*comm)->c2cSchedule = NULL;
   (*comm)->devCommState = NULL;
+  flagcxIntruQueueConstruct(&(*comm)->deferredBufferQueue);
+  (*comm)->deferredBufferCount = 0;
 
   struct bootstrapState *state = NULL;
   FLAGCXCHECK(flagcxCalloc(&state, 1));
@@ -1968,6 +1970,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+
+  // Drain deferred DevComm buffer queue.
+  FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));
 
   // Drain deferred device/host-pinned memory frees,
   // collected during DevComm/DevMem cleanup.

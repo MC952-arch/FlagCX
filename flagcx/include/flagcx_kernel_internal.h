@@ -197,6 +197,10 @@ flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm);
 void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
 flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
 
+// Drain deferred DevComm buffer queue (localBarrierFlags, epoch, signal, etc.).
+// Called at flagcxCommDestroy time when all peers are guaranteed done.
+flagcxResult_t flagcxCommDrainDeferredBuffers(flagcxComm_t comm);
+
 // Release data buffer resources (MR, network connections, handle arrays).
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm);
 
