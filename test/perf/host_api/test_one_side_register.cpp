@@ -92,9 +92,8 @@ int main(int argc, char *argv[]) {
   uint64_t splitMask = args.getSplitMask();
   MPI_Comm splitComm;
 
-  flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxDeviceHandleInit(&devHandle);
 
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
@@ -102,7 +101,7 @@ int main(int argc, char *argv[]) {
   if (totalProcs != 2) {
     if (proc == 0)
       printf("test_multi_comm_put requires exactly 2 MPI processes.\n");
-    flagcxHandleFree(handler);
+    flagcxDeviceHandleFree(devHandle);
     MPI_Finalize();
     return 0;
   }
@@ -114,30 +113,25 @@ int main(int argc, char *argv[]) {
   const int senderRank = 0;
   const int receiverRank = 1;
 
-  flagcxUniqueId_t uid1 = NULL;
-  flagcxCalloc(&uid1, 1);
+  flagcxUniqueId uid1;
   if (proc == 0)
     flagcxGetUniqueId(&uid1);
-  MPI_Bcast((void *)uid1, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uid1, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
   flagcxComm_t comm1 = NULL;
-  fatal(flagcxCommInitRank(&comm1, totalProcs, uid1, proc),
+  fatal(flagcxCommInitRank(&comm1, totalProcs, &uid1, proc),
         "flagcxCommInitRank (comm1) failed", proc);
 
-  flagcxUniqueId_t uid2 = NULL;
-  flagcxCalloc(&uid2, 1);
+  flagcxUniqueId uid2;
   if (proc == 0)
     flagcxGetUniqueId(&uid2);
-  MPI_Bcast((void *)uid2, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uid2, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
   flagcxComm_t comm2 = NULL;
-  fatal(flagcxCommInitRank(&comm2, totalProcs, uid2, proc),
+  fatal(flagcxCommInitRank(&comm2, totalProcs, &uid2, proc),
         "flagcxCommInitRank (comm2) failed", proc);
-
-  free(uid1);
-  free(uid2);
 
   if (proc == 0)
     printf("[test] comm1=%p  comm2=%p\n", (void *)comm1, (void *)comm2);
@@ -320,7 +314,7 @@ cleanup_no_onesided:
 
   flagcxCommDestroy(comm1);
   flagcxCommDestroy(comm2);
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
   MPI_Finalize();
   return 0;

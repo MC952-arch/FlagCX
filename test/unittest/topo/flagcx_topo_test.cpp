@@ -6,9 +6,8 @@ void FlagCXTopoTest::SetUp() {
   std::cout << "rank = " << rank << "; nranks = " << nranks << std::endl;
 
   // initialize flagcx handles
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandleInit(&devHandle);
+  flagcxUniqueId uniqueId;
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);
@@ -17,7 +16,7 @@ void FlagCXTopoTest::SetUp() {
   if (rank == 0)
     flagcxGetUniqueId(&uniqueId);
   std::cout << "finished getting uniqueId" << std::endl;
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -28,8 +27,7 @@ void FlagCXTopoTest::SetUp() {
 }
 
 void FlagCXTopoTest::TearDown() {
-  flagcxComm_t &comm = handler->comm;
   flagcxCommDestroy(comm);
 
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 }

@@ -6,10 +6,8 @@ void FlagCXCollTest::SetUp() {
   std::cout << "rank = " << rank << "; nranks = " << nranks << std::endl;
 
   // initialize flagcx handles
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandleInit(&devHandle);
+  flagcxUniqueId uniqueId;
   sendbuff = nullptr;
   recvbuff = nullptr;
   hostsendbuff = nullptr;
@@ -24,12 +22,12 @@ void FlagCXCollTest::SetUp() {
   // Create and broadcast uniqueId
   if (rank == 0)
     flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Create comm and stream
-  flagcxCommInitRank(&comm, nranks, uniqueId, rank);
+  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   devHandle->streamCreate(&stream);
 
   // allocate data and set inital value
@@ -43,11 +41,9 @@ void FlagCXCollTest::SetUp() {
 
 void FlagCXCollTest::TearDown() {
   // destroy comm
-  flagcxComm_t &comm = handler->comm;
   flagcxCommDestroy(comm);
 
   // destroy stream
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
   devHandle->streamDestroy(stream);
 
   // free data
@@ -57,7 +53,7 @@ void FlagCXCollTest::TearDown() {
   devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
 
   // free handles
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
   FlagCXTest::TearDown();
 }

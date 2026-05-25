@@ -234,15 +234,13 @@ protected:
   static constexpr int kServerGpuIdx = 1;
 
   void SetUp() override {
-    ASSERT_EQ(flagcxHandleInit(&handler), flagcxSuccess);
-    devHandle = handler->devHandle;
+    ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
     ASSERT_NE(devHandle, nullptr);
 
     int numDevices = 0;
     ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
     if (numDevices <= kServerGpuIdx) {
-      flagcxHandleFree(handler);
-      handler = nullptr;
+      flagcxDeviceHandleFree(devHandle);
       devHandle = nullptr;
       GTEST_SKIP() << "At least 2 GPU devices are required";
     }
@@ -273,8 +271,7 @@ protected:
         devHandle->streamDestroy(clientStream);
         clientStream = nullptr;
       }
-      flagcxHandleFree(handler);
-      handler = nullptr;
+      flagcxDeviceHandleFree(devHandle);
       devHandle = nullptr;
       GTEST_SKIP()
           << "Unable to create FlagCX P2P engines; likely no IB-capable device";
@@ -308,9 +305,8 @@ protected:
       devHandle->streamDestroy(clientStream);
       clientStream = nullptr;
     }
-    if (handler != nullptr) {
-      flagcxHandleFree(handler);
-      handler = nullptr;
+    if (devHandle != nullptr) {
+      flagcxDeviceHandleFree(devHandle);
       devHandle = nullptr;
     }
   }
@@ -398,8 +394,8 @@ protected:
     ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
   }
 
-  flagcxHandlerGroup_t handler = nullptr;
   flagcxDeviceHandle_t devHandle = nullptr;
+  flagcxComm_t comm = nullptr;
   flagcxStream_t clientStream = nullptr;
   flagcxStream_t serverStream = nullptr;
   FlagcxP2pEngine *serverEngine = nullptr;

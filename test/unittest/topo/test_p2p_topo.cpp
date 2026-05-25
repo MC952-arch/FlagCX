@@ -19,7 +19,7 @@ class P2pTopoTest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Initialize device adaptor (sets global deviceAdaptor)
-    flagcxHandleInit(&handler);
+    flagcxDeviceHandleInit(&devHandle);
 
     netAdaptor = &flagcxNetIbP2p;
     ASSERT_EQ(netAdaptor->init(), flagcxSuccess)
@@ -32,9 +32,10 @@ protected:
               << " devices)" << std::endl;
   }
 
-  void TearDown() override { flagcxHandleFree(handler); }
+  void TearDown() override { flagcxDeviceHandleFree(devHandle); }
 
-  flagcxHandlerGroup_t handler = nullptr;
+  flagcxDeviceHandle_t devHandle = nullptr;
+  flagcxComm_t comm = nullptr;
   struct flagcxNetAdaptor *netAdaptor = nullptr;
 };
 

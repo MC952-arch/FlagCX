@@ -32,11 +32,10 @@
 // ===========================================================================
 
 int main(int argc, char *argv[]) {
-  flagcxHandlerGroup_t handler;
-  FLAGCXCHECK(flagcxHandleInit(&handler));
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
+  flagcxComm_t comm;
+  flagcxUniqueId uniqueId;
 
   int worldSize = 1, worldRank = 0;
   int totalProcs = 1, proc = 0;
@@ -52,10 +51,10 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0)
     FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
@@ -358,7 +357,7 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(regBuff));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
-  FLAGCXCHECK(flagcxHandleFree(handler));
+  FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();
   return globalPass ? 0 : 1;

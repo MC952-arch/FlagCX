@@ -36,11 +36,10 @@ int main(int argc, char *argv[]) {
   assert(stepFactor > 1 && "Step factor must be > 1 to avoid infinite loop "
                            "when increasing message size");
 
-  flagcxHandlerGroup_t handler;
-  FLAGCXCHECK(flagcxHandleInit(&handler));
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
+  FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
+  flagcxUniqueId uniqueId;
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -55,10 +54,10 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0)
     FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
   // Create device communicator for custom kernel usage
   flagcxDevComm_t devComm = nullptr;
@@ -219,7 +218,7 @@ int main(int argc, char *argv[]) {
   free(hostbuff);
 
   FLAGCXCHECK(flagcxCommDestroy(comm));
-  FLAGCXCHECK(flagcxHandleFree(handler));
+  FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();
   return 0;

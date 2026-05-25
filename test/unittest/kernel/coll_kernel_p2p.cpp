@@ -13,8 +13,6 @@
 #include <iostream>
 
 TEST_F(FlagCXKernelTest, DISABLED_TwoSidedAlltoAll) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   size_t countPerPeer = count / nranks;
 
@@ -76,8 +74,6 @@ TEST_F(FlagCXKernelTest, DISABLED_TwoSidedAlltoAll) {
 }
 
 TEST_F(FlagCXKernelTest, DISABLED_OneSidedAlltoAll) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   size_t countPerPeer = count / nranks;
 

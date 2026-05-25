@@ -26,9 +26,8 @@ struct PerfContext {
   int localRegister;
 
   // FlagCX handles
-  flagcxHandlerGroup_t handler;
-  flagcxComm_t comm;              // alias for handler->comm
-  flagcxDeviceHandle_t devHandle; // alias for handler->devHandle
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
 
   // MPI info
   int color;
@@ -72,7 +71,7 @@ using PerfRootPostIterFn = void (*)(PerfContext &ctx, size_t size, size_t count,
 void perfSetup(PerfContext &ctx, int argc, char **argv,
                PerfBufSizeFn bufSizeFn = nullptr);
 
-// Free all buffers, destroy comm/stream, free handler, MPI_Finalize.
+// Free all buffers, destroy comm/stream, free devHandle, MPI_Finalize.
 void perfTeardown(PerfContext &ctx);
 
 // Run warmup iterations for large and small message sizes.

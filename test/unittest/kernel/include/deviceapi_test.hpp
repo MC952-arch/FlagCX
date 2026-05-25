@@ -13,7 +13,7 @@ protected:
   void SetUp() override;
   void TearDown() override {}
 
-  static flagcxHandlerGroup_t handler;
+  static flagcxDeviceHandle_t devHandle;
   static flagcxComm_t comm;
   static flagcxStream_t stream;
   static void *devBuff;

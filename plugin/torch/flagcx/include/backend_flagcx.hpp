@@ -33,14 +33,14 @@ class flagcxWork : public Work {
 
 public:
   flagcxWork(OpType opType, flagcxStream_t stream = nullptr,
-             flagcxDeviceHandle_t handler = nullptr,
+             flagcxDeviceHandle_t devHandle = nullptr,
              c10::intrusive_ptr<c10::ivalue::Future> future =
                  nullptr, // future of the output
              int deviceId = 0)
       : Work(-1, // rank, only used by recvAnySource, irrelevant in this
                  // implementation
              opType),
-        stream_(stream), handler_(handler), future_(std::move(future)),
+        stream_(stream), devHandle_(devHandle), future_(std::move(future)),
         deviceId_(deviceId), isBarrierOp_(false) {
 #ifdef USE_NVIDIA_ADAPTOR
     event_ = std::make_unique<flagcxCudaEvent>();
@@ -75,7 +75,7 @@ public:
 
 private:
   flagcxStream_t stream_;
-  flagcxDeviceHandle_t handler_;
+  flagcxDeviceHandle_t devHandle_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   int deviceId_;
   bool isBarrierOp_;
@@ -280,7 +280,8 @@ protected:
   uint64_t activeGroupCounter_;
   std::unordered_map<int, flagcxStream_t> flagcxStreams_;
   std::unordered_map<int, std::unique_ptr<flagcxEvent>> flagcxEvents_;
-  flagcxHandlerGroup_t handler_ = nullptr;
+  flagcxDeviceHandle_t devHandle_ = nullptr;
+  flagcxComm_t comm_ = nullptr;
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
   const c10::intrusive_ptr<Options> options_;

@@ -174,6 +174,17 @@ struct flagcxDeviceHandle {
 };
 typedef struct flagcxDeviceHandle *flagcxDeviceHandle_t;
 
+/* Initialize device handle — loads device/CCL adaptor plugins, returns a
+ * populated device handle. Call before flagcxCommInitRank if you need device
+ * operations (setDevice, getDeviceCount, streamCreate, etc.) early.
+ * If not called explicitly, flagcxCommInitRank will load plugins internally. */
+flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle);
+
+/* Free device handle — finalizes device/CCL adaptor plugins. */
+flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle);
+
+/* Deprecated: use flagcxDeviceHandleInit/Free and manage comm/uniqueId
+ * separately */
 struct flagcxHandlerGroup {
   flagcxUniqueId_t uniqueId;
   flagcxComm_t comm;
@@ -181,9 +192,10 @@ struct flagcxHandlerGroup {
 };
 typedef struct flagcxHandlerGroup *flagcxHandlerGroup_t;
 
-/* Init and free FlagCX handls including flagcxComm_t, flagcxStream_t */
+/* Deprecated: use flagcxDeviceHandleInit instead */
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 
+/* Deprecated: use flagcxDeviceHandleFree instead */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* User buffer registration functions. The actual allocated size might
@@ -224,8 +236,9 @@ flagcxResult_t flagcxGetVersion(int *version);
 
 /* Generates an Id to be used in flagcxCommInitRank. flagcxGetUniqueId should be
  * called once and the Id should be distributed to all ranks in the
- * communicator before calling flagcxCommInitRank. */
-flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t *uniqueId);
+ * communicator before calling flagcxCommInitRank.
+ * The caller must provide a valid pointer to a flagcxUniqueId struct. */
+flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 
 /* Creates a new communicator (multi thread/process version).
  * rank must be between 0 and nranks-1 and unique within a communicator clique.

@@ -19,11 +19,10 @@ int main(int argc, char *argv[]) {
   uint64_t splitMask = args.getSplitMask();
   int localRegister = args.getLocalRegister();
 
-  flagcxHandlerGroup_t handler;
-  FLAGCXCHECK(flagcxHandleInit(&handler));
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
+  FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
+  flagcxUniqueId uniqueId;
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -38,10 +37,10 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0)
     FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
@@ -323,7 +322,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
   free(hello);
-  FLAGCXCHECK(flagcxHandleFree(handler));
+  FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();
   return 0;

@@ -5,8 +5,6 @@
 #include <vector>
 
 TEST_F(FlagCXCollTest, Broadcast) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   // Only root (rank 0) initializes sendbuff; other ranks leave it zeroed
   // so stale data would be detected if broadcast fails.

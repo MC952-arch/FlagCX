@@ -13,8 +13,6 @@
 #define NUM_BASELINE_ENTRIES 1000
 
 TEST_F(FlagCXCollTest, AllReduce) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -61,8 +59,6 @@ TEST_F(FlagCXCollTest, AllReduce) {
 }
 
 TEST_F(FlagCXCollTest, AllGather) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -107,8 +103,6 @@ TEST_F(FlagCXCollTest, AllGather) {
 }
 
 TEST_F(FlagCXCollTest, ReduceScatter) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -151,8 +145,6 @@ TEST_F(FlagCXCollTest, ReduceScatter) {
 }
 
 TEST_F(FlagCXCollTest, Reduce) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -195,8 +187,6 @@ TEST_F(FlagCXCollTest, Reduce) {
 }
 
 TEST_F(FlagCXCollTest, Gather) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -241,8 +231,6 @@ TEST_F(FlagCXCollTest, Gather) {
 }
 
 TEST_F(FlagCXCollTest, Scatter) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   if (rank == 0) {
     for (size_t i = 0; i < count; i++) {
@@ -285,8 +273,6 @@ TEST_F(FlagCXCollTest, Scatter) {
 }
 
 TEST_F(FlagCXCollTest, Broadcast) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -327,11 +313,10 @@ TEST_F(FlagCXCollTest, Broadcast) {
 }
 
 TEST_F(FlagCXTopoTest, TopoDetection) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
+  flagcxUniqueId uniqueId;
 
   std::cout << "executing flagcxCommInitRank" << std::endl;
-  auto result = flagcxCommInitRank(&comm, nranks, uniqueId, rank);
+  auto result = flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   EXPECT_EQ(result, flagcxSuccess);
 }
 
@@ -339,8 +324,6 @@ TEST_F(FlagCXTopoTest, TopoDetection) {
 // Intra-node AllReduce: each rank fills with (rank+1), verify sum
 // ---------------------------------------------------------------------------
 TEST_F(FlagCXKernelTest, IntraAllReduce) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   // Allocate a separate buffer for the kernel (aligned with
   // test_kernel_intranode -R 0)
@@ -402,8 +385,6 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
 // Inter-node AlltoAll: two-sided send/recv via FIFO
 // ---------------------------------------------------------------------------
 TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   // count per peer
   size_t countPerPeer = count / nranks;
@@ -472,8 +453,6 @@ TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
 // Inter-node one-sided AlltoAll: put + waitSignal + flush
 // ---------------------------------------------------------------------------
 TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   size_t countPerPeer = count / nranks;
 

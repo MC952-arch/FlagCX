@@ -15,10 +15,8 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.splitMask = ctx.args->getSplitMask();
   ctx.localRegister = ctx.args->getLocalRegister();
 
-  // Initialize FlagCX handles
-  flagcxHandleInit(&ctx.handler);
-  ctx.comm = ctx.handler->comm;
-  ctx.devHandle = ctx.handler->devHandle;
+  // Initialize FlagCX device handle
+  flagcxDeviceHandleInit(&ctx.devHandle);
 
   // Initialize MPI environment
   ctx.color = 0;
@@ -39,16 +37,15 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.devHandle->setDevice(ctx.worldRank % nGpu);
 
   // Create and broadcast uniqueId
-  flagcxUniqueId_t &uniqueId = ctx.handler->uniqueId;
+  flagcxUniqueId uniqueId;
   if (ctx.proc == 0)
     flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             ctx.splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Initialize communicator
-  flagcxCommInitRank(&ctx.handler->comm, ctx.totalProcs, uniqueId, ctx.proc);
-  ctx.comm = ctx.handler->comm;
+  flagcxCommInitRank(&ctx.comm, ctx.totalProcs, &uniqueId, ctx.proc);
 
   // Create stream
   ctx.devHandle->streamCreate(&ctx.stream);
@@ -95,7 +92,7 @@ void perfTeardown(PerfContext &ctx) {
   free(ctx.hello);
   ctx.devHandle->streamDestroy(ctx.stream);
   flagcxCommDestroy(ctx.comm);
-  flagcxHandleFree(ctx.handler);
+  flagcxDeviceHandleFree(ctx.devHandle);
   delete ctx.args;
 
   MPI_Finalize();

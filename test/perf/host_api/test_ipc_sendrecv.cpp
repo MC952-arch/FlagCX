@@ -19,9 +19,8 @@ int main(int argc, char *argv[]) {
   uint64_t splitMask = args.getSplitMask();
   // int localRegister = args.getLocalRegister();
 
-  flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxDeviceHandleInit(&devHandle);
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -184,7 +183,7 @@ int main(int argc, char *argv[]) {
   // }
   free(hello);
   devHandle->streamDestroy(stream);
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
   MPI_Finalize();
   return 0;

@@ -9,8 +9,6 @@
 #include <iostream>
 
 TEST_F(FlagCXCollTest, AlltoAll) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   size_t countPerRank = count / nranks;
 

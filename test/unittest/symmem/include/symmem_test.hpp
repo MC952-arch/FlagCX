@@ -19,7 +19,7 @@ protected:
 
   bool hasHeteroComm() const;
 
-  static flagcxHandlerGroup_t handler;
+  static flagcxDeviceHandle_t devHandle;
   static flagcxComm_t comm;
   static flagcxStream_t stream;
   static void *devBuff;

@@ -6,10 +6,8 @@ void FlagCXKernelTest::SetUp() {
   FlagCXTest::SetUp();
 
   // initialize flagcx handles
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandleInit(&devHandle);
+  flagcxUniqueId uniqueId;
   sendbuff = nullptr;
   recvbuff = nullptr;
   hostsendbuff = nullptr;
@@ -24,12 +22,12 @@ void FlagCXKernelTest::SetUp() {
   // Create and broadcast uniqueId
   if (rank == 0)
     flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Create comm and stream
-  flagcxCommInitRank(&comm, nranks, uniqueId, rank);
+  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   devHandle->streamCreate(&stream);
 
   // allocate device buffers
@@ -44,8 +42,6 @@ void FlagCXKernelTest::SetUp() {
 }
 
 void FlagCXKernelTest::TearDown() {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   // Destroy stream first (sync any pending work)
   devHandle->streamDestroy(stream);
@@ -62,7 +58,7 @@ void FlagCXKernelTest::TearDown() {
   free(hostrecvbuff);
 
   // free handles
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
   FlagCXTest::TearDown();
 }

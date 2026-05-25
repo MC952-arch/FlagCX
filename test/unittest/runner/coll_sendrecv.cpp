@@ -9,8 +9,6 @@
 #include <iostream>
 
 TEST_F(FlagCXCollTest, SendRecv) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   int sendPeer = (rank + 1) % nranks;
   int recvPeer = (rank - 1 + nranks) % nranks;

@@ -6,8 +6,6 @@
 #include <vector>
 
 TEST_F(FlagCXCollTest, Scatter) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   if (rank == 0) {
     for (size_t i = 0; i < count; i++) {

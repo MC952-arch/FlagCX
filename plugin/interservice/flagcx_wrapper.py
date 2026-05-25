@@ -21,7 +21,6 @@ flagcxMemType_t = ctypes.c_int
 flagcxEventType_t = ctypes.c_int
 flagcxIpcMemHandle_t = ctypes.c_void_p
 
-flagcxHandlerGroup_t = ctypes.c_void_p
 flagcxComm_t = ctypes.c_void_p
 flagcxEvent_t = ctypes.c_void_p
 flagcxStream_t = ctypes.c_void_p
@@ -212,15 +211,15 @@ class Function:
 
 class FLAGCXLibrary:
     exported_functions = [
-        Function("flagcxHandleInit", flagcxResult_t,
-                [ctypes.POINTER(flagcxHandlerGroup_t)]),
-        Function("flagcxHandleFree", flagcxResult_t,
-                [flagcxHandlerGroup_t]),
+        Function("flagcxDeviceHandleInit", flagcxResult_t,
+                [ctypes.POINTER(flagcxDeviceHandle_t)]),
+        Function("flagcxDeviceHandleFree", flagcxResult_t,
+                [flagcxDeviceHandle_t]),
         Function("flagcxGetErrorString", ctypes.c_char_p, [flagcxResult_t]),
         Function("flagcxGetVersion", flagcxResult_t,
                  [ctypes.POINTER(ctypes.c_int)]),
         Function("flagcxGetUniqueId", flagcxResult_t,
-                [ctypes.POINTER(ctypes.POINTER(flagcxUniqueId))]),
+                [ctypes.POINTER(flagcxUniqueId)]),
         # Note that flagcxComm_t is a pointer type, so the first argument
         # is a pointer to a pointer
         Function("flagcxCommInitRank", flagcxResult_t, [
@@ -432,13 +431,13 @@ class FLAGCXLibrary:
             FLAGCXLibrary.path_to_dict_mapping[so_file] = _funcs
         self._funcs = FLAGCXLibrary.path_to_dict_mapping[so_file]
 
-        # init flagcx handler to call device-related apis
-        self.handler = flagcxHandlerGroup_t()
-        self.FLAGCX_CHECK(self._funcs["flagcxHandleInit"](ctypes.byref(self.handler)))
-    
+        # init flagcx device handle to call device-related apis
+        self.devHandle = flagcxDeviceHandle_t()
+        self.FLAGCX_CHECK(self._funcs["flagcxDeviceHandleInit"](ctypes.byref(self.devHandle)))
+
     def __del__(self):
-        # free flagcx handler
-        self.FLAGCX_CHECK(self._funcs["flagcxHandleFree"](self.handler))
+        # free flagcx device handle
+        self.FLAGCX_CHECK(self._funcs["flagcxDeviceHandleFree"](self.devHandle))
 
     def flagcxGetErrorString(self, result: flagcxResult_t) -> str:
         return self._funcs["flagcxGetErrorString"](result).decode("utf-8")
@@ -459,7 +458,7 @@ class FLAGCXLibrary:
         return f"{major}.{minor}.{patch}"
 
     def flagcxGetUniqueId(self) -> flagcxUniqueId:
-        unique_id = ctypes.POINTER(flagcxUniqueId)()
+        unique_id = flagcxUniqueId()
         self.FLAGCX_CHECK(self._funcs["flagcxGetUniqueId"](
             ctypes.byref(unique_id)))
         return unique_id
@@ -715,26 +714,26 @@ class FLAGCXLibrary:
 
     def adaptor_stream_create(self):
         new_stream = flagcxStream_t()
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCreate(ctypes.byref(new_stream)))
+        self.FLAGCX_CHECK(self.devHandle.contents.streamCreate(ctypes.byref(new_stream)))
         return new_stream
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
         raw_stream = getattr(old_stream, 'musa_stream', old_stream.cuda_stream)
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
+        self.FLAGCX_CHECK(self.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 
     def adaptor_stream_free(self, stream):
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamFree(stream))
+        self.FLAGCX_CHECK(self.devHandle.contents.streamFree(stream))
 
     def adaptor_stream_destroy(self, stream):
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamDestroy(stream))
+        self.FLAGCX_CHECK(self.devHandle.contents.streamDestroy(stream))
     
     def sync_stream(self, stream):
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamSynchronize(stream))
+        self.FLAGCX_CHECK(self.devHandle.contents.streamSynchronize(stream))
 
 
 __all__ = [
     "FLAGCXLibrary", "flagcxDataTypeEnum", "flagcxRedOpTypeEnum", "flagcxUniqueId",
-    "flagcxHandlerGroup_t", "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
+    "flagcxDeviceHandle_t", "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
 ]

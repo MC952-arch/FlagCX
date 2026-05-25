@@ -2,7 +2,7 @@
 #include <cstring>
 
 // Static member definitions
-flagcxHandlerGroup_t SymMemTest::handler = nullptr;
+flagcxDeviceHandle_t SymMemTest::devHandle = nullptr;
 flagcxComm_t SymMemTest::comm = nullptr;
 flagcxStream_t SymMemTest::stream = nullptr;
 void *SymMemTest::devBuff = nullptr;
@@ -19,24 +19,20 @@ void SymMemTest::SetUpTestSuite() {
   size = SYMMEM_TEST_SIZE;
   count = size / sizeof(float);
 
-  flagcxHandleInit(&handler);
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandleInit(&devHandle);
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);
   devHandle->setDevice(rank % numDevices);
 
-  flagcxUniqueId_t uniqueId = nullptr;
+  flagcxUniqueId uniqueId;
   if (rank == 0)
     flagcxGetUniqueId(&uniqueId);
-  else
-    uniqueId = (flagcxUniqueId_t)calloc(1, sizeof(flagcxUniqueId));
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, nranks, uniqueId, rank);
-  free(uniqueId);
+  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
 
   devHandle->streamCreate(&stream);
 
@@ -48,10 +44,10 @@ void SymMemTest::SetUpTestSuite() {
 }
 
 void SymMemTest::TearDownTestSuite() {
-  if (handler == nullptr)
+  if (devHandle == nullptr)
     return;
 
-  handler->devHandle->streamDestroy(stream);
+  devHandle->streamDestroy(stream);
 
   if (comm)
     flagcxCommDestroy(comm);
@@ -60,9 +56,9 @@ void SymMemTest::TearDownTestSuite() {
   flagcxMemFree(devBuff2);
   free(hostBuff);
 
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
-  handler = nullptr;
+  devHandle = nullptr;
   comm = nullptr;
   stream = nullptr;
   devBuff = nullptr;

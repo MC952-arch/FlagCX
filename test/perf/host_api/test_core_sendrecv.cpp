@@ -16,10 +16,9 @@ int main(int argc, char *argv[]) {
   int printBuffer = args.isPrintBuffer();
   uint64_t splitMask = args.getSplitMask();
 
-  flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxDeviceHandleInit(&devHandle);
+  flagcxUniqueId uniqueId;
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -33,12 +32,12 @@ int main(int argc, char *argv[]) {
   devHandle->setDevice(worldRank % nGpu);
 
   if (proc == 0)
-    flagcxHeteroGetUniqueId(uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+    flagcxHeteroGetUniqueId(&uniqueId);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
   flagcxHeteroComm_t comm;
-  flagcxHeteroCommInitRank(&comm, totalProcs, *uniqueId, proc);
+  flagcxHeteroCommInitRank(&comm, totalProcs, uniqueId, proc);
 
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
@@ -213,7 +212,7 @@ int main(int argc, char *argv[]) {
   free(testdata2);
   flagcxHeteroCommDestroy(comm);
   devHandle->streamDestroy(stream);
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
   MPI_Finalize();
   return 0;

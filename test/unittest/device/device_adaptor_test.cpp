@@ -14,8 +14,7 @@ class DeviceAdaptorTest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Initialize flagcx handle
-    flagcxHandleInit(&handler);
-    devHandle = handler->devHandle;
+    flagcxDeviceHandleInit(&devHandle);
 
     // Get device count and set device 0
     int numDevices = 0;
@@ -34,11 +33,11 @@ protected:
     if (stream) {
       devHandle->streamDestroy(stream);
     }
-    flagcxHandleFree(handler);
+    flagcxDeviceHandleFree(devHandle);
   }
 
-  flagcxHandlerGroup_t handler = nullptr;
   flagcxDeviceHandle_t devHandle = nullptr;
+  flagcxComm_t comm = nullptr;
   flagcxStream_t stream = nullptr;
 
   static constexpr size_t TEST_SIZE = 1024 * sizeof(float); // 1K floats

@@ -38,9 +38,9 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   // Each rank fills its own region with (localRank + 1) as a float pattern
   float fillValue = (float)(localRank + 1);
   std::vector<float> pattern(count, fillValue);
-  handler->devHandle->deviceMemcpy(devBuff, pattern.data(), size,
-                                   flagcxMemcpyHostToDevice, stream);
-  handler->devHandle->streamSynchronize(stream);
+  devHandle->deviceMemcpy(devBuff, pattern.data(), size,
+                          flagcxMemcpyHostToDevice, stream);
+  devHandle->streamSynchronize(stream);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -50,11 +50,11 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   // Stage through local device memory: peer VMM -> devBuff2 -> host
   std::vector<float> readBack(count, 0.0f);
-  handler->devHandle->deviceMemcpy(devBuff2, peerRegion, size,
-                                   flagcxMemcpyDeviceToDevice, stream);
-  handler->devHandle->deviceMemcpy(readBack.data(), devBuff2, size,
-                                   flagcxMemcpyDeviceToHost, stream);
-  handler->devHandle->streamSynchronize(stream);
+  devHandle->deviceMemcpy(devBuff2, peerRegion, size,
+                          flagcxMemcpyDeviceToDevice, stream);
+  devHandle->deviceMemcpy(readBack.data(), devBuff2, size,
+                          flagcxMemcpyDeviceToHost, stream);
+  devHandle->streamSynchronize(stream);
 
   // Verify: peer's region should contain (peerLocalRank + 1)
   float expected = (float)(peerLocalRank + 1);
@@ -106,8 +106,8 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   size_t allocSize = d->allocSize;
 
   // Zero out own region first
-  handler->devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
-  handler->devHandle->streamSynchronize(stream);
+  devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
+  devHandle->streamSynchronize(stream);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -120,11 +120,11 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 
   float writeValue = (float)(localRank + 100);
   std::vector<float> pattern(count, writeValue);
-  handler->devHandle->deviceMemcpy(devBuff2, pattern.data(), size,
-                                   flagcxMemcpyHostToDevice, stream);
-  handler->devHandle->deviceMemcpy(targetRegion, devBuff2, size,
-                                   flagcxMemcpyDeviceToDevice, stream);
-  handler->devHandle->streamSynchronize(stream);
+  devHandle->deviceMemcpy(devBuff2, pattern.data(), size,
+                          flagcxMemcpyHostToDevice, stream);
+  devHandle->deviceMemcpy(targetRegion, devBuff2, size,
+                          flagcxMemcpyDeviceToDevice, stream);
+  devHandle->streamSynchronize(stream);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -133,9 +133,9 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   float expected = (float)(writerLocalRank + 100);
 
   std::vector<float> readBack(count, 0.0f);
-  handler->devHandle->deviceMemcpy(readBack.data(), devBuff, size,
-                                   flagcxMemcpyDeviceToHost, stream);
-  handler->devHandle->streamSynchronize(stream);
+  devHandle->deviceMemcpy(readBack.data(), devBuff, size,
+                          flagcxMemcpyDeviceToHost, stream);
+  devHandle->streamSynchronize(stream);
 
   int mismatches = 0;
   for (size_t i = 0; i < count && mismatches < 10; i++) {

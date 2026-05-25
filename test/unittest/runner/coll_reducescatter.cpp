@@ -5,8 +5,6 @@
 #include <vector>
 
 TEST_F(FlagCXCollTest, ReduceScatter) {
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = rank * 1000.0f + (i % 10);

@@ -14,7 +14,8 @@ protected:
 
   void Run();
 
-  flagcxHandlerGroup_t handler;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
   flagcxStream_t stream;
   void *sendbuff;
   void *recvbuff;

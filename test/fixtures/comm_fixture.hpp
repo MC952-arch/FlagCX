@@ -17,21 +17,20 @@ protected:
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);
 
-    flagcxHandleInit(&handler);
-    flagcxUniqueId_t &uniqueId = handler->uniqueId;
-    flagcxDeviceHandle_t &devHandle = handler->devHandle;
+    flagcxDeviceHandleInit(&devHandle);
 
     int numDevices;
     devHandle->getDeviceCount(&numDevices);
     devHandle->setDevice(rank % numDevices);
 
+    flagcxUniqueId uniqueId;
     if (rank == 0)
       flagcxGetUniqueId(&uniqueId);
-    MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+    MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
               MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
 
-    flagcxCommInitRank(&handler->comm, nranks, uniqueId, rank);
+    flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
     devHandle->streamCreate(&stream);
 
     size = COMM_FIXTURE_SIZE;
@@ -46,9 +45,7 @@ protected:
   }
 
   void TearDown() override {
-    flagcxDeviceHandle_t &devHandle = handler->devHandle;
-
-    flagcxCommDestroy(handler->comm);
+    flagcxCommDestroy(comm);
     devHandle->streamDestroy(stream);
 
     devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
@@ -56,12 +53,13 @@ protected:
     devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
     devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
 
-    flagcxHandleFree(handler);
+    flagcxDeviceHandleFree(devHandle);
   }
 
   int rank;
   int nranks;
-  flagcxHandlerGroup_t handler;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
   flagcxStream_t stream;
   void *sendbuff;
   void *recvbuff;

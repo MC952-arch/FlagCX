@@ -54,8 +54,8 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
     hostInit[i] = (float)(worldRank + 1);
   }
 
-  ASSERT_EQ(handler->devHandle->deviceMemcpy(regBuff, hostInit, size,
-                                             flagcxMemcpyHostToDevice, nullptr),
+  ASSERT_EQ(devHandle->deviceMemcpy(regBuff, hostInit, size,
+                                    flagcxMemcpyHostToDevice, nullptr),
             flagcxSuccess);
   delete[] hostInit;
 
@@ -65,15 +65,15 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   EXPECT_EQ(
       flagcxIntraAllReduce(devMem, floatCount, flagcxFloat, devComm, stream),
       flagcxSuccess);
-  ASSERT_EQ(handler->devHandle->streamSynchronize(stream), flagcxSuccess);
+  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Verify: expected value = sum(1..nRanks) = nRanks*(nRanks+1)/2
   float expected = (float)(worldSize * (worldSize + 1)) / 2.0f;
   float *hostResult = new float[floatCount];
-  ASSERT_EQ(handler->devHandle->deviceMemcpy(hostResult, regBuff, size,
-                                             flagcxMemcpyDeviceToHost, nullptr),
+  ASSERT_EQ(devHandle->deviceMemcpy(hostResult, regBuff, size,
+                                    flagcxMemcpyDeviceToHost, nullptr),
             flagcxSuccess);
 
   for (size_t i = 0; i < floatCount; i++) {

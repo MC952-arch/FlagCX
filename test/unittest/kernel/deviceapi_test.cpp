@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 // Static member definitions
-flagcxHandlerGroup_t DeviceApiTest::handler = nullptr;
+flagcxDeviceHandle_t DeviceApiTest::devHandle = nullptr;
 flagcxComm_t DeviceApiTest::comm = nullptr;
 flagcxStream_t DeviceApiTest::stream = nullptr;
 void *DeviceApiTest::devBuff = nullptr;
@@ -15,45 +15,40 @@ void DeviceApiTest::SetUpTestSuite() {
 
   size = DEVICEAPI_TEST_SIZE;
 
-  ASSERT_EQ(flagcxHandleInit(&handler), flagcxSuccess);
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
 
   int numDevices;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_EQ(devHandle->setDevice(rank % numDevices), flagcxSuccess);
 
-  flagcxUniqueId_t uniqueId = nullptr;
+  flagcxUniqueId uniqueId;
   if (rank == 0) {
     ASSERT_EQ(flagcxGetUniqueId(&uniqueId), flagcxSuccess);
-  } else {
-    uniqueId = (flagcxUniqueId_t)calloc(1, sizeof(flagcxUniqueId));
-    ASSERT_NE(uniqueId, nullptr);
   }
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  ASSERT_EQ(flagcxCommInitRank(&comm, nranks, uniqueId, rank), flagcxSuccess);
-  free(uniqueId);
+  ASSERT_EQ(flagcxCommInitRank(&comm, nranks, &uniqueId, rank), flagcxSuccess);
 
   ASSERT_EQ(devHandle->streamCreate(&stream), flagcxSuccess);
   ASSERT_EQ(flagcxMemAlloc(&devBuff, size), flagcxSuccess);
 }
 
 void DeviceApiTest::TearDownTestSuite() {
-  if (handler == nullptr)
+  if (devHandle == nullptr)
     return;
 
-  handler->devHandle->streamDestroy(stream);
+  devHandle->streamDestroy(stream);
 
   if (comm)
     flagcxCommDestroy(comm);
 
   flagcxMemFree(devBuff);
 
-  flagcxHandleFree(handler);
+  flagcxDeviceHandleFree(devHandle);
 
-  handler = nullptr;
+  devHandle = nullptr;
   comm = nullptr;
   stream = nullptr;
   devBuff = nullptr;

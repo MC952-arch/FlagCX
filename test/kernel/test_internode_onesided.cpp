@@ -37,11 +37,10 @@ int main(int argc, char *argv[]) {
   uint64_t splitMask = args.getSplitMask();
   int localRegister = args.getLocalRegister();
 
-  flagcxHandlerGroup_t handler;
-  FLAGCXCHECK(flagcxHandleInit(&handler));
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
+  FLAGCXCHECK(flagcxDeviceHandleInit(&devHandle));
+  flagcxUniqueId uniqueId;
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -56,16 +55,16 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0)
     FLAGCXCHECK(flagcxGetUniqueId(&uniqueId));
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, uniqueId, proc));
+  FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
   if (totalProcs < 2) {
     if (proc == 0)
       printf("test_kernel_internode_onesided requires at least 2 ranks.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
-    FLAGCXCHECK(flagcxHandleFree(handler));
+    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
     return 0;
   }
@@ -74,7 +73,7 @@ int main(int argc, char *argv[]) {
     if (proc == 0)
       printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
-    FLAGCXCHECK(flagcxHandleFree(handler));
+    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
     return 0;
   }
@@ -270,7 +269,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
   free(hostBuff);
-  FLAGCXCHECK(flagcxHandleFree(handler));
+  FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();
   return 0;

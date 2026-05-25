@@ -42,11 +42,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  flagcxHandlerGroup_t handler;
-  flagcxHandleInit(&handler);
-  flagcxUniqueId_t &uniqueId = handler->uniqueId;
-  flagcxComm_t &comm = handler->comm;
-  flagcxDeviceHandle_t &devHandle = handler->devHandle;
+  flagcxDeviceHandle_t devHandle;
+  flagcxComm_t comm;
+  flagcxDeviceHandleInit(&devHandle);
+  flagcxUniqueId uniqueId;
 
   int color = 0;
   int worldSize = 1, worldRank = 0;
@@ -61,10 +60,10 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0)
     flagcxGetUniqueId(&uniqueId);
-  MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
+  MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
+  flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc);
 
   int isHomo = 0;
   flagcxIsHomoComm(comm, &isHomo);
@@ -74,7 +73,7 @@ int main(int argc, char *argv[]) {
              "(isHomo=%d).\n",
              isHomo);
     flagcxCommDestroy(comm);
-    flagcxHandleFree(handler);
+    flagcxDeviceHandleFree(devHandle);
     MPI_Finalize();
     return 0;
   }
@@ -141,7 +140,7 @@ int main(int argc, char *argv[]) {
     flagcxMemFree(dataWindow);
     flagcxMemFree(signalWindow);
     flagcxCommDestroy(comm);
-    flagcxHandleFree(handler);
+    flagcxDeviceHandleFree(devHandle);
     MPI_Finalize();
     return 0;
   }
@@ -301,7 +300,8 @@ int main(int argc, char *argv[]) {
   }
 
   fatal(flagcxCommDestroy(comm), "flagcxCommDestroy failed", proc);
-  fatal(flagcxHandleFree(handler), "flagcxHandleFree failed", proc);
+  fatal(flagcxDeviceHandleFree(devHandle), "flagcxDeviceHandleFree failed",
+        proc);
 
   MPI_Finalize();
   return 0;
