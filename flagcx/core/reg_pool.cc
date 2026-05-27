@@ -4,8 +4,6 @@
 #include <cstdio>
 #include <cstdlib>
 
-#define DEFAULT_REGPOOL_SIZE 16
-
 flagcxRegPool::flagcxRegPool() { pageSize = sysconf(_SC_PAGESIZE); }
 
 flagcxRegPool::~flagcxRegPool() {
@@ -24,7 +22,7 @@ inline void flagcxRegPool::getPagedAddr(void *data, size_t length,
 flagcxResult_t
 flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
                             struct flagcxProxyConnector *proxyConn) {
-  if (comm == nullptr || reg == nullptr) {
+  if (reg == nullptr) {
     return flagcxSuccess;
   }
   for (auto &handlePair : reg->handles) {
@@ -43,7 +41,7 @@ flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
 flagcxResult_t
 flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
                             struct flagcxProxyConnector *proxyConn) {
-  if (comm == nullptr || reg == nullptr) {
+  if (reg == nullptr) {
     return flagcxSuccess;
   }
   for (auto &handlePair : reg->handles) {
@@ -65,17 +63,19 @@ flagcxResult_t flagcxRegPool::removeRegItemNetHandles(void *comm,
     return flagcxSuccess;
   }
 
-  for (auto it = reg->handles.begin(); it != reg->handles.end();) {
-    if (it->first.handle) {
-      FLAGCXCHECK(flagcxNetDeregisterBuffer(comm, it->first.proxyConn,
-                                            it->first.handle));
-      it->first.handle = nullptr;
-      it->first.proxyConn = nullptr;
+  for (size_t i = 0; i < reg->handles.size();) {
+    auto &entry = reg->handles[i];
+    if (entry.first.handle) {
+      FLAGCXCHECK(flagcxNetDeregisterBuffer(comm, entry.first.proxyConn,
+                                            entry.first.handle));
+      entry.first.handle = nullptr;
+      entry.first.proxyConn = nullptr;
     }
-    if (it->first.handle == nullptr && it->second.handle == nullptr) {
-      it = reg->handles.erase(it);
+    if (entry.first.handle == nullptr && entry.second.handle == nullptr) {
+      reg->handles[i] = reg->handles.back();
+      reg->handles.pop_back();
     } else {
-      ++it;
+      ++i;
     }
   }
   return flagcxSuccess;
@@ -87,18 +87,20 @@ flagcxResult_t flagcxRegPool::removeRegItemP2pHandles(void *comm,
     return flagcxSuccess;
   }
 
-  for (auto it = reg->handles.begin(); it != reg->handles.end();) {
-    if (it->second.handle) {
-      flagcxIpcRegInfo *ipcInfo = (flagcxIpcRegInfo *)it->second.handle;
+  for (size_t i = 0; i < reg->handles.size();) {
+    auto &entry = reg->handles[i];
+    if (entry.second.handle) {
+      flagcxIpcRegInfo *ipcInfo = (flagcxIpcRegInfo *)entry.second.handle;
       FLAGCXCHECK(flagcxP2pDeregisterBuffer(
           reinterpret_cast<flagcxHeteroComm *>(comm), ipcInfo));
-      it->second.handle = nullptr;
-      it->second.proxyConn = nullptr;
+      entry.second.handle = nullptr;
+      entry.second.proxyConn = nullptr;
     }
-    if (it->first.handle == nullptr && it->second.handle == nullptr) {
-      it = reg->handles.erase(it);
+    if (entry.first.handle == nullptr && entry.second.handle == nullptr) {
+      reg->handles[i] = reg->handles.back();
+      reg->handles.pop_back();
     } else {
-      ++it;
+      ++i;
     }
   }
   return flagcxSuccess;
@@ -108,13 +110,11 @@ flagcxResult_t flagcxRegPool::removeAllP2pHandles(void *comm) {
   if (comm == nullptr) {
     return flagcxSuccess;
   }
-  uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
-  auto poolIt = regPool.find(commKey);
-  if (poolIt == regPool.end()) {
-    return flagcxSuccess;
-  }
-  for (auto &reg : poolIt->second) {
-    FLAGCXCHECK(removeRegItemP2pHandles(comm, &reg));
+  // Iterate over all items in the global pool and remove p2p handles
+  // associated with this comm
+  auto &globalPool = regPool[GLOBAL_POOL_KEY];
+  for (auto &pair : globalPool) {
+    FLAGCXCHECK(removeRegItemP2pHandles(comm, &pair.second));
   }
   return flagcxSuccess;
 }
@@ -131,83 +131,134 @@ void flagcxRegPool::mapRegItemPages(uintptr_t commKey, flagcxRegItem *reg) {
 
 flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
                                              size_t length) {
-  if (comm == nullptr || data == nullptr || length == 0)
+  if (data == nullptr || length == 0)
     return flagcxSuccess;
 
-  uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
+  uintptr_t commKey =
+      comm ? reinterpret_cast<uintptr_t>(comm) : GLOBAL_POOL_KEY;
   uintptr_t beginAddr, endAddr;
   getPagedAddr(data, length, &beginAddr, &endAddr);
 
-  auto &regCommPool = regPool[commKey];
-  for (auto it = regCommPool.begin(); it != regCommPool.end(); it++) {
-    // found a place to insert
-    if (beginAddr < it->beginAddr) {
-      flagcxRegItem reg{beginAddr, endAddr, 1, {}};
-      auto &insertedReg = *regCommPool.insert(it, std::move(reg));
-      mapRegItemPages(commKey, &insertedReg);
-      return flagcxSuccess;
-      // already inserted, just increase ref count
-    } else if (it->beginAddr <= beginAddr && it->endAddr >= endAddr) {
-      it->refCount++;
-      return flagcxSuccess;
+  // Always check/insert into the global pool (single source of truth)
+  auto &globalPool = regPool[GLOBAL_POOL_KEY];
+  auto it = globalPool.find(beginAddr);
+  if (it != globalPool.end()) {
+    // Already registered: bump refCount
+    it->second.refCount++;
+    // If comm is non-null, ensure it's mapped in the comm-specific regMap
+    if (comm != nullptr) {
+      mapRegItemPages(commKey, &it->second);
     }
+    return flagcxSuccess;
   }
 
-  // not found, insert to the end
+  // Not found: create new item in global pool
   flagcxRegItem reg{beginAddr, endAddr, 1, {}};
-  regCommPool.push_back(std::move(reg));
-  mapRegItemPages(commKey, &regCommPool.back());
+  auto [inserted, success] = globalPool.emplace(beginAddr, std::move(reg));
+  flagcxRegItem *regPtr = &inserted->second;
+
+  // Map pages in global regMap
+  mapRegItemPages(GLOBAL_POOL_KEY, regPtr);
+
+  // If comm is non-null, also map pages in comm-specific regMap
+  if (comm != nullptr) {
+    mapRegItemPages(commKey, regPtr);
+  }
+
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxRegPool::deregisterBuffer(void *comm, void *handle) {
-  if (comm == nullptr || handle == nullptr) {
+  if (handle == nullptr) {
     return flagcxSuccess;
   }
 
-  uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
+  uintptr_t commKey =
+      comm ? reinterpret_cast<uintptr_t>(comm) : GLOBAL_POOL_KEY;
   flagcxRegItem *reg = (flagcxRegItem *)handle;
 
-  auto &regCommPool = regPool[commKey];
-  for (auto it = regCommPool.begin(); it != regCommPool.end(); it++) {
-    if (&(*it) == reg) {
-      it->refCount--;
-      if (it->refCount > 0) {
-        return flagcxSuccess;
+  // Find the item in the global pool
+  auto &globalPool = regPool[GLOBAL_POOL_KEY];
+  auto poolIt = globalPool.find(reg->beginAddr);
+  if (poolIt == globalPool.end() || &poolIt->second != reg) {
+    WARN("Could not find the given handle in regPool");
+    return flagcxInvalidUsage;
+  }
+
+  reg->refCount--;
+
+  // Remove comm-specific page mappings
+  if (comm != nullptr && commKey != GLOBAL_POOL_KEY) {
+    auto mapIt = regMap.find(commKey);
+    if (mapIt != regMap.end()) {
+      auto &commMap = mapIt->second;
+      for (uintptr_t addr = reg->beginAddr; addr < reg->endAddr;
+           addr += pageSize) {
+        commMap.erase(addr);
       }
-      FLAGCXCHECK(removeRegItemNetHandles(comm, reg));
-      FLAGCXCHECK(removeRegItemP2pHandles(comm, reg));
-      auto &regCommMap = regMap[commKey];
-      for (auto mapIter = regCommMap.begin(); mapIter != regCommMap.end();) {
-        if (mapIter->second == reg) {
-          mapIter = regCommMap.erase(mapIter);
-        } else {
-          mapIter++;
-        }
+      if (commMap.empty()) {
+        regMap.erase(mapIt);
       }
-      regCommPool.erase(it);
-      return flagcxSuccess;
     }
   }
 
-  WARN("Could not find the given handle in regPool");
-  return flagcxInvalidUsage;
+  if (reg->refCount > 0) {
+    return flagcxSuccess;
+  }
+
+  // refCount == 0: full cleanup
+  FLAGCXCHECK(removeRegItemNetHandles(comm, reg));
+  FLAGCXCHECK(removeRegItemP2pHandles(comm, reg));
+
+  // Remove from global regMap
+  auto globalMapIt = regMap.find(GLOBAL_POOL_KEY);
+  if (globalMapIt != regMap.end()) {
+    auto &globalMap = globalMapIt->second;
+    for (uintptr_t addr = reg->beginAddr; addr < reg->endAddr;
+         addr += pageSize) {
+      globalMap.erase(addr);
+    }
+    if (globalMap.empty()) {
+      regMap.erase(globalMapIt);
+    }
+  }
+
+  // Remove from global pool (this destroys the flagcxRegItem)
+  globalPool.erase(poolIt);
+  return flagcxSuccess;
 }
 
-std::map<uintptr_t, std::map<uintptr_t, flagcxRegItem *>> &
+std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, flagcxRegItem *>> &
 flagcxRegPool::getGlobalMap() {
   return regMap;
 }
 
 flagcxRegItem *flagcxRegPool::getItem(const void *comm, void *data) {
-  uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
   uintptr_t beginAddr, endAddr;
   getPagedAddr(data, 0, &beginAddr, &endAddr);
-  auto it = regMap[commKey].find(beginAddr);
-  if (it == regMap[commKey].end()) {
-    return nullptr;
+
+  // If comm is non-null, check comm-specific regMap first
+  if (comm != nullptr) {
+    uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
+    auto mapIt = regMap.find(commKey);
+    if (mapIt != regMap.end()) {
+      auto it = mapIt->second.find(beginAddr);
+      if (it != mapIt->second.end()) {
+        return it->second;
+      }
+    }
   }
-  return it->second;
+
+  // Fall through to global pool
+  auto globalMapIt = regMap.find(GLOBAL_POOL_KEY);
+  if (globalMapIt != regMap.end()) {
+    auto it = globalMapIt->second.find(beginAddr);
+    if (it != globalMapIt->second.end()) {
+      return it->second;
+    }
+  }
+
+  return nullptr;
 }
 
 void flagcxRegPool::dump() {
@@ -218,11 +269,10 @@ void flagcxRegPool::dump() {
     for (auto &p : c.second) {
       printf("beginAddr(%lu) -> regItem[%lu,%lu,%d]\n", p.first,
              p.second->beginAddr, p.second->endAddr, p.second->refCount);
-      auto it = p.second->handles.begin();
-      for (; it != p.second->handles.end(); it++) {
-        printf("handlePtr(%p) -> netHandle[%p,%p] p2pHandle[%p,%p]\n", &(*it),
-               it->first.handle, it->first.proxyConn, it->second.handle,
-               it->second.proxyConn);
+      for (auto &h : p.second->handles) {
+        printf("handlePtr(%p) -> netHandle[%p,%p] p2pHandle[%p,%p]\n", &h,
+               h.first.handle, h.first.proxyConn, h.second.handle,
+               h.second.proxyConn);
       }
     }
     printf("==comm(%lu)==\n", c.first);

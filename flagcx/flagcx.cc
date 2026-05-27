@@ -998,7 +998,9 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
 
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm != nullptr) {
+    FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  }
 
   if (buff == NULL || size == 0) {
     WARN("Invalid buffer or size for buffer registration.");
@@ -1007,12 +1009,21 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   // Step 1: Register in globalRegPool (both paths)
   // Key: heteroComm if available (p2p/net downstream use it), else homoComm
-  void *regKey =
-      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  // If comm is NULL, register in global pool only (GLOBAL_POOL_KEY)
+  void *regKey = nullptr;
+  if (comm != nullptr) {
+    regKey =
+        comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  }
   globalRegPool.registerBuffer(regKey, buff, size);
   flagcxRegItem *regItem = globalRegPool.getItem(regKey, buff);
 
   *handle = reinterpret_cast<void *>(regItem);
+
+  // Null comm: pool-only registration, skip backend steps
+  if (comm == nullptr) {
+    return flagcxSuccess;
+  }
 
   // Re-registration: backend handle + IPC handle already set up
   if (regItem->refCount > 1) {
@@ -1082,13 +1093,15 @@ fail:
 }
 
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm != nullptr) {
+    FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  }
   if (handle == nullptr)
     return flagcxSuccess;
   flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
 
   // Backend-specific deregistration (homo path only, last ref only)
-  if (regItem->refCount == 1) {
+  if (comm != nullptr && regItem->refCount == 1) {
     if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
       cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(
           comm->homoComm, regItem->homoRegHandle);
@@ -1096,8 +1109,11 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   }
 
   // Clean up globalRegPool (both paths)
-  void *regKey =
-      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  void *regKey = nullptr;
+  if (comm != nullptr) {
+    regKey =
+        comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  }
   globalRegPool.deregisterBuffer(regKey, handle);
   return flagcxSuccess;
 }

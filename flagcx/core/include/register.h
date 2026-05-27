@@ -3,7 +3,7 @@
 
 #include "core.h"
 #include "device.h"
-#include <list>
+#include <vector>
 
 #define FLAGCX_IPC_HANDLE_SIZE 64
 
@@ -60,7 +60,7 @@ struct flagcxRegItem {
   uintptr_t beginAddr = 0;
   uintptr_t endAddr = 0;
   int refCount = 1;
-  std::list<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
+  std::vector<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
   void *homoRegHandle = nullptr;          // backend CCL handle (homo path only)
   flagcxIpcHandleData ipcHandleData = {}; // IPC handle bytes (both paths)
 };
