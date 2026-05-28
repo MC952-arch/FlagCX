@@ -31,8 +31,8 @@ flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
       return flagcxSuccess;
     }
   }
-  flagcxRegNetHandle netHandle{handle, proxyConn};
-  flagcxRegP2pHandle p2pHandle{nullptr, nullptr};
+  flagcxRegNetHandle netHandle{handle, proxyConn, comm};
+  flagcxRegP2pHandle p2pHandle{nullptr, nullptr, nullptr};
   reg->handles.push_back(std::make_pair(netHandle, p2pHandle));
 
   return flagcxSuccess;
@@ -50,8 +50,8 @@ flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
       return flagcxSuccess;
     }
   }
-  flagcxRegNetHandle netHandle{nullptr, nullptr};
-  flagcxRegP2pHandle p2pHandle{handle, proxyConn};
+  flagcxRegNetHandle netHandle{nullptr, nullptr, nullptr};
+  flagcxRegP2pHandle p2pHandle{handle, proxyConn, comm};
   reg->handles.push_back(std::make_pair(netHandle, p2pHandle));
 
   return flagcxSuccess;
@@ -66,10 +66,11 @@ flagcxResult_t flagcxRegPool::removeRegItemNetHandles(void *comm,
   for (size_t i = 0; i < reg->handles.size();) {
     auto &entry = reg->handles[i];
     if (entry.first.handle) {
-      FLAGCXCHECK(flagcxNetDeregisterBuffer(comm, entry.first.proxyConn,
-                                            entry.first.handle));
+      FLAGCXCHECK(flagcxNetDeregisterBuffer(
+          entry.first.ownerComm, entry.first.proxyConn, entry.first.handle));
       entry.first.handle = nullptr;
       entry.first.proxyConn = nullptr;
+      entry.first.ownerComm = nullptr;
     }
     if (entry.first.handle == nullptr && entry.second.handle == nullptr) {
       reg->handles[i] = reg->handles.back();
@@ -92,9 +93,11 @@ flagcxResult_t flagcxRegPool::removeRegItemP2pHandles(void *comm,
     if (entry.second.handle) {
       flagcxIpcRegInfo *ipcInfo = (flagcxIpcRegInfo *)entry.second.handle;
       FLAGCXCHECK(flagcxP2pDeregisterBuffer(
-          reinterpret_cast<flagcxHeteroComm *>(comm), ipcInfo));
+          reinterpret_cast<flagcxHeteroComm *>(entry.second.ownerComm),
+          ipcInfo));
       entry.second.handle = nullptr;
       entry.second.proxyConn = nullptr;
+      entry.second.ownerComm = nullptr;
     }
     if (entry.first.handle == nullptr && entry.second.handle == nullptr) {
       reg->handles[i] = reg->handles.back();
@@ -114,7 +117,7 @@ flagcxResult_t flagcxRegPool::removeAllP2pHandles(void *comm) {
   // associated with this comm
   auto &globalPool = regPool[GLOBAL_POOL_KEY];
   for (auto &pair : globalPool) {
-    FLAGCXCHECK(removeRegItemP2pHandles(comm, &pair.second));
+    FLAGCXCHECK(removeRegItemP2pHandles(comm, pair.second.get()));
   }
   return flagcxSuccess;
 }
@@ -144,18 +147,21 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
   auto it = globalPool.find(beginAddr);
   if (it != globalPool.end()) {
     // Already registered: bump refCount
-    it->second.refCount++;
+    it->second->refCount++;
     // If comm is non-null, ensure it's mapped in the comm-specific regMap
     if (comm != nullptr) {
-      mapRegItemPages(commKey, &it->second);
+      mapRegItemPages(commKey, it->second.get());
     }
     return flagcxSuccess;
   }
 
   // Not found: create new item in global pool
-  flagcxRegItem reg{beginAddr, endAddr, 1, {}};
-  auto [inserted, success] = globalPool.emplace(beginAddr, std::move(reg));
-  flagcxRegItem *regPtr = &inserted->second;
+  auto reg = std::make_unique<flagcxRegItem>();
+  reg->beginAddr = beginAddr;
+  reg->endAddr = endAddr;
+  reg->refCount = 1;
+  auto [it2, didInsert] = globalPool.emplace(beginAddr, std::move(reg));
+  flagcxRegItem *regPtr = it2->second.get();
 
   // Map pages in global regMap
   mapRegItemPages(GLOBAL_POOL_KEY, regPtr);
@@ -180,7 +186,7 @@ flagcxResult_t flagcxRegPool::deregisterBuffer(void *comm, void *handle) {
   // Find the item in the global pool
   auto &globalPool = regPool[GLOBAL_POOL_KEY];
   auto poolIt = globalPool.find(reg->beginAddr);
-  if (poolIt == globalPool.end() || &poolIt->second != reg) {
+  if (poolIt == globalPool.end() || poolIt->second.get() != reg) {
     WARN("Could not find the given handle in regPool");
     return flagcxInvalidUsage;
   }

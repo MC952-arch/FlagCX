@@ -3,6 +3,8 @@
 
 #include "core.h"
 #include "device.h"
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #define FLAGCX_IPC_HANDLE_SIZE 64
@@ -28,11 +30,13 @@ struct netRegInfo {
 struct flagcxRegNetHandle {
   void *handle = NULL;
   struct flagcxProxyConnector *proxyConn = NULL;
+  void *ownerComm = NULL; // comm that registered this handle
 };
 
 struct flagcxRegP2pHandle {
   void *handle = NULL;
   struct flagcxProxyConnector *proxyConn = NULL;
+  void *ownerComm = NULL; // comm that registered this handle
 };
 
 struct flagcxIpcImpInfo {
@@ -61,8 +65,10 @@ struct flagcxRegItem {
   uintptr_t endAddr = 0;
   int refCount = 1;
   std::vector<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
-  void *homoRegHandle = nullptr;          // backend CCL handle (homo path only)
-  flagcxIpcHandleData ipcHandleData = {}; // IPC handle bytes (both paths)
+  flagcxIpcHandleData localIpcHandleData =
+      {}; // sender's IPC handle bytes (hetero path)
+  std::unordered_map<uintptr_t, void *>
+      homoRegHandles; // commKey → backend CCL handle
 };
 
 struct flagcxReg {

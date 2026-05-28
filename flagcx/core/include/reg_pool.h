@@ -6,6 +6,7 @@
 #include "flagcx.h"
 #include "net.h"
 #include "register.h"
+#include <memory>
 #include <unistd.h>
 #include <unordered_map>
 
@@ -36,7 +37,8 @@ private:
   void mapRegItemPages(uintptr_t commKey, flagcxRegItem *reg);
   std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, flagcxRegItem *>>
       regMap; // <commPtr, <pageBasePtr, regItemPtr>>
-  std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, flagcxRegItem>>
+  std::unordered_map<
+      uintptr_t, std::unordered_map<uintptr_t, std::unique_ptr<flagcxRegItem>>>
       regPool; // <commPtr, <beginAddr, regItem>> (only GLOBAL_POOL_KEY owns
                // data)
   uintptr_t pageSize;

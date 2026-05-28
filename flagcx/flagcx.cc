@@ -1025,10 +1025,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  // Re-registration: backend handle + IPC handle already set up
-  if (regItem->refCount > 1) {
-    return flagcxSuccess;
-  }
+  uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
 
   flagcxResult_t res = flagcxSuccess;
 
@@ -1037,34 +1034,43 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   // (cudaIpcGetMemHandle is incompatible with ncclMemAlloc VMM buffers)
   // and Step 3 (one-sided MR registration, hetero-only).
   if (useHomoComm(comm) && !useHeteroComm()) {
+    // Re-registration: this comm already completed homo backend init
+    if (regItem->homoRegHandles.count(thisCommKey)) {
+      return flagcxSuccess;
+    }
     void *homoHandle = nullptr;
     res = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
         comm->homoComm, buff, size, &homoHandle);
     if (res != flagcxSuccess)
       goto fail;
-    regItem->homoRegHandle = homoHandle;
+    regItem->homoRegHandles[thisCommKey] = homoHandle;
     return flagcxSuccess;
   }
 
   // Step 2b: Create IPC handle for the buffer (hetero path only)
+  // Write-once: if localIpcHandleData is already populated, skip
   {
-    flagcxIpcMemHandle_t handlePtr = nullptr;
-    size_t ipcSize = 0;
-    res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-    if (res != flagcxSuccess)
-      goto fail;
-    res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
-    if (res != flagcxSuccess) {
+    char zeros[sizeof(flagcxIpcHandleData)] = {};
+    if (memcmp(&regItem->localIpcHandleData, zeros,
+               sizeof(flagcxIpcHandleData)) == 0) {
+      flagcxIpcMemHandle_t handlePtr = nullptr;
+      size_t ipcSize = 0;
+      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+      if (res != flagcxSuccess)
+        goto fail;
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+      if (res != flagcxSuccess) {
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+        goto fail;
+      }
+      if (ipcSize > sizeof(flagcxIpcHandleData)) {
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+        res = flagcxInternalError;
+        goto fail;
+      }
+      memcpy(&regItem->localIpcHandleData, handlePtr, ipcSize);
       deviceAdaptor->ipcMemHandleFree(handlePtr);
-      goto fail;
     }
-    if (ipcSize > sizeof(flagcxIpcHandleData)) {
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
-      res = flagcxInternalError;
-      goto fail;
-    }
-    memcpy(&regItem->ipcHandleData, handlePtr, ipcSize);
-    deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
   // Step 3: One-sided MR registration (hetero path only)
@@ -1081,10 +1087,13 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
 fail:
   // Undo Step 2a
-  if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
-                                                        regItem->homoRegHandle);
-    regItem->homoRegHandle = nullptr;
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    auto it = regItem->homoRegHandles.find(thisCommKey);
+    if (it != regItem->homoRegHandles.end()) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
+                                                          it->second);
+      regItem->homoRegHandles.erase(it);
+    }
   }
   // Undo Step 1
   globalRegPool.deregisterBuffer(regKey, regItem);
@@ -1100,20 +1109,26 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
     return flagcxSuccess;
   flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
 
-  // Backend-specific deregistration (homo path only, last ref only)
-  if (comm != nullptr && regItem->refCount == 1) {
-    if (useHomoComm(comm) && !useHeteroComm() && regItem->homoRegHandle) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(
-          comm->homoComm, regItem->homoRegHandle);
-    }
-  }
-
-  // Clean up globalRegPool (both paths)
   void *regKey = nullptr;
   if (comm != nullptr) {
     regKey =
         comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
   }
+
+  // Backend-specific deregistration (homo path)
+  if (comm != nullptr) {
+    uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
+    if (useHomoComm(comm) && !useHeteroComm()) {
+      auto it = regItem->homoRegHandles.find(thisCommKey);
+      if (it != regItem->homoRegHandles.end()) {
+        cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
+                                                            it->second);
+        regItem->homoRegHandles.erase(it);
+      }
+    }
+  }
+
+  // Clean up globalRegPool (both paths)
   globalRegPool.deregisterBuffer(regKey, handle);
   return flagcxSuccess;
 }
