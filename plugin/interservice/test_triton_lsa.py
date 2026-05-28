@@ -44,6 +44,12 @@ FLAGCX_INCLUDE_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "../../flagcx/include"),
 )
 
+# FlagCX library path for linking
+FLAGCX_LIB_PATH = os.environ.get(
+    "FLAGCX_LIB_PATH",
+    os.path.join(os.path.dirname(__file__), "../../build/lib"),
+)
+
 # ============================================================
 # FlagCX pluggable allocator (wraps flagcxMemAlloc/flagcxMemFree)
 # ============================================================
@@ -70,29 +76,69 @@ void flagcx_free_plug(void* ptr, size_t size, int device, void* stream) {
 }
 """
 
+_allocator = None
+_allocator_wrapper = None
+_mem_pool = None
+_flagcx_allocator_failed_to_compile = False
+
+
+def compile_flagcx_allocator():
+    """Compile the FlagCX allocator extension. Called once, result cached."""
+    global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
+    try:
+        out_dir = tempfile.gettempdir()
+        lib_name = "flagcx_allocator"
+
+        load_inline(
+            name=lib_name,
+            cpp_sources=flagcx_allocator_source,
+            with_cuda=True,
+            extra_ldflags=[f"-L{FLAGCX_LIB_PATH}", "-lflagcx",
+                           f"-Wl,-rpath,{FLAGCX_LIB_PATH}"],
+            verbose=False,
+            is_python_module=False,
+            build_directory=out_dir,
+            extra_include_paths=[FLAGCX_INCLUDE_PATH],
+        )
+
+        _allocator_wrapper = CUDAPluggableAllocator(
+            f"{out_dir}/{lib_name}.so",
+            "flagcx_alloc_plug",
+            "flagcx_free_plug",
+        )
+        _allocator = _allocator_wrapper.allocator()
+    except Exception as e:
+        _flagcx_allocator_failed_to_compile = True
+        print(
+            f"[WARNING] Failed to compile FlagCX memory allocator: {e}\n"
+            f"  Ensure FLAGCX_LIB_PATH ({FLAGCX_LIB_PATH}) contains libflagcx.so\n"
+            f"  and FLAGCX_INCLUDE_PATH ({FLAGCX_INCLUDE_PATH}) contains flagcx.h"
+        )
+
 
 def get_flagcx_mem_pool():
-    """Compile and return a PyTorch MemPool that uses flagcxMemAlloc."""
-    out_dir = tempfile.gettempdir()
-    lib_name = "flagcx_allocator"
+    """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
+    global _mem_pool, _flagcx_allocator_failed_to_compile
+    if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
+        compile_flagcx_allocator()
+        if _allocator is not None:
+            _mem_pool = torch.cuda.MemPool(_allocator)
+    return _mem_pool
 
-    load_inline(
-        name=lib_name,
-        cpp_sources=flagcx_allocator_source,
-        with_cuda=True,
-        extra_ldflags=["-lflagcx"],
-        verbose=False,
-        is_python_module=False,
-        build_directory=out_dir,
-        extra_include_paths=[FLAGCX_INCLUDE_PATH],
-    )
 
-    allocator_wrapper = CUDAPluggableAllocator(
-        f"{out_dir}/{lib_name}.so",
-        "flagcx_alloc_plug",
-        "flagcx_free_plug",
-    )
-    return torch.cuda.MemPool(allocator_wrapper.allocator())
+def _cleanup_flagcx_mem_pool():
+    global _mem_pool
+    _mem_pool = None
+
+
+def _cleanup_flagcx_allocator_wrapper():
+    global _allocator_wrapper
+    _allocator_wrapper = None
+
+
+import atexit
+atexit.register(_cleanup_flagcx_mem_pool)
+atexit.register(_cleanup_flagcx_allocator_wrapper)
 
 
 # ============================================================
@@ -181,6 +227,11 @@ def main():
     buf_size = N * 4  # float32
 
     flagcx_pool = get_flagcx_mem_pool()
+    if flagcx_pool is None:
+        raise RuntimeError(
+            "Failed to initialize FlagCX memory pool. "
+            "Check compilation warnings above."
+        )
     with torch.cuda.use_mem_pool(flagcx_pool):
         buf_tensor = torch.full((N,), float(rank), dtype=torch.float32, device="cuda")
 

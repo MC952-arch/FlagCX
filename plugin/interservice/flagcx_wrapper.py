@@ -435,11 +435,40 @@ class FLAGCXLibrary:
     #  to the corresponding dictionary
     path_to_dict_mapping: Dict[str, Dict[str, Any]] = {}
 
-    def __init__(self, so_file: Optional[str] = None):
+    @staticmethod
+    def _find_default_library() -> str:
+        import os
+        # 1. Check FLAGCX_PATH env var
+        flagcx_path = os.environ.get("FLAGCX_PATH")
+        if flagcx_path:
+            so_path = os.path.join(flagcx_path, "lib", "libflagcx.so")
+            if os.path.isfile(so_path):
+                return so_path
+            raise FileNotFoundError(
+                f"FLAGCX_PATH is set to '{flagcx_path}' but "
+                f"'{so_path}' does not exist. "
+                f"Please build FlagCX or check FLAGCX_PATH."
+            )
+        # 2. Fall back to <repo_root>/build/lib/libflagcx.so
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..")
+        )
+        so_path = os.path.join(repo_root, "build", "lib", "libflagcx.so")
+        if os.path.isfile(so_path):
+            return so_path
+        raise FileNotFoundError(
+            f"Cannot find libflagcx.so. Searched:\n"
+            f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
+            f"  - {so_path} (not found)\n"
+            f"Please set FLAGCX_PATH or build FlagCX first."
+        )
 
+    def __init__(self, so_file: Optional[str] = None):
+        if so_file is None:
+            so_file = FLAGCXLibrary._find_default_library()
 
         try:
-            if so_file not in FLAGCXLibrary.path_to_dict_mapping:
+            if so_file not in FLAGCXLibrary.path_to_library_cache:
                 lib = ctypes.CDLL(so_file)
                 FLAGCXLibrary.path_to_library_cache[so_file] = lib
             self.lib = FLAGCXLibrary.path_to_library_cache[so_file]
