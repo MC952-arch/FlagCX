@@ -7,8 +7,16 @@ wait_for_gpu() {
 
     while true; do
 
-    IFS=$'\n' read -d '' -r -a memory_usage_array <<< "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)"
-    IFS=$'\n' read -d '' -r -a memory_total_array <<< "$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits)"
+    if ! mapfile -t memory_usage_array < <(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits); then
+        echo "nvidia-smi failed, retrying..."
+        sleep 1m
+        continue
+    fi
+    if ! mapfile -t memory_total_array < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits); then
+        echo "nvidia-smi failed, retrying..."
+        sleep 1m
+        continue
+    fi
 
     need_wait=false
 

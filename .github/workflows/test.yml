@@ -47,6 +47,7 @@ jobs:
           make -j$(nproc) USE_NVIDIA=1
 
       - name: Wait for GPU
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX
           source test/script/_gpu_check.sh

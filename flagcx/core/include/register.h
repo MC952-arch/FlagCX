@@ -4,7 +4,6 @@
 #include "core.h"
 #include "device.h"
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #define FLAGCX_IPC_HANDLE_SIZE 64

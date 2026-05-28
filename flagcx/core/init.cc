@@ -465,8 +465,9 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
-  // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
+  // Clean up P2P/Net handles while proxy is still alive and peerSocks valid
   FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
+  FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
   // Stop: send stop + close peerSocks
   FLAGCXCHECK(flagcxProxyStop(comm));
   // Destroy: join thread, free proxy resources

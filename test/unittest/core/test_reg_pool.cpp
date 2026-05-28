@@ -380,3 +380,54 @@ TEST_F(RegPoolTest, LocalIpcHandleData_WriteOnce) {
       memcmp(&item->localIpcHandleData, fakeIpc, sizeof(flagcxIpcHandleData)),
       0);
 }
+
+// =============================================================================
+// 10. Register/Deregister Symmetry (API contract scenarios)
+// =============================================================================
+
+TEST_F(RegPoolTest, RegisterNullComm_DeregisterNullComm_Works) {
+  // Register(nullptr) + Deregister(nullptr) → pool-only, works
+  void *data = alignedAddr(200);
+  ASSERT_EQ(pool->registerBuffer(nullptr, data, pageSize), flagcxSuccess);
+
+  flagcxRegItem *item = pool->getItem(nullptr, data);
+  ASSERT_NE(item, nullptr);
+  EXPECT_EQ(item->refCount, 1);
+
+  ASSERT_EQ(pool->deregisterBuffer(nullptr, item), flagcxSuccess);
+  EXPECT_EQ(pool->getItem(nullptr, data), nullptr);
+}
+
+TEST_F(RegPoolTest, RegisterComm_DeregisterComm_Works) {
+  // Register(comm) + Deregister(comm) → full cleanup, works
+  void *data = alignedAddr(201);
+  void *commA = fakeComm(0xA000);
+  ASSERT_EQ(pool->registerBuffer(commA, data, pageSize), flagcxSuccess);
+
+  flagcxRegItem *item = pool->getItem(commA, data);
+  ASSERT_NE(item, nullptr);
+  EXPECT_EQ(item->refCount, 1);
+
+  ASSERT_EQ(pool->deregisterBuffer(commA, item), flagcxSuccess);
+  EXPECT_EQ(pool->getItem(commA, data), nullptr);
+  EXPECT_EQ(pool->getItem(nullptr, data), nullptr);
+}
+
+TEST_F(RegPoolTest, RegisterComm_DeregisterNullComm_PoolCleanupOnly) {
+  // Register(comm) + Deregister(nullptr) → pool removes item but cannot
+  // clean backend handles. At pool level this succeeds (pool doesn't know
+  // about backend handles). The flagcxCommDeregister layer guards this.
+  void *data = alignedAddr(202);
+  void *commA = fakeComm(0xB000);
+  ASSERT_EQ(pool->registerBuffer(commA, data, pageSize), flagcxSuccess);
+
+  flagcxRegItem *item = pool->getItem(commA, data);
+  ASSERT_NE(item, nullptr);
+
+  // Pool-level deregister with nullptr succeeds (no backend awareness)
+  ASSERT_EQ(pool->deregisterBuffer(nullptr, item), flagcxSuccess);
+  // Item removed from global pool
+  EXPECT_EQ(pool->getItem(nullptr, data), nullptr);
+  // Comm-specific mappings also cleaned up (no dangling pointers)
+  EXPECT_EQ(pool->getItem(commA, data), nullptr);
+}

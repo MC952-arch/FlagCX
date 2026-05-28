@@ -764,10 +764,11 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
   for (int p = 0; p < nPeers; p++) {
     int peerRank = peerRanks[p];
 
-    // Check cache: existing info with handleReady for this peer
+    // Check cache: existing info with handleReady for this peer (this comm
+    // only)
     flagcxIpcRegInfo *existingInfo = NULL;
     for (auto &handlePair : regItem->handles) {
-      if (handlePair.second.handle) {
+      if (handlePair.second.handle && handlePair.second.ownerComm == comm) {
         flagcxIpcRegInfo *info = (flagcxIpcRegInfo *)handlePair.second.handle;
         if (info->peerRank == peerRank) {
           existingInfo = info;

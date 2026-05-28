@@ -430,7 +430,8 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
       peerProxyConn = &peerConn->proxyConn;
       for (auto it = regRecord->handles.begin(); it != regRecord->handles.end();
            it++) {
-        if (it->first.proxyConn == peerProxyConn && it->first.handle) {
+        if (it->first.proxyConn == peerProxyConn && it->first.handle &&
+            it->first.ownerComm == comm) {
           found = true;
           outHandle[p] = it->first.handle;
           *outRegBufFlag = 1;

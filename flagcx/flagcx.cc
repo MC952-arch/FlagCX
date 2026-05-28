@@ -1109,26 +1109,48 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
     return flagcxSuccess;
   flagcxRegItem *regItem = reinterpret_cast<flagcxRegItem *>(handle);
 
-  void *regKey = nullptr;
-  if (comm != nullptr) {
-    regKey =
-        comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+  // Null comm: only valid if no backend handles exist on this item
+  // AND the item is not mapped under any comm-specific key
+  if (comm == nullptr) {
+    if (!regItem->homoRegHandles.empty() || !regItem->handles.empty()) {
+      WARN("flagcxCommDeregister: comm is nullptr but handle has backend "
+           "registrations that require a valid comm to clean up");
+      return flagcxInvalidArgument;
+    }
+    // Check if item is mapped under any non-global commKey
+    auto &globalMap = globalRegPool.getGlobalMap();
+    for (auto &[key, pageMap] : globalMap) {
+      if (key == flagcxRegPool::GLOBAL_POOL_KEY)
+        continue;
+      if (pageMap.find(regItem->beginAddr) != pageMap.end()) {
+        WARN("flagcxCommDeregister: comm is nullptr but handle has "
+             "comm-specific regMap entries that require a valid comm");
+        return flagcxInvalidArgument;
+      }
+    }
+    globalRegPool.deregisterBuffer(nullptr, handle);
+    return flagcxSuccess;
   }
 
+  void *regKey =
+      comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+
   // Backend-specific deregistration (homo path)
-  if (comm != nullptr) {
-    uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
-    if (useHomoComm(comm) && !useHeteroComm()) {
-      auto it = regItem->homoRegHandles.find(thisCommKey);
-      if (it != regItem->homoRegHandles.end()) {
-        cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
-                                                            it->second);
-        regItem->homoRegHandles.erase(it);
-      }
+  uintptr_t thisCommKey = reinterpret_cast<uintptr_t>(regKey);
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    auto it = regItem->homoRegHandles.find(thisCommKey);
+    if (it != regItem->homoRegHandles.end()) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homoComm,
+                                                          it->second);
+      regItem->homoRegHandles.erase(it);
     }
   }
 
-  // Clean up globalRegPool (both paths)
+  // Remove this comm's net/p2p handles from the regItem
+  globalRegPool.removeRegItemNetHandles(regKey, regItem);
+  globalRegPool.removeRegItemP2pHandles(regKey, regItem);
+
+  // Clean up globalRegPool (refCount--, page mappings, item removal at 0)
   globalRegPool.deregisterBuffer(regKey, handle);
   return flagcxSuccess;
 }

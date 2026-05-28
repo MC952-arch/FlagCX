@@ -26,6 +26,7 @@ public:
                               struct flagcxProxyConnector *proxyConn);
   flagcxResult_t removeRegItemP2pHandles(void *comm, flagcxRegItem *reg);
   flagcxResult_t removeAllP2pHandles(void *comm);
+  flagcxResult_t removeAllNetHandles(void *comm);
   flagcxResult_t registerBuffer(void *comm, void *data, size_t length);
   flagcxResult_t deregisterBuffer(void *comm, void *handle);
   std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, flagcxRegItem *>>
