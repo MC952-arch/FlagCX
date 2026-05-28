@@ -488,7 +488,8 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   // Sort by peer asc to issue pair sub-comms in canonical (min,max) order,
   // avoiding the ring-of-pairs deadlock from getOrInitPtpuPairComm handshake.
   // No flagcxGroupStart/End: pair-comm send/recv are already async per-stream,
-  // so serial issue still meets batch_isend_irecv's enqueue-then-wait semantics.
+  // so serial issue still meets batch_isend_irecv's enqueue-then-wait
+  // semantics.
   std::stable_sort(
       ptpuCoalesce_.pendingOps.begin(), ptpuCoalesce_.pendingOps.end(),
       [](const auto &a, const auto &b) { return a.first < b.first; });

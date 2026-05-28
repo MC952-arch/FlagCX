@@ -16,7 +16,6 @@ void FlagCXTopoTest::SetUp() {
   FlagCXTest::SetUp();
 
   flagcxDeviceHandleInit(&devHandle);
-  flagcxUniqueId uniqueId;
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);

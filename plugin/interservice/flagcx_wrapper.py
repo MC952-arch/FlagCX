@@ -485,7 +485,7 @@ class FLAGCXLibrary:
                          rank: int) -> flagcxComm_t:
         comm = flagcxComm_t()
         self.FLAGCX_CHECK(self._funcs["flagcxCommInitRank"](ctypes.byref(comm),
-                                                        world_size, unique_id,
+                                                        world_size, ctypes.byref(unique_id),
                                                         rank))
         return comm
 

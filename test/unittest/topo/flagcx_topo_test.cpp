@@ -7,7 +7,6 @@ void FlagCXTopoTest::SetUp() {
 
   // initialize flagcx handles
   flagcxDeviceHandleInit(&devHandle);
-  flagcxUniqueId uniqueId;
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);
@@ -27,7 +26,8 @@ void FlagCXTopoTest::SetUp() {
 }
 
 void FlagCXTopoTest::TearDown() {
-  flagcxCommDestroy(comm);
-
+  if (comm) {
+    flagcxCommDestroy(comm);
+  }
   flagcxDeviceHandleFree(devHandle);
 }

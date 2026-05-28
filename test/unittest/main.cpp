@@ -313,8 +313,6 @@ TEST_F(FlagCXCollTest, Broadcast) {
 }
 
 TEST_F(FlagCXTopoTest, TopoDetection) {
-  flagcxUniqueId uniqueId;
-
   std::cout << "executing flagcxCommInitRank" << std::endl;
   auto result = flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   EXPECT_EQ(result, flagcxSuccess);

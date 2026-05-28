@@ -7,6 +7,12 @@
 #include "tang.h"
 #include "tang_runtime.h"
 #include <map>
+
+struct flagcxInnerWindow {
+  int winFlags;
+};
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   pcclComm_t base;
 };

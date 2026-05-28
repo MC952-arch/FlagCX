@@ -8,6 +8,7 @@ protected:
   void SetUp() override;
   void TearDown() override;
 
-  flagcxDeviceHandle_t devHandle;
-  flagcxComm_t comm;
+  flagcxDeviceHandle_t devHandle = nullptr;
+  flagcxComm_t comm = nullptr;
+  flagcxUniqueId uniqueId;
 };

@@ -157,6 +157,10 @@ bool useHeteroComm() {
 }
 
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle) {
+  if (devHandle == NULL) {
+    WARN("flagcxDeviceHandleInit: devHandle is NULL");
+    return flagcxInvalidArgument;
+  }
   flagcxResult_t res = flagcxSuccess;
   flagcxDeviceAdaptorPluginInit();
   flagcxCCLAdaptorPluginInit();
@@ -176,9 +180,9 @@ fail:
 }
 
 flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle) {
-  if (devHandle != NULL) {
-    free(devHandle);
-  }
+  if (devHandle == NULL)
+    return flagcxSuccess;
+  free(devHandle);
   flagcxCCLAdaptorPluginFinalize();
   flagcxDeviceAdaptorPluginFinalize();
   return flagcxSuccess;
@@ -1536,6 +1540,10 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     WARN("Invalid rank requested : %d/%d", rank, nranks);
     return flagcxInvalidArgument;
   }
+  if (commId == NULL || comm == NULL) {
+    WARN("flagcxCommInitRank: commId or comm is NULL");
+    return flagcxInvalidArgument;
+  }
 
   // Ensure device/CCL plugins are loaded (idempotent, ref-counted)
   flagcxDeviceAdaptorPluginInit();
@@ -1746,7 +1754,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   INFO(FLAGCX_INIT, "Flagcx USE_TUNER flag set to %d", useTuner);
   if (useTuner) {
     (*comm)->tuner = &internalTuner;
-    (*comm)->commId = commId;
+    FLAGCXCHECK(flagcxCalloc(&(*comm)->commId, 1));
+    memcpy((*comm)->commId, commId, sizeof(flagcxUniqueId));
     (*comm)->uniqueIdData = uniqueIdData;
     (*comm)->tunerInnerComm = NULL;
     (*comm)->isTunningComm = false;
@@ -2030,8 +2039,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Destroy tuner
   if (comm->tuner) {
     comm->tuner->destroy(comm->tunerContext);
-    // Free uniqueIdData
+    // Free uniqueIdData and commId
     free(comm->uniqueIdData);
+    free(comm->commId);
   }
 
   // Finalize net adaptor plugin (dlclose)
