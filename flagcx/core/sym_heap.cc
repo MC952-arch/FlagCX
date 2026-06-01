@@ -48,6 +48,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
   w->vendorBase = nullptr;
   w->defaultBase = d;
   w->isSymmetricDefault = 1;
+  w->winFlags = winFlags;
 
   d->mrIndex = -1;
   d->mrBase = 0;

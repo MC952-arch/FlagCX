@@ -1115,6 +1115,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
             comm->homoComm, buff, size, &(*win)->vendorBase, winFlags);
     if (res == flagcxSuccess) {
+      (*win)->winFlags = winFlags;
       return flagcxSuccess;
     }
     if (res != flagcxNotSupported) {
@@ -1324,13 +1325,16 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
     if (res != flagcxSuccess && res != flagcxNotSupported)
       goto fail;
     if (res == flagcxSuccess) {
+      state->sendStagedWin->winFlags = FLAGCX_WIN_COLL_SYMMETRIC;
       FLAGCXCHECKGOTO(flagcxCalloc(&state->recvStagedWin, 1), res, fail);
       res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
           comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
           &state->recvStagedWin->vendorBase, FLAGCX_WIN_COLL_SYMMETRIC);
       if (res != flagcxSuccess && res != flagcxNotSupported)
         goto fail;
-      if (res != flagcxSuccess) {
+      if (res == flagcxSuccess) {
+        state->recvStagedWin->winFlags = FLAGCX_WIN_COLL_SYMMETRIC;
+      } else {
         free(state->recvStagedWin);
         state->recvStagedWin = nullptr;
       }

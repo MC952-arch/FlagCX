@@ -1131,8 +1131,7 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
     // ---- Window layer: if win provided and valid (vendor path) ----
     if (win != nullptr && !win->isSymmetricDefault) {
       handle->hasWindow = true;
-      handle->isSymmetric = (win->vendorBase && (win->vendorBase->winFlags &
-                                                 FLAGCX_WIN_COLL_SYMMETRIC));
+      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
       handle->winHandle = (void *)win;
     }
   }

@@ -19,6 +19,7 @@ struct flagcxWindow {
   flagcxSymWindow_t
       defaultBase;        // default symmetric-heap state (NULL on vendor path)
   int isSymmetricDefault; // 1 if using default path, 0 if using vendor path
+  int winFlags;           // flags passed at registration time
 };
 
 /* Symmetric window state for the default (non-vendor) path */
