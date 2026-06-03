@@ -71,7 +71,7 @@ if BuildExtension is not None:
 
 setup(
     name="flagcx",
-    version="0.10.0",
+    version="0.13.0",
     ext_modules=ext_modules,
     cmdclass=cmdclass,
     packages=find_packages(),
