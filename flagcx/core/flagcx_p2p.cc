@@ -12,6 +12,7 @@
 #include "flagcx_p2p.h"
 
 #include "adaptor.h"
+#include "bootstrap.h"
 #include "debug.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
@@ -267,6 +268,11 @@ struct FlagcxP2pEngine {
   std::atomic<bool> stopNotif;
   std::unordered_map<int, FlagcxP2pNotifConn> notifPeers;
   std::mutex notifPeerMutex;
+
+  /* Bootstrap P2P listen state — used for ctrl meta + desc table exchange
+     during connect/accept handshake. */
+  struct bootstrapState *bsListenState;
+  int bsListenPort;
 
   /* Control-plane RPC service: accept daemon + per-session connection
      cache (initiator side) + kept-alive accepted connections (server
@@ -1593,6 +1599,70 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
   return 0;
 }
 
+// ============================================================================
+// Bootstrap P2P helpers for ctrl meta + desc table exchange
+// ============================================================================
+
+static flagcxResult_t bootstrapExchangeCtrlMeta(struct bootstrapState *bsState,
+                                                FlagcxP2pCtrlMeta *localMeta,
+                                                FlagcxP2pCtrlMeta *remoteMeta) {
+  FLAGCXCHECK(bootstrapExchange(bsState, 0, 1, localMeta, sizeof(*localMeta),
+                                remoteMeta, sizeof(*remoteMeta)));
+  return flagcxSuccess;
+}
+
+static int bootstrapExchangeDescTable(struct bootstrapState *bsState,
+                                      FlagcxP2pConn *conn) {
+  if (bsState == NULL || conn == NULL || conn->sendComm == NULL)
+    return -1;
+
+  std::vector<FlagcxP2pMemRegWire> localTable;
+  {
+    std::lock_guard<std::mutex> lock(gMemMutex);
+    localTable.reserve(gMemRegInfo.size());
+    for (std::unordered_map<uintptr_t, FlagcxP2pMemRegEntry>::iterator it =
+             gMemRegInfo.begin();
+         it != gMemRegInfo.end(); ++it) {
+      FlagcxP2pMrHandleView *mrView =
+          reinterpret_cast<FlagcxP2pMrHandleView *>(it->second.mhandle);
+      if (mrView == NULL)
+        continue;
+      FlagcxP2pMemRegWire w;
+      w.baseAddr = it->second.baseAddr;
+      w.size = it->second.size;
+      w.rkey = mrView->rkey;
+      w.reserved = 0;
+      localTable.push_back(w);
+    }
+  }
+
+  uint32_t localCount = static_cast<uint32_t>(localTable.size());
+  uint32_t remoteCount = 0;
+  if (bootstrapExchange(bsState, 0, 2, &localCount, sizeof(localCount),
+                        &remoteCount, sizeof(remoteCount)) != flagcxSuccess)
+    return -1;
+
+  std::vector<FlagcxP2pMemRegWire> remoteTable(remoteCount);
+  if (bootstrapExchange(
+          bsState, 0, 3, localTable.data(),
+          static_cast<int>(localCount * sizeof(FlagcxP2pMemRegWire)),
+          remoteTable.data(),
+          static_cast<int>(remoteCount * sizeof(FlagcxP2pMemRegWire))) !=
+      flagcxSuccess)
+    return -1;
+
+  conn->remoteRegions.clear();
+  conn->remoteRegions.reserve(remoteCount);
+  for (uint32_t i = 0; i < remoteCount; i++) {
+    FlagcxP2pRemoteRegion r;
+    r.baseAddr = remoteTable[i].baseAddr;
+    r.size = remoteTable[i].size;
+    r.rkey = remoteTable[i].rkey;
+    conn->remoteRegions.push_back(r);
+  }
+  return 0;
+}
+
 FlagcxP2pEngine *flagcxP2pEngineCreate() {
   FlagcxP2pEngine *engine = new FlagcxP2pEngine;
   engine->adaptor = &flagcxNetIbP2p;
@@ -1607,6 +1677,8 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   engine->stopNotif = false;
   engine->rpcServerActive = false;
   engine->stopRpcServer = false;
+  engine->bsListenState = NULL;
+  engine->bsListenPort = 0;
   memset(engine->listeners, 0, sizeof(engine->listeners));
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
 
@@ -1614,6 +1686,9 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
     delete engine;
     return NULL;
   }
+
+  // Initialize bootstrap network context (discovers local NIC)
+  bootstrapNetInit();
 
   engine->adaptor->devices(&engine->nDevs);
   if (flagcxP2pTopoInit(engine->adaptor, &engine->topoMgr) != flagcxSuccess) {
@@ -1665,6 +1740,21 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   if (engine->notifListenActive && flagcxNIbDevs > 0) {
     flagcxP2pPoolStartNotif(0, flagcxIbDevs[0].context, engine);
   }
+
+  // Set up bootstrap P2P listen for ctrl meta + desc table exchange
+  struct bootstrapState *bsState = NULL;
+  char bsListenHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memset(bsListenHandle, 0, sizeof(bsListenHandle));
+  if (bootstrapP2pListen(FLAGCX_SOCKET_MAGIC, NULL, bsListenHandle, &bsState) ==
+      flagcxSuccess) {
+    engine->bsListenState = bsState;
+    union flagcxSocketAddress bsAddr;
+    flagcxSocketGetAddr(&bsState->p2p->sock, &bsAddr);
+    engine->bsListenPort = socketAddrPort(&bsAddr);
+    INFO(FLAGCX_INIT, "NET/IB_P2P : bootstrap P2P listen on port %d",
+         engine->bsListenPort);
+  }
+
   return engine;
 }
 
@@ -1679,6 +1769,11 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
     engine->notifListenActive = false;
   }
   flagcxP2pPoolStopNotif();
+
+  if (engine->bsListenState) {
+    bootstrapClose(engine->bsListenState);
+    engine->bsListenState = NULL;
+  }
 
   {
     std::lock_guard<std::mutex> lock(engine->notifPeerMutex);
@@ -1764,6 +1859,12 @@ void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine) {
     engine->notifListenActive = false;
   }
 
+  if (engine->bsListenState) {
+    bootstrapClose(engine->bsListenState);
+    engine->bsListenState = NULL;
+    engine->bsListenPort = 0;
+  }
+
   for (int d = 0; d < engine->nDevs; d++) {
     if (engine->listeners[d].listenComm) {
       engine->adaptor->closeListen(engine->listeners[d].listenComm);
@@ -1833,30 +1934,57 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
 
   const int netDev = chooseEngineNetDev(engine);
 
-  char remoteHandleBuf[FLAGCX_NET_HANDLE_MAXSIZE];
-  memset(remoteHandleBuf, 0, sizeof(remoteHandleBuf));
-  FlagcxP2pListenHandleView *remoteHandle =
-      reinterpret_cast<FlagcxP2pListenHandleView *>(remoteHandleBuf);
+  // Step 1: Establish bootstrap P2P connection to remote's bootstrap listen
+  // port
+  char bsPeerHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memset(bsPeerHandle, 0, sizeof(bsPeerHandle));
+  FlagcxP2pListenHandleView *bsHandleView =
+      reinterpret_cast<FlagcxP2pListenHandleView *>(bsPeerHandle);
 
   char ipPortStr[256];
   snprintf(ipPortStr, sizeof(ipPortStr), "%s:%d", ipAddr, remotePort);
-  if (flagcxSocketGetAddrFromString(&remoteHandle->connectAddr, ipPortStr) !=
+  if (flagcxSocketGetAddrFromString(&bsHandleView->connectAddr, ipPortStr) !=
       flagcxSuccess) {
     return NULL;
   }
-  remoteHandle->magic = FLAGCX_SOCKET_MAGIC;
+  bsHandleView->magic = FLAGCX_SOCKET_MAGIC;
 
+  struct bootstrapState *bsConn = NULL;
+  if (bootstrapP2pConnect(bsPeerHandle, FLAGCX_SOCKET_MAGIC, NULL, &bsConn) !=
+      flagcxSuccess) {
+    return NULL;
+  }
+
+  // Step 2: Exchange IB listen handles over bootstrap
+  char localIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memcpy(localIbHandle, engine->listeners[netDev].handle,
+         FLAGCX_NET_HANDLE_MAXSIZE);
+
+  char remoteIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memset(remoteIbHandle, 0, sizeof(remoteIbHandle));
+  if (bootstrapExchange(bsConn, 0, 4, localIbHandle, FLAGCX_NET_HANDLE_MAXSIZE,
+                        remoteIbHandle,
+                        FLAGCX_NET_HANDLE_MAXSIZE) != flagcxSuccess) {
+    bootstrapClose(bsConn);
+    return NULL;
+  }
+
+  // Step 3: Connect IB adaptor using remote's handle
   void *sendComm = NULL;
-  if (engine->adaptor->connect(netDev, remoteHandleBuf, &sendComm) !=
+  if (engine->adaptor->connect(netDev, remoteIbHandle, &sendComm) !=
       flagcxSuccess) {
+    bootstrapClose(bsConn);
     return NULL;
   }
 
+  FlagcxP2pListenHandleView *remoteHandle =
+      reinterpret_cast<FlagcxP2pListenHandleView *>(remoteIbHandle);
   const bool sameHost =
       socketAddrSameHost(&remoteHandle->connectAddr, &flagcxIbIfAddr);
   const bool isLocal = sameHost;
   const bool isSameProcess = sameHost && sameProcess;
 
+  // Step 4: Exchange ctrl meta over bootstrap
   FlagcxP2pCtrlMeta localMeta;
   memset(&localMeta, 0, sizeof(localMeta));
   localMeta.gpuIdx = engine->localGpuIdx;
@@ -1869,11 +1997,10 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
 
   FlagcxP2pCtrlMeta remoteMeta;
   memset(&remoteMeta, 0, sizeof(remoteMeta));
-  FlagcxP2pCommView *sendView = getCommView(sendComm);
-  if (flagcxSocketSendRecv(&sendView->sock, &localMeta, sizeof(localMeta),
-                           &sendView->sock, &remoteMeta,
-                           sizeof(remoteMeta)) != flagcxSuccess) {
+  if (bootstrapExchangeCtrlMeta(bsConn, &localMeta, &remoteMeta) !=
+      flagcxSuccess) {
     engine->adaptor->closeSend(sendComm);
+    bootstrapClose(bsConn);
     return NULL;
   }
 
@@ -1897,12 +2024,16 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
     connectNotifSocket(conn, &remoteHandle->connectAddr, remoteMeta.notifPort);
   }
 
-  if (exchangeMemRegTable(conn) != 0) {
+  // Step 5: Exchange desc table over bootstrap
+  if (bootstrapExchangeDescTable(bsConn, conn) != 0) {
     WARN("NET/IB_P2P : connect desc-table exchange failed");
     flagcxP2pEngineConnDestroy(conn);
+    bootstrapClose(bsConn);
     return NULL;
   }
 
+  // Step 6: Close transient bootstrap connection
+  bootstrapClose(bsConn);
   return conn;
 }
 
@@ -1912,15 +2043,38 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
     return NULL;
 
   const int dev = chooseEngineNetDev(engine);
-  if (engine->listeners[dev].listenComm == NULL)
+  if (engine->bsListenState == NULL)
     return NULL;
 
-  void *recvComm = NULL;
-  if (engine->adaptor->accept(engine->listeners[dev].listenComm, &recvComm) !=
-      flagcxSuccess) {
+  // Step 1: Accept bootstrap P2P connection from connector
+  struct bootstrapState *bsConn = NULL;
+  if (bootstrapP2pAccept(engine->bsListenState, &bsConn) != flagcxSuccess) {
     return NULL;
   }
 
+  // Step 2: Exchange IB listen handles over bootstrap
+  char localIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memcpy(localIbHandle, engine->listeners[dev].handle,
+         FLAGCX_NET_HANDLE_MAXSIZE);
+
+  char remoteIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
+  memset(remoteIbHandle, 0, sizeof(remoteIbHandle));
+  if (bootstrapExchange(bsConn, 0, 4, localIbHandle, FLAGCX_NET_HANDLE_MAXSIZE,
+                        remoteIbHandle,
+                        FLAGCX_NET_HANDLE_MAXSIZE) != flagcxSuccess) {
+    bootstrapClose(bsConn);
+    return NULL;
+  }
+
+  // Step 3: Accept IB connection using the adaptor
+  void *recvComm = NULL;
+  if (engine->adaptor->accept(engine->listeners[dev].listenComm, &recvComm) !=
+      flagcxSuccess) {
+    bootstrapClose(bsConn);
+    return NULL;
+  }
+
+  // Step 4: Exchange ctrl meta over bootstrap
   FlagcxP2pCtrlMeta localMeta;
   memset(&localMeta, 0, sizeof(localMeta));
   localMeta.gpuIdx = engine->localGpuIdx;
@@ -1932,10 +2086,10 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
 
   FlagcxP2pCtrlMeta remoteMeta;
   memset(&remoteMeta, 0, sizeof(remoteMeta));
-  if (flagcxSocketSendRecv(&recvView->sock, &localMeta, sizeof(localMeta),
-                           &recvView->sock, &remoteMeta,
-                           sizeof(remoteMeta)) != flagcxSuccess) {
+  if (bootstrapExchangeCtrlMeta(bsConn, &localMeta, &remoteMeta) !=
+      flagcxSuccess) {
     engine->adaptor->closeRecv(recvComm);
+    bootstrapClose(bsConn);
     return NULL;
   }
 
@@ -1960,12 +2114,16 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
     connectNotifSocket(conn, &recvView->sock.addr, remoteMeta.notifPort);
   }
 
-  if (exchangeMemRegTable(conn) != 0) {
+  // Step 5: Exchange desc table over bootstrap
+  if (bootstrapExchangeDescTable(bsConn, conn) != 0) {
     WARN("NET/IB_P2P : accept desc-table exchange failed");
     flagcxP2pEngineConnDestroy(conn);
+    bootstrapClose(bsConn);
     return NULL;
   }
 
+  // Step 6: Close transient bootstrap connection
+  bootstrapClose(bsConn);
   return conn;
 }
 
@@ -2516,6 +2674,10 @@ int flagcxP2pEngineGetMetadata(FlagcxP2pEngine *engine, char **metadataStr) {
 int flagcxP2pEngineGetRpcPort(FlagcxP2pEngine *engine) {
   if (engine == NULL)
     return -1;
+  // Return bootstrap P2P listen port for RPC metadata exchange
+  if (engine->bsListenState != NULL && engine->bsListenPort > 0)
+    return engine->bsListenPort;
+  // Fallback to IB listen port if bootstrap not available
   const int netDev = chooseEngineNetDev(engine);
   if (engine->listeners[netDev].listenComm == NULL)
     return -1;

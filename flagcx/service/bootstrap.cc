@@ -15,6 +15,14 @@
 #include <unistd.h>
 #include <vector>
 
+// Internal tags for typed collective operations (must be unique per operation)
+#define BOOTSTRAP_TAG_REDUCE (-9993)
+#define BOOTSTRAP_TAG_BROADCAST (-9994)
+#define BOOTSTRAP_TAG_ALLTOALL (-9995)
+#define BOOTSTRAP_TAG_GATHER (-9996)
+#define BOOTSTRAP_TAG_SCATTER (-9997)
+#define BOOTSTRAP_TAG_ALLTOALLV (-9998)
+
 struct bootstrapRootArgs {
   struct flagcxSocket *listenSock;
   uint64_t magic;
@@ -923,7 +931,7 @@ bootstrapRingReduce(struct bootstrapState *commState,
                                          length.data(), datatype, op));
 
   // gather to root
-  const int bootstrapTag = -9993;
+  const int bootstrapTag = BOOTSTRAP_TAG_REDUCE;
   if (rank == root) {
     for (int i = 0; i < nranks; i++) {
       if (i == rank)
@@ -1027,7 +1035,7 @@ flagcxResult_t AlltoAllBootstrap(struct bootstrapState *state,
     memcpy(tmpBuff, (char *)sendbuff + rank * size, size);
   }
 
-  const int bootstrapTag = -9995;
+  const int bootstrapTag = BOOTSTRAP_TAG_ALLTOALL;
   for (int i = 0; i < nranks; i++) {
     if (i == rank) {
       if (inPlace) {
@@ -1065,7 +1073,7 @@ flagcxResult_t BroadcastBootstrap(struct bootstrapState *state,
     return flagcxInvalidArgument;
   int rank = coll->rank;
   int nranks = coll->nranks;
-  const int bootstrapTag = -9994;
+  const int bootstrapTag = BOOTSTRAP_TAG_BROADCAST;
   if (nranks == 1) {
     if (sendbuff != recvbuff) {
       memcpy(recvbuff, sendbuff, getFlagcxDataTypeSize(datatype) * count);
@@ -1103,7 +1111,7 @@ flagcxResult_t GatherBootstrap(struct bootstrapState *state,
     return flagcxInvalidArgument;
   int rank = coll->rank;
   int nranks = coll->nranks;
-  const int bootstrapTag = -9996;
+  const int bootstrapTag = BOOTSTRAP_TAG_GATHER;
 
   if (nranks == 1) {
     if (sendbuff != recvbuff) {
@@ -1143,7 +1151,7 @@ flagcxResult_t ScatterBootstrap(struct bootstrapState *state,
   int rank = coll->rank;
   int nranks = coll->nranks;
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const int bootstrapTag = -9997;
+  const int bootstrapTag = BOOTSTRAP_TAG_SCATTER;
 
   if (rank == root) {
     // Root sends to all non-root ranks
@@ -1198,7 +1206,7 @@ flagcxResult_t AlltoAllvBootstrap(struct bootstrapState *state,
              (void *)((char *)sendbuff + sdispls[i] * typeSize),
              sendcounts[i] * typeSize);
     }
-    const int bootstrapTag = -9998;
+    const int bootstrapTag = BOOTSTRAP_TAG_ALLTOALLV;
     if (rank > i) {
       FLAGCXCHECK(
           bootstrapSend(state, i, bootstrapTag,
