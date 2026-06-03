@@ -206,7 +206,7 @@ def main():
     # Create unique ID on rank 0 and broadcast
     if rank == 0:
         unique_id = flagcx.flagcxGetUniqueId()
-        id_bytes = bytes(unique_id.contents.internal)
+        id_bytes = bytes(unique_id.internal)
     else:
         id_bytes = b"\x00" * 256
 

@@ -529,13 +529,13 @@ class FLAGCXLibrary:
 
     def unique_id_from_bytes(self, data: bytes) -> flagcxUniqueId:
         """
-        Reconstructs an `ncclUniqueId` object from bytes data.
+        Reconstructs a flagcxUniqueId object from bytes data.
         Args:
-            data: Must be a 128-byte data block (matching NCCL's unique_id).
+            data: Must be a 256-byte data block (matching FlagCX's unique_id).
         Returns:
-            ncclUniqueId: The reconstructed NCCL Unique ID object.
+            flagcxUniqueId: The reconstructed FlagCX Unique ID object.
         Raises:
-            ValueError: If the input data length is not 128 bytes.
+            ValueError: If the input data length is not 256 bytes.
         """
         if len(data) != 256:
             raise ValueError(
