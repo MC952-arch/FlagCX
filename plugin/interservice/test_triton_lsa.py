@@ -47,7 +47,7 @@ FLAGCX_INCLUDE_PATH = os.environ.get(
 # FlagCX library path for linking
 FLAGCX_LIB_PATH = os.environ.get(
     "FLAGCX_LIB_PATH",
-    os.path.join(os.path.dirname(__file__), "../../build/lib"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../build/lib"),
 )
 
 # ============================================================
@@ -137,8 +137,8 @@ def _cleanup_flagcx_allocator_wrapper():
 
 
 import atexit
-atexit.register(_cleanup_flagcx_mem_pool)
 atexit.register(_cleanup_flagcx_allocator_wrapper)
+atexit.register(_cleanup_flagcx_mem_pool)
 
 
 # ============================================================

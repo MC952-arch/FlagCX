@@ -500,7 +500,8 @@ class FLAGCXLibrary:
 
     def __del__(self):
         # free flagcx device handle
-        self.FLAGCX_CHECK(self._funcs["flagcxDeviceHandleFree"](self.devHandle))
+        if hasattr(self, '_funcs') and hasattr(self, 'devHandle'):
+            self.FLAGCX_CHECK(self._funcs["flagcxDeviceHandleFree"](self.devHandle))
 
     def flagcxGetErrorString(self, result: flagcxResult_t) -> str:
         return self._funcs["flagcxGetErrorString"](result).decode("utf-8")
