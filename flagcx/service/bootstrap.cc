@@ -23,6 +23,7 @@ struct bootstrapRootArgs {
 /* Init functions */
 static char bootstrapNetIfName[MAX_IF_NAME_SIZE + 1];
 union flagcxSocketAddress bootstrapNetIfAddr;
+static flagcxNetProperties_t bootstrapNetProperties;
 static int bootstrapNetInitDone = 0;
 pthread_mutex_t bootstrapNetLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -64,6 +65,36 @@ flagcxResult_t bootstrapNetInit() {
     pthread_mutex_unlock(&bootstrapNetLock);
   }
   return flagcxSuccess;
+}
+
+// ============================================================================
+// Accessor APIs
+// ============================================================================
+
+int bootstrapGetRank(struct bootstrapState *state) {
+  if (state == NULL || state->mode != FLAGCX_BOOTSTRAP_COLL ||
+      state->coll == NULL) {
+    return -1;
+  }
+  return state->coll->rank;
+}
+
+int bootstrapGetNranks(struct bootstrapState *state) {
+  if (state == NULL || state->mode != FLAGCX_BOOTSTRAP_COLL ||
+      state->coll == NULL) {
+    return -1;
+  }
+  return state->coll->nranks;
+}
+
+flagcxNetProperties_t *bootstrapGetNetProperties() {
+  return &bootstrapNetProperties;
+}
+
+const char *bootstrapGetNetIfName() { return bootstrapNetIfName; }
+
+union flagcxSocketAddress *bootstrapGetNetIfAddr() {
+  return &bootstrapNetIfAddr;
 }
 
 /* Socket Interface Selection type */
@@ -331,10 +362,6 @@ flagcxResult_t bootstrapCollInit(struct flagcxBootstrapHandle *handle, int rank,
                                      sizeof(union flagcxSocketAddress)));
 
   // Set bootstrap net info
-  state->bootstrapNetIfName = bootstrapNetIfName;
-  flagcxNetProperties_t *properties;
-  FLAGCXCHECK(flagcxCalloc(&properties, 1));
-  state->properties = properties;
   INFO(FLAGCX_INIT, "rank %d nranks %d - DONE", rank, nranks);
 
   *stateOut = wrapper;
@@ -595,7 +622,6 @@ flagcxResult_t bootstrapClose(struct bootstrapState *state) {
   FLAGCXCHECK(flagcxSocketClose(&coll->ringRecvSocket));
 
   free(coll->peerCommAddresses);
-  free(coll->properties);
   free(coll);
   free(state);
   return flagcxSuccess;
@@ -614,7 +640,6 @@ flagcxResult_t bootstrapCollAbort(struct bootstrapState *state) {
   FLAGCXCHECK(flagcxSocketClose(&coll->ringRecvSocket));
   free(coll->peerCommAddresses);
   free(coll->peerProxyAddresses);
-  free(coll->properties);
   free(coll);
   free(state);
   return flagcxSuccess;

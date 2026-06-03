@@ -41,8 +41,6 @@ struct bootstrapCollState {
   int nranks;
   uint64_t magic;
   volatile uint32_t *abortFlag;
-  char *bootstrapNetIfName;
-  void *properties;
 };
 
 struct bootstrapP2pState {
@@ -214,6 +212,19 @@ flagcxResult_t AlltoAllvBootstrap(struct bootstrapState *state,
                                   size_t *sdispls, void *recvbuff,
                                   size_t *recvcounts, size_t *rdispls,
                                   flagcxDataType_t datatype);
+
+// ============================================================================
+// Accessor APIs — encapsulate internal state for external callers
+// ============================================================================
+
+// Get rank/nranks from a collective-mode bootstrap state
+int bootstrapGetRank(struct bootstrapState *state);
+int bootstrapGetNranks(struct bootstrapState *state);
+
+// Global network context (populated by bootstrapNetInit)
+flagcxNetProperties_t *bootstrapGetNetProperties();
+const char *bootstrapGetNetIfName();
+union flagcxSocketAddress *bootstrapGetNetIfAddr();
 
 #ifdef __cplusplus
 } // end extern "C"

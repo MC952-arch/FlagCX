@@ -1911,7 +1911,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
       if (!flagcxParamTopoDetectionDisable()) {
         FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
-            (*comm)->heteroComm->netDev, state->coll->properties));
+            (*comm)->heteroComm->netDev, bootstrapGetNetProperties()));
       }
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
           &(*comm)->hostComm, nranks, commId, rank, state));

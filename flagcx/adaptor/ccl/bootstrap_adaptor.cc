@@ -142,7 +142,7 @@ flagcxResult_t bootstrapAdaptorCommSuspend(flagcxInnerComm_t comm) {
 
 flagcxResult_t bootstrapAdaptorCommCount(const flagcxInnerComm_t comm,
                                          int *count) {
-  *count = comm->base->coll->nranks;
+  *count = bootstrapGetNranks(comm->base);
   return flagcxSuccess;
 }
 
@@ -154,7 +154,7 @@ flagcxResult_t bootstrapAdaptorCommCuDevice(const flagcxInnerComm_t comm,
 
 flagcxResult_t bootstrapAdaptorCommUserRank(const flagcxInnerComm_t comm,
                                             int *rank) {
-  *rank = comm->base->coll->rank;
+  *rank = bootstrapGetRank(comm->base);
   return flagcxSuccess;
 }
 
