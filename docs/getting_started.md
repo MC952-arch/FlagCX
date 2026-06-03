@@ -44,12 +44,44 @@ Note that Option A also supports `<backend>=1`, allowing users to explicitly spe
 
 ### Performance Test
 
-Performance tests are maintained in `test/perf`.
+Performance tests are maintained in `test/perf/`, organized by API level:
+
+- **Host API tests** (`test/perf/host_api/`) — high-level collective operations via FlagCX host API
+- **Device API tests** (`test/perf/device_api/`) — low-level device kernel benchmarks via FlagCX Device API
+
+#### Host API Performance Test
 
 ```shell
-cd test/perf
+cd test/perf/host_api
 make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_TSM | USE_ENFLAME]=1
-mpirun --allow-run-as-root -np 8 ./test_allreduce -b 128K -e 4G -f 2
+cd build/bin
+mpirun --allow-run-as-root -np 8 ./perf_allreduce -b 128K -e 4G -f 2
+```
+
+#### Device API Performance Test
+
+Device API perf tests require `-R 1` (IPC mode) or `-R 2` (window mode).
+The FlagCX library must be built with `COMPILE_KERNEL=1`:
+
+```shell
+# Build FlagCX with kernel support (from project root)
+make USE_NVIDIA=1 COMPILE_KERNEL=1 -j$(nproc)
+
+cd test/perf/device_api
+make USE_NVIDIA=1
+cd build/bin
+
+# Intra-node AllReduce (single node, 8 GPUs)
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+  ./perf_allreduce_intranode -b 1M -e 64M -f 2 -R 1
+
+# Inter-node two-sided AlltoAll (multi-node)
+mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+  ./perf_internode_twosided -b 1M -e 64M -f 2 -R 1
+
+# Inter-node one-sided AlltoAll (requires -R 2)
+mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+  ./perf_internode_onesided -b 1M -e 64M -f 2 -R 2
 ```
 
 Note that the default MPI install path is set to `/usr/local/mpi`, you may specify the MPI path with:
@@ -81,51 +113,39 @@ All tests support the same set of arguments:
   * `-p, <0/1>` print buffer info. Default: 0.
   * `-h` print help message. Default: disabled.
 
-### Device API Test
+Registration modes (`-R`):
 
-Device API tests are maintained in `test/kernel/`. There are four test binaries:
+- `-R 0`: Raw device memory (default). No explicit registration. Not supported by Device API tests.
+- `-R 1`: IPC mode — `cudaMalloc` + `flagcxCommRegister`. Works on all NCCL versions.
+- `-R 2`: Window mode — `flagcxMemAlloc` + `flagcxCommWindowRegister`. Requires NCCL >= 2.28.
+
+### Device API Correctness Test
+
+Device API correctness tests are maintained in `test/unittest/device_api/`. These tests verify the functional correctness of the Device API primitives.
 
 | Binary | What it tests |
 |---|---|
-| `test_intranode` | Intra-node AllReduce via Device API. Correctness + bandwidth benchmarking. |
-| `test_internode_twosided` | Inter-node two-sided AlltoAll (FIFO-based; Window-based with `-R 2`). Correctness + bandwidth. |
-| `test_internode_onesided` | Inter-node one-sided AlltoAll (put+signal+wait pattern). Requires `-R 1` or `-R 2`. |
-| `test_device_api` | Correctness suite for 10 one-sided Device API kernels. Requires `-R 1` or `-R 2`. |
+| `test_device_api` | Correctness suite for 10 one-sided Device API kernels (put, get, signal, flush, counter, etc.). |
+| `test_device_ir` | IR wrapper layer correctness. |
 
-Build:
+Build and run:
 
 ```shell
-cd test/kernel
-make USE_NVIDIA=1    # or other backend flag
-```
+# FlagCX must be built with COMPILE_KERNEL=1 (from project root)
+make USE_NVIDIA=1 COMPILE_KERNEL=1 -j$(nproc)
 
-Supports `MPI_HOME=<path>`.
-
-Run examples:
-
-```shell
-# Intra-node AllReduce (single node, 8 GPUs)
-mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_intranode -b 1M -e 64M -f 2
-
-# Inter-node two-sided AlltoAll (multi-node)
-mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_internode_twosided -b 1M -e 64M -f 2 -R 1
-
-# Inter-node one-sided AlltoAll (requires -R 1 or -R 2)
-mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_internode_onesided -b 1M -e 64M -f 2 -R 2
+cd test/unittest/device_api
+make USE_NVIDIA=1
+cd build/bin
 
 # Device API correctness test (requires -R 1 or -R 2)
-mpirun --allow-run-as-root -np 16 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 ./test_device_api -b 1M -e 64M -f 2 -R 2
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+  ./test_device_api -b 1M -e 4M -f 2 -R 2
+
+# IR wrapper correctness test
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+  ./test_device_ir -b 1M -e 4M -f 2 -R 2
 ```
-
-Arguments are the same as Performance Test (`-b`, `-e`, `-f`, `-w`, `-n`, `-R`, `-p`, `-s`).
-
-Registration modes (`-R`):
-
-- `-R 0`: Raw device memory (default). No explicit registration.
-- `-R 1`: IPC mode — `flagcxMemAlloc` + `flagcxCommRegister`.
-- `-R 2`: Window mode — `flagcxMemAlloc` + `flagcxCommWindowRegister`.
-
-One-sided tests (`test_internode_onesided`, `test_device_api`) require `-R 1` or `-R 2`.
 
 ### Torch API Test
 

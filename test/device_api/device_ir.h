@@ -4,7 +4,7 @@
  * Test-only Device IR kernel declarations.
  * These kernels exercise the FlagCX Device API IR wrapper functions
  * (extern "C" wrappers compiled via nvcc here, or via LLVM bitcode for
- * Triton). Compiled from device_ir.cu in test/kernel/.
+ * Triton). Compiled from device_ir.cu in test/device_api/.
  ************************************************************************/
 
 #ifndef TEST_KERNEL_DEVICE_IR_H_

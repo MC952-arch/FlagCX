@@ -2,7 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Test-only Device API kernel declarations.
- * These kernels are compiled from device_api.cu in test/kernel/ and are
+ * These kernels are compiled from device_api.cu in test/device_api/ and are
  * NOT part of libflagcx.so.
  ************************************************************************/
 

@@ -3,8 +3,8 @@ include ../../make.inc
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
-# device_api.cu object (compiled in test/kernel/build/obj/)
-KERNEL_DIR     := $(PROJECT_ROOT)/test/kernel
+# device_api.cu object (compiled in test/device_api/build/obj/)
+KERNEL_DIR     := $(PROJECT_ROOT)/test/device_api
 DEVICE_API_OBJ := $(KERNEL_DIR)/build/obj/device_api.o
 DEVICE_API_INCLUDE := -I$(KERNEL_DIR)
 
@@ -36,7 +36,7 @@ endif
 
 all: $(ALL_TARGETS)
 
-# Build device_api.o from test/kernel/ if not already built
+# Build device_api.o from test/device_api/ if not already built
 device-api-obj:
 	@$(MAKE) -C $(KERNEL_DIR) device_api.o USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU)
 

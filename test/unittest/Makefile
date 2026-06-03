@@ -13,7 +13,7 @@
 COMPONENTS := adaptor core service runner p2p topo symmem
 
 ifeq ($(COMPILE_KERNEL), 1)
-COMPONENTS += kernel
+COMPONENTS += kernel device_api
 endif
 
 .PHONY: all $(COMPONENTS) clean run-unit run-mpi run
