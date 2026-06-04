@@ -12,13 +12,19 @@ ifeq ($(USE_NVIDIA), 1)
 include $(PROJECT_ROOT)/makefiles/nvidia_gencode.mk
 endif
 
+# Propagate FORCE_DEFAULT_PATH to device compilation (must match library build)
+ifeq ($(FORCE_DEFAULT_PATH), 1)
+ADAPTOR_DEFINE += -DFLAGCX_FORCE_DEFAULT_PATH
+endif
+
 PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
 
 ALL_INCLUDES := $(FLAGCX_INCLUDES) \
     -I$(PROJECT_ROOT)/flagcx/adaptor/include/device_api \
     -I$(PROJECT_ROOT)/bindings/ir \
     $(PLATFORM_INCLUDES) \
-    -I$(DEVICE_INCLUDE)
+    $(CCL_INCLUDE) \
+    $(DEVICE_INCLUDE)
 
 .PHONY: all clean device_api.o device_ir.o
 

@@ -1152,6 +1152,20 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                : nullptr);
     handle->window = kWin;
     handle->hasWindow = kWin->hasAccess();
+
+    // Detect incompatible configuration: symmetric default window on vendor
+    // path. The vendor Device API Window only accepts vendor-native windows.
+    // A symmetric default window (created when FLAGCX_USE_HETERO_COMM=1
+    // bypasses the vendor window registration) cannot be used on this path.
+    if (!handle->hasWindow && win != nullptr && win->isSymmetricDefault) {
+      WARN("flagcxDevMemCreate: symmetric default window is not supported on "
+           "the vendor Device API path. Disable FLAGCX_USE_HETERO_COMM or "
+           "rebuild with FORCE_DEFAULT_PATH=1.");
+      delete kWin;
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
+      free(handle);
+      return flagcxInvalidUsage;
+    }
   }
 
   *devMem = handle;

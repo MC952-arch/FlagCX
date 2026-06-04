@@ -3,20 +3,25 @@
 # Usage:
 #   make              Build all perf benchmarks
 #   make host_api     Build host API benchmarks only
-#   make device_api   Build device API benchmarks only
+#   make device_api   Build device API benchmarks only (requires COMPILE_KERNEL=1)
 #   make clean        Clean all build artifacts
+
+SUBDIRS := host_api
+
+ifeq ($(COMPILE_KERNEL), 1)
+SUBDIRS += device_api
+endif
 
 .PHONY: all host_api device_api clean
 
-all: host_api device_api
+all: $(SUBDIRS)
 
 host_api:
 	@$(MAKE) -C host_api
 
 # Device API tests require kernel functions compiled into libflagcx (.cu files).
-# Use -k to continue past failures and || true to not fail the overall build.
 device_api:
-	@$(MAKE) -C device_api || echo "Warning: device_api build failed (kernel functions may not be compiled into libflagcx)"
+	@$(MAKE) -C device_api
 
 clean:
 	@$(MAKE) -C host_api clean

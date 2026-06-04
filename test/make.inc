@@ -71,7 +71,7 @@ USE_ENFLAME        ?= 0
 ifeq ($(USE_NVIDIA), 1)
   DEVICE_HOME      ?= /usr/local/cuda
   DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
   DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
   DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
   ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
@@ -79,7 +79,7 @@ ifeq ($(USE_NVIDIA), 1)
 else ifeq ($(USE_DU), 1)
   DEVICE_HOME      ?= $(CUDA_PATH)
   DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
   DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
   DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
   ADAPTOR_DEFINE   := -DUSE_DU_ADAPTOR
@@ -88,7 +88,7 @@ else
   # Default: NVIDIA paths (same as top-level Makefile fallback)
   DEVICE_HOME      ?= /usr/local/cuda
   DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := $(DEVICE_HOME)/include
+  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
   DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
   DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
   ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR

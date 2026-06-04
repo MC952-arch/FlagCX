@@ -20,7 +20,7 @@ DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o
 # Includes: flagcx, perf headers, MPI, device SDK, device_api headers
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
     -I$(PROJECT_ROOT)/flagcx/core -I$(PROJECT_ROOT)/flagcx/service \
-    -I$(DEVICE_API_DIR) -I$(DEVICE_INCLUDE)
+    -I$(DEVICE_API_DIR) $(DEVICE_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
