@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #include "flagcx.h"
+#include "flagcx_net.h"
 #include "socket.h"
 
 struct flagcxBootstrapHandle {

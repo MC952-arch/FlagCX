@@ -1642,6 +1642,14 @@ static int bootstrapExchangeDescTable(struct bootstrapState *bsState,
                         &remoteCount, sizeof(remoteCount)) != flagcxSuccess)
     return -1;
 
+  // Sanity check: reject absurdly large counts to prevent OOM or overflow
+  const uint32_t MAX_REMOTE_REGIONS = 65536;
+  if (remoteCount > MAX_REMOTE_REGIONS) {
+    WARN("bootstrapExchangeDescTable: remote count %u exceeds limit %u",
+         remoteCount, MAX_REMOTE_REGIONS);
+    return -1;
+  }
+
   std::vector<FlagcxP2pMemRegWire> remoteTable(remoteCount);
   if (bootstrapExchange(
           bsState, 0, 3, localTable.data(),
@@ -1936,21 +1944,19 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
 
   // Step 1: Establish bootstrap P2P connection to remote's bootstrap listen
   // port
-  char bsPeerHandle[FLAGCX_NET_HANDLE_MAXSIZE];
-  memset(bsPeerHandle, 0, sizeof(bsPeerHandle));
-  FlagcxP2pListenHandleView *bsHandleView =
-      reinterpret_cast<FlagcxP2pListenHandleView *>(bsPeerHandle);
+  struct flagcxBootstrapHandle bsHandle;
+  memset(&bsHandle, 0, sizeof(bsHandle));
+  bsHandle.magic = FLAGCX_SOCKET_MAGIC;
 
   char ipPortStr[256];
   snprintf(ipPortStr, sizeof(ipPortStr), "%s:%d", ipAddr, remotePort);
-  if (flagcxSocketGetAddrFromString(&bsHandleView->connectAddr, ipPortStr) !=
+  if (flagcxSocketGetAddrFromString(&bsHandle.addr, ipPortStr) !=
       flagcxSuccess) {
     return NULL;
   }
-  bsHandleView->magic = FLAGCX_SOCKET_MAGIC;
 
   struct bootstrapState *bsConn = NULL;
-  if (bootstrapP2pConnect(bsPeerHandle, FLAGCX_SOCKET_MAGIC, NULL, &bsConn) !=
+  if (bootstrapP2pConnect(&bsHandle, FLAGCX_SOCKET_MAGIC, NULL, &bsConn) !=
       flagcxSuccess) {
     return NULL;
   }
@@ -2647,15 +2653,15 @@ int flagcxP2pEngineGetMetadata(FlagcxP2pEngine *engine, char **metadataStr) {
   if (engine == NULL || metadataStr == NULL)
     return -1;
 
-  const int netDev = chooseEngineNetDev(engine);
-  if (engine->listeners[netDev].listenComm == NULL)
+  // After bootstrap P2P integration, metadata must expose the bootstrap listen
+  // port (used by flagcxP2pEngineConnect for the initial handshake), not the
+  // RDMA listen port (which is now exchanged during the bootstrap handshake).
+  if (engine->bsListenState == NULL || engine->bsListenPort <= 0)
     return -1;
 
-  FlagcxP2pListenHandleView *listenHandle =
-      reinterpret_cast<FlagcxP2pListenHandleView *>(
-          engine->listeners[netDev].handle);
-  const std::string rdmaAddr =
-      socketAddrToHostPortString(&listenHandle->connectAddr);
+  union flagcxSocketAddress bsAddr;
+  flagcxSocketGetAddr(&engine->bsListenState->p2p->sock, &bsAddr);
+  const std::string rdmaAddr = socketAddrToHostPortString(&bsAddr);
   if (rdmaAddr.empty())
     return -1;
 

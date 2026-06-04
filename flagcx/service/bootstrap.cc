@@ -174,6 +174,7 @@ static void *bootstrapRoot(void *rargs) {
   flagcxResult_t res = flagcxSuccess;
 
   /* Receive addresses from all ranks */
+  int checkedIn = 0;
   do {
     struct flagcxSocket sock;
     FLAGCXCHECKGOTO(flagcxSocketInit(&sock), res, fail);
@@ -184,12 +185,20 @@ static void *bootstrapRoot(void *rargs) {
     if (nranks == 0) {
       nranks = info.nranks;
       FLAGCXCHECKGOTO(flagcxCalloc(&rankInfo, nranks), res, fail);
-    }
-    if (info.rank < 0 || info.rank >= nranks) {
+    } else if (info.nranks != nranks) {
+      WARN("Bootstrap Root: rank %d nranks mismatch: expected %d, got %d",
+           info.rank, nranks, info.nranks);
+      res = flagcxInvalidArgument;
       goto fail;
     }
+    if (info.rank < 0 || info.rank >= nranks) {
+      res = flagcxInvalidArgument;
+      goto fail;
+    }
+    if (rankInfo[info.rank].nranks == 0)
+      checkedIn++;
     rankInfo[info.rank] = info;
-  } while (rankInfo[nranks - 1].nranks == 0);
+  } while (checkedIn < nranks);
 
   /* Send everyone info about their "next" rank in the ring */
   for (int i = 0; i < nranks; ++i) {
@@ -234,6 +243,9 @@ flagcxResult_t bootstrapCollCreateRoot(struct flagcxBootstrapHandle *handle,
   args->magic = handle->magic;
   if (pthread_create(&thread, NULL, bootstrapRoot, (void *)args) != 0) {
     WARN("bootstrapCollCreateRoot: pthread_create failed");
+    free(args);
+    flagcxSocketClose(listenSock);
+    free(listenSock);
     return flagcxSystemError;
   }
   flagcxSetThreadName(thread, "FlagCX BootRoot");
@@ -889,11 +901,18 @@ bootstrapRingAllReduce(struct flagcxSocket *prevSocket,
                                          sendbuff, recvbuff, offset.data(),
                                          length.data(), datatype, op));
 
-  // AllGather the results
+  // AllGather the results with variable chunk sizes
   // Copy my chunk into correct position
-  memcpy(recvbuff + offset[rank], recvbuff, length[rank]);
-  FLAGCXCHECK(bootstrapRingAllGather(prevSocket, nextSocket, rank, nranks,
-                                     recvbuff, ChunkBytes));
+  memmove(recvbuff + offset[rank], recvbuff, length[rank]);
+
+  // Ring AllGather with per-slice variable sizes
+  for (int i = 0; i < nranks - 1; i++) {
+    size_t sslice = (rank - i + nranks) % nranks;
+    size_t rslice = (rank - i - 1 + nranks) % nranks;
+    FLAGCXCHECK(bootstrapNetSendRecv(
+        nextSocket, recvbuff + offset[sslice], (int)length[sslice], prevSocket,
+        recvbuff + offset[rslice], (int)length[rslice]));
+  }
   return flagcxSuccess;
 }
 
@@ -929,6 +948,9 @@ bootstrapRingReduce(struct bootstrapState *commState,
   FLAGCXCHECK(bootstrapRingReduceScatter(prevSocket, nextSocket, rank, nranks,
                                          sendbuff, recvbuff, offset.data(),
                                          length.data(), datatype, op));
+
+  // Move my reduced chunk to its final position before gather to root
+  memmove(recvbuff + offset[rank], recvbuff, length[rank]);
 
   // gather to root
   const int bootstrapTag = BOOTSTRAP_TAG_REDUCE;

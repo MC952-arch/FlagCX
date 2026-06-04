@@ -194,7 +194,7 @@ TEST_F(P2pEngineRpcTest, GetMetadataContainsIpAndPort) {
   EXPECT_GE(parsed.notifPort, 0);
 }
 
-TEST_F(P2pEngineRpcTest, GetMetadataRdmaPortDiffersFromRpcPort) {
+TEST_F(P2pEngineRpcTest, GetMetadataPortMatchesRpcPort) {
   char *metaRaw = nullptr;
   ASSERT_EQ(flagcxP2pEngineGetMetadata(serverEngine, &metaRaw), 0);
   std::unique_ptr<char[]> metadata(metaRaw);
@@ -203,10 +203,10 @@ TEST_F(P2pEngineRpcTest, GetMetadataRdmaPortDiffersFromRpcPort) {
   ASSERT_TRUE(parseMetadata(metadata.get(), &parsed));
 
   const int rpcPort = flagcxP2pEngineGetRpcPort(serverEngine);
-  // The IB RDMA listen port (in metadata) should differ from the bootstrap
-  // RPC port, since they're separate listeners
-  EXPECT_NE(parsed.port, rpcPort)
-      << "IB listen port should not equal bootstrap RPC port";
+  // After bootstrap P2P integration, metadata exposes the bootstrap listen
+  // port — the same port used for RPC and initial connection handshake.
+  EXPECT_EQ(parsed.port, rpcPort)
+      << "metadata port should equal bootstrap RPC port";
 }
 
 // ============================================================================
