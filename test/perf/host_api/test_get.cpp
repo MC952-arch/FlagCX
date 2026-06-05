@@ -23,7 +23,7 @@
 //                       calls flagcxGet to RDMA-READ from rank 0's buffer
 //                       into its own local buffer.
 //
-// Both ranks register their data window (flagcxOneSideRegister) and signal
+// Both ranks register their data window (flagcxCommWindowRegister) and signal
 // buffer (flagcxOneSideSignalRegister) before the benchmark loop.
 
 namespace {
@@ -47,10 +47,9 @@ int main(int argc, char *argv[]) {
   uint64_t split_mask = args.getSplitMask();
   int local_register = args.getLocalRegister();
 
-  // RMA requires flagcxMemAlloc (GDR memory with SYNC_MEMOPS)
-  if (local_register < 1) {
-    fprintf(stderr,
-            "test_get requires -R 1 or -R 2 for GDR buffer allocation.\n");
+  // RMA with window registration requires -R 2
+  if (local_register != 2) {
+    fprintf(stderr, "test_get requires -R 2 for window-based RMA.\n");
     return 1;
   }
 
@@ -142,9 +141,11 @@ int main(int argc, char *argv[]) {
   res = flagcxCommRegister(comm, dataWindow, data_bytes, &dataHandle);
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
-  // Register data buffer for one-sided operations (MR index 0)
-  res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
-  if (res == flagcxNotSupported) {
+  // Register data buffer as window for one-sided operations
+  flagcxWindow_t dataWin = nullptr;
+  res = flagcxCommWindowRegister(comm, dataWindow, data_bytes, &dataWin,
+                                 FLAGCX_WIN_COLL_SYMMETRIC);
+  if (res == flagcxNotSupported || dataWin == nullptr) {
     if (proc == 0)
       printf("Skipping get benchmark: net adaptor does not support iget.\n");
     flagcxCommDeregister(comm, dataHandle);
@@ -155,7 +156,7 @@ int main(int argc, char *argv[]) {
     MPI_Finalize();
     return 0;
   }
-  fatal(res, "flagcxOneSideRegister (data) failed", proc);
+  fatal(res, "flagcxCommWindowRegister (data) failed", proc);
 
   // Register signal buffer for one-sided operations
   res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes,
@@ -217,8 +218,6 @@ int main(int argc, char *argv[]) {
     // Ack signal slots: [total_iters_per_size ..
     // total_iters_per_size+num_warmup_iters-1]
     for (int i = 0; i < num_warmup_iters; ++i) {
-      size_t signalOffset = i * signalBytes;
-      size_t ackSignalOffset = (total_iters_per_size + i) * signalBytes;
       size_t dataOffset = i * size; // same logical offset for both sides
 
       if (isProducer) {
@@ -228,18 +227,23 @@ int main(int argc, char *argv[]) {
         devHandle->deviceMemcpy((char *)dataWindow + dataOffset, hostStaging,
                                 size, flagcxMemcpyHostToDevice, NULL);
 
-        res = flagcxSignal(comm, getterRank, signalOffset, 1);
+        res = flagcxSignal(getterRank, 0, comm, producerWaitStream);
         fatal(res, "flagcxSignal warmup failed", proc);
         // Wait for getter's ack: getter has finished reading, safe to reuse
         // buffer
-        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1,
-                               producerWaitStream);
-        fatal(res, "flagcxWaitSignal ack warmup failed", proc);
+        {
+          flagcxWaitSignalDesc_t ackDesc = {1, getterRank};
+          res = flagcxWaitSignal(1, &ackDesc, comm, producerWaitStream);
+          fatal(res, "flagcxWaitSignal ack warmup failed", proc);
+        }
         devHandle->streamSynchronize(producerWaitStream);
       } else if (isGetter) {
         // Wait for producer's signal then RDMA READ from producer's buffer
-        res = flagcxWaitSignal(comm, producerRank, signalOffset, 1, waitStream);
-        fatal(res, "flagcxWaitSignal warmup failed", proc);
+        {
+          flagcxWaitSignalDesc_t desc = {1, producerRank};
+          res = flagcxWaitSignal(1, &desc, comm, waitStream);
+          fatal(res, "flagcxWaitSignal warmup failed", proc);
+        }
         devHandle->streamSynchronize(waitStream);
 
         uint64_t cntBefore;
@@ -250,7 +254,7 @@ int main(int argc, char *argv[]) {
         fatal(flagcxWaitCounter(comm, cntBefore + 1),
               "flagcxWaitCounter warmup failed", proc);
         // Notify producer that GET is done
-        res = flagcxSignal(comm, producerRank, ackSignalOffset, 1);
+        res = flagcxSignal(producerRank, 0, comm, waitStream);
         fatal(res, "flagcxSignal ack warmup failed", proc);
       }
     }
@@ -262,9 +266,6 @@ int main(int argc, char *argv[]) {
     // Ack signal slots: [total_iters_per_size+num_warmup_iters ..
     // total_iters_per_size*2-1]
     for (int i = 0; i < num_iters; ++i) {
-      size_t signalOffset = (num_warmup_iters + i) * signalBytes;
-      size_t ackSignalOffset =
-          (total_iters_per_size + num_warmup_iters + i) * signalBytes;
       size_t dataOffset = i * size;
 
       if (isProducer) {
@@ -273,17 +274,22 @@ int main(int argc, char *argv[]) {
         devHandle->deviceMemcpy((char *)dataWindow + dataOffset, hostStaging,
                                 size, flagcxMemcpyHostToDevice, NULL);
 
-        res = flagcxSignal(comm, getterRank, signalOffset, 1);
+        res = flagcxSignal(getterRank, 0, comm, producerWaitStream);
         fatal(res, "flagcxSignal failed", proc);
         // Wait for getter's ack: getter has finished reading, safe to reuse
         // buffer
-        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1,
-                               producerWaitStream);
-        fatal(res, "flagcxWaitSignal ack failed", proc);
+        {
+          flagcxWaitSignalDesc_t ackDesc = {1, getterRank};
+          res = flagcxWaitSignal(1, &ackDesc, comm, producerWaitStream);
+          fatal(res, "flagcxWaitSignal ack failed", proc);
+        }
         devHandle->streamSynchronize(producerWaitStream);
       } else if (isGetter) {
-        res = flagcxWaitSignal(comm, producerRank, signalOffset, 1, waitStream);
-        fatal(res, "flagcxWaitSignal failed", proc);
+        {
+          flagcxWaitSignalDesc_t desc = {1, producerRank};
+          res = flagcxWaitSignal(1, &desc, comm, waitStream);
+          fatal(res, "flagcxWaitSignal failed", proc);
+        }
         devHandle->streamSynchronize(waitStream);
 
         uint64_t cntBefore;
@@ -294,7 +300,7 @@ int main(int argc, char *argv[]) {
         fatal(flagcxWaitCounter(comm, cntBefore + 1),
               "flagcxWaitCounter failed", proc);
         // Notify producer that GET is done
-        res = flagcxSignal(comm, producerRank, ackSignalOffset, 1);
+        res = flagcxSignal(producerRank, 0, comm, waitStream);
         fatal(res, "flagcxSignal ack failed", proc);
 
         if (print_buffer) {
@@ -335,11 +341,14 @@ int main(int argc, char *argv[]) {
   // Cleanup
   MPI_Barrier(MPI_COMM_WORLD);
   sleep(1);
+
+  res = flagcxCommWindowDeregister(comm, dataWin);
+  fatal(res, "flagcxCommWindowDeregister failed", proc);
+
   res = flagcxCommDeregister(comm, dataHandle);
   fatal(res, "flagcxCommDeregister failed", proc);
 
   flagcxOneSideSignalDeregister(comm->heteroComm);
-  flagcxOneSideDeregister(comm->heteroComm);
   flagcxMemFree(dataWindow);
   flagcxMemFree(signalWindow);
   free(hostStaging);

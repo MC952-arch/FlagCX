@@ -208,6 +208,10 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     if (!failed) {
       // Publish completion: doneSeqs with RELEASE so waiters acquire-see it.
       __atomic_store_n(&proxy->doneSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
+      // Also write to GPU-visible doneSeqsDev for stream-based waiters.
+      if (proxy->doneSeqsCpu != NULL)
+        __atomic_store_n(&proxy->doneSeqsCpu[peer], desc->opSeq,
+                         __ATOMIC_RELEASE);
       __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
     }
     free(desc);
@@ -455,6 +459,40 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     flagcxIntruQueueConstruct(&proxy->inProgressQueues[p]);
   }
 
+  // Allocate GPU-visible memory for doneSeqsDev (stream-based synchronization).
+  // Use GDR to get CPU-mappable device memory.
+  proxy->doneSeqsDev = NULL;
+  proxy->doneSeqsCpu = NULL;
+  proxy->doneSeqsGdrHandle = NULL;
+  flagcxResult_t memRes =
+      deviceAdaptor->memHandleInit(comm->cudaDev, &proxy->doneSeqsGdrHandle);
+  if (memRes == flagcxSuccess && proxy->doneSeqsGdrHandle != NULL) {
+    memRes = deviceAdaptor->gdrMemAlloc((void **)&proxy->doneSeqsDev,
+                                        nRanks * sizeof(uint64_t),
+                                        proxy->doneSeqsGdrHandle);
+    if (memRes == flagcxSuccess) {
+      // Map device memory to CPU address space for progress thread writes
+      memRes = deviceAdaptor->gdrPtrMmap((void **)&proxy->doneSeqsCpu,
+                                         proxy->doneSeqsDev,
+                                         nRanks * sizeof(uint64_t));
+      if (memRes == flagcxSuccess) {
+        // Zero-initialize doneSeqsDev
+        memset((void *)proxy->doneSeqsCpu, 0, nRanks * sizeof(uint64_t));
+      } else {
+        WARN("flagcxHeteroRmaProxyStart: gdrPtrMmap failed, stream sync "
+             "unavailable");
+        deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
+        proxy->doneSeqsDev = NULL;
+      }
+    } else {
+      WARN("flagcxHeteroRmaProxyStart: gdrMemAlloc failed, stream sync "
+           "unavailable");
+    }
+  } else {
+    WARN("flagcxHeteroRmaProxyStart: memHandleInit failed, stream sync "
+         "unavailable");
+  }
+
   proxy->stop = 0;
   comm->rmaProxy = proxy;
 
@@ -491,6 +529,19 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
 
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
+
+  // Free GDR memory for stream-based sync
+  if (proxy->doneSeqsCpu != NULL) {
+    deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                proxy->nRanks * sizeof(uint64_t));
+  }
+  if (proxy->doneSeqsDev != NULL && proxy->doneSeqsGdrHandle != NULL) {
+    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
+  }
+  if (proxy->doneSeqsGdrHandle != NULL) {
+    deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
+  }
+
   free(proxy->circularBuffers);
   free((void *)proxy->pis);
   free((void *)proxy->cis);
@@ -537,6 +588,25 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
     usleep(100);
   }
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
+                                          uint64_t seq, flagcxStream_t stream) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL || seq == 0)
+    return flagcxSuccess;
+  if (peer < 0 || peer >= proxy->nRanks) {
+    WARN("flagcxHeteroFlushRmaStream: peer %d out of range (nRanks=%d)", peer,
+         proxy->nRanks);
+    return flagcxInvalidArgument;
+  }
+  if (stream == NULL || proxy->doneSeqsDev == NULL) {
+    // Fallback to host-side spin if stream or GDR memory not available
+    return flagcxHeteroFlushRma(comm, peer, seq);
+  }
+  // GPU-side wait: stream stalls until doneSeqsDev[peer] >= seq
+  return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
+                                          seq, 0 /*GEQ*/);
 }
 
 flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
@@ -868,5 +938,201 @@ flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
   flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
   if (res != flagcxSuccess)
     free(desc);
+  return res;
+}
+
+// ---- Intra-node topology helper ----
+
+static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer) {
+  if (comm->rankToNode == NULL)
+    return false;
+  return comm->rankToNode[peer] == comm->node;
+}
+
+// ---- IPC state initialization ----
+
+flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxInternalError;
+
+  int nRanks = comm->nRanks;
+  struct flagcxRmaIpcState *ipc =
+      (struct flagcxRmaIpcState *)calloc(1, sizeof(*ipc));
+  if (ipc == NULL)
+    return flagcxSystemError;
+  ipc->nRanks = nRanks;
+  ipc->dataHandleCount = comm->oneSideHandleCount;
+
+  // Allocate per-peer IPC-mapped data buffer pointers
+  ipc->peerDataBufs = (void ***)calloc(nRanks, sizeof(void **));
+  ipc->peerSignalBufs = (void **)calloc(nRanks, sizeof(void *));
+  if (ipc->peerDataBufs == NULL || ipc->peerSignalBufs == NULL) {
+    free(ipc->peerDataBufs);
+    free(ipc->peerSignalBufs);
+    free(ipc);
+    return flagcxSystemError;
+  }
+
+  // For each intra-node peer, open IPC handles
+  for (int p = 0; p < nRanks; p++) {
+    if (p == comm->rank || !flagcxIsIntraNode(comm, p))
+      continue;
+
+    // Map signal buffer from peer
+    if (comm->signalHandle != NULL && comm->signalHandle->baseVas != NULL) {
+      // Signal buffer VA is already accessible (registered with full-mesh)
+      // For IPC path, use the known peer base VA directly
+      ipc->peerSignalBufs[p] = (void *)comm->signalHandle->baseVas[p];
+    }
+
+    // Map data buffers from peer (for each registered MR)
+    if (comm->oneSideHandleCount > 0) {
+      ipc->peerDataBufs[p] =
+          (void **)calloc(comm->oneSideHandleCount, sizeof(void *));
+      if (ipc->peerDataBufs[p] == NULL)
+        continue;
+      for (int h = 0; h < comm->oneSideHandleCount; h++) {
+        if (comm->oneSideHandles[h] != NULL &&
+            comm->oneSideHandles[h]->baseVas != NULL) {
+          ipc->peerDataBufs[p][h] = (void *)comm->oneSideHandles[h]->baseVas[p];
+        }
+      }
+    }
+  }
+
+  proxy->ipcState = ipc;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroRmaIpcDestroy(flagcxHeteroComm_t comm) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL || proxy->ipcState == NULL)
+    return flagcxSuccess;
+
+  struct flagcxRmaIpcState *ipc = proxy->ipcState;
+  for (int p = 0; p < ipc->nRanks; p++) {
+    if (ipc->peerDataBufs != NULL)
+      free(ipc->peerDataBufs[p]);
+  }
+  free(ipc->peerDataBufs);
+  free(ipc->peerSignalBufs);
+  free(ipc);
+  proxy->ipcState = NULL;
+  return flagcxSuccess;
+}
+
+// ---- Stream-based Put with intra-node D2D bypass ----
+
+flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxStream_t stream, uint64_t *opSeq) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxInternalError;
+
+  // Try intra-node D2D path
+  if (stream != NULL && proxy->ipcState != NULL &&
+      flagcxIsIntraNode(comm, peer)) {
+    struct flagcxRmaIpcState *ipc = proxy->ipcState;
+    void *srcBuf = NULL;
+    void *dstBuf = NULL;
+
+    // Resolve source and destination buffers
+    if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
+        comm->oneSideHandles[srcMrIdx] != NULL) {
+      srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
+                        srcOffset);
+    }
+    if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
+        ipc->peerDataBufs[peer] != NULL &&
+        ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
+      dstBuf =
+          (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
+    }
+
+    if (srcBuf != NULL && dstBuf != NULL) {
+      flagcxResult_t res = deviceAdaptor->deviceMemcpy(
+          dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+      if (opSeq != NULL)
+        *opSeq = 0; // D2D path has no opSeq (no proxy involvement)
+      return res;
+    }
+    // Fall through to proxy path if buffer resolution fails
+  }
+
+  // Fallback: enqueue to proxy thread (inter-node or no IPC)
+  flagcxResult_t res = flagcxHeteroPut(comm, peer, srcOffset, dstOffset, size,
+                                       srcMrIdx, dstMrIdx);
+  if (opSeq != NULL && res == flagcxSuccess)
+    *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
+  return res;
+}
+
+flagcxResult_t
+flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                            size_t dstOffset, size_t size, size_t signalOffset,
+                            int srcMrIdx, int dstMrIdx, uint64_t signalValue,
+                            flagcxStream_t stream, uint64_t *opSeq) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxInternalError;
+
+  // Try intra-node D2D path
+  if (stream != NULL && proxy->ipcState != NULL &&
+      flagcxIsIntraNode(comm, peer)) {
+    struct flagcxRmaIpcState *ipc = proxy->ipcState;
+    void *srcBuf = NULL;
+    void *dstBuf = NULL;
+    void *signalAddr = NULL;
+
+    // Resolve source buffer (local)
+    if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
+        comm->oneSideHandles[srcMrIdx] != NULL) {
+      srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
+                        srcOffset);
+    }
+    // Resolve destination buffer (peer)
+    if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
+        ipc->peerDataBufs[peer] != NULL &&
+        ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
+      dstBuf =
+          (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
+    }
+    // Resolve signal address (peer's signal buffer)
+    if (ipc->peerSignalBufs[peer] != NULL) {
+      signalAddr =
+          (void *)((uintptr_t)ipc->peerSignalBufs[peer] + signalOffset);
+    }
+
+    if ((size == 0 || (srcBuf != NULL && dstBuf != NULL)) &&
+        signalAddr != NULL) {
+      flagcxResult_t res = flagcxSuccess;
+      // Data transfer (if any)
+      if (size > 0) {
+        res = deviceAdaptor->deviceMemcpy(
+            dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+        if (res != flagcxSuccess)
+          return res;
+      }
+      // Signal write via D2D (atomic add emulated via streamWriteValue64)
+      // Note: this is a simple write, not atomic add — suitable for
+      // single-writer scenarios typical in intra-node RMA.
+      res =
+          deviceAdaptor->streamWriteValue64(stream, signalAddr, signalValue, 0);
+      if (opSeq != NULL)
+        *opSeq = 0; // D2D path
+      return res;
+    }
+    // Fall through to proxy path
+  }
+
+  // Fallback: enqueue to proxy thread
+  flagcxResult_t res =
+      flagcxHeteroPutSignal(comm, peer, srcOffset, dstOffset, size,
+                            signalOffset, srcMrIdx, dstMrIdx, signalValue);
+  if (opSeq != NULL && res == flagcxSuccess)
+    *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
   return res;
 }

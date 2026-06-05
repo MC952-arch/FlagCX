@@ -35,10 +35,9 @@ int main(int argc, char *argv[]) {
   uint64_t splitMask = args.getSplitMask();
   int localRegister = args.getLocalRegister();
 
-  // RMA requires flagcxMemAlloc (GDR memory with SYNC_MEMOPS)
-  if (localRegister < 1) {
-    fprintf(stderr,
-            "test_put requires -R 1 or -R 2 for GDR buffer allocation.\n");
+  // RMA with window registration requires -R 2
+  if (localRegister != 2) {
+    fprintf(stderr, "test_put requires -R 2 for window-based RMA.\n");
     return 1;
   }
 
@@ -131,9 +130,11 @@ int main(int argc, char *argv[]) {
   res = flagcxCommRegister(comm, dataWindow, dataBytes, &dataHandle);
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
-  // Register data buffer for one-sided operations
-  res = flagcxOneSideRegister(comm, dataWindow, dataBytes);
-  if (res == flagcxNotSupported) {
+  // Register data buffer as a window for one-sided operations
+  flagcxWindow_t dataWin = nullptr;
+  res = flagcxCommWindowRegister(comm, dataWindow, dataBytes, &dataWin,
+                                 FLAGCX_WIN_COLL_SYMMETRIC);
+  if (res == flagcxNotSupported || dataWin == nullptr) {
     if (proc == 0)
       printf("Skipping put benchmark: net adaptor does not support iput.\n");
     flagcxCommDeregister(comm, dataHandle);
@@ -144,7 +145,7 @@ int main(int argc, char *argv[]) {
     MPI_Finalize();
     return 0;
   }
-  fatal(res, "flagcxOneSideRegister (data) failed", proc);
+  fatal(res, "flagcxCommWindowRegister (data) failed", proc);
 
   // Register signal buffer for one-sided operations
   res = flagcxOneSideSignalRegister(comm, signalWindow, signalTotalBytes,
@@ -182,11 +183,9 @@ int main(int argc, char *argv[]) {
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
-  // Create stream for receiver-side wait operations
+  // Create stream for one-sided operations (both sender and receiver need one)
   flagcxStream_t waitStream = nullptr;
-  if (isReceiver) {
-    devHandle->streamCreate(&waitStream);
-  }
+  devHandle->streamCreate(&waitStream);
 
   // Benchmark loop
   timer tim;
@@ -201,7 +200,6 @@ int main(int argc, char *argv[]) {
 
     // Warmup iterations (signal slots [0 .. numWarmupIters-1])
     for (int i = 0; i < numWarmupIters; ++i) {
-      size_t signalOffset = i * signalBytes;
       size_t currentSendOffset = i * size;
       size_t currentRecvOffset = i * size;
 
@@ -213,11 +211,13 @@ int main(int argc, char *argv[]) {
                                 hostStaging, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, currentSendOffset,
-                              currentRecvOffset, size, signalOffset, 0, 0, 1);
+        res = flagcxPutSignal((char *)dataWindow + currentSendOffset, size,
+                              flagcxChar, receiverRank, dataWin,
+                              currentRecvOffset, 0, comm, waitStream);
         fatal(res, "flagcxPutSignal warmup failed", proc);
       } else if (isReceiver) {
-        res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
+        flagcxWaitSignalDesc_t desc = {1, senderRank};
+        res = flagcxWaitSignal(1, &desc, comm, waitStream);
         fatal(res, "flagcxWaitSignal warmup failed", proc);
         devHandle->streamSynchronize(waitStream);
       }
@@ -228,7 +228,6 @@ int main(int argc, char *argv[]) {
 
     // Benchmark iterations (signal slots [numWarmupIters .. totalIters-1])
     for (int i = 0; i < numIters; ++i) {
-      size_t signalOffset = (numWarmupIters + i) * signalBytes;
       size_t currentSendOffset = i * size;
       size_t currentRecvOffset = i * size;
 
@@ -239,11 +238,13 @@ int main(int argc, char *argv[]) {
                                 hostStaging, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, currentSendOffset,
-                              currentRecvOffset, size, signalOffset, 0, 0, 1);
+        res = flagcxPutSignal((char *)dataWindow + currentSendOffset, size,
+                              flagcxChar, receiverRank, dataWin,
+                              currentRecvOffset, 0, comm, waitStream);
         fatal(res, "flagcxPutSignal failed", proc);
       } else if (isReceiver) {
-        res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
+        flagcxWaitSignalDesc_t desc = {1, senderRank};
+        res = flagcxWaitSignal(1, &desc, comm, waitStream);
         fatal(res, "flagcxWaitSignal failed", proc);
         devHandle->streamSynchronize(waitStream);
 
@@ -286,18 +287,19 @@ int main(int argc, char *argv[]) {
   // Cleanup
   MPI_Barrier(MPI_COMM_WORLD);
   sleep(1);
+
+  res = flagcxCommWindowDeregister(comm, dataWin);
+  fatal(res, "flagcxCommWindowDeregister failed", proc);
+
   res = flagcxCommDeregister(comm, dataHandle);
   fatal(res, "flagcxCommDeregister failed", proc);
 
   flagcxOneSideSignalDeregister(comm->heteroComm);
-  flagcxOneSideDeregister(comm->heteroComm);
   flagcxMemFree(dataWindow);
   flagcxMemFree(signalWindow);
   free(hostStaging);
 
-  if (waitStream != nullptr) {
-    devHandle->streamDestroy(waitStream);
-  }
+  devHandle->streamDestroy(waitStream);
 
   fatal(flagcxCommDestroy(comm), "flagcxCommDestroy failed", proc);
   fatal(flagcxDeviceHandleFree(devHandle), "flagcxDeviceHandleFree failed",

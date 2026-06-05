@@ -2531,35 +2531,87 @@ flagcxResult_t flagcxBatchPut(flagcxComm_t comm, int peer,
                               sizes, srcMrIdxs, dstMrIdxs, count);
 }
 
-flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
-                               size_t dstOffset, size_t size,
-                               size_t signalOffset, int srcMrIdx, int dstMrIdx,
-                               uint64_t signalValue) {
+// ---- High-level NCCL-aligned one-sided APIs (window-based, stream-integrated)
+// ----
+
+flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
+                               flagcxDataType_t datatype, int peer,
+                               flagcxWindow_t peerWin, size_t peerWinOffset,
+                               unsigned int flags, flagcxComm_t comm,
+                               flagcxStream_t stream) {
+  (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
-  return flagcxHeteroPutSignal(comm->heteroComm, peer, srcOffset, dstOffset,
-                               size, signalOffset, srcMrIdx, dstMrIdx,
-                               signalValue);
+  if (peerWin == NULL)
+    return flagcxInvalidArgument;
+
+  // Resolve window to MR index and compute byte size
+  size_t byteSize = count * getFlagcxDataTypeSize(datatype);
+  int dstMrIdx = -1;
+  if (peerWin->isSymmetricDefault && peerWin->defaultBase != NULL) {
+    dstMrIdx = peerWin->defaultBase->mrIndex;
+  }
+  if (dstMrIdx < 0)
+    return flagcxInvalidArgument;
+
+  // Source is localbuff — need to find which MR it belongs to.
+  // For now, use MR index 0 (first registered data buffer) and compute offset.
+  // TODO: implement proper source buffer lookup by VA range.
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  int srcMrIdx = 0; // default: first registered data MR
+  size_t srcOffset = 0;
+  if (hetero->oneSideHandleCount > 0 && hetero->oneSideHandles[0] != NULL) {
+    uintptr_t srcBase = hetero->oneSideHandles[0]->baseVas[hetero->rank];
+    srcOffset = (uintptr_t)localbuff - srcBase;
+  } else {
+    return flagcxInvalidArgument;
+  }
+
+  // Signal offset: use aggregate signal (offset nRanks * 8 in signal buffer)
+  size_t signalOffset = (size_t)peer * sizeof(uint64_t);
+
+  uint64_t opSeq = 0;
+  return flagcxHeteroPutSignalStream(hetero, peer, srcOffset, peerWinOffset,
+                                     byteSize, signalOffset, srcMrIdx, dstMrIdx,
+                                     1 /*signalValue*/, stream, &opSeq);
 }
 
-flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
-                            uint64_t signalValue) {
+flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
+                            flagcxStream_t stream) {
+  (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
-  // Signal-only: size == 0, srcMrIdx/dstMrIdx unused
-  return flagcxHeteroPutSignal(comm->heteroComm, peer, 0, 0, 0, signalOffset, 0,
-                               0, signalValue);
+
+  size_t signalOffset = (size_t)peer * sizeof(uint64_t);
+  uint64_t opSeq = 0;
+  return flagcxHeteroPutSignalStream(comm->heteroComm, peer, 0, 0, 0,
+                                     signalOffset, -1, 0, 1 /*signalValue*/,
+                                     stream, &opSeq);
 }
 
-flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
-                                size_t signalOffset, uint64_t expected,
-                                flagcxStream_t stream) {
+flagcxResult_t flagcxWaitSignal(int nDesc, flagcxWaitSignalDesc_t *signalDescs,
+                                flagcxComm_t comm, flagcxStream_t stream) {
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
-  if (stream == NULL)
+  if (stream == NULL || signalDescs == NULL)
     return flagcxInvalidArgument;
-  return flagcxHeteroWaitSignal(comm->heteroComm, peer, signalOffset, expected,
-                                stream);
+
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  for (int i = 0; i < nDesc; i++) {
+    int p = signalDescs[i].peer;
+    int opCnt = signalDescs[i].opCnt;
+    // Wait for opCnt completions from peer p using stream-based flush
+    uint64_t seq =
+        __atomic_load_n(&hetero->rmaProxy->opSeqs[p], __ATOMIC_RELAXED);
+    // The expected done sequence is the current opSeq (all pending ops
+    // complete) If opCnt specifies a subset, we'd need per-peer tracking — for
+    // now wait all.
+    (void)opCnt;
+    flagcxResult_t res = flagcxHeteroFlushRmaStream(hetero, p, seq, stream);
+    if (res != flagcxSuccess)
+      return res;
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count) {

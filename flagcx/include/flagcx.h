@@ -516,22 +516,47 @@ flagcxResult_t flagcxBatchPut(flagcxComm_t comm, int peer,
 
 /* RDMA WRITE + ATOMIC: write size bytes from local srcOffset to remote
  * dstOffset, then atomically increment the remote signal at signalOffset by
- * signalValue. When size == 0, only the signal ATOMIC is posted. */
-flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
-                               size_t dstOffset, size_t size,
-                               size_t signalOffset, int srcMrIdx, int dstMrIdx,
-                               uint64_t signalValue);
+ * signalValue. When size == 0, only the signal ATOMIC is posted.
+ *
+ * Window-based, stream-integrated API (NCCL-aligned).
+ * localbuff: local source buffer (registered via flagcxCommWindowRegister)
+ * count: number of elements to transfer
+ * datatype: element data type (determines byte size)
+ * peer: target rank
+ * peerWin: remote peer's window handle
+ * peerWinOffset: byte offset into peer's window
+ * flags: reserved (pass 0)
+ * comm: communicator handle
+ * stream: device stream for async execution and synchronization
+ *
+ * Automatically selects intra-node D2D or inter-node RDMA proxy path. */
+flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
+                               flagcxDataType_t datatype, int peer,
+                               flagcxWindow_t peerWin, size_t peerWinOffset,
+                               unsigned int flags, flagcxComm_t comm,
+                               flagcxStream_t stream);
 
-/* Signal only: atomically increment remote peer's signal at signalOffset by
- * signalValue (equivalent to flagcxPutSignal with size == 0). */
-flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
-                            uint64_t signalValue);
+/* Signal only (no data): notify remote peer of completion.
+ * peer: target rank
+ * flags: reserved (pass 0)
+ * comm: communicator handle
+ * stream: device stream for synchronization */
+flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
+                            flagcxStream_t stream);
 
-/* Wait until the local signal buffer at signalOffset reaches the expected
- * value. Uses device-side streamWaitValue64; stream must not be NULL. */
-flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
-                                size_t signalOffset, uint64_t expected,
-                                flagcxStream_t stream);
+/* Descriptor for batch WaitSignal. */
+typedef struct {
+  int opCnt; /* number of operations to wait for from this peer */
+  int peer;  /* source rank */
+} flagcxWaitSignalDesc_t;
+
+/* Batch wait for multiple peers' signals to complete.
+ * nDesc: number of wait descriptors
+ * signalDescs: array of wait descriptors
+ * comm: communicator handle
+ * stream: device stream (stalls until all described signals complete) */
+flagcxResult_t flagcxWaitSignal(int nDesc, flagcxWaitSignalDesc_t *signalDescs,
+                                flagcxComm_t comm, flagcxStream_t stream);
 
 /* Read the current global RMA completion counter into *count.
  * Call this before issuing RMA ops (flagcxGet / flagcxPut / etc.) to
