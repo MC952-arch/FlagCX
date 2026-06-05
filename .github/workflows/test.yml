@@ -37,15 +37,17 @@ jobs:
           submodules: true
           set-safe-directory: true
 
+      # FORCE_DEFAULT_PATH only affects kernel object compilation (comm traits);
+      # host-side library and vendor API dispatch are unchanged.
       - name: Build FlagCX
         run: |
           cd /__w/FlagCX/FlagCX
-          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
 
       - name: Build perf tests
         run: |
           cd /__w/FlagCX/FlagCX/test/perf
-          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
 
       - name: Wait for GPU
         shell: bash
@@ -110,9 +112,10 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           mpirun -np 8 --allow-run-as-root \
-            -x NCCL_CUMEM_ENABLE=0 \
+            -x FLAGCX_USE_HETERO_COMM=1 \
+            -x FLAGCX_VMM_ENABLE=0 \
             -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
-            -x NCCL_DEBUG=TRACE -x NCCL_DEBUG_SUBSYS=ALL \
+            -x LD_LIBRARY_PATH \
             $DEVICE_API_BIN/perf_allreduce_intranode -b 1M -e 64M -f 2 -R 1
 
       # - name: "Device API perf (inter-node two-sided)"

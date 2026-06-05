@@ -793,8 +793,10 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
       }
     }
 
-    // One-sided Default layer: if signals or counters requested
-    if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+    // One-sided Default layer: if signals or counters requested AND inter-node
+    // peers exist
+    if (handle->nInterPeers > 0 &&
+        (reqs->interSignalCount > 0 || reqs->interCounterCount > 0)) {
       // Use nKernelProxies (max contextCount) for buffer sizing so that
       // the RDMA MR covers all possible context slots across DevComm
       // re-creations with different contextCount values.
@@ -1129,10 +1131,8 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
         handle->mrIndex = d->mrIndex;
         handle->mrBase = d->mrBase;
       }
-      if (d != nullptr && d->isVMM && d->flatBase) {
-        // Priority 1: VMM — peer access via flat VA, nothing else needed
-      } else {
-        // Priority 2: Symmetric IPC fallback (VMM failed or not available)
+      if (d == nullptr || !d->isVMM || !d->flatBase) {
+        // Priority 2: Symmetric IPC fallback (VMM not available)
         int idx = buildIpcPeerPointers(comm, buff, size);
         if (idx >= 0) {
           handle->ipcIndex = idx;
@@ -1141,6 +1141,7 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                "fallback also failed — no peer access");
         }
       }
+      // else: Priority 1 — VMM peer access via flat VA, nothing needed
       handle->window = nullptr;
     }
     // ---- Priority 3: Vendor native window ----
