@@ -2051,6 +2051,9 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
   const int dev = chooseEngineNetDev(engine);
   if (engine->bsListenState == NULL)
     return NULL;
+  if (dev < 0 || dev >= engine->nDevs ||
+      engine->listeners[dev].listenComm == NULL)
+    return NULL;
 
   // Step 1: Accept bootstrap P2P connection from connector
   struct bootstrapState *bsConn = NULL;

@@ -462,6 +462,7 @@ static void unexpectedFree(struct bootstrapCollState *state) {
   while (elem) {
     prev = elem;
     elem = elem->next;
+    flagcxSocketClose(&prev->sock);
     free(prev);
   }
 }
@@ -632,8 +633,6 @@ flagcxResult_t bootstrapClose(struct bootstrapState *state) {
     unexpectedFree(coll);
     if (__atomic_load_n(coll->abortFlag, __ATOMIC_RELAXED) == 0) {
       WARN("Unexpected connections are not empty");
-      free(state);
-      return flagcxInternalError;
     }
   }
 
@@ -1053,37 +1052,40 @@ flagcxResult_t AlltoAllBootstrap(struct bootstrapState *state,
   bool inPlace = (sendbuff == recvbuff);
   char *tmpBuff = nullptr;
   if (inPlace) {
-    FLAGCXCHECK(flagcxCalloc(&tmpBuff, size));
-    memcpy(tmpBuff, (char *)sendbuff + rank * size, size);
+    FLAGCXCHECK(flagcxCalloc(&tmpBuff, nranks * size));
+    memcpy(tmpBuff, sendbuff, nranks * size);
+    sendbuff = tmpBuff;
   }
 
   const int bootstrapTag = BOOTSTRAP_TAG_ALLTOALL;
+  flagcxResult_t res = flagcxSuccess;
   for (int i = 0; i < nranks; i++) {
     if (i == rank) {
-      if (inPlace) {
-        memcpy((char *)recvbuff + rank * size, tmpBuff, size);
-      } else {
-        memcpy((char *)recvbuff + rank * size, (char *)sendbuff + rank * size,
-               size);
-      }
+      memcpy((char *)recvbuff + rank * size, (char *)sendbuff + rank * size,
+             size);
       continue;
     }
     if (rank > i) {
-      FLAGCXCHECK(bootstrapSend(state, i, bootstrapTag,
-                                (char *)sendbuff + i * size, size));
-      FLAGCXCHECK(bootstrapRecv(state, i, bootstrapTag,
-                                (char *)recvbuff + i * size, size));
+      FLAGCXCHECKGOTO(bootstrapSend(state, i, bootstrapTag,
+                                    (char *)sendbuff + i * size, size),
+                      res, cleanup);
+      FLAGCXCHECKGOTO(bootstrapRecv(state, i, bootstrapTag,
+                                    (char *)recvbuff + i * size, size),
+                      res, cleanup);
     } else {
-      FLAGCXCHECK(bootstrapRecv(state, i, bootstrapTag,
-                                (char *)recvbuff + i * size, size));
-      FLAGCXCHECK(bootstrapSend(state, i, bootstrapTag,
-                                (char *)sendbuff + i * size, size));
+      FLAGCXCHECKGOTO(bootstrapRecv(state, i, bootstrapTag,
+                                    (char *)recvbuff + i * size, size),
+                      res, cleanup);
+      FLAGCXCHECKGOTO(bootstrapSend(state, i, bootstrapTag,
+                                    (char *)sendbuff + i * size, size),
+                      res, cleanup);
     }
   }
 
+cleanup:
   if (tmpBuff)
     free(tmpBuff);
-  return flagcxSuccess;
+  return res;
 }
 
 flagcxResult_t BroadcastBootstrap(struct bootstrapState *state,
