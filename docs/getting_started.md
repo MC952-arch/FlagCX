@@ -72,7 +72,7 @@ make USE_NVIDIA=1
 cd build/bin
 
 # Intra-node AllReduce (single node, 8 GPUs)
-mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_VMM_ENABLE=0 \
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
   ./perf_allreduce_intranode -b 1M -e 64M -f 2 -R 1
 
 # Inter-node two-sided AlltoAll (multi-node)
@@ -139,11 +139,11 @@ make USE_NVIDIA=1
 cd build/bin
 
 # Device API correctness test (requires -R 1 or -R 2)
-mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_VMM_ENABLE=0 \
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
   ./test_device_api -b 1M -e 4M -f 2 -R 2
 
 # IR wrapper correctness test
-mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_VMM_ENABLE=0 \
+mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
   ./test_device_ir -b 1M -e 4M -f 2 -R 2
 ```
 
