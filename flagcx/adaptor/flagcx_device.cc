@@ -18,6 +18,7 @@
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
 #include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc (+comm.h, transport.h)
+#include "reg_pool.h" // globalRegPool, flagcxRegItem
 #include "shmutils.h" // flagcxShmOpen, flagcxShmClose, flagcxShmUnlink
 #include "utils.h"    // flagcxParamSignalHostEnable
 #include <algorithm>  // std::min, std::max
@@ -31,6 +32,9 @@
 // Build IPC peer pointer table for a user buffer.
 // Stores results in comm->ipcTable and returns the table index.
 // Returns -1 on failure (IPC not available for this buffer).
+// Internally checks globalRegPool for a pre-registered IPC handle to skip
+// ipcMemHandleGet when the buffer was already registered via
+// flagcxCommRegister.
 static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
 
   // Find a free slot in the IPC table
@@ -58,27 +62,48 @@ static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   void **hostPeerPtrs = nullptr;
   void **devPeerPtrs = nullptr;
 
-  // Step 1: Get IPC handle for existing user buffer
+  // Step 1: Get IPC handle for existing user buffer.
+  // First check if globalRegPool has a pre-registered handle (from
+  // flagcxCommRegister).
   struct flagcxP2pIpcDesc myIpcDesc;
   memset(&myIpcDesc, 0, sizeof(myIpcDesc));
   {
-    flagcxIpcMemHandle_t handlePtr = nullptr;
-    size_t ipcSize = 0;
-    FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize),
-                    res, fail);
-    res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
-    if (res != flagcxSuccess) {
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
-      goto fail;
+    const flagcxIpcHandleData *preRegHandle = nullptr;
+    void *regKey =
+        comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
+    flagcxRegItem *regItem = globalRegPool.getItem(regKey, buff);
+    if (regItem != nullptr) {
+      char zeros[sizeof(flagcxIpcHandleData)] = {};
+      if (memcmp(&regItem->localIpcHandleData, zeros,
+                 sizeof(flagcxIpcHandleData)) != 0) {
+        preRegHandle = &regItem->localIpcHandleData;
+      }
     }
-    if (ipcSize > sizeof(flagcxIpcHandleData)) {
+
+    if (preRegHandle != nullptr) {
+      // Reuse pre-registered handle — skip ipcMemHandleGet
+      memcpy(&myIpcDesc.handleData, preRegHandle, sizeof(flagcxIpcHandleData));
+      myIpcDesc.size = size;
+    } else {
+      // Get IPC handle from device adaptor
+      flagcxIpcMemHandle_t handlePtr = nullptr;
+      size_t ipcSize = 0;
+      FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize),
+                      res, fail);
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+      if (res != flagcxSuccess) {
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+        goto fail;
+      }
+      if (ipcSize > sizeof(flagcxIpcHandleData)) {
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+        res = flagcxInternalError;
+        goto fail;
+      }
+      memcpy(&myIpcDesc.handleData, handlePtr, ipcSize);
+      myIpcDesc.size = size;
       deviceAdaptor->ipcMemHandleFree(handlePtr);
-      res = flagcxInternalError;
-      goto fail;
     }
-    memcpy(&myIpcDesc.handleData, handlePtr, ipcSize);
-    myIpcDesc.size = size;
-    deviceAdaptor->ipcMemHandleFree(handlePtr);
   }
 
   // Step 2: Exchange IPC handles with all ranks
@@ -1094,7 +1119,7 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;
 
-    // ---- Symmetric default window ----
+    // ---- Priority 1 & 2: Symmetric default window (VMM or IPC fallback) ----
     if (win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
       handle->hasWindow = true;
@@ -1104,8 +1129,10 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
         handle->mrIndex = d->mrIndex;
         handle->mrBase = d->mrBase;
       }
-      // If VMM failed, fall back to IPC for peer access
-      if (d != nullptr && !d->isVMM) {
+      if (d != nullptr && d->isVMM && d->flatBase) {
+        // Priority 1: VMM — peer access via flat VA, nothing else needed
+      } else {
+        // Priority 2: Symmetric IPC fallback (VMM failed or not available)
         int idx = buildIpcPeerPointers(comm, buff, size);
         if (idx >= 0) {
           handle->ipcIndex = idx;
@@ -1114,25 +1141,37 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                "fallback also failed — no peer access");
         }
       }
-      // window pointer will be set in the default block below
       handle->window = nullptr;
     }
-    // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
-    else if (win == nullptr) {
-      int idx = buildIpcPeerPointers(comm, buff, size);
-      if (idx >= 0) {
-        handle->ipcIndex = idx;
-      } else {
-        WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
-             "IPC layer not available");
-      }
-    }
-
-    // ---- Window layer: if win provided and valid (vendor path) ----
-    if (win != nullptr && !win->isSymmetricDefault) {
+    // ---- Priority 3: Vendor native window ----
+    else if (win != nullptr && !win->isSymmetricDefault) {
       handle->hasWindow = true;
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
       handle->winHandle = (void *)win;
+    }
+    // ---- Priority 4 & 5: No window — IPC (buildIpcPeerPointers checks
+    //      globalRegPool internally to reuse pre-registered handles) ----
+    else if (win == nullptr) {
+      // Check if already in ipcTable (from a previous flagcxDevMemCreate call)
+      int existingIdx = -1;
+      for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
+        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
+          existingIdx = i;
+          break;
+        }
+      }
+      if (existingIdx >= 0) {
+        // Already built — reuse existing entry
+        handle->ipcIndex = existingIdx;
+      } else {
+        int idx = buildIpcPeerPointers(comm, buff, size);
+        if (idx >= 0) {
+          handle->ipcIndex = idx;
+        } else {
+          WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
+               "IPC layer not available");
+        }
+      }
     }
   }
 
