@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <pybind11/chrono.h>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -295,26 +296,18 @@ protected:
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
 #endif
-#ifdef USE_SUNRISE_ADAPTOR
-  // PCCL p2p needs a dedicated 2-rank pair sub-comm (1-rank for self).
-  // Lazily created/cached per (rank_, peer); unique_id is swapped via
-  // store_ (lower rank publishes). Peer p2p_rank is (rank_ < peer ? 1 : 0)
-  // so callers compute it locally rather than returning it.
-  flagcxComm_t getOrInitPtpuPairComm(int peer);
-  std::unordered_map<std::string, flagcxComm_t> ptpuPairComms_;
 
-  // PTPU coalescing state. Group-bracket on handler_->comm + pair-comm
-  // send/recv crashes PCCL; user-ordered pair-comm issue ring-deadlocks
-  // on >=3 ranks. So we queue ops in pendingOps and replay them in
-  // peer-ascending (canonical) order in endCoalescing().
-  struct PtpuCoalesceCtx {
+  // Pair-comm support for backends that require dedicated 2-rank sub-comms
+  // for p2p operations (e.g. PCCL/sunrise). Detected at runtime via
+  // devHandle_->getVendor().
+  bool needsPairComm_ = false;
+  std::unordered_map<std::string, flagcxComm_t> pairComms_;
+  struct pairCoalesceCtx {
     bool active = false;
-    // (peer-rank, runner-lambda). Runner captures tensor by value so
-    // storage stays alive until endCoalescing() flushes.
     std::vector<std::pair<int, std::function<void()>>> pendingOps;
   };
-  PtpuCoalesceCtx ptpuCoalesce_;
-#endif
+  pairCoalesceCtx pairCoalesce_;
+  flagcxComm_t getOrCreatePairComm(int peer);
 
 private:
   // Helper that encapsulates work shared across all collective communication
