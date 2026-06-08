@@ -188,6 +188,10 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
       // Update regPool key to match new beginAddr
       auto &globalPool = regPool[GLOBAL_POOL_KEY];
       auto nodeIt = globalPool.find(oldBegin);
+      if (nodeIt == globalPool.end()) {
+        WARN("registerBuffer: regPool key mismatch for oldBegin");
+        return flagcxInternalError;
+      }
       std::unique_ptr<flagcxRegItem> tmp = std::move(nodeIt->second);
       globalPool.erase(nodeIt);
       globalPool.emplace(beginAddr, std::move(tmp));

@@ -147,6 +147,20 @@ void serializeFunc2DVector(FILE *file, size_t chunksize,
   fprintf(file, "%*s</%s>\n", indent, "", tagName);
 }
 
+// Overloaded dispatch helpers for readFunc2DVector (C++11-compatible
+// alternative to if constexpr)
+inline void readFuncStep(FILE *file, size_t chunksize, const char *line,
+                         std::vector<flagcxC2cHomoFunc> &step) {
+  if (strstr(line, "<HomoFunc>"))
+    step.emplace_back(file, chunksize);
+}
+
+inline void readFuncStep(FILE *file, size_t chunksize, const char *line,
+                         std::vector<flagcxC2cHeteroFunc> &step) {
+  if (strstr(line, "<HeteroFunc>"))
+    step.emplace_back(file, chunksize);
+}
+
 template <typename T>
 std::vector<std::vector<T>> readFunc2DVector(FILE *file, size_t chunksize,
                                              const char *tagName) {
@@ -169,13 +183,7 @@ std::vector<std::vector<T>> readFunc2DVector(FILE *file, size_t chunksize,
       while (fgets(line, sizeof(line), file)) {
         if (strstr(line, "</Step>"))
           break;
-        if (std::is_same<T, flagcxC2cHomoFunc>::value) {
-          if (strstr(line, "<HomoFunc>"))
-            step.emplace_back(file, chunksize);
-        } else if (std::is_same<T, flagcxC2cHeteroFunc>::value) {
-          if (strstr(line, "<HeteroFunc>"))
-            step.emplace_back(file, chunksize);
-        }
+        readFuncStep(file, chunksize, line, step);
       }
       result.push_back(step);
     }
