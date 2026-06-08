@@ -161,6 +161,7 @@ struct flagcxCollnetHandleList {
 };
 
 struct flagcxRmaProxyState; // forward declaration; defined in flagcx_hetero.h
+struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 
 #define FLAGCX_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
 
@@ -385,6 +386,10 @@ struct flagcxHeteroComm {
   struct flagcxOneSideHandleInfo **oneSideHandles;
   int oneSideHandleCount;
   int oneSideHandleCapacity;
+
+  // IPC table pointer — owned by outer flagcxComm, shared for intra-node D2D
+  struct flagcxIpcTableEntry *ipcTable;
+  int ipcTableSize;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;

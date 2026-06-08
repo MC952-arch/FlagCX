@@ -13,6 +13,8 @@
 
 #include "comm.h" // for flagcxHeteroComm_t
 
+struct flagcxSymWindow; // forward declaration
+
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
   uint32_t *rkeys;
@@ -23,6 +25,11 @@ struct flagcxOneSideHandleInfo {
   void **fullSendComms; // [nRanks] per-peer sendComm (NULL if not owner)
   void **fullRecvComms; // [nRanks] per-peer recvComm (NULL if not owner)
   int nRanks;           // number of ranks (for cleanup iteration)
+
+  // Symmetric memory window for intra-node D2D bypass (CE path).
+  // NULL if VMM not available or window not registered with
+  // FLAGCX_WIN_COLL_SYMMETRIC.
+  struct flagcxSymWindow *symWin;
 };
 
 // Internal implementation used by sym_heap and flagcxCommRegister

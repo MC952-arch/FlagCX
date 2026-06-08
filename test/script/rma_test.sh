@@ -19,7 +19,7 @@ echo "--- test_put ---"
 mpirun -np "$NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_MEM_ENABLE=1 \
-    -x FLAGCX_VMM_ENABLE=0 \
+    -x FLAGCX_VMM_ENABLE=1 \
     "$PERF_BIN/perf_put" -b 8 -e 1M -f 2 -R 2
 
 echo ""
@@ -27,7 +27,7 @@ echo "--- test_get ---"
 mpirun -np "$NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_MEM_ENABLE=1 \
-    -x FLAGCX_VMM_ENABLE=0 \
+    -x FLAGCX_VMM_ENABLE=1 \
     "$PERF_BIN/perf_get" -b 8 -e 1M -f 2 -R 2
 
 echo ""
@@ -35,7 +35,7 @@ echo "--- test_one_side_register ---"
 mpirun -np "$NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_MEM_ENABLE=1 \
-    -x FLAGCX_VMM_ENABLE=0 \
+    -x FLAGCX_VMM_ENABLE=1 \
     "$PERF_BIN/perf_one_side_register" -b 8 -e 1M -f 2 -R 2
 
 echo ""

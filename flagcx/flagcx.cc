@@ -1212,7 +1212,20 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
   }
   // Non-homo or homo-fallback: use symmetric heap path
   if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
-    return flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
+    flagcxResult_t res =
+        flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
+
+    // Initialize D2D bypass if this is the first successful symmetric window
+    // and RMA proxy is running but IPC not yet initialized.
+    if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
+        (*win)->defaultBase->flatBase != NULL) {
+      if (comm->heteroComm->rmaProxy != NULL &&
+          comm->heteroComm->rmaProxy->ipcState == NULL) {
+        flagcxHeteroRmaIpcInit(comm->heteroComm);
+      }
+    }
+
+    return res;
   }
   *win = nullptr;
   return flagcxSuccess;
@@ -1907,6 +1920,10 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     FLAGCXCHECK(
         flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks, *commId, rank));
 
+    // Share ipcTable with heteroComm for intra-node D2D bypass
+    (*comm)->heteroComm->ipcTable = (*comm)->ipcTable;
+    (*comm)->heteroComm->ipcTableSize = FLAGCX_MAX_IPC_ENTRIES;
+
     // Init host cclAdaptor
     if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
       if (!flagcxParamTopoDetectionDisable()) {
@@ -2562,13 +2579,19 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
   size_t srcOffset = 0;
   if (hetero->oneSideHandleCount > 0 && hetero->oneSideHandles[0] != NULL) {
     uintptr_t srcBase = hetero->oneSideHandles[0]->baseVas[hetero->rank];
+    if ((uintptr_t)localbuff < srcBase) {
+      WARN("flagcxPutSignal: localbuff %p below MR base %lx", localbuff,
+           (unsigned long)srcBase);
+      return flagcxInvalidArgument;
+    }
     srcOffset = (uintptr_t)localbuff - srcBase;
   } else {
     return flagcxInvalidArgument;
   }
 
-  // Signal offset: use aggregate signal (offset nRanks * 8 in signal buffer)
-  size_t signalOffset = (size_t)peer * sizeof(uint64_t);
+  // Signal offset: sender writes to its own slot in receiver's signal buffer,
+  // so receiver can identify which peer sent the signal.
+  size_t signalOffset = (size_t)hetero->rank * sizeof(uint64_t);
 
   uint64_t opSeq = 0;
   return flagcxHeteroPutSignalStream(hetero, peer, srcOffset, peerWinOffset,
@@ -2582,7 +2605,8 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
 
-  size_t signalOffset = (size_t)peer * sizeof(uint64_t);
+  // Sender writes to its own slot in receiver's signal buffer
+  size_t signalOffset = (size_t)comm->heteroComm->rank * sizeof(uint64_t);
   uint64_t opSeq = 0;
   return flagcxHeteroPutSignalStream(comm->heteroComm, peer, 0, 0, 0,
                                      signalOffset, -1, 0, 1 /*signalValue*/,
@@ -2597,17 +2621,20 @@ flagcxResult_t flagcxWaitSignal(int nDesc, flagcxWaitSignalDesc_t *signalDescs,
     return flagcxInvalidArgument;
 
   flagcxHeteroComm_t hetero = comm->heteroComm;
+  if (hetero->rmaProxy == NULL)
+    return flagcxInvalidArgument;
+
   for (int i = 0; i < nDesc; i++) {
-    int p = signalDescs[i].peer;
-    int opCnt = signalDescs[i].opCnt;
-    // Wait for opCnt completions from peer p using stream-based flush
-    uint64_t seq =
-        __atomic_load_n(&hetero->rmaProxy->opSeqs[p], __ATOMIC_RELAXED);
-    // The expected done sequence is the current opSeq (all pending ops
-    // complete) If opCnt specifies a subset, we'd need per-peer tracking — for
-    // now wait all.
-    (void)opCnt;
-    flagcxResult_t res = flagcxHeteroFlushRmaStream(hetero, p, seq, stream);
+    int peer = signalDescs[i].peer;
+    uint64_t opCnt = (uint64_t)signalDescs[i].opCnt;
+
+    // Signal offset: peer's slot in my local signal buffer
+    // (sender writes to sender's rank slot on receiver)
+    size_t signalOffset = (size_t)peer * sizeof(uint64_t);
+
+    // Wait for signal value >= opCnt using GPU-side streamWaitValue64
+    flagcxResult_t res =
+        flagcxHeteroWaitSignal(hetero, peer, signalOffset, opCnt, stream);
     if (res != flagcxSuccess)
       return res;
   }

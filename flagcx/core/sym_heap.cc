@@ -325,6 +325,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
           if ((uintptr_t)buff == base) {
             d->mrIndex = i;
             d->mrBase = base;
+
+            // Link symmetric window to MR handle for intra-node D2D bypass
+            info->symWin = d;
+
             break;
           }
         }

@@ -1,9 +1,11 @@
 #include "flagcx_hetero.h"
 #include "adaptor.h"
+#include "global_comm.h"
 #include "group.h"
 #include "net.h"
 #include "onesided.h"
 #include "param.h"
+#include "sym_heap.h"
 #include "transport.h"
 #include "type.h"
 
@@ -499,6 +501,17 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
                      proxy) != 0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
+    // Free GDR memory for stream-based sync
+    if (proxy->doneSeqsCpu != NULL) {
+      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                  nRanks * sizeof(uint64_t));
+    }
+    if (proxy->doneSeqsDev != NULL && proxy->doneSeqsGdrHandle != NULL) {
+      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
+    }
+    if (proxy->doneSeqsGdrHandle != NULL) {
+      deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
+    }
     for (int p = 0; p < nRanks; p++)
       pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
     free(proxy->circularBuffers);
@@ -943,6 +956,18 @@ flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
 
 // ---- Intra-node topology helper ----
 
+// Get pointer to peer's buffer in the flat-mapped symmetric VA range.
+// Equivalent to NCCL's ncclDevrGetLsaRankPtr — computes local VA for peer's
+// memory. Returns NULL if symmetric memory not available for this handle.
+static inline void *flagcxGetIntraRankPtr(flagcxSymWindow_t symWin,
+                                          int peerLocalRank, size_t offset) {
+  if (symWin == NULL || symWin->flatBase == NULL || !symWin->isVMM)
+    return NULL;
+
+  return (void *)((uintptr_t)symWin->flatBase +
+                  (size_t)peerLocalRank * symWin->allocSize + offset);
+}
+
 static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer) {
   if (comm->rankToNode == NULL)
     return false;
@@ -956,6 +981,48 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
   if (proxy == NULL)
     return flagcxInternalError;
 
+  // Check if D2D memory is available (VMM OR IPC)
+  bool hasD2dMemory = false;
+
+  // Check VMM (symmetric memory flat VA)
+  for (int h = 0; h < comm->oneSideHandleCount; h++) {
+    struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[h];
+    if (info != NULL && info->symWin != NULL &&
+        info->symWin->flatBase != NULL && info->symWin->isVMM) {
+      hasD2dMemory = true;
+      break;
+    }
+  }
+  if (comm->signalHandle != NULL && comm->signalHandle->symWin != NULL &&
+      comm->signalHandle->symWin->flatBase != NULL &&
+      comm->signalHandle->symWin->isVMM) {
+    hasD2dMemory = true;
+  }
+
+  // Check IPC table for matching entries
+  if (!hasD2dMemory && comm->ipcTable != NULL) {
+    for (int h = 0; h < comm->oneSideHandleCount; h++) {
+      struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[h];
+      if (info == NULL || info->baseVas == NULL)
+        continue;
+      uintptr_t myBase = info->baseVas[comm->rank];
+      for (int k = 0; k < comm->ipcTableSize; k++) {
+        if (comm->ipcTable[k].inUse &&
+            (uintptr_t)comm->ipcTable[k].basePtr == myBase) {
+          hasD2dMemory = true;
+          break;
+        }
+      }
+      if (hasD2dMemory)
+        break;
+    }
+  }
+
+  if (!hasD2dMemory) {
+    INFO(FLAGCX_REG, "D2D bypass disabled: no VMM or IPC memory available");
+    return flagcxSuccess; // Not an error — proxy path works fine
+  }
+
   int nRanks = comm->nRanks;
   struct flagcxRmaIpcState *ipc =
       (struct flagcxRmaIpcState *)calloc(1, sizeof(*ipc));
@@ -964,7 +1031,7 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
   ipc->nRanks = nRanks;
   ipc->dataHandleCount = comm->oneSideHandleCount;
 
-  // Allocate per-peer IPC-mapped data buffer pointers
+  // Allocate per-peer pointer arrays
   ipc->peerDataBufs = (void ***)calloc(nRanks, sizeof(void **));
   ipc->peerSignalBufs = (void **)calloc(nRanks, sizeof(void *));
   if (ipc->peerDataBufs == NULL || ipc->peerSignalBufs == NULL) {
@@ -974,34 +1041,58 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
     return flagcxSystemError;
   }
 
-  // For each intra-node peer, open IPC handles
+  // For each intra-node peer, resolve D2D pointers
   for (int p = 0; p < nRanks; p++) {
     if (p == comm->rank || !flagcxIsIntraNode(comm, p))
       continue;
 
-    // Map signal buffer from peer
-    if (comm->signalHandle != NULL && comm->signalHandle->baseVas != NULL) {
-      // Signal buffer VA is already accessible (registered with full-mesh)
-      // For IPC path, use the known peer base VA directly
-      ipc->peerSignalBufs[p] = (void *)comm->signalHandle->baseVas[p];
+    int peerLocalRank = comm->rankToLocalRank[p];
+
+    // Map signal buffer via symmetric flat mapping (VMM only)
+    if (comm->signalHandle != NULL && comm->signalHandle->symWin != NULL) {
+      ipc->peerSignalBufs[p] =
+          flagcxGetIntraRankPtr(comm->signalHandle->symWin, peerLocalRank, 0);
     }
 
-    // Map data buffers from peer (for each registered MR)
+    // Map data buffers for each registered handle
     if (comm->oneSideHandleCount > 0) {
       ipc->peerDataBufs[p] =
           (void **)calloc(comm->oneSideHandleCount, sizeof(void *));
       if (ipc->peerDataBufs[p] == NULL)
         continue;
       for (int h = 0; h < comm->oneSideHandleCount; h++) {
-        if (comm->oneSideHandles[h] != NULL &&
-            comm->oneSideHandles[h]->baseVas != NULL) {
-          ipc->peerDataBufs[p][h] = (void *)comm->oneSideHandles[h]->baseVas[p];
+        struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[h];
+        if (info == NULL)
+          continue;
+
+        // VMM path (takes precedence)
+        if (info->symWin != NULL && info->symWin->flatBase != NULL &&
+            info->symWin->isVMM) {
+          ipc->peerDataBufs[p][h] =
+              flagcxGetIntraRankPtr(info->symWin, peerLocalRank, 0);
+          continue;
+        }
+
+        // IPC fallback: lookup in ipcTable by basePtr
+        if (comm->ipcTable != NULL && info->baseVas != NULL) {
+          uintptr_t myBase = info->baseVas[comm->rank];
+          for (int k = 0; k < comm->ipcTableSize; k++) {
+            if (comm->ipcTable[k].inUse &&
+                (uintptr_t)comm->ipcTable[k].basePtr == myBase &&
+                comm->ipcTable[k].hostPeerPtrs != NULL) {
+              ipc->peerDataBufs[p][h] =
+                  comm->ipcTable[k].hostPeerPtrs[peerLocalRank];
+              break;
+            }
+          }
         }
       }
     }
   }
 
   proxy->ipcState = ipc;
+  INFO(FLAGCX_REG, "D2D bypass enabled for %d intra-node peers",
+       comm->localRanks - 1);
   return flagcxSuccess;
 }
 
@@ -1032,34 +1123,37 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
   if (proxy == NULL)
     return flagcxInternalError;
 
-  // Try intra-node D2D path
-  if (stream != NULL && proxy->ipcState != NULL &&
-      flagcxIsIntraNode(comm, peer)) {
-    struct flagcxRmaIpcState *ipc = proxy->ipcState;
-    void *srcBuf = NULL;
-    void *dstBuf = NULL;
+  // Try intra-node D2D path (lazy init if not yet built)
+  if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
+    if (proxy->ipcState == NULL)
+      flagcxHeteroRmaIpcInit(comm);
+    if (proxy->ipcState != NULL) {
+      struct flagcxRmaIpcState *ipc = proxy->ipcState;
+      void *srcBuf = NULL;
+      void *dstBuf = NULL;
 
-    // Resolve source and destination buffers
-    if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
-        comm->oneSideHandles[srcMrIdx] != NULL) {
-      srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
-                        srcOffset);
-    }
-    if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
-        ipc->peerDataBufs[peer] != NULL &&
-        ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
-      dstBuf =
-          (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
-    }
+      // Resolve source and destination buffers
+      if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
+          comm->oneSideHandles[srcMrIdx] != NULL) {
+        srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
+                          srcOffset);
+      }
+      if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
+          ipc->peerDataBufs[peer] != NULL &&
+          ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
+        dstBuf =
+            (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
+      }
 
-    if (srcBuf != NULL && dstBuf != NULL) {
-      flagcxResult_t res = deviceAdaptor->deviceMemcpy(
-          dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
-      if (opSeq != NULL)
-        *opSeq = 0; // D2D path has no opSeq (no proxy involvement)
-      return res;
+      if (srcBuf != NULL && dstBuf != NULL) {
+        flagcxResult_t res = deviceAdaptor->deviceMemcpy(
+            dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+        if (opSeq != NULL)
+          *opSeq = 0; // D2D path has no opSeq (no proxy involvement)
+        return res;
+      }
+      // Fall through to proxy path if buffer resolution fails
     }
-    // Fall through to proxy path if buffer resolution fails
   }
 
   // Fallback: enqueue to proxy thread (inter-node or no IPC)
@@ -1079,53 +1173,56 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
   if (proxy == NULL)
     return flagcxInternalError;
 
-  // Try intra-node D2D path
-  if (stream != NULL && proxy->ipcState != NULL &&
-      flagcxIsIntraNode(comm, peer)) {
-    struct flagcxRmaIpcState *ipc = proxy->ipcState;
-    void *srcBuf = NULL;
-    void *dstBuf = NULL;
-    void *signalAddr = NULL;
+  // Try intra-node D2D path (lazy init if not yet built)
+  if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
+    if (proxy->ipcState == NULL)
+      flagcxHeteroRmaIpcInit(comm);
+    if (proxy->ipcState != NULL) {
+      struct flagcxRmaIpcState *ipc = proxy->ipcState;
+      void *srcBuf = NULL;
+      void *dstBuf = NULL;
+      void *signalAddr = NULL;
 
-    // Resolve source buffer (local)
-    if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
-        comm->oneSideHandles[srcMrIdx] != NULL) {
-      srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
-                        srcOffset);
-    }
-    // Resolve destination buffer (peer)
-    if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
-        ipc->peerDataBufs[peer] != NULL &&
-        ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
-      dstBuf =
-          (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
-    }
-    // Resolve signal address (peer's signal buffer)
-    if (ipc->peerSignalBufs[peer] != NULL) {
-      signalAddr =
-          (void *)((uintptr_t)ipc->peerSignalBufs[peer] + signalOffset);
-    }
-
-    if ((size == 0 || (srcBuf != NULL && dstBuf != NULL)) &&
-        signalAddr != NULL) {
-      flagcxResult_t res = flagcxSuccess;
-      // Data transfer (if any)
-      if (size > 0) {
-        res = deviceAdaptor->deviceMemcpy(
-            dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
-        if (res != flagcxSuccess)
-          return res;
+      // Resolve source buffer (local)
+      if (srcMrIdx >= 0 && srcMrIdx < comm->oneSideHandleCount &&
+          comm->oneSideHandles[srcMrIdx] != NULL) {
+        srcBuf = (void *)(comm->oneSideHandles[srcMrIdx]->baseVas[comm->rank] +
+                          srcOffset);
       }
-      // Signal write via D2D (atomic add emulated via streamWriteValue64)
-      // Note: this is a simple write, not atomic add — suitable for
-      // single-writer scenarios typical in intra-node RMA.
-      res =
-          deviceAdaptor->streamWriteValue64(stream, signalAddr, signalValue, 0);
-      if (opSeq != NULL)
-        *opSeq = 0; // D2D path
-      return res;
+      // Resolve destination buffer (peer)
+      if (dstMrIdx >= 0 && dstMrIdx < ipc->dataHandleCount &&
+          ipc->peerDataBufs[peer] != NULL &&
+          ipc->peerDataBufs[peer][dstMrIdx] != NULL) {
+        dstBuf =
+            (void *)((uintptr_t)ipc->peerDataBufs[peer][dstMrIdx] + dstOffset);
+      }
+      // Resolve signal address (peer's signal buffer)
+      if (ipc->peerSignalBufs[peer] != NULL) {
+        signalAddr =
+            (void *)((uintptr_t)ipc->peerSignalBufs[peer] + signalOffset);
+      }
+
+      if ((size == 0 || (srcBuf != NULL && dstBuf != NULL)) &&
+          signalAddr != NULL) {
+        flagcxResult_t res = flagcxSuccess;
+        // Data transfer (if any)
+        if (size > 0) {
+          res = deviceAdaptor->deviceMemcpy(
+              dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+          if (res != flagcxSuccess)
+            return res;
+        }
+        // Signal write via D2D (atomic add emulated via streamWriteValue64)
+        // Note: this is a simple write, not atomic add — suitable for
+        // single-writer scenarios typical in intra-node RMA.
+        res = deviceAdaptor->streamWriteValue64(stream, signalAddr, signalValue,
+                                                0);
+        if (opSeq != NULL)
+          *opSeq = 0; // D2D path
+        return res;
+      }
+      // Fall through to proxy path
     }
-    // Fall through to proxy path
   }
 
   // Fallback: enqueue to proxy thread
