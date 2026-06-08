@@ -292,8 +292,8 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
   char vendor[64] = {};
-  devHandle_->getVendor(vendor);
-  needsPairComm_ = (std::string(vendor) == "SUNRISE");
+  C10D_FLAGCX_CHECK(devHandle_->getVendor(vendor), std::nullopt);
+  needsPairComm_ = (strcmp(vendor, "SUNRISE") == 0);
 }
 #else
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
@@ -305,8 +305,8 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
   char vendor[64] = {};
-  devHandle_->getVendor(vendor);
-  needsPairComm_ = (std::string(vendor) == "SUNRISE");
+  C10D_FLAGCX_CHECK(devHandle_->getVendor(vendor), std::nullopt);
+  needsPairComm_ = (strcmp(vendor, "SUNRISE") == 0);
 }
 #endif
 
@@ -317,7 +317,10 @@ flagcxBackend::~flagcxBackend() {
     }
     // Destroy pair comms before the global comm
     for (auto &kv : pairComms_) {
-      flagcxCommDestroy(kv.second);
+      auto ret = flagcxCommDestroy(kv.second);
+      if (ret != flagcxSuccess) {
+        TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first);
+      }
     }
     pairComms_.clear();
     flagcxCommDestroy(comm_);
@@ -449,41 +452,52 @@ void flagcxBackend::initComm() {
 }
 
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
-  if (peer == rank_) {
-    // Self-send uses the global comm directly
-    return comm_;
-  }
+  std::string key;
+  int numRanks;
+  int p2pRank;
 
-  const int low = std::min(rank_, peer);
-  const int high = std::max(rank_, peer);
-  std::string key = std::to_string(low) + ":" + std::to_string(high);
+  if (peer == rank_) {
+    // Self-send/recv: dedicated 1-rank comm
+    key = "self:" + std::to_string(rank_);
+    numRanks = 1;
+    p2pRank = 0;
+  } else {
+    const int low = std::min(rank_, peer);
+    const int high = std::max(rank_, peer);
+    key = std::to_string(low) + ":" + std::to_string(high);
+    numRanks = 2;
+    p2pRank = (rank_ < peer) ? 0 : 1;
+  }
 
   if (auto it = pairComms_.find(key); it != pairComms_.end()) {
     return it->second;
   }
 
-  // Exchange uniqueId via store_: lower rank generates and publishes
-  const int p2pRank = (rank_ < peer) ? 0 : 1;
-  const std::string storeKey = "flagcx/p2p/" + key + "/uniqueId";
-
   flagcxUniqueId uniqueId{};
+  C10D_FLAGCX_CHECK(flagcxGetUniqueId(&uniqueId), std::nullopt);
 
-  if (p2pRank == 0) {
-    C10D_FLAGCX_CHECK(flagcxGetUniqueId(&uniqueId), std::nullopt);
-    auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t *>(&uniqueId),
-                                    reinterpret_cast<uint8_t *>(&uniqueId) +
-                                        sizeof(flagcxUniqueId));
-    store_->set(storeKey, std::string(vec.begin(), vec.end()));
-  } else {
-    auto vec = store_->get(storeKey);
-    TORCH_CHECK_WITH(DistBackendError, vec.size() == sizeof(flagcxUniqueId),
-                     "Invalid size for flagcxUniqueId on p2p key '", key, "'");
-    std::memcpy(reinterpret_cast<uint8_t *>(&uniqueId), vec.data(),
-                sizeof(flagcxUniqueId));
+  if (numRanks == 2) {
+    // Exchange uniqueId via store_: lower rank (p2pRank 0) generates and
+    // publishes; higher rank (p2pRank 1) reads.
+    const std::string storeKey = "flagcx/p2p/" + key + "/uniqueId";
+    if (p2pRank == 0) {
+      auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t *>(&uniqueId),
+                                      reinterpret_cast<uint8_t *>(&uniqueId) +
+                                          sizeof(flagcxUniqueId));
+      store_->set(storeKey, std::string(vec.begin(), vec.end()));
+    } else {
+      auto vec = store_->get(storeKey);
+      TORCH_CHECK_WITH(DistBackendError, vec.size() == sizeof(flagcxUniqueId),
+                       "Invalid size for flagcxUniqueId on p2p key '", key,
+                       "'");
+      std::memcpy(reinterpret_cast<uint8_t *>(&uniqueId), vec.data(),
+                  sizeof(flagcxUniqueId));
+    }
   }
+  // numRanks == 1 (self-comm): no store exchange needed, single participant.
 
   flagcxComm_t pairComm = nullptr;
-  C10D_FLAGCX_CHECK(flagcxCommInitRank(&pairComm, 2, &uniqueId, p2pRank),
+  C10D_FLAGCX_CHECK(flagcxCommInitRank(&pairComm, numRanks, &uniqueId, p2pRank),
                     std::nullopt);
   pairComms_.emplace(key, pairComm);
   return pairComm;
@@ -1335,13 +1349,12 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
   if (needsPairComm_) {
     // Pair-comm mode: route through dedicated 2-rank sub-comm
-    void *dataPtr = tensor.data_ptr();
-    size_t numel = tensor.numel();
-    auto doSend = [this, dataPtr, numel, flagcxDataType, stream, dstRank]() {
+    auto doSend = [this, tensor, flagcxDataType, stream, dstRank]() {
       flagcxComm_t pairComm = getOrCreatePairComm(dstRank);
-      int peerInPair = (dstRank == rank_) ? 0 : ((rank_ < dstRank) ? 1 : 0);
-      C10D_FLAGCX_CHECK(flagcxSend(dataPtr, numel, flagcxDataType, peerInPair,
-                                   pairComm, stream),
+      int peerInPair = (rank_ < dstRank) ? 1 : 0;
+      C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, peerInPair, pairComm,
+                                   stream),
                         std::nullopt);
     };
     if (pairCoalesce_.active) {
@@ -1388,13 +1401,12 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
 
   if (needsPairComm_) {
     // Pair-comm mode: route through dedicated 2-rank sub-comm
-    void *dataPtr = tensor.data_ptr();
-    size_t numel = tensor.numel();
-    auto doRecv = [this, dataPtr, numel, flagcxDataType, stream, srcRank]() {
+    auto doRecv = [this, tensor, flagcxDataType, stream, srcRank]() {
       flagcxComm_t pairComm = getOrCreatePairComm(srcRank);
-      int peerInPair = (srcRank == rank_) ? 0 : ((rank_ < srcRank) ? 1 : 0);
-      C10D_FLAGCX_CHECK(flagcxRecv(dataPtr, numel, flagcxDataType, peerInPair,
-                                   pairComm, stream),
+      int peerInPair = (rank_ < srcRank) ? 1 : 0;
+      C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, peerInPair, pairComm,
+                                   stream),
                         std::nullopt);
     };
     if (pairCoalesce_.active) {
