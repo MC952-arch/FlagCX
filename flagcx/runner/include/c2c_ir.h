@@ -116,6 +116,18 @@ inline void serializeHeteroFunc(FILE *file, size_t chunksize,
   fprintf(file, "%*s</HeteroFunc>\n", indent, "");
 }
 
+// Overloaded dispatch helpers for serializeFunc2DVector (C++11-compatible
+// alternative to if constexpr)
+inline void serializeFunc(FILE *file, size_t chunksize,
+                          const flagcxC2cHomoFunc &func, int indent) {
+  serializeHomoFunc(file, chunksize, func, indent);
+}
+
+inline void serializeFunc(FILE *file, size_t chunksize,
+                          const flagcxC2cHeteroFunc &func, int indent) {
+  serializeHeteroFunc(file, chunksize, func, indent);
+}
+
 template <typename T>
 void serializeFunc2DVector(FILE *file, size_t chunksize,
                            const std::vector<std::vector<T>> &steps,
@@ -128,11 +140,7 @@ void serializeFunc2DVector(FILE *file, size_t chunksize,
     }
     fprintf(file, "%*s<Step>\n", indent + 2, "");
     for (const auto &func : stepVec) {
-      if (std::is_same<T, flagcxC2cHomoFunc>::value) {
-        serializeHomoFunc(file, chunksize, func, indent + 4);
-      } else if (std::is_same<T, flagcxC2cHeteroFunc>::value) {
-        serializeHeteroFunc(file, chunksize, func, indent + 4);
-      }
+      serializeFunc(file, chunksize, func, indent + 4);
     }
     fprintf(file, "%*s</Step>\n", indent + 2, "");
   }
