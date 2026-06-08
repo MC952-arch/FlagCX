@@ -1141,10 +1141,10 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
     }
     // Check if item is mapped under any non-global commKey
     auto &globalMap = globalRegPool.getGlobalMap();
-    for (auto &[key, pageMap] : globalMap) {
-      if (key == flagcxRegPool::GLOBAL_POOL_KEY)
+    for (auto &entry : globalMap) {
+      if (entry.first == flagcxRegPool::GLOBAL_POOL_KEY)
         continue;
-      if (pageMap.find(regItem->beginAddr) != pageMap.end()) {
+      if (entry.second.find(regItem->beginAddr) != entry.second.end()) {
         WARN("flagcxCommDeregister: comm is nullptr but handle has "
              "comm-specific regMap entries that require a valid comm");
         return flagcxInvalidArgument;

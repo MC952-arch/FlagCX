@@ -37,10 +37,10 @@ bool flagcxInterRankBufferInfoManager::checkIfPossibleToPush(int clusterId,
                                                              int rank,
                                                              size_t offset,
                                                              size_t count) {
-  if (auto clusterSearch = bufferInfos_.find(clusterId);
-      clusterSearch != bufferInfos_.end()) {
-    if (auto rankSearch = clusterSearch->second.find(rank);
-        rankSearch != clusterSearch->second.end()) {
+  auto clusterSearch = bufferInfos_.find(clusterId);
+  if (clusterSearch != bufferInfos_.end()) {
+    auto rankSearch = clusterSearch->second.find(rank);
+    if (rankSearch != clusterSearch->second.end()) {
       auto infoList = rankSearch->second;
       for (auto info : infoList) {
         if ((offset < info.offset_ && offset + count > info.offset_) ||
@@ -59,10 +59,10 @@ bool flagcxInterRankBufferInfoManager::checkIfPossibleToSplitAndPush(
     int *pushMode) {
   size_t maxSplitCount = 0;
   int finalPushMode = 0; // 0: prePush, 1: postPush
-  if (auto clusterSearch = bufferInfos_.find(clusterId);
-      clusterSearch != bufferInfos_.end()) {
-    if (auto rankSearch = clusterSearch->second.find(rank);
-        rankSearch != clusterSearch->second.end()) {
+  auto clusterSearch = bufferInfos_.find(clusterId);
+  if (clusterSearch != bufferInfos_.end()) {
+    auto rankSearch = clusterSearch->second.find(rank);
+    if (rankSearch != clusterSearch->second.end()) {
       auto infoList = rankSearch->second;
       for (auto info : infoList) {
         if (offset < info.offset_ && offset + count > info.offset_) {
@@ -95,10 +95,10 @@ bool flagcxInterRankBufferInfoManager::checkIfPossibleToSplitAndPush(
 
 bool flagcxInterRankBufferInfoManager::checkIsFull(int clusterId, int rank) {
   int rankCount = 0;
-  if (auto clusterSearch = bufferInfos_.find(clusterId);
-      clusterSearch != bufferInfos_.end()) {
-    if (auto rankSearch = clusterSearch->second.find(rank);
-        rankSearch != clusterSearch->second.end()) {
+  auto clusterSearch = bufferInfos_.find(clusterId);
+  if (clusterSearch != bufferInfos_.end()) {
+    auto rankSearch = clusterSearch->second.find(rank);
+    if (rankSearch != clusterSearch->second.end()) {
       auto infoList = rankSearch->second;
       for (auto info : infoList) {
         rankCount += info.count_;
@@ -113,10 +113,10 @@ bool flagcxInterRankBufferInfoManager::checkIsFull(int clusterId, int rank) {
 
 bool flagcxInterRankBufferInfoManager::checkIsScheduled(int clusterId,
                                                         int rank) {
-  if (auto clusterSearch = bufferInfos_.find(clusterId);
-      clusterSearch != bufferInfos_.end()) {
-    if (auto rankSearch = clusterSearch->second.find(rank);
-        rankSearch != clusterSearch->second.end()) {
+  auto clusterSearch = bufferInfos_.find(clusterId);
+  if (clusterSearch != bufferInfos_.end()) {
+    auto rankSearch = clusterSearch->second.find(rank);
+    if (rankSearch != clusterSearch->second.end()) {
       auto infoList = rankSearch->second;
       for (auto info : infoList) {
         if (!info.isScheduled_) {
@@ -130,10 +130,10 @@ bool flagcxInterRankBufferInfoManager::checkIsScheduled(int clusterId,
 
 std::list<flagcxBufferInfo> &
 flagcxInterRankBufferInfoManager::getBufferInfoList(int clusterId, int rank) {
-  if (auto clusterSearch = bufferInfos_.find(clusterId);
-      clusterSearch != bufferInfos_.end()) {
-    if (auto rankSearch = clusterSearch->second.find(rank);
-        rankSearch != clusterSearch->second.end()) {
+  auto clusterSearch = bufferInfos_.find(clusterId);
+  if (clusterSearch != bufferInfos_.end()) {
+    auto rankSearch = clusterSearch->second.find(rank);
+    if (rankSearch != clusterSearch->second.end()) {
       return rankSearch->second;
     } else {
       clusterSearch->second[rank] = {};

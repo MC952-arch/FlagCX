@@ -128,9 +128,9 @@ void serializeFunc2DVector(FILE *file, size_t chunksize,
     }
     fprintf(file, "%*s<Step>\n", indent + 2, "");
     for (const auto &func : stepVec) {
-      if constexpr (std::is_same<T, flagcxC2cHomoFunc>::value) {
+      if (std::is_same<T, flagcxC2cHomoFunc>::value) {
         serializeHomoFunc(file, chunksize, func, indent + 4);
-      } else if constexpr (std::is_same<T, flagcxC2cHeteroFunc>::value) {
+      } else if (std::is_same<T, flagcxC2cHeteroFunc>::value) {
         serializeHeteroFunc(file, chunksize, func, indent + 4);
       }
     }
@@ -161,10 +161,10 @@ std::vector<std::vector<T>> readFunc2DVector(FILE *file, size_t chunksize,
       while (fgets(line, sizeof(line), file)) {
         if (strstr(line, "</Step>"))
           break;
-        if constexpr (std::is_same<T, flagcxC2cHomoFunc>::value) {
+        if (std::is_same<T, flagcxC2cHomoFunc>::value) {
           if (strstr(line, "<HomoFunc>"))
             step.emplace_back(file, chunksize);
-        } else if constexpr (std::is_same<T, flagcxC2cHeteroFunc>::value) {
+        } else if (std::is_same<T, flagcxC2cHeteroFunc>::value) {
           if (strstr(line, "<HeteroFunc>"))
             step.emplace_back(file, chunksize);
         }

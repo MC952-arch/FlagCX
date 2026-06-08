@@ -187,9 +187,10 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
       }
       // Update regPool key to match new beginAddr
       auto &globalPool = regPool[GLOBAL_POOL_KEY];
-      auto node = globalPool.extract(oldBegin);
-      node.key() = beginAddr;
-      globalPool.insert(std::move(node));
+      auto nodeIt = globalPool.find(oldBegin);
+      std::unique_ptr<flagcxRegItem> tmp = std::move(nodeIt->second);
+      globalPool.erase(nodeIt);
+      globalPool.emplace(beginAddr, std::move(tmp));
     }
     // Extend forward if new buffer goes beyond existing range
     if (endAddr > existing->endAddr) {
@@ -212,8 +213,8 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
   reg->beginAddr = beginAddr;
   reg->endAddr = endAddr;
   reg->refCount = 1;
-  auto [it2, didInsert] = globalPool.emplace(beginAddr, std::move(reg));
-  flagcxRegItem *regPtr = it2->second.get();
+  auto result = globalPool.emplace(beginAddr, std::move(reg));
+  flagcxRegItem *regPtr = result.first->second.get();
 
   // Map pages in global regMap
   mapRegItemPages(GLOBAL_POOL_KEY, regPtr);
