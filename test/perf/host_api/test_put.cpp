@@ -216,7 +216,7 @@ int main(int argc, char *argv[]) {
                               currentRecvOffset, 0, comm, waitStream);
         fatal(res, "flagcxPutSignal warmup failed", proc);
       } else if (isReceiver) {
-        flagcxWaitSignalDesc_t desc = {1, senderRank};
+        flagcxWaitSignalDesc_t desc = {(uint64_t)(i + 1), senderRank};
         res = flagcxWaitSignal(1, &desc, comm, waitStream);
         fatal(res, "flagcxWaitSignal warmup failed", proc);
         devHandle->streamSynchronize(waitStream);
@@ -243,7 +243,8 @@ int main(int argc, char *argv[]) {
                               currentRecvOffset, 0, comm, waitStream);
         fatal(res, "flagcxPutSignal failed", proc);
       } else if (isReceiver) {
-        flagcxWaitSignalDesc_t desc = {1, senderRank};
+        flagcxWaitSignalDesc_t desc = {(uint64_t)(numWarmupIters + i + 1),
+                                       senderRank};
         res = flagcxWaitSignal(1, &desc, comm, waitStream);
         fatal(res, "flagcxWaitSignal failed", proc);
         devHandle->streamSynchronize(waitStream);

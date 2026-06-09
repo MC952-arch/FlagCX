@@ -41,6 +41,8 @@ struct flagcxRmaIpcState {
   void ***peerDataBufs;  // [nRanks][oneSideHandleCount] IPC-mapped data buffers
   void **peerSignalBufs; // [nRanks] IPC-mapped signal buffers
   int dataHandleCount;   // number of registered data windows
+  uint64_t *signalSeqs; // [nRanks] per-peer accumulated signal counter (for D2D
+                        // signal writes)
 };
 
 // Per-comm async RMA proxy state.

@@ -43,7 +43,8 @@ void warmupConnect(flagcxComm_t comm, flagcxDeviceHandle_t devHandle, int proc,
 bool doPutRound(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
                 void *dataWindow, flagcxWindow_t dataWin, void *hostStaging,
                 size_t size, size_t dataOffset, int proc, int senderRank,
-                int receiverRank, flagcxStream_t waitStream) {
+                int receiverRank, flagcxStream_t waitStream,
+                uint64_t expectedSignal) {
   flagcxResult_t res;
   if (proc == senderRank) {
     uint8_t fillVal = (uint8_t)(dataOffset & 0xff);
@@ -59,7 +60,7 @@ bool doPutRound(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
       return false;
     }
   } else {
-    flagcxWaitSignalDesc_t desc = {1, senderRank};
+    flagcxWaitSignalDesc_t desc = {expectedSignal, senderRank};
     res = flagcxWaitSignal(1, &desc, comm, waitStream);
     if (res != flagcxSuccess) {
       fprintf(stderr, "[rank %d] flagcxWaitSignal failed (err=%d)\n", proc,
@@ -214,9 +215,9 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < numWarmup + numIters; i++) {
         size_t dataOffset = (size_t)(i % std::max(numWarmup, numIters)) * size;
 
-        bool ok =
-            doPutRound(comm1, devHandle, dataBuf1, dataWin1, hostStaging, size,
-                       dataOffset, proc, senderRank, receiverRank, waitStream);
+        bool ok = doPutRound(comm1, devHandle, dataBuf1, dataWin1, hostStaging,
+                             size, dataOffset, proc, senderRank, receiverRank,
+                             waitStream, (uint64_t)(i + 1));
         if (!ok) {
           fprintf(stderr, "[rank %d] Phase 1 FAILED at iter %d size %zu\n",
                   proc, i, size);
@@ -239,9 +240,9 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < numWarmup + numIters; i++) {
         size_t dataOffset = (size_t)(i % std::max(numWarmup, numIters)) * size;
 
-        bool ok =
-            doPutRound(comm2, devHandle, dataBuf2, dataWin2, hostStaging, size,
-                       dataOffset, proc, senderRank, receiverRank, waitStream);
+        bool ok = doPutRound(comm2, devHandle, dataBuf2, dataWin2, hostStaging,
+                             size, dataOffset, proc, senderRank, receiverRank,
+                             waitStream, (uint64_t)(i + 1));
         if (!ok) {
           fprintf(stderr, "[rank %d] Phase 2 FAILED at iter %d size %zu\n",
                   proc, i, size);
@@ -273,9 +274,9 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < numWarmup + numIters; i++) {
         size_t dataOffset = (size_t)(i % std::max(numWarmup, numIters)) * size;
 
-        bool ok =
-            doPutRound(comm2, devHandle, dataBuf2, dataWin2, hostStaging, size,
-                       dataOffset, proc, senderRank, receiverRank, waitStream);
+        bool ok = doPutRound(comm2, devHandle, dataBuf2, dataWin2, hostStaging,
+                             size, dataOffset, proc, senderRank, receiverRank,
+                             waitStream, (uint64_t)(i + 1));
         if (!ok) {
           fprintf(stderr,
                   "[rank %d] Phase 3 FAILED at iter %d size %zu "

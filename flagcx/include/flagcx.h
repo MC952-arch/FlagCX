@@ -546,8 +546,8 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
 
 /* Descriptor for batch WaitSignal. */
 typedef struct {
-  int opCnt; /* number of operations to wait for from this peer */
-  int peer;  /* source rank */
+  uint64_t opCnt; /* number of operations to wait for from this peer */
+  int peer;       /* source rank */
 } flagcxWaitSignalDesc_t;
 
 /* Batch wait for multiple peers' signals to complete.

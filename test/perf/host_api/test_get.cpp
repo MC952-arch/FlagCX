@@ -232,7 +232,7 @@ int main(int argc, char *argv[]) {
         // Wait for getter's ack: getter has finished reading, safe to reuse
         // buffer
         {
-          flagcxWaitSignalDesc_t ackDesc = {1, getterRank};
+          flagcxWaitSignalDesc_t ackDesc = {(uint64_t)(i + 1), getterRank};
           res = flagcxWaitSignal(1, &ackDesc, comm, producerWaitStream);
           fatal(res, "flagcxWaitSignal ack warmup failed", proc);
         }
@@ -240,7 +240,7 @@ int main(int argc, char *argv[]) {
       } else if (isGetter) {
         // Wait for producer's signal then RDMA READ from producer's buffer
         {
-          flagcxWaitSignalDesc_t desc = {1, producerRank};
+          flagcxWaitSignalDesc_t desc = {(uint64_t)(i + 1), producerRank};
           res = flagcxWaitSignal(1, &desc, comm, waitStream);
           fatal(res, "flagcxWaitSignal warmup failed", proc);
         }
@@ -279,14 +279,16 @@ int main(int argc, char *argv[]) {
         // Wait for getter's ack: getter has finished reading, safe to reuse
         // buffer
         {
-          flagcxWaitSignalDesc_t ackDesc = {1, getterRank};
+          flagcxWaitSignalDesc_t ackDesc = {
+              (uint64_t)(num_warmup_iters + i + 1), getterRank};
           res = flagcxWaitSignal(1, &ackDesc, comm, producerWaitStream);
           fatal(res, "flagcxWaitSignal ack failed", proc);
         }
         devHandle->streamSynchronize(producerWaitStream);
       } else if (isGetter) {
         {
-          flagcxWaitSignalDesc_t desc = {1, producerRank};
+          flagcxWaitSignalDesc_t desc = {(uint64_t)(num_warmup_iters + i + 1),
+                                         producerRank};
           res = flagcxWaitSignal(1, &desc, comm, waitStream);
           fatal(res, "flagcxWaitSignal failed", proc);
         }

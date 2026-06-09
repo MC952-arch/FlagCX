@@ -540,6 +540,9 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   __atomic_store_n(&proxy->stop, 1, __ATOMIC_RELEASE);
   pthread_join(proxy->thread, NULL);
 
+  // Free IPC state (D2D bypass peer pointers)
+  flagcxHeteroRmaIpcDestroy(comm);
+
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
 
@@ -1034,9 +1037,12 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
   // Allocate per-peer pointer arrays
   ipc->peerDataBufs = (void ***)calloc(nRanks, sizeof(void **));
   ipc->peerSignalBufs = (void **)calloc(nRanks, sizeof(void *));
-  if (ipc->peerDataBufs == NULL || ipc->peerSignalBufs == NULL) {
+  ipc->signalSeqs = (uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  if (ipc->peerDataBufs == NULL || ipc->peerSignalBufs == NULL ||
+      ipc->signalSeqs == NULL) {
     free(ipc->peerDataBufs);
     free(ipc->peerSignalBufs);
+    free(ipc->signalSeqs);
     free(ipc);
     return flagcxSystemError;
   }
@@ -1108,6 +1114,7 @@ flagcxResult_t flagcxHeteroRmaIpcDestroy(flagcxHeteroComm_t comm) {
   }
   free(ipc->peerDataBufs);
   free(ipc->peerSignalBufs);
+  free(ipc->signalSeqs);
   free(ipc);
   proxy->ipcState = NULL;
   return flagcxSuccess;
@@ -1212,11 +1219,12 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
           if (res != flagcxSuccess)
             return res;
         }
-        // Signal write via D2D (atomic add emulated via streamWriteValue64)
-        // Note: this is a simple write, not atomic add — suitable for
-        // single-writer scenarios typical in intra-node RMA.
-        res = deviceAdaptor->streamWriteValue64(stream, signalAddr, signalValue,
-                                                0);
+        // Signal write via D2D: accumulate monotonic counter so that
+        // streamWaitValue64(GEQ) on the receiver side works correctly
+        // across multiple iterations.
+        ipc->signalSeqs[peer] += signalValue;
+        res = deviceAdaptor->streamWriteValue64(stream, signalAddr,
+                                                ipc->signalSeqs[peer], 0);
         if (opSeq != NULL)
           *opSeq = 0; // D2D path
         return res;
