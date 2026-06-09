@@ -560,11 +560,12 @@ typedef struct {
 } flagcxWaitSignalDesc_t;
 
 /* Batch wait for multiple peers' signals to complete.
- * nDesc: number of wait descriptors
- * signalDescs: array of wait descriptors
+ * nDesc: number of wait descriptors (0 is a valid no-op)
+ * signalDescs: array of wait descriptors (may be NULL when nDesc == 0)
  * comm: communicator handle
  * stream: device stream (stalls until all described signals complete) */
-flagcxResult_t flagcxWaitSignal(int nDesc, flagcxWaitSignalDesc_t *signalDescs,
+flagcxResult_t flagcxWaitSignal(int nDesc,
+                                const flagcxWaitSignalDesc_t *signalDescs,
                                 flagcxComm_t comm, flagcxStream_t stream);
 
 /* Read the current global RMA completion counter into *count.

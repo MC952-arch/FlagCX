@@ -37,4 +37,11 @@ struct flagcxOneSideHandleInfo {
 flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
                                              void *buff, size_t size);
 
+// Build IPC peer pointer table for a user buffer (intra-node D2D bypass).
+// Stores results in comm->ipcTable and returns the table index.
+// Returns -1 on failure (IPC not available for this buffer).
+struct flagcxComm;
+typedef struct flagcxComm *flagcxComm_t;
+int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size);
+
 #endif // FLAGCX_ONESIDED_H_

@@ -32,11 +32,7 @@
 // Build IPC peer pointer table for a user buffer.
 // Stores results in comm->ipcTable and returns the table index.
 // Returns -1 on failure (IPC not available for this buffer).
-// Internally checks globalRegPool for a pre-registered IPC handle to skip
-// ipcMemHandleGet when the buffer was already registered via
-// flagcxCommRegister.
-static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
-
+int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   // Find a free slot in the IPC table
   int slot = -1;
   for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {

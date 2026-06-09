@@ -136,7 +136,8 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx,
-                               bool streamSyncReady = false);
+                               bool streamSyncReady = false,
+                               uint64_t *assignedSeq = nullptr);
 
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
@@ -157,7 +158,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t size, size_t signalOffset,
                                      int srcMrIdx, int dstMrIdx,
                                      uint64_t signalValue,
-                                     bool streamSyncReady = false);
+                                     bool streamSyncReady = false,
+                                     uint64_t *assignedSeq = nullptr);
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);

@@ -12,6 +12,15 @@ export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
 
 NP="${NP:-2}"
 
+# Detect available GPUs and skip gracefully if fewer than NP are present.
+if command -v nvidia-smi &>/dev/null; then
+  GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
+  if [ "$GPU_COUNT" -lt "$NP" ]; then
+    echo "WARNING: Only $GPU_COUNT GPU(s) available but NP=$NP requested. Skipping RMA tests."
+    exit 0
+  fi
+fi
+
 echo "=== Running RMA one-sided perf tests (np=$NP) ==="
 
 echo ""

@@ -695,6 +695,12 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     }
   }
 
+  // NOTE: Signal buffer IPC registration for D2D bypass is NOT done here.
+  // buildIpcPeerPointers() requires a collective allGather which may deadlock
+  // if the ptrType/localRanks guard doesn't hold uniformly across all ranks.
+  // The D2D signal path uses VMM (symWin) when available; otherwise the proxy
+  // + RDMA path handles signalling correctly.
+
   return flagcxSuccess;
 
 fail_mr:
@@ -1222,14 +1228,8 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     // and RMA proxy is running but IPC not yet initialized.
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
         (*win)->defaultBase->flatBase != NULL) {
-      if (comm->heteroComm->rmaProxy != NULL &&
-          comm->heteroComm->rmaProxy->ipcState == NULL &&
-          !comm->heteroComm->rmaProxy->ipcInitFailed) {
-        if (flagcxHeteroRmaIpcInit(comm->heteroComm) != flagcxSuccess) {
-          comm->heteroComm->rmaProxy->ipcInitFailed = true;
-          INFO(FLAGCX_INIT, "D2D IPC init failed, will use proxy path");
-        }
-      }
+      // D2D IPC init deferred to first stream-path use (when both data
+      // windows and signal buffer are registered).
     }
 
     return res;
@@ -2642,8 +2642,11 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
                                      stream, &opSeq);
 }
 
-flagcxResult_t flagcxWaitSignal(int nDesc, flagcxWaitSignalDesc_t *signalDescs,
+flagcxResult_t flagcxWaitSignal(int nDesc,
+                                const flagcxWaitSignalDesc_t *signalDescs,
                                 flagcxComm_t comm, flagcxStream_t stream) {
+  if (nDesc == 0)
+    return flagcxSuccess;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   if (stream == NULL || signalDescs == NULL)
