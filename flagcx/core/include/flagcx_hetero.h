@@ -62,19 +62,19 @@ struct flagcxRmaProxyState {
   volatile uint64_t *doneSeqs;  // [nRanks]
   volatile uint32_t *inFlights; // [nRanks]
 
-  // GPU-visible done sequence counters for stream-based synchronization.
-  // Written by progress thread (via GDR-mapped CPU pointer), waited on by
-  // GPU stream via streamWaitValue64.
-  uint64_t *doneSeqsDev;          // [nRanks] device pointer (GPU-visible)
-  volatile uint64_t *doneSeqsCpu; // [nRanks] CPU-mapped pointer to doneSeqsDev
-  void *doneSeqsGdrHandle;        // GDR handle for cleanup
+  // GPU-visible done sequence counters for STREAM_OPS mode.
+  // GPU stream waits on doneSeqsDev via streamWaitValue64.
+  uint64_t *doneSeqsDev; // [nRanks] device pointer (GPU-visible)
+  // CPU-side done sequence counters for HOST_FUNC mode.
+  // Written by proxy thread, polled by host-func callback.
+  volatile uint64_t *doneSeqsCpu; // [nRanks] host memory
 
-  // GPU-visible ready sequence counters for stream→proxy handshake.
-  // Written by GPU stream (streamWriteValue64 or host-func callback) to signal
-  // that source buffer data is committed. Proxy polls before issuing RDMA.
-  uint64_t *readySeqsDev;          // [nRanks] device pointer (GPU-visible)
-  volatile uint64_t *readySeqsCpu; // [nRanks] CPU-mapped pointer
-  void *readySeqsGdrHandle;        // GDR handle for cleanup
+  // GPU-visible ready sequence counters for STREAM_OPS mode.
+  // GPU stream writes readySeqsDev via streamWriteValue64 to signal data ready.
+  uint64_t *readySeqsDev; // [nRanks] device pointer (GPU-visible)
+  // CPU-side ready sequence counters for HOST_FUNC mode.
+  // Written by host-func callback, polled by proxy thread.
+  volatile uint64_t *readySeqsCpu; // [nRanks] host memory
 
   // Synchronization method: HOST_FUNC (default) or STREAM_OPS (opt-in via env)
   int useStreamOps; // 0 = HOST_FUNC (default), 1 = STREAM_OPS

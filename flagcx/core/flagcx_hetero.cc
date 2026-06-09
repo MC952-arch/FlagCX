@@ -567,74 +567,61 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     flagcxIntruQueueConstruct(&proxy->inProgressQueues[p]);
   }
 
-  // Allocate GPU-visible memory for doneSeqsDev (stream-based synchronization).
-  // Use GDR to get CPU-mappable device memory.
+  // Allocate device memory for stream-based synchronization.
   proxy->doneSeqsDev = NULL;
   proxy->doneSeqsCpu = NULL;
-  proxy->doneSeqsGdrHandle = NULL;
-  flagcxResult_t memRes =
-      deviceAdaptor->memHandleInit(comm->cudaDev, &proxy->doneSeqsGdrHandle);
-  if (memRes == flagcxSuccess && proxy->doneSeqsGdrHandle != NULL) {
-    memRes = deviceAdaptor->gdrMemAlloc((void **)&proxy->doneSeqsDev,
-                                        nRanks * sizeof(uint64_t),
-                                        proxy->doneSeqsGdrHandle);
-    if (memRes == flagcxSuccess) {
-      // Map device memory to CPU address space for progress thread writes
-      memRes = deviceAdaptor->gdrPtrMmap((void **)&proxy->doneSeqsCpu,
-                                         proxy->doneSeqsDev,
-                                         nRanks * sizeof(uint64_t));
-      if (memRes == flagcxSuccess) {
-        // Zero-initialize doneSeqsDev
-        memset((void *)proxy->doneSeqsCpu, 0, nRanks * sizeof(uint64_t));
-      } else {
-        WARN("flagcxHeteroRmaProxyStart: gdrPtrMmap failed, stream sync "
-             "unavailable");
-        deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
-        proxy->doneSeqsDev = NULL;
-      }
-    } else {
-      WARN("flagcxHeteroRmaProxyStart: gdrMemAlloc failed, stream sync "
-           "unavailable");
-    }
-  } else {
-    WARN("flagcxHeteroRmaProxyStart: memHandleInit failed, stream sync "
-         "unavailable");
-  }
-
-  // Allocate GPU-visible memory for readySeqsDev (stream→proxy handshake).
-  // Same pattern as doneSeqs: GDR-mapped device memory for CPU polling.
   proxy->readySeqsDev = NULL;
   proxy->readySeqsCpu = NULL;
-  proxy->readySeqsGdrHandle = NULL;
-  memRes =
-      deviceAdaptor->memHandleInit(comm->cudaDev, &proxy->readySeqsGdrHandle);
-  if (memRes == flagcxSuccess && proxy->readySeqsGdrHandle != NULL) {
+  if (deviceAdaptor->gdrMemAlloc != NULL) {
+    flagcxResult_t memRes = deviceAdaptor->gdrMemAlloc(
+        (void **)&proxy->doneSeqsDev, nRanks * sizeof(uint64_t), NULL);
+    if (memRes != flagcxSuccess)
+      proxy->doneSeqsDev = NULL;
     memRes = deviceAdaptor->gdrMemAlloc((void **)&proxy->readySeqsDev,
-                                        nRanks * sizeof(uint64_t),
-                                        proxy->readySeqsGdrHandle);
-    if (memRes == flagcxSuccess) {
-      memRes = deviceAdaptor->gdrPtrMmap((void **)&proxy->readySeqsCpu,
-                                         proxy->readySeqsDev,
-                                         nRanks * sizeof(uint64_t));
-      if (memRes == flagcxSuccess) {
-        memset((void *)proxy->readySeqsCpu, 0, nRanks * sizeof(uint64_t));
-      } else {
-        WARN("flagcxHeteroRmaProxyStart: gdrPtrMmap for readySeqs failed");
-        deviceAdaptor->gdrMemFree(proxy->readySeqsDev,
-                                  proxy->readySeqsGdrHandle);
-        proxy->readySeqsDev = NULL;
-      }
-    } else {
-      WARN("flagcxHeteroRmaProxyStart: gdrMemAlloc for readySeqs failed");
-    }
-  } else {
-    WARN("flagcxHeteroRmaProxyStart: memHandleInit for readySeqs failed");
+                                        nRanks * sizeof(uint64_t), NULL);
+    if (memRes != flagcxSuccess)
+      proxy->readySeqsDev = NULL;
   }
 
-  // Determine sync method: STREAM_OPS if env enabled AND GDR buffers available
+  // Map device memory to CPU if adaptor supports gdrPtrMmap (e.g. kunlunxin).
+  // This gives the proxy thread direct CPU access to the device buffers.
+  if (deviceAdaptor->gdrPtrMmap != NULL) {
+    if (proxy->doneSeqsDev != NULL) {
+      if (deviceAdaptor->gdrPtrMmap((void **)&proxy->doneSeqsCpu,
+                                    proxy->doneSeqsDev,
+                                    nRanks * sizeof(uint64_t)) != flagcxSuccess)
+        proxy->doneSeqsCpu = NULL;
+    }
+    if (proxy->readySeqsDev != NULL) {
+      if (deviceAdaptor->gdrPtrMmap((void **)&proxy->readySeqsCpu,
+                                    proxy->readySeqsDev,
+                                    nRanks * sizeof(uint64_t)) != flagcxSuccess)
+        proxy->readySeqsCpu = NULL;
+    }
+  }
+
+  // If no CPU mapping available, allocate separate host memory for HOST_FUNC.
+  if (proxy->doneSeqsCpu == NULL)
+    proxy->doneSeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  if (proxy->readySeqsCpu == NULL)
+    proxy->readySeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+
+  // Zero-init device buffers
+  if (proxy->doneSeqsDev != NULL)
+    deviceAdaptor->deviceMemset(proxy->doneSeqsDev, 0,
+                                nRanks * sizeof(uint64_t), flagcxMemDevice,
+                                NULL);
+  if (proxy->readySeqsDev != NULL)
+    deviceAdaptor->deviceMemset(proxy->readySeqsDev, 0,
+                                nRanks * sizeof(uint64_t), flagcxMemDevice,
+                                NULL);
+
+  // STREAM_OPS requires: device buffers AND CPU mapping of those same buffers
+  // (so proxy thread can write doneSeqsDev from CPU). Only possible when
+  // gdrPtrMmap is available (doneSeqsCpu points into doneSeqsDev).
   proxy->useStreamOps =
-      (flagcxParamRmaStreamOps() == 1 && proxy->readySeqsDev != NULL &&
-       proxy->doneSeqsDev != NULL)
+      (flagcxParamRmaStreamOps() == 1 && proxy->doneSeqsDev != NULL &&
+       proxy->readySeqsDev != NULL && deviceAdaptor->gdrPtrMmap != NULL)
           ? 1
           : 0;
   INFO(FLAGCX_INIT, "RMA proxy sync method: %s",
@@ -646,28 +633,21 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
                      proxy) != 0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
-    // Free GDR memory for stream-based sync (doneSeqs)
-    if (proxy->doneSeqsCpu != NULL) {
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                  nRanks * sizeof(uint64_t));
+    if (deviceAdaptor->gdrPtrMunmap != NULL) {
+      if (proxy->doneSeqsCpu != NULL)
+        deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                    nRanks * sizeof(uint64_t));
+      if (proxy->readySeqsCpu != NULL)
+        deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                    nRanks * sizeof(uint64_t));
+    } else {
+      free((void *)proxy->doneSeqsCpu);
+      free((void *)proxy->readySeqsCpu);
     }
-    if (proxy->doneSeqsDev != NULL && proxy->doneSeqsGdrHandle != NULL) {
-      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
-    }
-    if (proxy->doneSeqsGdrHandle != NULL) {
-      deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
-    }
-    // Free GDR memory for readySeqs
-    if (proxy->readySeqsCpu != NULL) {
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                  nRanks * sizeof(uint64_t));
-    }
-    if (proxy->readySeqsDev != NULL && proxy->readySeqsGdrHandle != NULL) {
-      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, proxy->readySeqsGdrHandle);
-    }
-    if (proxy->readySeqsGdrHandle != NULL) {
-      deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->readySeqsGdrHandle);
-    }
+    if (proxy->doneSeqsDev != NULL)
+      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+    if (proxy->readySeqsDev != NULL)
+      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
     for (int p = 0; p < nRanks; p++)
       pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
     free(proxy->circularBuffers);
@@ -702,29 +682,24 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
 
-  // Free GDR memory for stream-based sync (doneSeqs)
-  if (proxy->doneSeqsCpu != NULL) {
-    deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                proxy->nRanks * sizeof(uint64_t));
-  }
-  if (proxy->doneSeqsDev != NULL && proxy->doneSeqsGdrHandle != NULL) {
-    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, proxy->doneSeqsGdrHandle);
-  }
-  if (proxy->doneSeqsGdrHandle != NULL) {
-    deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
+  // Free CPU mappings / host memory
+  if (deviceAdaptor->gdrPtrMunmap != NULL) {
+    if (proxy->doneSeqsCpu != NULL)
+      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                  proxy->nRanks * sizeof(uint64_t));
+    if (proxy->readySeqsCpu != NULL)
+      deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                  proxy->nRanks * sizeof(uint64_t));
+  } else {
+    free((void *)proxy->doneSeqsCpu);
+    free((void *)proxy->readySeqsCpu);
   }
 
-  // Free GDR memory for readySeqs
-  if (proxy->readySeqsCpu != NULL) {
-    deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                proxy->nRanks * sizeof(uint64_t));
-  }
-  if (proxy->readySeqsDev != NULL && proxy->readySeqsGdrHandle != NULL) {
-    deviceAdaptor->gdrMemFree(proxy->readySeqsDev, proxy->readySeqsGdrHandle);
-  }
-  if (proxy->readySeqsGdrHandle != NULL) {
-    deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->readySeqsGdrHandle);
-  }
+  // Free device memory
+  if (proxy->doneSeqsDev != NULL)
+    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+  if (proxy->readySeqsDev != NULL)
+    deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
 
   free(proxy->circularBuffers);
   free((void *)proxy->pis);

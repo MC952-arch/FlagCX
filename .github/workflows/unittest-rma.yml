@@ -46,4 +46,6 @@ jobs:
       - name: Run RMA tests
         run: |
           cd /__w/FlagCX/FlagCX
+          export FLAGCX_DEBUG=TRACE
+          export FLAGCX_DEBUG_SUBSYS=ALL
           bash test/script/rma_test.sh

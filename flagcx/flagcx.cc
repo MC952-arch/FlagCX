@@ -452,10 +452,10 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
     info->regionSize = size;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
 
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
@@ -667,10 +667,10 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
     info->regionSize = size;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
@@ -695,11 +695,16 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     }
   }
 
-  // NOTE: Signal buffer IPC registration for D2D bypass is NOT done here.
-  // buildIpcPeerPointers() requires a collective allGather which may deadlock
-  // if the ptrType/localRanks guard doesn't hold uniformly across all ranks.
-  // The D2D signal path uses VMM (symWin) when available; otherwise the proxy
-  // + RDMA path handles signalling correctly.
+  // Register signal buffer in IPC table for intra-node D2D bypass.
+  // Guard on ptrType only (global env var, uniform across all ranks) to ensure
+  // all ranks enter the collective allGather inside buildIpcPeerPointers.
+  if (ptrType == FLAGCX_PTR_CUDA) {
+    int idx = buildIpcPeerPointers(comm, buff, size);
+    if (idx >= 0) {
+      INFO(FLAGCX_REG, "Signal buffer IPC registered (slot %d) for D2D bypass",
+           idx);
+    }
+  }
 
   return flagcxSuccess;
 
@@ -828,10 +833,10 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
     info->regionSize = size;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
