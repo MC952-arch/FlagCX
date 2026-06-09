@@ -69,6 +69,16 @@ struct flagcxRmaProxyState {
   volatile uint64_t *doneSeqsCpu; // [nRanks] CPU-mapped pointer to doneSeqsDev
   void *doneSeqsGdrHandle;        // GDR handle for cleanup
 
+  // GPU-visible ready sequence counters for stream→proxy handshake.
+  // Written by GPU stream (streamWriteValue64 or host-func callback) to signal
+  // that source buffer data is committed. Proxy polls before issuing RDMA.
+  uint64_t *readySeqsDev;          // [nRanks] device pointer (GPU-visible)
+  volatile uint64_t *readySeqsCpu; // [nRanks] CPU-mapped pointer
+  void *readySeqsGdrHandle;        // GDR handle for cleanup
+
+  // Synchronization method: HOST_FUNC (default) or STREAM_OPS (opt-in via env)
+  int useStreamOps; // 0 = HOST_FUNC (default), 1 = STREAM_OPS
+
   // Global completion counter: incremented once for every op that completes.
   // Callers record the value before issuing ops, then poll until it advances.
   volatile uint64_t completionCount;
@@ -84,6 +94,8 @@ struct flagcxRmaProxyState {
   // Intra-node IPC state: per-peer device pointers for D2D bypass
   // NULL if not initialized or if no intra-node peers exist
   struct flagcxRmaIpcState *ipcState;
+  bool ipcInitFailed; // true if IpcInit was attempted and failed (prevents
+                      // retries)
 
   pthread_t thread;
   volatile int stop;
@@ -123,7 +135,8 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx);
+                               int srcMrIdx, int dstMrIdx,
+                               bool streamSyncReady = false);
 
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
@@ -143,7 +156,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset,
                                      int srcMrIdx, int dstMrIdx,
-                                     uint64_t signalValue);
+                                     uint64_t signalValue,
+                                     bool streamSyncReady = false);
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);

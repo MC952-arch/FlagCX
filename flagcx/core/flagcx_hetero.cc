@@ -26,6 +26,88 @@
 
 FLAGCX_PARAM(RmaQueueSize, "RMA_QUEUE_SIZE", FLAGCX_RMA_QUEUE_SIZE);
 FLAGCX_PARAM(RmaBatchMax, "RMA_BATCH_MAX", FLAGCX_RMA_BATCH_MAX);
+FLAGCX_PARAM(RmaStreamOps, "RMA_STREAM_OPS",
+             0); // 0 = HOST_FUNC (default), 1 = STREAM_OPS
+
+// ---- Stream→Proxy ready signal infrastructure ----
+
+// Context for launchHostFunc callbacks (HOST_FUNC path).
+// Allocated per-op, freed inside the callback.
+struct flagcxRmaReadyCtx {
+  volatile uint64_t *readySeqsCpu; // pointer to proxy's readySeqsCpu[peer]
+  uint64_t opSeq;                  // the sequence number to signal
+};
+
+// Host-func callback: signals proxy that GPU stream work is done (source buffer
+// data is committed). Called by driver after all prior stream ops complete.
+static void flagcxRmaReadyHostFunc(void *arg) {
+  struct flagcxRmaReadyCtx *ctx = (struct flagcxRmaReadyCtx *)arg;
+  __atomic_store_n(ctx->readySeqsCpu, ctx->opSeq, __ATOMIC_RELEASE);
+  free(ctx);
+}
+
+// Context for launchHostFunc done-wait callbacks (HOST_FUNC path).
+struct flagcxRmaDoneWaitCtx {
+  volatile uint64_t *doneSeqsCpu; // pointer to proxy's doneSeqsCpu[peer]
+  uint64_t opSeq;                 // sequence to wait for
+  volatile int *rmaError;         // proxy error flag
+};
+
+// Host-func callback: blocks stream until proxy signals completion.
+static void flagcxRmaDoneWaitHostFunc(void *arg) {
+  struct flagcxRmaDoneWaitCtx *ctx = (struct flagcxRmaDoneWaitCtx *)arg;
+  while (__atomic_load_n(ctx->doneSeqsCpu, __ATOMIC_ACQUIRE) < ctx->opSeq) {
+    if (__atomic_load_n(ctx->rmaError, __ATOMIC_ACQUIRE)) {
+      break;
+    }
+    sched_yield();
+  }
+  free(ctx);
+}
+
+// Signal proxy that source data is ready (stream-ordered).
+// Uses streamWriteValue64 (STREAM_OPS) or launchHostFunc (HOST_FUNC).
+static flagcxResult_t flagcxRmaSignalReady(struct flagcxRmaProxyState *proxy,
+                                           int peer, uint64_t opSeq,
+                                           flagcxStream_t stream) {
+  if (proxy->useStreamOps) {
+    // STREAM_OPS: GPU writes readySeqsDev directly (zero-overhead hardware op)
+    return deviceAdaptor->streamWriteValue64(stream, &proxy->readySeqsDev[peer],
+                                             opSeq, 0);
+  } else {
+    // HOST_FUNC: launch callback on stream that writes readySeqsCpu
+    struct flagcxRmaReadyCtx *ctx =
+        (struct flagcxRmaReadyCtx *)malloc(sizeof(*ctx));
+    if (ctx == NULL)
+      return flagcxSystemError;
+    ctx->readySeqsCpu = &proxy->readySeqsCpu[peer];
+    ctx->opSeq = opSeq;
+    return deviceAdaptor->launchHostFunc(stream, flagcxRmaReadyHostFunc, ctx);
+  }
+}
+
+// Wait for proxy completion (stream-ordered).
+// Uses streamWaitValue64 (STREAM_OPS) or launchHostFunc (HOST_FUNC).
+static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
+                                        int peer, uint64_t opSeq,
+                                        flagcxStream_t stream) {
+  if (proxy->useStreamOps) {
+    // STREAM_OPS: GPU waits on doneSeqsDev (hardware poll, no CPU involvement)
+    return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
+                                            opSeq, 0);
+  } else {
+    // HOST_FUNC: launch callback that polls doneSeqsCpu until done
+    struct flagcxRmaDoneWaitCtx *ctx =
+        (struct flagcxRmaDoneWaitCtx *)malloc(sizeof(*ctx));
+    if (ctx == NULL)
+      return flagcxSystemError;
+    ctx->doneSeqsCpu = &proxy->doneSeqsCpu[peer];
+    ctx->opSeq = opSeq;
+    ctx->rmaError = &proxy->rmaError;
+    return deviceAdaptor->launchHostFunc(stream, flagcxRmaDoneWaitHostFunc,
+                                         ctx);
+  }
+}
 
 // ---- Circular buffer helpers ----
 
@@ -45,7 +127,8 @@ flagcxRmaProxyCircularBufEmpty(struct flagcxRmaProxyState *proxy, int peer) {
 
 static flagcxResult_t
 flagcxRmaProxyEnqueueDesc(struct flagcxRmaProxyState *proxy, int peer,
-                          struct flagcxRmaDesc *desc) {
+                          struct flagcxRmaDesc *desc,
+                          bool streamSyncReady = false) {
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
   while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
     if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
@@ -63,6 +146,12 @@ flagcxRmaProxyEnqueueDesc(struct flagcxRmaProxyState *proxy, int peer,
   desc->request = NULL;
   desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
   proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx] = desc;
+  // For non-stream callers: CPU data is already committed, auto-advance
+  // readySeq so the proxy won't wait on it. Stream-path callers signal via
+  // stream ops.
+  if (!streamSyncReady && proxy->readySeqsCpu != NULL) {
+    __atomic_store_n(&proxy->readySeqsCpu[peer], desc->opSeq, __ATOMIC_RELEASE);
+  }
   // RELEASE so the progress thread sees desc contents before the pi bump.
   __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -97,6 +186,11 @@ flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
     desc->request = NULL;
     desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
     proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx] = desc;
+    // Batch path is always non-stream; auto-advance readySeq
+    if (proxy->readySeqsCpu != NULL) {
+      __atomic_store_n(&proxy->readySeqsCpu[peer], desc->opSeq,
+                       __ATOMIC_RELEASE);
+    }
     __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
     (*enqueued)++;
   }
@@ -240,6 +334,17 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     uint32_t idx = ci & proxy->queueMask;
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
+
+    // Poll readySeq: wait for GPU stream to signal source data is committed.
+    // Both STREAM_OPS (streamWriteValue64) and HOST_FUNC (callback) write here.
+    if (proxy->readySeqsCpu != NULL) {
+      uint64_t ready =
+          __atomic_load_n(&proxy->readySeqsCpu[peer], __ATOMIC_ACQUIRE);
+      if (ready < desc->opSeq) {
+        // GPU hasn't signaled ready yet; skip this peer for now
+        break;
+      }
+    }
 
     bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
                     comm->netAdaptor->name != NULL &&
@@ -495,13 +600,52 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
          "unavailable");
   }
 
+  // Allocate GPU-visible memory for readySeqsDev (stream→proxy handshake).
+  // Same pattern as doneSeqs: GDR-mapped device memory for CPU polling.
+  proxy->readySeqsDev = NULL;
+  proxy->readySeqsCpu = NULL;
+  proxy->readySeqsGdrHandle = NULL;
+  memRes =
+      deviceAdaptor->memHandleInit(comm->cudaDev, &proxy->readySeqsGdrHandle);
+  if (memRes == flagcxSuccess && proxy->readySeqsGdrHandle != NULL) {
+    memRes = deviceAdaptor->gdrMemAlloc((void **)&proxy->readySeqsDev,
+                                        nRanks * sizeof(uint64_t),
+                                        proxy->readySeqsGdrHandle);
+    if (memRes == flagcxSuccess) {
+      memRes = deviceAdaptor->gdrPtrMmap((void **)&proxy->readySeqsCpu,
+                                         proxy->readySeqsDev,
+                                         nRanks * sizeof(uint64_t));
+      if (memRes == flagcxSuccess) {
+        memset((void *)proxy->readySeqsCpu, 0, nRanks * sizeof(uint64_t));
+      } else {
+        WARN("flagcxHeteroRmaProxyStart: gdrPtrMmap for readySeqs failed");
+        deviceAdaptor->gdrMemFree(proxy->readySeqsDev,
+                                  proxy->readySeqsGdrHandle);
+        proxy->readySeqsDev = NULL;
+      }
+    } else {
+      WARN("flagcxHeteroRmaProxyStart: gdrMemAlloc for readySeqs failed");
+    }
+  } else {
+    WARN("flagcxHeteroRmaProxyStart: memHandleInit for readySeqs failed");
+  }
+
+  // Determine sync method: STREAM_OPS if env enabled AND GDR buffers available
+  proxy->useStreamOps =
+      (flagcxParamRmaStreamOps() == 1 && proxy->readySeqsDev != NULL &&
+       proxy->doneSeqsDev != NULL)
+          ? 1
+          : 0;
+  INFO(FLAGCX_INIT, "RMA proxy sync method: %s",
+       proxy->useStreamOps ? "STREAM_OPS" : "HOST_FUNC");
+
   proxy->stop = 0;
   comm->rmaProxy = proxy;
 
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
                      proxy) != 0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
-    // Free GDR memory for stream-based sync
+    // Free GDR memory for stream-based sync (doneSeqs)
     if (proxy->doneSeqsCpu != NULL) {
       deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
                                   nRanks * sizeof(uint64_t));
@@ -511,6 +655,17 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     }
     if (proxy->doneSeqsGdrHandle != NULL) {
       deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
+    }
+    // Free GDR memory for readySeqs
+    if (proxy->readySeqsCpu != NULL) {
+      deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                  nRanks * sizeof(uint64_t));
+    }
+    if (proxy->readySeqsDev != NULL && proxy->readySeqsGdrHandle != NULL) {
+      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, proxy->readySeqsGdrHandle);
+    }
+    if (proxy->readySeqsGdrHandle != NULL) {
+      deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->readySeqsGdrHandle);
     }
     for (int p = 0; p < nRanks; p++)
       pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
@@ -546,7 +701,7 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
 
-  // Free GDR memory for stream-based sync
+  // Free GDR memory for stream-based sync (doneSeqs)
   if (proxy->doneSeqsCpu != NULL) {
     deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
                                 proxy->nRanks * sizeof(uint64_t));
@@ -556,6 +711,18 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   }
   if (proxy->doneSeqsGdrHandle != NULL) {
     deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->doneSeqsGdrHandle);
+  }
+
+  // Free GDR memory for readySeqs
+  if (proxy->readySeqsCpu != NULL) {
+    deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                proxy->nRanks * sizeof(uint64_t));
+  }
+  if (proxy->readySeqsDev != NULL && proxy->readySeqsGdrHandle != NULL) {
+    deviceAdaptor->gdrMemFree(proxy->readySeqsDev, proxy->readySeqsGdrHandle);
+  }
+  if (proxy->readySeqsGdrHandle != NULL) {
+    deviceAdaptor->memHandleDestroy(comm->cudaDev, proxy->readySeqsGdrHandle);
   }
 
   free(proxy->circularBuffers);
@@ -727,7 +894,8 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
 
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx) {
+                               int srcMrIdx, int dstMrIdx,
+                               bool streamSyncReady) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -748,7 +916,8 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   desc->size = size;
   desc->srcMrIdx = srcMrIdx;
   desc->dstMrIdx = dstMrIdx;
-  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
+  flagcxResult_t res =
+      flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc, streamSyncReady);
   if (res != flagcxSuccess)
     free(desc);
   return res;
@@ -843,7 +1012,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset,
                                      int srcMrIdx, int dstMrIdx,
-                                     uint64_t signalValue) {
+                                     uint64_t signalValue,
+                                     bool streamSyncReady) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -867,7 +1037,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   desc->dstMrIdx = (size > 0) ? dstMrIdx : -1;
   desc->signalOff = (uint64_t)signalOffset;
   desc->signalValue = signalValue;
-  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
+  flagcxResult_t res =
+      flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc, streamSyncReady);
   if (res != flagcxSuccess)
     free(desc);
   return res;
@@ -1132,8 +1303,10 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
 
   // Try intra-node D2D path (lazy init if not yet built)
   if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
-    if (proxy->ipcState == NULL)
-      flagcxHeteroRmaIpcInit(comm);
+    if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
+      if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
+        proxy->ipcInitFailed = true;
+    }
     if (proxy->ipcState != NULL) {
       struct flagcxRmaIpcState *ipc = proxy->ipcState;
       void *srcBuf = NULL;
@@ -1164,11 +1337,40 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
   }
 
   // Fallback: enqueue to proxy thread (inter-node or no IPC)
-  flagcxResult_t res = flagcxHeteroPut(comm, peer, srcOffset, dstOffset, size,
-                                       srcMrIdx, dstMrIdx);
-  if (opSeq != NULL && res == flagcxSuccess)
-    *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
-  return res;
+  // Stream sync: signal ready → enqueue → wait done
+  if (stream != NULL && proxy->readySeqsCpu != NULL) {
+    // Predict next opSeq: enqueue uses add_fetch(opSeqs[peer], 1)
+    uint64_t nextSeq =
+        __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED) + 1;
+
+    // Step 1: Signal proxy that source data is ready (GPU stream → proxy)
+    flagcxResult_t syncRes = flagcxRmaSignalReady(proxy, peer, nextSeq, stream);
+    if (syncRes != flagcxSuccess)
+      return syncRes;
+
+    // Step 2: Enqueue to proxy (increments opSeqs[peer])
+    flagcxResult_t res = flagcxHeteroPut(comm, peer, srcOffset, dstOffset, size,
+                                         srcMrIdx, dstMrIdx,
+                                         /*streamSyncReady=*/true);
+    if (res != flagcxSuccess)
+      return res;
+
+    // Step 3: Wait for proxy completion (proxy → GPU stream)
+    syncRes = flagcxRmaWaitDone(proxy, peer, nextSeq, stream);
+    if (syncRes != flagcxSuccess)
+      return syncRes;
+
+    if (opSeq != NULL)
+      *opSeq = nextSeq;
+    return flagcxSuccess;
+  } else {
+    // No stream or no GDR buffers: skip sync (legacy non-stream path)
+    flagcxResult_t res = flagcxHeteroPut(comm, peer, srcOffset, dstOffset, size,
+                                         srcMrIdx, dstMrIdx);
+    if (opSeq != NULL && res == flagcxSuccess)
+      *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
+    return res;
+  }
 }
 
 flagcxResult_t
@@ -1182,8 +1384,10 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
 
   // Try intra-node D2D path (lazy init if not yet built)
   if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
-    if (proxy->ipcState == NULL)
-      flagcxHeteroRmaIpcInit(comm);
+    if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
+      if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
+        proxy->ipcInitFailed = true;
+    }
     if (proxy->ipcState != NULL) {
       struct flagcxRmaIpcState *ipc = proxy->ipcState;
       void *srcBuf = NULL;
@@ -1234,10 +1438,39 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
   }
 
   // Fallback: enqueue to proxy thread
-  flagcxResult_t res =
-      flagcxHeteroPutSignal(comm, peer, srcOffset, dstOffset, size,
-                            signalOffset, srcMrIdx, dstMrIdx, signalValue);
-  if (opSeq != NULL && res == flagcxSuccess)
-    *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
-  return res;
+  // Stream sync: signal ready → enqueue → wait done
+  if (stream != NULL && proxy->readySeqsCpu != NULL) {
+    uint64_t nextSeq =
+        __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED) + 1;
+
+    // Step 1: Signal proxy that source data is ready
+    flagcxResult_t syncRes = flagcxRmaSignalReady(proxy, peer, nextSeq, stream);
+    if (syncRes != flagcxSuccess)
+      return syncRes;
+
+    // Step 2: Enqueue to proxy
+    flagcxResult_t res =
+        flagcxHeteroPutSignal(comm, peer, srcOffset, dstOffset, size,
+                              signalOffset, srcMrIdx, dstMrIdx, signalValue,
+                              /*streamSyncReady=*/true);
+    if (res != flagcxSuccess)
+      return res;
+
+    // Step 3: Wait for proxy completion
+    syncRes = flagcxRmaWaitDone(proxy, peer, nextSeq, stream);
+    if (syncRes != flagcxSuccess)
+      return syncRes;
+
+    if (opSeq != NULL)
+      *opSeq = nextSeq;
+    return flagcxSuccess;
+  } else {
+    // No stream or no GDR buffers: skip sync (legacy non-stream path)
+    flagcxResult_t res =
+        flagcxHeteroPutSignal(comm, peer, srcOffset, dstOffset, size,
+                              signalOffset, srcMrIdx, dstMrIdx, signalValue);
+    if (opSeq != NULL && res == flagcxSuccess)
+      *opSeq = __atomic_load_n(&proxy->opSeqs[peer], __ATOMIC_RELAXED);
+    return res;
+  }
 }

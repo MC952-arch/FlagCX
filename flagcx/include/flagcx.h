@@ -4,6 +4,15 @@
 #include <stddef.h> // size_t
 #include <stdint.h>
 
+/* FlagCX API version — compile-time checks for consumers.
+ * Bump MAJOR for breaking changes, MINOR for new APIs, PATCH for fixes. */
+#define FLAGCX_VERSION_MAJOR 0
+#define FLAGCX_VERSION_MINOR 13
+#define FLAGCX_VERSION_PATCH 0
+#define FLAGCX_VERSION_CODE                                                    \
+  (FLAGCX_VERSION_MAJOR * 10000 + FLAGCX_VERSION_MINOR * 100 +                 \
+   FLAGCX_VERSION_PATCH)
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -452,9 +452,10 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
-    info->rkeys[heteroComm->rank] = mr->rkey;
-    info->lkeys[heteroComm->rank] = mr->lkey;
+    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->regionSize = size;
+    info->rkeys[state->rank] = mr->rkey;
+    info->lkeys[state->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
 
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
@@ -666,9 +667,10 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
-    info->rkeys[heteroComm->rank] = mr->rkey;
-    info->lkeys[heteroComm->rank] = mr->lkey;
+    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->regionSize = size;
+    info->rkeys[state->rank] = mr->rkey;
+    info->lkeys[state->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
@@ -820,9 +822,10 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
-    info->rkeys[heteroComm->rank] = mr->rkey;
-    info->lkeys[heteroComm->rank] = mr->lkey;
+    info->baseVas[state->rank] = (uintptr_t)buff;
+    info->regionSize = size;
+    info->rkeys[state->rank] = mr->rkey;
+    info->lkeys[state->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
@@ -1220,8 +1223,12 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
         (*win)->defaultBase->flatBase != NULL) {
       if (comm->heteroComm->rmaProxy != NULL &&
-          comm->heteroComm->rmaProxy->ipcState == NULL) {
-        flagcxHeteroRmaIpcInit(comm->heteroComm);
+          comm->heteroComm->rmaProxy->ipcState == NULL &&
+          !comm->heteroComm->rmaProxy->ipcInitFailed) {
+        if (flagcxHeteroRmaIpcInit(comm->heteroComm) != flagcxSuccess) {
+          comm->heteroComm->rmaProxy->ipcInitFailed = true;
+          INFO(FLAGCX_INIT, "D2D IPC init failed, will use proxy path");
+        }
       }
     }
 
@@ -1237,6 +1244,25 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+
+  // Clear symWin pointer in oneSideHandles to prevent use-after-free
+  if (hetero != NULL && win->defaultBase != NULL) {
+    for (int h = 0; h < hetero->oneSideHandleCount; h++) {
+      struct flagcxOneSideHandleInfo *info = hetero->oneSideHandles[h];
+      if (info != NULL && info->symWin == win->defaultBase) {
+        info->symWin = NULL;
+        break;
+      }
+    }
+    // Rebuild IPC state since D2D pointers derived from symWin are now invalid
+    if (hetero->rmaProxy != NULL && hetero->rmaProxy->ipcState != NULL) {
+      flagcxHeteroRmaIpcDestroy(hetero);
+      // Will be lazily re-initialized on next D2D attempt
+    }
+  }
+
   // Use isSymmetricDefault flag to determine ownership:
   // - If backend owns it (vendorBase != nullptr && !isSymmetricDefault),
   //   deregister via backend only
@@ -2571,21 +2597,24 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
   if (dstMrIdx < 0)
     return flagcxInvalidArgument;
 
-  // Source is localbuff — need to find which MR it belongs to.
-  // For now, use MR index 0 (first registered data buffer) and compute offset.
-  // TODO: implement proper source buffer lookup by VA range.
+  // Source is localbuff — find which MR it belongs to by VA range lookup
   flagcxHeteroComm_t hetero = comm->heteroComm;
-  int srcMrIdx = 0; // default: first registered data MR
+  int srcMrIdx = -1;
   size_t srcOffset = 0;
-  if (hetero->oneSideHandleCount > 0 && hetero->oneSideHandles[0] != NULL) {
-    uintptr_t srcBase = hetero->oneSideHandles[0]->baseVas[hetero->rank];
-    if ((uintptr_t)localbuff < srcBase) {
-      WARN("flagcxPutSignal: localbuff %p below MR base %lx", localbuff,
-           (unsigned long)srcBase);
-      return flagcxInvalidArgument;
+  for (int h = 0; h < hetero->oneSideHandleCount; h++) {
+    struct flagcxOneSideHandleInfo *info = hetero->oneSideHandles[h];
+    if (info == NULL)
+      continue;
+    uintptr_t base = info->baseVas[hetero->rank];
+    if ((uintptr_t)localbuff >= base &&
+        (uintptr_t)localbuff < base + info->regionSize) {
+      srcMrIdx = h;
+      srcOffset = (uintptr_t)localbuff - base;
+      break;
     }
-    srcOffset = (uintptr_t)localbuff - srcBase;
-  } else {
+  }
+  if (srcMrIdx < 0) {
+    WARN("flagcxPutSignal: localbuff %p not in any registered MR", localbuff);
     return flagcxInvalidArgument;
   }
 

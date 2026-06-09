@@ -17,6 +17,7 @@ struct flagcxSymWindow; // forward declaration
 
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
+  size_t regionSize; // size of the registered memory region (bytes)
   uint32_t *rkeys;
   uint32_t *lkeys;
   void *localMrHandle; // local rank's MR handle for deregMr
