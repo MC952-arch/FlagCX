@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 // Max line length for reading xml
@@ -132,6 +133,10 @@ template <typename T>
 void serializeFunc2DVector(FILE *file, size_t chunksize,
                            const std::vector<std::vector<T>> &steps,
                            const char *tagName, int indent = 2) {
+  static_assert(std::is_same<T, flagcxC2cHomoFunc>::value ||
+                    std::is_same<T, flagcxC2cHeteroFunc>::value,
+                "serializeFunc2DVector only supports flagcxC2cHomoFunc or "
+                "flagcxC2cHeteroFunc");
   fprintf(file, "%*s<%s>\n", indent, "", tagName);
   for (const auto &stepVec : steps) {
     if (stepVec.size() == 0) {
@@ -164,6 +169,10 @@ inline void readFuncStep(FILE *file, size_t chunksize, const char *line,
 template <typename T>
 std::vector<std::vector<T>> readFunc2DVector(FILE *file, size_t chunksize,
                                              const char *tagName) {
+  static_assert(std::is_same<T, flagcxC2cHomoFunc>::value ||
+                    std::is_same<T, flagcxC2cHeteroFunc>::value,
+                "readFunc2DVector only supports flagcxC2cHomoFunc or "
+                "flagcxC2cHeteroFunc");
   std::vector<std::vector<T>> result;
   char line[LINE_LEN];
 
