@@ -194,6 +194,10 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
       }
       std::unique_ptr<flagcxRegItem> tmp = std::move(nodeIt->second);
       globalPool.erase(nodeIt);
+      if (globalPool.count(beginAddr)) {
+        WARN("registerBuffer: unexpected duplicate key at beginAddr");
+        return flagcxInternalError;
+      }
       globalPool.emplace(beginAddr, std::move(tmp));
     }
     // Extend forward if new buffer goes beyond existing range
@@ -213,7 +217,7 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
 
   // Not found: create new item in global pool
   auto &globalPool = regPool[GLOBAL_POOL_KEY];
-  auto reg = std::make_unique<flagcxRegItem>();
+  std::unique_ptr<flagcxRegItem> reg(new flagcxRegItem());
   reg->beginAddr = beginAddr;
   reg->endAddr = endAddr;
   reg->refCount = 1;
