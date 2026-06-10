@@ -184,6 +184,13 @@ int main(int argc, char *argv[]) {
 
   PerfOp opMode = getOpMode();
 
+  if (stepFactor <= 1) {
+    if (worldRank == 0)
+      fprintf(stderr, "perf_p2p_engine: step factor (-f) must be >= 2.\n");
+    MPI_Finalize();
+    return 1;
+  }
+
   // Initialize device handle and set GPU
   flagcxDeviceHandle_t devHandle = nullptr;
   fatalIf(flagcxDeviceHandleInit(&devHandle) != flagcxSuccess,
@@ -224,7 +231,7 @@ int main(int argc, char *argv[]) {
 
   // Parse IP from metadata format "ip:rdma_port?gpu_index?notif_port"
   std::string metaStr(metadataRaw);
-  free(metadataRaw);
+  delete[] metadataRaw;
   size_t firstSep = metaStr.find('?');
   std::string endpoint = metaStr.substr(0, firstSep);
   size_t lastColon = endpoint.rfind(':');
