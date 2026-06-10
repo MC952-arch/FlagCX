@@ -587,9 +587,16 @@ flagcxResult_t bootstrapExchange(struct bootstrapState *state, int peer,
     return flagcxInvalidArgument;
 
   if (state->mode == FLAGCX_BOOTSTRAP_P2P) {
-    // P2P mode: send then recv (single peer, no deadlock risk)
-    FLAGCXCHECK(bootstrapSend(state, peer, tag, (void *)sendData, sendSize));
-    FLAGCXCHECK(bootstrapRecv(state, peer, tag, recvData, recvSize));
+    // P2P mode: order by role to avoid deadlock when payload exceeds
+    // socket buffer (connector sends first, acceptor recvs first).
+    struct bootstrapP2pState *p2p = state->p2p;
+    if (p2p->isConnector) {
+      FLAGCXCHECK(bootstrapSend(state, peer, tag, (void *)sendData, sendSize));
+      FLAGCXCHECK(bootstrapRecv(state, peer, tag, recvData, recvSize));
+    } else {
+      FLAGCXCHECK(bootstrapRecv(state, peer, tag, recvData, recvSize));
+      FLAGCXCHECK(bootstrapSend(state, peer, tag, (void *)sendData, sendSize));
+    }
     return flagcxSuccess;
   }
 
@@ -1306,6 +1313,7 @@ flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
   struct bootstrapP2pState *p2p;
   FLAGCXCHECK(flagcxCalloc(&p2p, 1));
   p2p->isListener = false;
+  p2p->isConnector = true;
   p2p->magic = magic;
   p2p->abortFlag = abortFlag;
 
@@ -1340,6 +1348,7 @@ flagcxResult_t bootstrapP2pAccept(struct bootstrapState *listenState,
   struct bootstrapP2pState *connP2p;
   FLAGCXCHECK(flagcxCalloc(&connP2p, 1));
   connP2p->isListener = false;
+  connP2p->isConnector = false;
   connP2p->magic = listenP2p->magic;
   connP2p->abortFlag = listenP2p->abortFlag;
 

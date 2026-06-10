@@ -45,7 +45,8 @@ struct bootstrapCollState {
 };
 
 struct bootstrapP2pState {
-  bool isListener;          // true = listen mode, false = connected mode
+  bool isListener;  // true = listen mode, false = connected mode
+  bool isConnector; // true = initiated connect, false = accepted connection
   struct flagcxSocket sock; // listen socket OR connected peer socket
   union flagcxSocketAddress localAddr;
   uint64_t magic;
