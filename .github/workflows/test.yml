@@ -133,3 +133,9 @@ jobs:
       #     export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
       #     mpirun -np 8 --allow-run-as-root \
       #       $DEVICE_API_BIN/perf_internode_onesided -b 1M -e 64M -f 2 -R 2
+
+      - name: "P2P Engine perf (one-sided read/write)"
+        run: |
+          export PATH=$MPI_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
+          mpirun -np 2 --allow-run-as-root $PERF_BIN/perf_p2p_engine -b 4K -e 64M -f 2 -n 10
