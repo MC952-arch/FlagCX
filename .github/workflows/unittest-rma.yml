@@ -31,21 +31,29 @@ jobs:
           submodules: true
           set-safe-directory: true
 
+      - name: Build Google Test
+        run: |
+          cd /__w/FlagCX/FlagCX/third-party/googletest
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc)
+
       - name: Build FlagCX
         run: |
           cd /__w/FlagCX/FlagCX
           export MPI_HOME=/usr/local/mpi
           make -j$(nproc) USE_NVIDIA=1
 
-      - name: Build RMA perf tests
+      - name: Build RMA unit tests
         run: |
-          cd /__w/FlagCX/FlagCX/test/perf
+          cd /__w/FlagCX/FlagCX/test/unittest/rma
           export MPI_HOME=/usr/local/mpi
-          make -j$(nproc) host_api USE_NVIDIA=1
+          make -j$(nproc)
 
-      - name: Run RMA tests
+      - name: Run RMA unit tests
         run: |
-          cd /__w/FlagCX/FlagCX
-          export FLAGCX_DEBUG=TRACE
-          export FLAGCX_DEBUG_SUBSYS=ALL
-          bash test/script/rma_test.sh
+          cd /__w/FlagCX/FlagCX/test/unittest/rma
+          export MPI_HOME=/usr/local/mpi
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
+          make run-mpi

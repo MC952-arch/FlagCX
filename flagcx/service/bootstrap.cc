@@ -128,16 +128,26 @@ static flagcxResult_t bootstrapNetRecv(struct flagcxSocket *sock, void *data,
   FLAGCXCHECK(flagcxSocketRecv(sock, data, std::min(recvSize, size)));
   return flagcxSuccess;
 }
-// Sequential send-then-recv is safe here because bootstrapNetSendRecv is only
-// called on ring topology with separate ringSendSocket and ringRecvSocket.
-// One rank's send-to-next and recv-from-prev use independent sockets, so there
-// is no risk of deadlock.
+// NCCL-style interleaved non-blocking send+recv to avoid deadlock when message
+// size exceeds kernel TCP buffer (~256KB). Both directions make incremental
+// progress via MSG_DONTWAIT inside flagcxSocketSendRecv.
 static flagcxResult_t bootstrapNetSendRecv(struct flagcxSocket *sendSocket,
                                            void *sendData, int sendSize,
                                            struct flagcxSocket *recvSocket,
                                            void *recvData, int recvSize) {
-  FLAGCXCHECK(bootstrapNetSend(sendSocket, sendData, sendSize));
-  FLAGCXCHECK(bootstrapNetRecv(recvSocket, recvData, recvSize));
+  // Exchange size headers (interleaved to stay symmetric)
+  int recvExpectedSize;
+  FLAGCXCHECK(flagcxSocketSendRecv(sendSocket, &sendSize, sizeof(int),
+                                   recvSocket, &recvExpectedSize, sizeof(int)));
+  if (recvExpectedSize > recvSize) {
+    WARN("bootstrapNetSendRecv: message truncated: received %d bytes instead "
+         "of %d",
+         recvExpectedSize, recvSize);
+    return flagcxInternalError;
+  }
+  // Exchange payload (interleaved, handles arbitrary sizes)
+  FLAGCXCHECK(flagcxSocketSendRecv(sendSocket, sendData, sendSize, recvSocket,
+                                   recvData, recvExpectedSize));
   return flagcxSuccess;
 }
 

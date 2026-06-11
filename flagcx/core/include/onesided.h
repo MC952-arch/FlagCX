@@ -41,7 +41,6 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
 // Stores results in comm->ipcTable and returns the table index.
 // Returns -1 on failure (IPC not available for this buffer).
 struct flagcxComm;
-typedef struct flagcxComm *flagcxComm_t;
-int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size);
+int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

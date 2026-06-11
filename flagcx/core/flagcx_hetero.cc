@@ -305,7 +305,10 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     if (!failed) {
       // Publish completion: doneSeqs with RELEASE so waiters acquire-see it.
       __atomic_store_n(&proxy->doneSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
-      // Also write to GPU-visible doneSeqsDev for stream-based waiters.
+      // Also write doneSeqsCpu for stream/host-func waiters.
+      // In STREAM_OPS mode: this is a CPU mapping of doneSeqsDev (GPU-visible).
+      // In HOST_FUNC mode: this is host memory polled by launchHostFunc
+      // callback.
       if (proxy->doneSeqsCpu != NULL)
         __atomic_store_n(&proxy->doneSeqsCpu[peer], desc->opSeq,
                          __ATOMIC_RELEASE);
@@ -585,17 +588,22 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
 
   // Map device memory to CPU if adaptor supports gdrPtrMmap (e.g. kunlunxin).
   // This gives the proxy thread direct CPU access to the device buffers.
+  bool mmapDone = false, mmapReady = false;
   if (deviceAdaptor->gdrPtrMmap != NULL) {
     if (proxy->doneSeqsDev != NULL) {
       if (deviceAdaptor->gdrPtrMmap((void **)&proxy->doneSeqsCpu,
                                     proxy->doneSeqsDev,
-                                    nRanks * sizeof(uint64_t)) != flagcxSuccess)
+                                    nRanks * sizeof(uint64_t)) == flagcxSuccess)
+        mmapDone = true;
+      else
         proxy->doneSeqsCpu = NULL;
     }
     if (proxy->readySeqsDev != NULL) {
       if (deviceAdaptor->gdrPtrMmap((void **)&proxy->readySeqsCpu,
                                     proxy->readySeqsDev,
-                                    nRanks * sizeof(uint64_t)) != flagcxSuccess)
+                                    nRanks * sizeof(uint64_t)) == flagcxSuccess)
+        mmapReady = true;
+      else
         proxy->readySeqsCpu = NULL;
     }
   }
@@ -616,12 +624,13 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
                                 nRanks * sizeof(uint64_t), flagcxMemDevice,
                                 NULL);
 
-  // STREAM_OPS requires: device buffers AND CPU mapping of those same buffers
-  // (so proxy thread can write doneSeqsDev from CPU). Only possible when
-  // gdrPtrMmap is available (doneSeqsCpu points into doneSeqsDev).
+  // STREAM_OPS requires: device buffers AND successful CPU mmap of both
+  // (so proxy thread can write doneSeqsDev from CPU via the mmap'd pointer).
+  // If mmap failed, doneSeqsCpu/readySeqsCpu are separate host allocations
+  // and STREAM_OPS would hang (GPU waits on device memory proxy never updates).
   proxy->useStreamOps =
       (flagcxParamRmaStreamOps() == 1 && proxy->doneSeqsDev != NULL &&
-       proxy->readySeqsDev != NULL && deviceAdaptor->gdrPtrMmap != NULL)
+       proxy->readySeqsDev != NULL && mmapDone && mmapReady)
           ? 1
           : 0;
   INFO(FLAGCX_INIT, "RMA proxy sync method: %s",
@@ -633,7 +642,7 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
                      proxy) != 0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
-    if (deviceAdaptor->gdrPtrMunmap != NULL) {
+    if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
       if (proxy->doneSeqsCpu != NULL)
         deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
                                     nRanks * sizeof(uint64_t));
@@ -683,7 +692,7 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
 
   // Free CPU mappings / host memory
-  if (deviceAdaptor->gdrPtrMunmap != NULL) {
+  if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
     if (proxy->doneSeqsCpu != NULL)
       deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
                                   proxy->nRanks * sizeof(uint64_t));
@@ -759,8 +768,10 @@ flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
          proxy->nRanks);
     return flagcxInvalidArgument;
   }
-  if (stream == NULL || proxy->doneSeqsDev == NULL) {
-    // Fallback to host-side spin if stream or GDR memory not available
+  if (stream == NULL || !proxy->useStreamOps || proxy->doneSeqsDev == NULL) {
+    // Fallback to host-side spin if stream or STREAM_OPS not available.
+    // In HOST_FUNC mode, proxy writes doneSeqsCpu (host memory), so GPU-side
+    // streamWaitValue64 on doneSeqsDev would stall forever.
     return flagcxHeteroFlushRma(comm, peer, seq);
   }
   // GPU-side wait: stream stalls until doneSeqsDev[peer] >= seq
@@ -1415,10 +1426,11 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
         }
         // Signal write via D2D: accumulate monotonic counter so that
         // streamWaitValue64(GEQ) on the receiver side works correctly
-        // across multiple iterations.
-        ipc->signalSeqs[peer] += signalValue;
-        res = deviceAdaptor->streamWriteValue64(stream, signalAddr,
-                                                ipc->signalSeqs[peer], 0);
+        // across multiple iterations. Use atomic to prevent races if
+        // multiple threads enqueue D2D PutSignal to the same peer.
+        uint64_t newSeq = __atomic_add_fetch(&ipc->signalSeqs[peer],
+                                             signalValue, __ATOMIC_RELAXED);
+        res = deviceAdaptor->streamWriteValue64(stream, signalAddr, newSeq, 0);
         if (opSeq != NULL)
           *opSeq = 0; // D2D path
         return res;
