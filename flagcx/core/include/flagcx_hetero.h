@@ -97,6 +97,11 @@ struct flagcxRmaProxyState {
   bool ipcInitFailed; // true if IpcInit was attempted and failed (prevents
                       // retries)
 
+  // Condition variable for HOST_FUNC done-wait: proxy thread broadcasts
+  // after updating doneSeqsCpu so host-func callbacks wake without spinning.
+  pthread_mutex_t doneMutex;
+  pthread_cond_t doneCond;
+
   pthread_t thread;
   volatile int stop;
 };

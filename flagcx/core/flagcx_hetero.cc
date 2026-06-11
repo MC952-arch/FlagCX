@@ -14,6 +14,7 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef FLAGCX_RMA_QUEUE_SIZE
@@ -51,17 +52,29 @@ struct flagcxRmaDoneWaitCtx {
   volatile uint64_t *doneSeqsCpu; // pointer to proxy's doneSeqsCpu[peer]
   uint64_t opSeq;                 // sequence to wait for
   volatile int *rmaError;         // proxy error flag
+  pthread_mutex_t *doneMutex;     // proxy done condvar mutex
+  pthread_cond_t *doneCond;       // proxy done condvar
 };
 
 // Host-func callback: blocks stream until proxy signals completion.
+// Uses condvar to sleep instead of spinning — zero CPU while waiting.
 static void flagcxRmaDoneWaitHostFunc(void *arg) {
   struct flagcxRmaDoneWaitCtx *ctx = (struct flagcxRmaDoneWaitCtx *)arg;
+  pthread_mutex_lock(ctx->doneMutex);
   while (__atomic_load_n(ctx->doneSeqsCpu, __ATOMIC_ACQUIRE) < ctx->opSeq) {
     if (__atomic_load_n(ctx->rmaError, __ATOMIC_ACQUIRE)) {
       break;
     }
-    sched_yield();
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 1000000; // 1ms timeout as safety net
+    if (ts.tv_nsec >= 1000000000) {
+      ts.tv_sec++;
+      ts.tv_nsec -= 1000000000;
+    }
+    pthread_cond_timedwait(ctx->doneCond, ctx->doneMutex, &ts);
   }
+  pthread_mutex_unlock(ctx->doneMutex);
   free(ctx);
 }
 
@@ -96,7 +109,7 @@ static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
     return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
                                             opSeq, 0);
   } else {
-    // HOST_FUNC: launch callback that polls doneSeqsCpu until done
+    // HOST_FUNC: launch callback that waits on doneCond until done
     struct flagcxRmaDoneWaitCtx *ctx =
         (struct flagcxRmaDoneWaitCtx *)malloc(sizeof(*ctx));
     if (ctx == NULL)
@@ -104,6 +117,8 @@ static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
     ctx->doneSeqsCpu = &proxy->doneSeqsCpu[peer];
     ctx->opSeq = opSeq;
     ctx->rmaError = &proxy->rmaError;
+    ctx->doneMutex = &proxy->doneMutex;
+    ctx->doneCond = &proxy->doneCond;
     return deviceAdaptor->launchHostFunc(stream, flagcxRmaDoneWaitHostFunc,
                                          ctx);
   }
@@ -313,6 +328,12 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
         __atomic_store_n(&proxy->doneSeqsCpu[peer], desc->opSeq,
                          __ATOMIC_RELEASE);
       __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+      // Wake HOST_FUNC waiters sleeping on doneCond
+      if (!proxy->useStreamOps) {
+        pthread_mutex_lock(&proxy->doneMutex);
+        pthread_cond_broadcast(&proxy->doneCond);
+        pthread_mutex_unlock(&proxy->doneMutex);
+      }
     }
     free(desc);
     did = true;
@@ -570,6 +591,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     flagcxIntruQueueConstruct(&proxy->inProgressQueues[p]);
   }
 
+  pthread_mutex_init(&proxy->doneMutex, NULL);
+  pthread_cond_init(&proxy->doneCond, NULL);
+
   // Allocate device memory for stream-based synchronization.
   proxy->doneSeqsDev = NULL;
   proxy->doneSeqsCpu = NULL;
@@ -659,6 +683,8 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
       deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
     for (int p = 0; p < nRanks; p++)
       pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
+    pthread_cond_destroy(&proxy->doneCond);
+    pthread_mutex_destroy(&proxy->doneMutex);
     free(proxy->circularBuffers);
     free((void *)proxy->pis);
     free((void *)proxy->cis);
@@ -690,6 +716,9 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
 
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
+
+  pthread_cond_destroy(&proxy->doneCond);
+  pthread_mutex_destroy(&proxy->doneMutex);
 
   // Free CPU mappings / host memory
   if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {

@@ -17,7 +17,7 @@ void RmaTest::SetUpTestSuite() {
   MPI_Comm_size(MPI_COMM_WORLD, &nranks);
 
   size = RMA_TEST_SIZE;
-  signalSize = sizeof(uint64_t) * 64; // room for multiple signals
+  signalSize = sizeof(uint64_t) * nranks;
 
   flagcxDeviceHandleInit(&devHandle);
 
@@ -56,7 +56,14 @@ void RmaTest::SetUpTestSuite() {
   // Allocate and register signal buffer
   flagcxMemAlloc(&signalBuff, signalSize);
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
-  flagcxOneSideSignalRegister(comm, signalBuff, signalSize, FLAGCX_PTR_CUDA);
+  res = flagcxOneSideSignalRegister(comm, signalBuff, signalSize,
+                                    FLAGCX_PTR_CUDA);
+  if (res != flagcxSuccess) {
+    flagcxMemFree(signalBuff);
+    signalBuff = nullptr;
+    dataWin = nullptr;
+    return;
+  }
 }
 
 void RmaTest::TearDownTestSuite() {

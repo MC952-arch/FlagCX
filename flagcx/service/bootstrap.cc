@@ -139,15 +139,15 @@ static flagcxResult_t bootstrapNetSendRecv(struct flagcxSocket *sendSocket,
   int recvExpectedSize;
   FLAGCXCHECK(flagcxSocketSendRecv(sendSocket, &sendSize, sizeof(int),
                                    recvSocket, &recvExpectedSize, sizeof(int)));
-  if (recvExpectedSize > recvSize) {
-    WARN("bootstrapNetSendRecv: message truncated: received %d bytes instead "
-         "of %d",
+  if (recvExpectedSize < 0 || recvExpectedSize > recvSize) {
+    WARN("bootstrapNetSendRecv: invalid recvExpectedSize %d (recvSize=%d)",
          recvExpectedSize, recvSize);
     return flagcxInternalError;
   }
   // Exchange payload (interleaved, handles arbitrary sizes)
   FLAGCXCHECK(flagcxSocketSendRecv(sendSocket, sendData, sendSize, recvSocket,
-                                   recvData, recvExpectedSize));
+                                   recvData,
+                                   std::min(recvSize, recvExpectedSize)));
   return flagcxSuccess;
 }
 

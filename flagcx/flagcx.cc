@@ -2592,6 +2592,11 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
     return flagcxInvalidArgument;
   if (peerWin == NULL)
     return flagcxInvalidArgument;
+  if (peer < 0 || peer >= comm->heteroComm->nRanks) {
+    WARN("flagcxPutSignal: peer %d out of range (nRanks=%d)", peer,
+         comm->heteroComm->nRanks);
+    return flagcxInvalidArgument;
+  }
 
   // Resolve window to MR index and compute byte size
   size_t byteSize = count * getFlagcxDataTypeSize(datatype);
@@ -2638,6 +2643,11 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
   (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
+  if (peer < 0 || peer >= comm->heteroComm->nRanks) {
+    WARN("flagcxSignal: peer %d out of range (nRanks=%d)", peer,
+         comm->heteroComm->nRanks);
+    return flagcxInvalidArgument;
+  }
 
   // Sender writes to its own slot in receiver's signal buffer
   size_t signalOffset = (size_t)comm->heteroComm->rank * sizeof(uint64_t);
@@ -2663,6 +2673,11 @@ flagcxResult_t flagcxWaitSignal(int nDesc,
 
   for (int i = 0; i < nDesc; i++) {
     int peer = signalDescs[i].peer;
+    if (peer < 0 || peer >= hetero->nRanks) {
+      WARN("flagcxWaitSignal: peer %d out of range (nRanks=%d)", peer,
+           hetero->nRanks);
+      return flagcxInvalidArgument;
+    }
     uint64_t opCnt = (uint64_t)signalDescs[i].opCnt;
 
     // Signal offset: peer's slot in my local signal buffer
