@@ -2,9 +2,11 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Test-only Device IR kernel declarations.
- * These kernels exercise the FlagCX Device API IR wrapper functions
- * (extern "C" wrappers compiled via nvcc here, or via LLVM bitcode for
- * Triton). Compiled from device_ir.cu in test/device_api/.
+ * These kernels exercise both API paths:
+ *   - C-suffixed (struct-based) IR wrappers: K1–K8
+ *   - S-suffixed (scalar) IR functions:      S1–S6
+ *
+ * Compiled from device_ir.cu in test/device_api/.
  ************************************************************************/
 
 #ifndef TEST_KERNEL_DEVICE_IR_H_
@@ -46,5 +48,37 @@ void launchKernelIntraBarrierArriveWait(const void *devCommPtr,
                                         const void *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream);
+
+// =========================================================================
+// Scalar IR (S-suffixed) kernel launchers
+// =========================================================================
+
+// S1: Cooperative Group (Scalar) — writes threadRank, coopSize per thread
+void launchKernelCoopGroupS(const void *devCommPtr, int *devResults,
+                            int nBlocks, int nThreads, flagcxStream_t stream);
+
+// S2: Team Queries (Scalar) — writes intraRank, worldRank to results[0..1]
+void launchKernelTeamQueriesS(const void *devCommPtr, int *devResults,
+                              flagcxStream_t stream);
+
+// S3: Local Pointer (Scalar) — verifies localPtr == rawBuff
+void launchKernelLocalPointerS(const void *devMemPtr, void *rawBuff,
+                               int *devResults, flagcxStream_t stream);
+
+// S4: Intra Pointer (Scalar) — reads peer's data via LSA
+void launchKernelIntraPointerS(const void *devCommPtr, const void *devMemPtr,
+                               float *devOutput, int nBlocks, int nThreads,
+                               flagcxStream_t stream);
+
+// S5: Intra Barrier Sync (Scalar) — write buffer, barrier, read peer
+void launchKernelIntraBarrierSyncS(const void *devCommPtr,
+                                   const void *devMemPtr, float *buffer,
+                                   float *output, int N, flagcxStream_t stream);
+
+// S6: Intra Barrier Arrive/Wait (Scalar) — write, arrive, wait, read peer
+void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
+                                         const void *devMemPtr, float *buffer,
+                                         float *output, int N,
+                                         flagcxStream_t stream);
 
 #endif // TEST_KERNEL_DEVICE_IR_H_

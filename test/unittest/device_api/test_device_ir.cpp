@@ -4,7 +4,7 @@
  * Device IR Function Tests — host driver exercising FlagCX Device API
  * IR wrapper functions via device pointers (simulates Triton usage path).
  *
- * Tests 8 kernel categories covering 69 IR functions:
+ * Tests 8 kernel categories covering C-suffixed (struct-based) IR functions:
  *   K1: Comm Queries (GetRank, GetSize, GetIntraRank, GetIntraSize)
  *   K2: Cooperative Group (InitBlock, ThreadRank, Size, Sync)
  *   K3: Team Queries (GetTeamIntra, RankToWorld, RankToIntra)
@@ -13,6 +13,14 @@
  *   K6: Data Type Size (DataTypeSizeDevice)
  *   K7: Intra Barrier (SessionInit, Sync)
  *   K8: Intra Barrier Arrive/Wait (SessionArrive, Wait)
+ *
+ * Tests 6 kernel categories covering S-suffixed (scalar) IR functions:
+ *   S1: Cooperative Group (CoopThreadRankS, CoopSizeS, CoopSyncS)
+ *   S2: Team Queries (TeamRankToWorldS)
+ *   S3: Local Pointer (GetLocalPointerS)
+ *   S4: Intra Pointer (GetIntraPointerS)
+ *   S5: Intra Barrier Sync (IntraBarrierSyncS)
+ *   S6: Intra Barrier Arrive/Wait (IntraBarrierArriveS, WaitS)
  *
  * Usage: mpirun -np N ./test_device_ir
  ************************************************************************/
@@ -333,13 +341,208 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(k8Output, flagcxMemDevice, NULL));
   delete[] hostBuff;
 
+  // =========================================================================
+  // Scalar IR Tests (S1 - S6)
+  // =========================================================================
+
+  if (proc == 0) {
+    printf("\n--- Scalar IR Tests ---\n");
+  }
+
+  // -------------------------------------------------------------------------
+  // S1: Cooperative Group (Scalar)
+  // -------------------------------------------------------------------------
+  int nBlocksS1 = 2, nThreadsS1 = 32;
+  int totalThreadsS1 = nBlocksS1 * nThreadsS1;
+  int *s1Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s1Results,
+                                      totalThreadsS1 * 2 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelCoopGroupS(devCommPtr, s1Results, nBlocksS1, nThreadsS1, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int *hostS1 = new int[totalThreadsS1 * 2];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS1, s1Results,
+                                      totalThreadsS1 * 2 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s1Pass = true;
+  for (int i = 0; i < totalThreadsS1; i++) {
+    int expectedRank = i % nThreadsS1; // block-level: threadIdx within block
+    int expectedSize = nThreadsS1;
+    if (hostS1[i * 2 + 0] != expectedRank ||
+        hostS1[i * 2 + 1] != expectedSize) {
+      s1Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S1 CoopGroup(Scalar): %s\n", s1Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostS1;
+  FLAGCXCHECK(devHandle->deviceFree(s1Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S2: Team Queries (Scalar)
+  // -------------------------------------------------------------------------
+  int *s2Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s2Results, 2 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelTeamQueriesS(devCommPtr, s2Results, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int hostS2[2];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, s2Results, 2 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  // intraRank -> worldRank via INTRA team should give back our proc rank
+  bool s2Pass = (hostS2[1] == proc);
+  if (proc == 0) {
+    printf("S2 TeamQueries(Scalar): %s\n", s2Pass ? "PASS" : "FAIL");
+  }
+  FLAGCXCHECK(devHandle->deviceFree(s2Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S3: Local Pointer (Scalar)
+  // -------------------------------------------------------------------------
+  int *s3Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s3Results, sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelLocalPointerS(devMemPtr, regBuff, s3Results, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int hostS3 = 0;
+  FLAGCXCHECK(devHandle->deviceMemcpy(&hostS3, s3Results, sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s3Pass = (hostS3 == 1);
+  if (proc == 0) {
+    printf("S3 LocalPointer(Scalar): %s\n", s3Pass ? "PASS" : "FAIL");
+  }
+  FLAGCXCHECK(devHandle->deviceFree(s3Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S4: Intra Pointer (Scalar)
+  // -------------------------------------------------------------------------
+  // Write known pattern to local buffer first
+  int nElemsS4 = 256;
+  float *hostInitS4 = new float[nElemsS4];
+  for (int i = 0; i < nElemsS4; i++)
+    hostInitS4[i] = (float)(proc * 1000 + i);
+  FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, hostInitS4,
+                                      nElemsS4 * sizeof(float),
+                                      flagcxMemcpyHostToDevice, NULL));
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  float *s4Output = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc(
+      (void **)&s4Output, nElemsS4 * sizeof(float), flagcxMemDevice, NULL));
+
+  launchKernelIntraPointerS(devCommPtr, devMemPtr, s4Output, 1, nElemsS4,
+                            stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostS4 = new float[nElemsS4];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS4, s4Output,
+                                      nElemsS4 * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s4Pass = true;
+  for (int i = 0; i < nElemsS4; i++) {
+    float expected = (float)(peer * 1000 + i);
+    if (fabsf(hostS4[i] - expected) > 1e-3f) {
+      s4Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S4 IntraPointer(Scalar): %s\n", s4Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostInitS4;
+  delete[] hostS4;
+  FLAGCXCHECK(devHandle->deviceFree(s4Output, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S5: Intra Barrier Sync (Scalar)
+  // -------------------------------------------------------------------------
+  int NS5 = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *s5Output = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s5Output, NS5 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s5Output, 0, NS5 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierSyncS(devCommPtr, devMemPtr, (float *)regBuff,
+                                s5Output, NS5, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostS5 = new float[NS5];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS5, s5Output, NS5 * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedS5 = (float)(peer + 1);
+  bool s5Pass = true;
+  for (int i = 0; i < NS5; i++) {
+    if (fabsf(hostS5[i] - expectedS5) > 1e-3f) {
+      s5Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S5 IntraBarrierSync(Scalar): %s\n", s5Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostS5;
+  FLAGCXCHECK(devHandle->deviceFree(s5Output, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S6: Intra Barrier Arrive/Wait (Scalar)
+  // -------------------------------------------------------------------------
+  int NS6 = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS6 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *s6Output = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s6Output, NS6 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s6Output, 0, NS6 * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierArriveWaitS(devCommPtr, devMemPtr, (float *)regBuff,
+                                      s6Output, NS6, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostS6 = new float[NS6];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS6, s6Output, NS6 * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedS6 = (float)(peer + 100);
+  bool s6Pass = true;
+  for (int i = 0; i < NS6; i++) {
+    if (fabsf(hostS6[i] - expectedS6) > 1e-3f) {
+      s6Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S6 IntraBarrierArriveWait(Scalar): %s\n", s6Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostS6;
+  FLAGCXCHECK(devHandle->deviceFree(s6Output, flagcxMemDevice, NULL));
+
   // -------------------------------------------------------------------------
   // Summary
   // -------------------------------------------------------------------------
   MPI_Barrier(MPI_COMM_WORLD);
 
   int allPass = k1Pass && k2Pass && k3Pass && k4Pass && k5Pass && k6Pass &&
-                k7Pass && k8Pass;
+                k7Pass && k8Pass && s1Pass && s2Pass && s3Pass && s4Pass &&
+                s5Pass && s6Pass;
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 

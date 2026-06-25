@@ -19,6 +19,9 @@
 #include "device_utils.h"
 #include "flagcx.h"
 
+// Scalar enum types for IR/Triton integration (shared with native path).
+#include "flagcx_device_enums.h"
+
 // Device traits — provides DeviceAPI with all type/function dispatch.
 #include "comm_traits.h"
 
