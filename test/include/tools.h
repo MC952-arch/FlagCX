@@ -1,3 +1,4 @@
+#include "flagcx.h"
 #include "mpi.h"
 #include <cstddef>
 #include <cstdint>
@@ -5,6 +6,21 @@
 void initMpiEnv(int argc, char **argv, int &worldRank, int &worldSize,
                 int &proc, int &totalProcs, int &color, MPI_Comm &splitComm,
                 uint64_t splitMask);
+
+// Datatype tables (aligned with nccl-tests style)
+extern flagcxDataType_t test_types[];
+extern const char *test_typenames[];
+extern int test_typenum;
+
+// Reduction op tables
+extern flagcxRedOp_t test_ops[];
+extern const char *test_opnames[];
+extern int test_opnum;
+
+// Returns index into test_types[], or -1 for "all"
+int flagcxStringToType(const char *str);
+// Returns index into test_ops[], or -1 for "all"
+int flagcxStringToOp(const char *str);
 
 class timer {
 public:
@@ -27,6 +43,8 @@ public:
   int getRootRank() const { return root; }
   uint64_t getSplitMask() const { return splitMask; }
   int getLocalRegister() const { return localRegister; }
+  int getDataType() const { return datatype; }
+  int getOp() const { return op; }
 
   size_t minBytes;
   size_t maxBytes;
@@ -37,4 +55,6 @@ public:
   int root;
   uint64_t splitMask;
   int localRegister;
+  int datatype; // flagcxDataType_t value, or -1 for "all"
+  int op;       // flagcxRedOp_t value, or -1 for "all"
 };

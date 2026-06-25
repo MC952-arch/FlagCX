@@ -15,6 +15,13 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.splitMask = ctx.args->getSplitMask();
   ctx.localRegister = ctx.args->getLocalRegister();
 
+  // Datatype/op from CLI (may be -1 for "all")
+  // For warmup, default to float/sum when "all" is selected
+  int parsedDt = ctx.args->getDataType();
+  int parsedOp = ctx.args->getOp();
+  ctx.datatype = (flagcxDataType_t)(parsedDt >= 0 ? parsedDt : flagcxFloat);
+  ctx.op = (flagcxRedOp_t)(parsedOp >= 0 ? parsedOp : flagcxSum);
+
   // Initialize FlagCX device handle
   flagcxDeviceHandleInit(&ctx.devHandle);
 
@@ -99,15 +106,16 @@ void perfTeardown(PerfContext &ctx) {
 }
 
 void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
+  size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
   // Warmup for large size
-  size_t largeCount = ctx.maxBytes / sizeof(float);
+  size_t largeCount = ctx.maxBytes / typeSize;
   for (int i = 0; i < ctx.numWarmupIters; i++) {
     fn(ctx, largeCount);
   }
   ctx.devHandle->streamSynchronize(ctx.stream);
 
   // Warmup for small size
-  size_t smallCount = ctx.minBytes / sizeof(float);
+  size_t smallCount = ctx.minBytes / typeSize;
   for (int i = 0; i < ctx.numWarmupIters; i++) {
     fn(ctx, smallCount);
   }
@@ -121,47 +129,96 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
     fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
     return;
   }
-  for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
-       size *= ctx.stepFactor) {
-    size_t count = size / sizeof(float);
 
-    // Optional data initialization
-    if (dataInitFn) {
-      dataInitFn(ctx, size, count);
-    }
+  // Determine which types and ops to run
+  int parsedType = ctx.args->getDataType();
+  int parsedOp = ctx.args->getOp();
 
-    MPI_Barrier(MPI_COMM_WORLD);
+  int typeCount, opCount;
+  flagcxDataType_t *runTypes;
+  flagcxRedOp_t *runOps;
+  const char **runTypeNames;
+  const char **runOpNames;
 
-    // Timed loop
-    ctx.tim.reset();
-    for (int i = 0; i < ctx.numIters; i++) {
-      collFn(ctx, count);
-    }
-    ctx.devHandle->streamSynchronize(ctx.stream);
+  flagcxDataType_t singleType = ctx.datatype;
+  flagcxRedOp_t singleOp = ctx.op;
+  const char *singleTypeName = test_typenames[parsedType >= 0 ? parsedType : 0];
+  const char *singleOpName = test_opnames[parsedOp >= 0 ? parsedOp : 0];
 
-    // Compute average elapsed time across all ranks
-    double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
-    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
-                  MPI_COMM_WORLD);
-    elapsedTime /= ctx.worldSize;
+  if (parsedType != -1) {
+    typeCount = 1;
+    runTypes = &singleType;
+    runTypeNames = &singleTypeName;
+  } else {
+    typeCount = test_typenum;
+    runTypes = test_types;
+    runTypeNames = test_typenames;
+  }
 
-    // Bandwidth calculation
-    double baseBw = (double)(size) / 1.0E9 / elapsedTime;
-    double algBw = baseBw;
-    double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
-    double busBw = baseBw * factor;
+  if (parsedOp != -1) {
+    opCount = 1;
+    runOps = &singleOp;
+    runOpNames = &singleOpName;
+  } else {
+    opCount = test_opnum;
+    runOps = test_ops;
+    runOpNames = test_opnames;
+  }
 
-    if (ctx.proc == 0 && ctx.color == 0) {
-      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
-             "%lf GB/s; Bus bandwidth: %lf GB/s\n",
-             size, elapsedTime, algBw, busBw);
-    }
+  for (int ti = 0; ti < typeCount; ti++) {
+    for (int oi = 0; oi < opCount; oi++) {
+      ctx.datatype = runTypes[ti];
+      ctx.op = runOps[oi];
+      size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
 
-    MPI_Barrier(MPI_COMM_WORLD);
+      if (ctx.proc == 0 && ctx.color == 0) {
+        printf("#\n# datatype: %s, op: %s\n#\n", runTypeNames[ti],
+               runOpNames[oi]);
+      }
 
-    // Optional post-iteration callback
-    if (postIterFn) {
-      postIterFn(ctx, size, count);
+      for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
+           size *= ctx.stepFactor) {
+        size_t count = size / typeSize;
+
+        // Optional data initialization
+        if (dataInitFn) {
+          dataInitFn(ctx, size, count);
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // Timed loop
+        ctx.tim.reset();
+        for (int i = 0; i < ctx.numIters; i++) {
+          collFn(ctx, count);
+        }
+        ctx.devHandle->streamSynchronize(ctx.stream);
+
+        // Compute average elapsed time across all ranks
+        double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
+        MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE,
+                      MPI_SUM, MPI_COMM_WORLD);
+        elapsedTime /= ctx.worldSize;
+
+        // Bandwidth calculation
+        double baseBw = (double)(size) / 1.0E9 / elapsedTime;
+        double algBw = baseBw;
+        double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
+        double busBw = baseBw * factor;
+
+        if (ctx.proc == 0 && ctx.color == 0) {
+          printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
+                 "%lf GB/s; Bus bandwidth: %lf GB/s\n",
+                 size, elapsedTime, algBw, busBw);
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // Optional post-iteration callback
+        if (postIterFn) {
+          postIterFn(ctx, size, count);
+        }
+      }
     }
   }
 }
@@ -174,64 +231,113 @@ void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
     fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
     return;
   }
-  for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
-       size *= ctx.stepFactor) {
-    int beginRoot, endRoot;
-    double sumAlgBw = 0;
-    double sumBusBw = 0;
-    double sumTime = 0;
-    int testCount = 0;
 
-    if (ctx.root != -1) {
-      beginRoot = endRoot = ctx.root;
-    } else {
-      beginRoot = 0;
-      endRoot = ctx.totalProcs - 1;
-    }
+  // Determine which types and ops to run
+  int parsedType = ctx.args->getDataType();
+  int parsedOp = ctx.args->getOp();
 
-    for (int r = beginRoot; r <= endRoot; r++) {
-      size_t count = size / sizeof(float);
+  int typeCount, opCount;
+  flagcxDataType_t *runTypes;
+  flagcxRedOp_t *runOps;
+  const char **runTypeNames;
+  const char **runOpNames;
 
-      if (dataInitFn) {
-        dataInitFn(ctx, size, count, r);
+  flagcxDataType_t singleType = ctx.datatype;
+  flagcxRedOp_t singleOp = ctx.op;
+  const char *singleTypeName = test_typenames[parsedType >= 0 ? parsedType : 0];
+  const char *singleOpName = test_opnames[parsedOp >= 0 ? parsedOp : 0];
+
+  if (parsedType != -1) {
+    typeCount = 1;
+    runTypes = &singleType;
+    runTypeNames = &singleTypeName;
+  } else {
+    typeCount = test_typenum;
+    runTypes = test_types;
+    runTypeNames = test_typenames;
+  }
+
+  if (parsedOp != -1) {
+    opCount = 1;
+    runOps = &singleOp;
+    runOpNames = &singleOpName;
+  } else {
+    opCount = test_opnum;
+    runOps = test_ops;
+    runOpNames = test_opnames;
+  }
+
+  for (int ti = 0; ti < typeCount; ti++) {
+    for (int oi = 0; oi < opCount; oi++) {
+      ctx.datatype = runTypes[ti];
+      ctx.op = runOps[oi];
+      size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
+
+      if (ctx.proc == 0 && ctx.color == 0) {
+        printf("#\n# datatype: %s, op: %s\n#\n", runTypeNames[ti],
+               runOpNames[oi]);
       }
 
-      MPI_Barrier(MPI_COMM_WORLD);
+      for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
+           size *= ctx.stepFactor) {
+        int beginRoot, endRoot;
+        double sumAlgBw = 0;
+        double sumBusBw = 0;
+        double sumTime = 0;
+        int testCount = 0;
 
-      ctx.tim.reset();
-      for (int i = 0; i < ctx.numIters; i++) {
-        collFn(ctx, count, r);
+        if (ctx.root != -1) {
+          beginRoot = endRoot = ctx.root;
+        } else {
+          beginRoot = 0;
+          endRoot = ctx.totalProcs - 1;
+        }
+
+        for (int r = beginRoot; r <= endRoot; r++) {
+          size_t count = size / typeSize;
+
+          if (dataInitFn) {
+            dataInitFn(ctx, size, count, r);
+          }
+
+          MPI_Barrier(MPI_COMM_WORLD);
+
+          ctx.tim.reset();
+          for (int i = 0; i < ctx.numIters; i++) {
+            collFn(ctx, count, r);
+          }
+          ctx.devHandle->streamSynchronize(ctx.stream);
+
+          MPI_Barrier(MPI_COMM_WORLD);
+
+          double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
+          MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE,
+                        MPI_SUM, MPI_COMM_WORLD);
+          elapsedTime /= ctx.worldSize;
+
+          double baseBw = (double)(size) / 1.0E9 / elapsedTime;
+          double algBw = baseBw;
+          double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
+          double busBw = baseBw * factor;
+          sumAlgBw += algBw;
+          sumBusBw += busBw;
+          sumTime += elapsedTime;
+          testCount++;
+
+          if (postIterFn) {
+            postIterFn(ctx, size, count, r);
+          }
+        }
+
+        if (ctx.proc == 0 && ctx.color == 0) {
+          double algBw = sumAlgBw / testCount;
+          double busBw = sumBusBw / testCount;
+          double elapsedTime = sumTime / testCount;
+          printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
+                 "%lf GB/s; Bus bandwidth: %lf GB/s\n",
+                 size, elapsedTime, algBw, busBw);
+        }
       }
-      ctx.devHandle->streamSynchronize(ctx.stream);
-
-      MPI_Barrier(MPI_COMM_WORLD);
-
-      double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
-      MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
-                    MPI_COMM_WORLD);
-      elapsedTime /= ctx.worldSize;
-
-      double baseBw = (double)(size) / 1.0E9 / elapsedTime;
-      double algBw = baseBw;
-      double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
-      double busBw = baseBw * factor;
-      sumAlgBw += algBw;
-      sumBusBw += busBw;
-      sumTime += elapsedTime;
-      testCount++;
-
-      if (postIterFn) {
-        postIterFn(ctx, size, count, r);
-      }
-    }
-
-    if (ctx.proc == 0 && ctx.color == 0) {
-      double algBw = sumAlgBw / testCount;
-      double busBw = sumBusBw / testCount;
-      double elapsedTime = sumTime / testCount;
-      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
-             "%lf GB/s; Bus bandwidth: %lf GB/s\n",
-             size, elapsedTime, algBw, busBw);
     }
   }
 }

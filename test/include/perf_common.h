@@ -25,6 +25,10 @@ struct PerfContext {
   uint64_t splitMask;
   int localRegister;
 
+  // Datatype/op for current iteration
+  flagcxDataType_t datatype;
+  flagcxRedOp_t op;
+
   // FlagCX handles
   flagcxDeviceHandle_t devHandle;
   flagcxComm_t comm;

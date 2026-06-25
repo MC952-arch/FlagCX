@@ -2,8 +2,46 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <getopt.h>
 #include <libgen.h>
+
+// Datatype tables
+flagcxDataType_t test_types[] = {
+    flagcxInt8,   flagcxUint8,   flagcxInt32,   flagcxUint32,  flagcxInt64,
+    flagcxUint64, flagcxFloat16, flagcxFloat32, flagcxFloat64, flagcxBfloat16};
+const char *test_typenames[] = {"int8",   "uint8",   "int32", "uint32",
+                                "int64",  "uint64",  "half",  "float",
+                                "double", "bfloat16"};
+int test_typenum = 10;
+
+// Reduction op tables
+flagcxRedOp_t test_ops[] = {flagcxSum, flagcxProd, flagcxMax, flagcxMin,
+                            flagcxAvg};
+const char *test_opnames[] = {"sum", "prod", "max", "min", "avg"};
+int test_opnum = 5;
+
+int flagcxStringToType(const char *str) {
+  for (int t = 0; t < test_typenum; t++) {
+    if (strcmp(str, test_typenames[t]) == 0)
+      return t;
+  }
+  if (strcmp(str, "all") == 0)
+    return -1;
+  printf("invalid datatype '%s', defaulting to float\n", str);
+  return flagcxFloat;
+}
+
+int flagcxStringToOp(const char *str) {
+  for (int o = 0; o < test_opnum; o++) {
+    if (strcmp(str, test_opnames[o]) == 0)
+      return o;
+  }
+  if (strcmp(str, "all") == 0)
+    return -1;
+  printf("invalid op '%s', defaulting to sum\n", str);
+  return flagcxSum;
+}
 
 void initMpiEnv(int argc, char **argv, int &worldRank, int &worldSize,
                 int &proc, int &totalProcs, int &color, MPI_Comm &splitComm,
@@ -87,6 +125,8 @@ parser::parser(int argc, char **argv) {
   root = -1;
   splitMask = 0;
   localRegister = 0;
+  datatype = flagcxFloat;
+  op = flagcxSum;
 
   double parsedValue;
   int longIndex;
@@ -100,14 +140,15 @@ parser::parser(int argc, char **argv) {
       {"root", required_argument, 0, 'r'},
       {"split_mask", required_argument, 0, 's'},
       {"local_register", required_argument, 0, 'R'},
-      // {"op", required_argument, 0, 'o'},
-      // {"datatype", required_argument, 0, 'd'},
+      {"op", required_argument, 0, 'o'},
+      {"datatype", required_argument, 0, 'd'},
       {"help", no_argument, 0, 'h'},
       {}};
 
   while (1) {
     int c;
-    c = getopt_long(argc, argv, "b:e:f:w:n:p:r:s:R:h", longOpts, &longIndex);
+    c = getopt_long(argc, argv, "b:e:f:w:n:p:r:s:R:o:d:h", longOpts,
+                    &longIndex);
 
     if (c == -1)
       break;
@@ -176,6 +217,12 @@ parser::parser(int argc, char **argv) {
           exit(1);
         }
         break;
+      case 'd':
+        datatype = flagcxStringToType(optarg);
+        break;
+      case 'o':
+        op = flagcxStringToOp(optarg);
+        break;
       case 'h':
       default:
         if (c != 'h')
@@ -190,10 +237,12 @@ parser::parser(int argc, char **argv) {
                "[-r <root>] \n\t"
                "[-s <splitmask OCT/DEC/HEX>] \n\t"
                "[-R <localregister 0/1/2>] \n\t"
+               "[-d <datatype/all>] \n\t"
+               "[-o <op/all>] \n\t"
                "[-h\n",
                basename(argv[0]));
         printf("Use default values with -b 1M -e 1G -f 2 -w 5 -n 20 -p 0 -r 0 "
-               "-s 0 -R 0\n");
+               "-s 0 -R 0 -d float -o sum\n");
         break;
     }
   }

@@ -55,14 +55,14 @@ static void warmupFn(PerfContext &ctx, size_t count) {
   AlltoallvData *d = (AlltoallvData *)ctx.userData;
   computeCounts(ctx, count / ctx.totalProcs);
   flagcxAlltoAllv(ctx.sendbuff, d->hSendcounts, d->hSdispls, ctx.recvbuff,
-                  d->hRecvcounts, d->hRdispls, flagcxFloat, ctx.comm,
+                  d->hRecvcounts, d->hRdispls, ctx.datatype, ctx.comm,
                   ctx.stream);
 }
 
 static void collFn(PerfContext &ctx, size_t count) {
   AlltoallvData *d = (AlltoallvData *)ctx.userData;
   flagcxAlltoAllv(ctx.sendbuff, d->hSendcounts, d->hSdispls, ctx.recvbuff,
-                  d->hRecvcounts, d->hRdispls, flagcxFloat, ctx.comm,
+                  d->hRecvcounts, d->hRdispls, ctx.datatype, ctx.comm,
                   ctx.stream);
 }
 
