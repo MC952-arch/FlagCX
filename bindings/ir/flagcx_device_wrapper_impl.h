@@ -336,9 +336,9 @@ flagcxDevNetReadCounter(const void *transOpaque,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevNetWaitounter(const void *transOpaque, const void *coopOpaque,
-                       flagcxDevNetCounter_t counterId, uint64_t least,
-                       int bits, flagcxDeviceMemoryOrder_t order) {
+flagcxDevNetWaitCounter(const void *transOpaque, const void *coopOpaque,
+                        flagcxDevNetCounter_t counterId, uint64_t least,
+                        int bits, flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *trans = (const flagcxDevNet *)transOpaque;
   const flagcxCoopAny *coop = (const flagcxCoopAny *)coopOpaque;
   trans->waitCounter(*coop, counterId, least, bits, order);

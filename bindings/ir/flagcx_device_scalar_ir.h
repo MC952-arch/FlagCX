@@ -8,7 +8,7 @@
  *
  * Design:
  *   - CoopAny/Team replaced by flagcxCoopKind_t / flagcxTeamKind_t enums
- *   - Barrier sessions replaced by per-call params + caller-held epoch
+ *   - Barrier sessions replaced by per-call params (epoch managed internally)
  *   - Net (transport) obtained via flagcxDevNetGetFromCommS (pre-allocated)
  *
  * When compiled to LLVM bitcode (clang -x cuda --cuda-device-only),

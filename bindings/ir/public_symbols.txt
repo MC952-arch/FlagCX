@@ -88,8 +88,8 @@ flagcxDevNetWaitSignal
 flagcxDevNetWaitSignalMeetShadow
 flagcxDevNetWaitSignalMeetShadowS
 flagcxDevNetWaitSignalS
-flagcxDevNetWaitounter
-flagcxDevNetWaitounterS
+flagcxDevNetWaitCounter
+flagcxDevNetWaitCounterS
 flagcxGetIntraPointerC
 flagcxGetIntraPointerS
 flagcxGetLocalPointerC

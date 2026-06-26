@@ -249,9 +249,9 @@ flagcxDevNetReadCounter(const void *trans, flagcxDevNetCounter_t counterId,
                         int bits, flagcxDeviceMemoryOrder_t order);
 /** @brief Spin-wait until counter >= least. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetWaitounter(const void *trans, const void *coop,
-                       flagcxDevNetCounter_t counterId, uint64_t least,
-                       int bits, flagcxDeviceMemoryOrder_t order);
+flagcxDevNetWaitCounter(const void *trans, const void *coop,
+                        flagcxDevNetCounter_t counterId, uint64_t least,
+                        int bits, flagcxDeviceMemoryOrder_t order);
 /** @brief Flush pending RDMA/network writes. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetFlush(const void *trans, const void *coop,

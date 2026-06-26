@@ -22,11 +22,7 @@
 
 // IR wrapper declarations + implementations (needed for nvcc inline compilation)
 #include "flagcx_device_wrapper.h"
-#include "flagcx_device_wrapper_impl.h"
-
-// Scalar IR declarations + implementations
-#include "flagcx_device_scalar_ir.h"
-#include "flagcx_device_scalar_ir_impl.h"
+#include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
 #include "device_ir.h"
 

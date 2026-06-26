@@ -23,6 +23,7 @@
 #include "utils.h"    // flagcxParamSignalHostEnable
 #include <algorithm>  // std::min, std::max
 #include <cstddef>    // offsetof
+#include <new>        // std::nothrow
 #include <sched.h>    // sched_yield
 
 // Host-visible helpers implemented in device_api_host_helpers.cu (compiled by
@@ -1303,6 +1304,9 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
   // (nullptr), which guarantees sequential execution. If a vendor's
   // deviceAdaptor->deviceMemcpy dispatches on a different stream, an explicit
   // streamSynchronize would be needed between these two calls.
+  // When flagcxDevNetSizeOf() returns 0 (stub path or vendor without net
+  // support), _netContexts remains nullptr. The scalar API's
+  // flagcxDevNetGetFromCommS handles this gracefully by returning nullptr.
   if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
     size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
     FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
