@@ -37,7 +37,7 @@ int flagcxStringToType(const char *str) {
 
 int flagcxStringToOp(const char *str) {
   // Search all ops including avg (which is beyond test_opnum)
-  static const int totalOps = 5;
+  static const int totalOps = sizeof(test_ops) / sizeof(test_ops[0]);
   for (int o = 0; o < totalOps; o++) {
     if (strcmp(str, test_opnames[o]) == 0)
       return o;

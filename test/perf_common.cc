@@ -19,6 +19,8 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   // For warmup, default to float/sum when "all" is selected
   int parsedDt = ctx.args->getDataType();
   int parsedOp = ctx.args->getOp();
+  // Table indices match enum values (test_types[i] == i), so direct cast is
+  // valid
   ctx.datatype = (flagcxDataType_t)(parsedDt >= 0 ? parsedDt : flagcxFloat);
   ctx.op = (flagcxRedOp_t)(parsedOp >= 0 ? parsedOp : flagcxSum);
 

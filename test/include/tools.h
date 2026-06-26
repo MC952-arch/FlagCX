@@ -57,6 +57,6 @@ public:
   int root;
   uint64_t splitMask;
   int localRegister;
-  int datatype = -1; // flagcxDataType_t value, or -1 for "all"
-  int op = -1;       // flagcxRedOp_t value, or -1 for "all"
+  int datatype = -1; // index into test_types[], or -1 for "all"
+  int op = -1;       // index into test_ops[], or -1 for "all"
 };
