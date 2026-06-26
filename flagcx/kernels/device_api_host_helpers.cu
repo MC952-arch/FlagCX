@@ -15,7 +15,7 @@
 
 extern "C" size_t flagcxDevNetSizeOf() { return sizeof(flagcxDevNet); }
 
-__global__ void flagcxDevNetConstructKernel(flagcxDevNet *nets,
+static __global__ void flagcxDevNetConstructKernel(flagcxDevNet *nets,
                                             flagcxDevComm *comm, int count) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if (i < count) {

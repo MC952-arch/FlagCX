@@ -1299,7 +1299,11 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
 
   // Step 2: Allocate + construct net array on device, referencing
   // the device-resident flagcxDevComm. Then patch _netContexts on device.
-  if (hostCopy._contextCount > 0) {
+  // Both the kernel launch and the subsequent memcpy use the default stream
+  // (nullptr), which guarantees sequential execution. If a vendor's
+  // deviceAdaptor->deviceMemcpy dispatches on a different stream, an explicit
+  // streamSynchronize would be needed between these two calls.
+  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
     size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
     FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
                                                 flagcxMemDevice, NULL),
