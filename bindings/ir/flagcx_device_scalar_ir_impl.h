@@ -206,7 +206,17 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[ArriveS] rank=%d idx=%d epoch=%llu nRanks=%d nBarriers=%d\n",
+           (int)comm->getIntraRank(), (int)index,
+           (unsigned long long)bar._impl._epoch, (int)bar._impl._nRanks,
+           (int)bar._impl._nBarriers);
+  }
   bar.arrive(order);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[ArriveS] rank=%d idx=%d DONE\n", (int)comm->getIntraRank(),
+           (int)index);
+  }
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -218,7 +228,18 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[WaitS] rank=%d idx=%d epoch=%llu nRanks=%d peerBuf=%p\n",
+           (int)comm->getIntraRank(), (int)index,
+           (unsigned long long)bar._impl._epoch, (int)bar._impl._nRanks,
+           (void *)bar._impl._peerBuffers);
+  }
   bar.wait(order);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[WaitS] rank=%d idx=%d DONE epoch_after=%llu\n",
+           (int)comm->getIntraRank(), (int)index,
+           (unsigned long long)bar._impl._epoch);
+  }
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -230,7 +251,15 @@ flagcxIntraBarrierSyncS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[SyncS] rank=%d idx=%d epoch=%llu\n", (int)comm->getIntraRank(),
+           (int)index, (unsigned long long)bar._impl._epoch);
+  }
   bar.sync(order);
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    printf("[SyncS] rank=%d idx=%d DONE\n", (int)comm->getIntraRank(),
+           (int)index);
+  }
 }
 
 /* ================================================================

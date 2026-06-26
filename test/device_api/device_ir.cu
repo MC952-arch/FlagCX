@@ -375,10 +375,23 @@ __global__ void kernelScalarIntraBarrierArriveWait(const void *devCommPtr,
     buffer[tid] = (float)(myRank + 100);
   }
 
+  if (threadIdx.x == 0) {
+    printf("[S6] rank=%d block=%d: BEFORE ArriveS\n", myRank, blockIdx.x);
+  }
+
   flagcxIntraBarrierArriveS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                             flagcxDeviceMemoryOrderRelease);
+
+  if (threadIdx.x == 0) {
+    printf("[S6] rank=%d block=%d: AFTER ArriveS, BEFORE WaitS\n", myRank, blockIdx.x);
+  }
+
   flagcxIntraBarrierWaitS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcquire);
+
+  if (threadIdx.x == 0) {
+    printf("[S6] rank=%d block=%d: AFTER WaitS\n", myRank, blockIdx.x);
+  }
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -388,8 +401,16 @@ __global__ void kernelScalarIntraBarrierArriveWait(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
+  if (threadIdx.x == 0) {
+    printf("[S6] rank=%d block=%d: BEFORE SyncS\n", myRank, blockIdx.x);
+  }
+
   flagcxIntraBarrierSyncS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcquire);
+
+  if (threadIdx.x == 0) {
+    printf("[S6] rank=%d block=%d: DONE\n", myRank, blockIdx.x);
+  }
 }
 
 void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
