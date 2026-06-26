@@ -151,6 +151,19 @@ struct flagcxDeviceAdaptor *deviceAdaptor = &topsAdaptor;
 struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
                                                       &pcclAdaptor};
 struct flagcxDeviceAdaptor *deviceAdaptor = &ptpuAdaptor;
+
+#elif USE_PPU_ADAPTOR
+#ifdef USE_BOOTSTRAP_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
+                                                      &ppu_ncclAdaptor};
+#elif USE_GLOO_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&glooAdaptor,
+                                                      &ppu_ncclAdaptor};
+#elif USE_MPI_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
+                                                      &ppu_ncclAdaptor};
+#endif
+struct flagcxDeviceAdaptor *deviceAdaptor = &ppu_cudaAdaptor;
 #endif
 
 // External adaptor declarations
