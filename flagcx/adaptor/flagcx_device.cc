@@ -22,14 +22,20 @@
 #include "shmutils.h" // flagcxShmOpen, flagcxShmClose, flagcxShmUnlink
 #include "utils.h"    // flagcxParamSignalHostEnable
 #include <algorithm>  // std::min, std::max
-#include <new>
-#include <sched.h> // sched_yield
+#include <cstddef>    // offsetof
+#include <sched.h>    // sched_yield
 
 // Host-visible helpers implemented in device_api_host_helpers.cu (compiled by
-// nvcc)
+// nvcc). Other vendors provide equivalent implementations.
+// When kernels are not compiled, provide stubs so the library links.
+#ifdef COMPILE_KERNEL_HOST
 extern "C" size_t flagcxDevNetSizeOf();
-extern "C" void flagcxDevNetConstructArray(void *dst, const void *comm,
-                                           int count);
+extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
+                                            int count, void *stream);
+#else
+static size_t flagcxDevNetSizeOf() { return 0; }
+static void flagcxDevNetLaunchConstruct(void *, void *, int, void *) {}
+#endif
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -1274,37 +1280,14 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
     return flagcxSuccess;
   }
 
-  // Construct value struct on host stack
+  // Construct value struct on host stack (with _netContexts = nullptr;
+  // will be patched on device after kernel construction)
   flagcxDevComm hostCopy(*devComm);
+  hostCopy._netContexts = nullptr;
 
-  // Pre-allocate net contexts (one flagcxDevNet per context) in device memory
-  void *netDevPtr = nullptr;
-  if (hostCopy._contextCount > 0) {
-    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
-    // Build array on host heap
-    void *hostNets = malloc(netArraySize);
-    if (hostNets) {
-      flagcxDevNetConstructArray(hostNets, &hostCopy, hostCopy._contextCount);
-      // Copy to device
-      flagcxResult_t netRes = deviceAdaptor->deviceMalloc(
-          &netDevPtr, netArraySize, flagcxMemDevice, NULL);
-      if (netRes == flagcxSuccess) {
-        netRes =
-            deviceAdaptor->deviceMemcpy(netDevPtr, hostNets, netArraySize,
-                                        flagcxMemcpyHostToDevice, NULL, NULL);
-      }
-      if (netRes != flagcxSuccess) {
-        if (netDevPtr)
-          deviceAdaptor->deviceFree(netDevPtr, flagcxMemDevice, NULL);
-        netDevPtr = nullptr;
-      }
-      free(hostNets);
-    }
-    hostCopy._netContexts = netDevPtr;
-  }
-
-  // Allocate device memory and copy
+  // Step 1: Copy flagcxDevComm to device
   void *dPtr = nullptr;
+  void *netDevPtr = nullptr;
   flagcxResult_t res = flagcxSuccess;
   FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
                                               flagcxMemDevice, NULL),
@@ -1313,6 +1296,25 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
       deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevComm),
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
+
+  // Step 2: Allocate + construct net array on device, referencing
+  // the device-resident flagcxDevComm. Then patch _netContexts on device.
+  if (hostCopy._contextCount > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
+    // Launch kernel to construct flagcxDevNet[] referencing device-resident
+    // comm
+    flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount,
+                                nullptr);
+    // Patch _netContexts field on the device-resident flagcxDevComm
+    void *netCtxField = (char *)dPtr + offsetof(flagcxDevComm, _netContexts);
+    FLAGCXCHECKGOTO(
+        deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
+                                    flagcxMemcpyHostToDevice, NULL, NULL),
+        res, fail);
+  }
 
   devComm->cachedDevicePtr = dPtr;
   devComm->cachedNetContextsPtr = netDevPtr;
