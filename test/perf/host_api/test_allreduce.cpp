@@ -19,8 +19,9 @@ static double bwFactorFn(int totalProcs) {
 
 static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
   size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
+  memset(ctx.hello, 0, size);
   for (size_t i = 0; i < count; i++) {
-    float val = i % 10 * (1 << ctx.proc);
+    float val = (float)(i % 10) * (1ULL << (ctx.proc % 30));
     memcpy((char *)ctx.hello + i * typeSize, &val,
            sizeof(float) < typeSize ? sizeof(float) : typeSize);
   }

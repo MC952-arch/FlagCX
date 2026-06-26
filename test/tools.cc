@@ -7,7 +7,7 @@
 #include <libgen.h>
 
 // Datatype tables
-flagcxDataType_t test_types[] = {
+const flagcxDataType_t test_types[] = {
     flagcxInt8,   flagcxUint8,   flagcxInt32,   flagcxUint32,  flagcxInt64,
     flagcxUint64, flagcxFloat16, flagcxFloat32, flagcxFloat64, flagcxBfloat16};
 const char *test_typenames[] = {"int8",   "uint8",   "int32", "uint32",
@@ -16,8 +16,8 @@ const char *test_typenames[] = {"int8",   "uint8",   "int32", "uint32",
 int test_typenum = 10;
 
 // Reduction op tables
-flagcxRedOp_t test_ops[] = {flagcxSum, flagcxProd, flagcxMax, flagcxMin,
-                            flagcxAvg};
+const flagcxRedOp_t test_ops[] = {flagcxSum, flagcxProd, flagcxMax, flagcxMin,
+                                  flagcxAvg};
 const char *test_opnames[] = {"sum", "prod", "max", "min", "avg"};
 int test_opnum = 5;
 

@@ -1,3 +1,5 @@
+#pragma once
+
 #include "flagcx.h"
 #include "mpi.h"
 #include <cstddef>
@@ -8,12 +10,12 @@ void initMpiEnv(int argc, char **argv, int &worldRank, int &worldSize,
                 uint64_t splitMask);
 
 // Datatype tables (aligned with nccl-tests style)
-extern flagcxDataType_t test_types[];
+extern const flagcxDataType_t test_types[];
 extern const char *test_typenames[];
 extern int test_typenum;
 
 // Reduction op tables
-extern flagcxRedOp_t test_ops[];
+extern const flagcxRedOp_t test_ops[];
 extern const char *test_opnames[];
 extern int test_opnum;
 
@@ -55,6 +57,6 @@ public:
   int root;
   uint64_t splitMask;
   int localRegister;
-  int datatype; // flagcxDataType_t value, or -1 for "all"
-  int op;       // flagcxRedOp_t value, or -1 for "all"
+  int datatype = -1; // flagcxDataType_t value, or -1 for "all"
+  int op = -1;       // flagcxRedOp_t value, or -1 for "all"
 };

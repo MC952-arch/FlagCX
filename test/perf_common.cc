@@ -83,6 +83,13 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.hello = malloc(hBufSize);
   memset(ctx.hello, 0, hBufSize);
 
+  // Zero-init device buffers to avoid UB in tests without custom dataInitFn
+  ctx.devHandle->deviceMemset(ctx.sendbuff, 0, sBufSize, flagcxMemDevice,
+                              ctx.stream);
+  ctx.devHandle->deviceMemset(ctx.recvbuff, 0, rBufSize, flagcxMemDevice,
+                              ctx.stream);
+  ctx.devHandle->streamSynchronize(ctx.stream);
+
   ctx.userData = nullptr;
 }
 
@@ -135,8 +142,8 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
   int parsedOp = ctx.args->getOp();
 
   int typeCount, opCount;
-  flagcxDataType_t *runTypes;
-  flagcxRedOp_t *runOps;
+  const flagcxDataType_t *runTypes;
+  const flagcxRedOp_t *runOps;
   const char **runTypeNames;
   const char **runOpNames;
 
@@ -237,8 +244,8 @@ void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
   int parsedOp = ctx.args->getOp();
 
   int typeCount, opCount;
-  flagcxDataType_t *runTypes;
-  flagcxRedOp_t *runOps;
+  const flagcxDataType_t *runTypes;
+  const flagcxRedOp_t *runOps;
   const char **runTypeNames;
   const char **runOpNames;
 
