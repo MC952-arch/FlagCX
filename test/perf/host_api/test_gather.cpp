@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
   PerfContext ctx;
   perfSetup(ctx, argc, argv, bufSizeFn);
   perfWarmup(ctx, warmupFn);
-  perfRootBenchmarkLoop(ctx, collFn, bwFactorFn);
+  perfRootBenchmarkLoop(ctx, collFn, bwFactorFn, nullptr, nullptr, false);
   perfTeardown(ctx);
   return 0;
 }

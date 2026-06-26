@@ -16,10 +16,13 @@ const char *test_typenames[] = {"int8",   "uint8",   "int32", "uint32",
 int test_typenum = 10;
 
 // Reduction op tables
+// Note: flagcxAvg is excluded from the default "all" sweep (test_opnum=4)
+// because it is not supported by all adaptors (MPI, Gloo). Users can still
+// explicitly select it with --op avg on supported backends.
 const flagcxRedOp_t test_ops[] = {flagcxSum, flagcxProd, flagcxMax, flagcxMin,
                                   flagcxAvg};
 const char *test_opnames[] = {"sum", "prod", "max", "min", "avg"};
-int test_opnum = 5;
+int test_opnum = 4; // only sweep sum/prod/max/min in "all" mode
 
 int flagcxStringToType(const char *str) {
   for (int t = 0; t < test_typenum; t++) {
@@ -33,7 +36,9 @@ int flagcxStringToType(const char *str) {
 }
 
 int flagcxStringToOp(const char *str) {
-  for (int o = 0; o < test_opnum; o++) {
+  // Search all ops including avg (which is beyond test_opnum)
+  static const int totalOps = 5;
+  for (int o = 0; o < totalOps; o++) {
     if (strcmp(str, test_opnames[o]) == 0)
       return o;
   }

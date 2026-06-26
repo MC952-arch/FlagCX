@@ -131,7 +131,7 @@ void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
 
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
                        PerfBwFactorFn bwFactorFn, PerfDataInitFn dataInitFn,
-                       PerfPostIterFn postIterFn) {
+                       PerfPostIterFn postIterFn, bool iterateOps) {
   if (ctx.stepFactor <= 1) {
     fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
     return;
@@ -162,7 +162,7 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
     runTypeNames = test_typenames;
   }
 
-  if (parsedOp != -1) {
+  if (parsedOp != -1 || !iterateOps) {
     opCount = 1;
     runOps = &singleOp;
     runOpNames = &singleOpName;
@@ -233,7 +233,7 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
 void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
                            PerfBwFactorFn bwFactorFn,
                            PerfRootDataInitFn dataInitFn,
-                           PerfRootPostIterFn postIterFn) {
+                           PerfRootPostIterFn postIterFn, bool iterateOps) {
   if (ctx.stepFactor <= 1) {
     fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
     return;
@@ -264,7 +264,7 @@ void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
     runTypeNames = test_typenames;
   }
 
-  if (parsedOp != -1) {
+  if (parsedOp != -1 || !iterateOps) {
     opCount = 1;
     runOps = &singleOp;
     runOpNames = &singleOpName;

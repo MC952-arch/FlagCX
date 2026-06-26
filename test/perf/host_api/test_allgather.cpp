@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
   PerfContext ctx;
   perfSetup(ctx, argc, argv, bufSizeFn);
   perfWarmup(ctx, collFn);
-  perfBenchmarkLoop(ctx, collFn, bwFactorFn);
+  perfBenchmarkLoop(ctx, collFn, bwFactorFn, nullptr, nullptr, false);
   perfTeardown(ctx);
   return 0;
 }

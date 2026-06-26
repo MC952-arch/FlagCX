@@ -72,63 +72,26 @@ static double bwFactorFn(int totalProcs) {
 
 static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
   AlltoallvData *d = (AlltoallvData *)ctx.userData;
+  size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
   size_t perPeer = count / ctx.totalProcs;
 
+  memset(ctx.hello, 0, size);
   for (int i = 0; i < ctx.totalProcs; i++) {
-    ((float *)ctx.hello)[i * perPeer] = 10 * ctx.proc + i;
+    float val = (float)(10 * ctx.proc + i);
+    size_t offset = (size_t)i * perPeer * typeSize;
+    memcpy((char *)ctx.hello + offset, &val,
+           sizeof(float) < typeSize ? sizeof(float) : typeSize);
   }
   ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, size,
                               flagcxMemcpyHostToDevice, NULL);
 
-  if ((ctx.proc == 0 || ctx.proc == ctx.totalProcs - 1) && ctx.color == 0 &&
-      ctx.printBuffer) {
-    printf("sendbuff = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%f ", ((float *)ctx.hello)[i * perPeer]);
-    }
-    printf("\n");
-  }
-
   computeCounts(ctx, perPeer);
-
-  if ((ctx.proc == 0 || ctx.proc == ctx.totalProcs - 1) && ctx.color == 0 &&
-      ctx.printBuffer) {
-    printf("hSendcounts = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%ld ", d->hSendcounts[i]);
-    }
-    printf("\n");
-    printf("hRecvcounts = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%ld ", d->hRecvcounts[i]);
-    }
-    printf("\n");
-    printf("hSdispls = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%ld ", d->hSdispls[i]);
-    }
-    printf("\n");
-    printf("hRdispls = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%ld ", d->hRdispls[i]);
-    }
-    printf("\n");
-  }
 }
 
 static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
-  size_t perPeer = count / ctx.totalProcs;
   memset(ctx.hello, 0, size);
   ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
                               flagcxMemcpyDeviceToHost, NULL);
-  if ((ctx.proc == 0 || ctx.proc == ctx.totalProcs - 1) && ctx.color == 0 &&
-      ctx.printBuffer) {
-    printf("recvbuff = ");
-    for (int i = 0; i < ctx.totalProcs; i++) {
-      printf("%f ", ((float *)ctx.hello)[i * perPeer]);
-    }
-    printf("\n");
-  }
 }
 
 int main(int argc, char *argv[]) {
@@ -143,7 +106,7 @@ int main(int argc, char *argv[]) {
   ctx.userData = &data;
 
   perfWarmup(ctx, warmupFn);
-  perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn);
+  perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn, false);
 
   free(data.hSendcounts);
   free(data.hRecvcounts);
