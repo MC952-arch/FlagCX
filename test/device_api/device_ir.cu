@@ -6,7 +6,7 @@
  *
  * Covers both:
  *   - C-suffixed (struct-based) API: K1–K8
- *   - S-suffixed (scalar) API:       S1–S6
+ *   - S-suffixed (scalar) API:       S1–S10
  *
  * Compiled by nvcc into device_ir.o, linked by g++ into test_device_ir.
  ************************************************************************/

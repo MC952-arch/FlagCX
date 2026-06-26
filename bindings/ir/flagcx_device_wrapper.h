@@ -3,10 +3,10 @@
  *
  * FlagCX Device API C-style wrapper functions for LLVM IR generation.
  *
- * DEPRECATED since v2.1: This struct-based API (suffix "C") will be removed
- * in v3.0. Migrate to the scalar API (flagcx_device_scalar_ir.h, suffix "S")
- * which requires no struct instantiation and is compatible with Triton /
- * LLVM IR consumers.
+ * DEPRECATED: This struct-based API (suffix "C") is scheduled for removal.
+ * Migrate to the scalar API (flagcx_device_scalar_ir.h, suffix "S") which
+ * requires no struct instantiation and is compatible with Triton / LLVM IR
+ * consumers.
  *
  * This header declares extern "C" device functions that wrap the C++
  * template-based FlagCX Device API. When compiled to LLVM bitcode,

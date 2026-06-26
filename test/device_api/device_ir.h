@@ -4,7 +4,7 @@
  * Test-only Device IR kernel declarations.
  * These kernels exercise both API paths:
  *   - C-suffixed (struct-based) IR wrappers: K1–K8
- *   - S-suffixed (scalar) IR functions:      S1–S6
+ *   - S-suffixed (scalar) IR functions:      S1–S10
  *
  * Compiled from device_ir.cu in test/device_api/.
  ************************************************************************/

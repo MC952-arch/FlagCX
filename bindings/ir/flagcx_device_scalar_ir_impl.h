@@ -395,25 +395,9 @@ flagcxDevNetFlushS(const void *netOpaque, flagcxCoopKind_t coopKind,
   net->flush(coop, order);
 }
 
-/* Reset / Shadow (no coop needed) */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevNetResetSignal(const void *netOpaque, flagcxDevNetSignal_t slot) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  net->resetSignal(slot);
-}
-
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevNetResetCounter(const void *netOpaque, flagcxDevNetCounter_t slot) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  net->resetCounter(slot);
-}
-
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevNetIncreaseSignalShadow(const void *netOpaque,
-                                 flagcxDevNetSignal_t slot, uint64_t delta) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  net->increaseSignalShadow(slot, delta);
-}
+/* Reset / Shadow — shared with C-API, defined in flagcx_device_wrapper_impl.h.
+ * Not duplicated here to avoid ODR violations when both headers are included
+ * in the same translation unit. */
 
 /* ================================================================
  * Category 11: Net — Two-Sided (scalar coop) (4)
