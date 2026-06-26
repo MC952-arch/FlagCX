@@ -6,35 +6,35 @@
 #include "alloc.h"
 #include "comm.h"
 
-flagcxResult_t ppu_ncclAdaptorGetVersion(int *version) {
+flagcxResult_t ppuncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
 
-flagcxResult_t ppu_ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t ppuncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
-flagcxResult_t ppu_ncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
-                                              void **buff, size_t size,
-                                              int isRecv) {
+flagcxResult_t ppuncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                             void **buff, size_t size,
+                                             int isRecv) {
   return flagcxNotSupported;
 }
 
-const char *ppu_ncclAdaptorGetErrorString(flagcxResult_t result) {
+const char *ppuncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
 
-const char *ppu_ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
+const char *ppuncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
 }
 
 flagcxResult_t
-ppu_ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                            flagcxUniqueId_t commId, int rank,
-                            struct bootstrapState * /*bootstrap*/) {
+ppuncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                           flagcxUniqueId_t commId, int rank,
+                           struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
@@ -42,89 +42,89 @@ ppu_ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(ncclUniqueId *)commId, rank);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
+flagcxResult_t ppuncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclCommFinalize(comm->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+flagcxResult_t ppuncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclCommDestroy(comm->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
+flagcxResult_t ppuncclAdaptorCommAbort(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclCommAbort(comm->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommResume(flagcxInnerComm_t comm) {
+flagcxResult_t ppuncclAdaptorCommResume(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclInvalidUsage;
 }
 
-flagcxResult_t ppu_ncclAdaptorCommSuspend(flagcxInnerComm_t comm) {
+flagcxResult_t ppuncclAdaptorCommSuspend(flagcxInnerComm_t comm) {
   return (flagcxResult_t)ncclInvalidUsage;
 }
 
-flagcxResult_t ppu_ncclAdaptorCommCount(const flagcxInnerComm_t comm,
-                                        int *count) {
+flagcxResult_t ppuncclAdaptorCommCount(const flagcxInnerComm_t comm,
+                                       int *count) {
   return (flagcxResult_t)ncclCommCount(comm->base, count);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
-                                           int *device) {
+flagcxResult_t ppuncclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
+                                          int *device) {
   return (flagcxResult_t)ncclCommCuDevice(comm->base, device);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommUserRank(const flagcxInnerComm_t comm,
-                                           int *rank) {
+flagcxResult_t ppuncclAdaptorCommUserRank(const flagcxInnerComm_t comm,
+                                          int *rank) {
   return (flagcxResult_t)ncclCommUserRank(comm->base, rank);
 }
 
-flagcxResult_t ppu_ncclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
-                                                flagcxResult_t *asyncError) {
+flagcxResult_t ppuncclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
+                                               flagcxResult_t *asyncError) {
   return (flagcxResult_t)ncclCommGetAsyncError(comm->base,
                                                (ncclResult_t *)asyncError);
 }
 
-flagcxResult_t ppu_ncclAdaptorMemAlloc(void **ptr, size_t size) {
+flagcxResult_t ppuncclAdaptorMemAlloc(void **ptr, size_t size) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
+flagcxResult_t ppuncclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 
-flagcxResult_t ppu_ncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
-                                           size_t size, void **handle) {
+flagcxResult_t ppuncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
+                                          size_t size, void **handle) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorCommDeregister(flagcxInnerComm_t comm,
-                                             void *handle) {
+flagcxResult_t ppuncclAdaptorCommDeregister(flagcxInnerComm_t comm,
+                                            void *handle) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
-                                                 void *buff, size_t size,
-                                                 flagcxInnerWindow_t *win,
-                                                 int winFlags) {
+flagcxResult_t ppuncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                                void *buff, size_t size,
+                                                flagcxInnerWindow_t *win,
+                                                int winFlags) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                   flagcxInnerWindow_t win) {
+flagcxResult_t ppuncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                  flagcxInnerWindow_t win) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorReduce(const void *sendbuff, void *recvbuff,
-                                     size_t count, flagcxDataType_t datatype,
-                                     flagcxRedOp_t op, int root,
-                                     flagcxInnerComm_t comm,
-                                     flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorReduce(const void *sendbuff, void *recvbuff,
+                                    size_t count, flagcxDataType_t datatype,
+                                    flagcxRedOp_t op, int root,
+                                    flagcxInnerComm_t comm,
+                                    flagcxStream_t stream) {
   return (flagcxResult_t)ncclReduce(sendbuff, recvbuff, count,
                                     (ncclDataType_t)datatype, (ncclRedOp_t)op,
                                     root, comm->base, stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorGather(const void *sendbuff, void *recvbuff,
-                                     size_t count, flagcxDataType_t datatype,
-                                     int root, flagcxInnerComm_t comm,
-                                     flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorGather(const void *sendbuff, void *recvbuff,
+                                    size_t count, flagcxDataType_t datatype,
+                                    int root, flagcxInnerComm_t comm,
+                                    flagcxStream_t stream) {
   int rank, nranks;
   ncclResult_t res = ncclSuccess;
   res = ncclCommUserRank(comm->base, &rank);
@@ -146,10 +146,10 @@ flagcxResult_t ppu_ncclAdaptorGather(const void *sendbuff, void *recvbuff,
   return (flagcxResult_t)res;
 }
 
-flagcxResult_t ppu_ncclAdaptorScatter(const void *sendbuff, void *recvbuff,
-                                      size_t count, flagcxDataType_t datatype,
-                                      int root, flagcxInnerComm_t comm,
-                                      flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorScatter(const void *sendbuff, void *recvbuff,
+                                     size_t count, flagcxDataType_t datatype,
+                                     int root, flagcxInnerComm_t comm,
+                                     flagcxStream_t stream) {
   int rank, nranks;
   ncclResult_t res = ncclSuccess;
   res = ncclCommUserRank(comm->base, &rank);
@@ -171,47 +171,46 @@ flagcxResult_t ppu_ncclAdaptorScatter(const void *sendbuff, void *recvbuff,
   return (flagcxResult_t)res;
 }
 
-flagcxResult_t ppu_ncclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        int root, flagcxInnerComm_t comm,
-                                        flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
+                                       size_t count, flagcxDataType_t datatype,
+                                       int root, flagcxInnerComm_t comm,
+                                       flagcxStream_t stream) {
   return (flagcxResult_t)ncclBroadcast(sendbuff, recvbuff, count,
                                        (ncclDataType_t)datatype, root,
                                        comm->base, stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op,
-                                        flagcxInnerComm_t comm,
-                                        flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
+                                       size_t count, flagcxDataType_t datatype,
+                                       flagcxRedOp_t op, flagcxInnerComm_t comm,
+                                       flagcxStream_t stream) {
   return (flagcxResult_t)ncclAllReduce(
       sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
       comm->base, stream->base);
 }
 
 flagcxResult_t
-ppu_ncclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t count,
-                             flagcxDataType_t datatype, flagcxRedOp_t op,
-                             flagcxInnerComm_t comm, flagcxStream_t stream) {
+ppuncclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t count,
+                            flagcxDataType_t datatype, flagcxRedOp_t op,
+                            flagcxInnerComm_t comm, flagcxStream_t stream) {
   return (flagcxResult_t)ncclReduceScatter(
       sendbuff, recvbuff, count, (ncclDataType_t)datatype, (ncclRedOp_t)op,
       comm->base, stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorAllGather(const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        flagcxInnerComm_t comm,
-                                        flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorAllGather(const void *sendbuff, void *recvbuff,
+                                       size_t count, flagcxDataType_t datatype,
+                                       flagcxInnerComm_t comm,
+                                       flagcxStream_t stream) {
   return (flagcxResult_t)ncclAllGather(sendbuff, recvbuff, count,
                                        (ncclDataType_t)datatype, comm->base,
                                        stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
-                                       size_t count, flagcxDataType_t datatype,
-                                       flagcxInnerComm_t comm,
-                                       flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
+                                      size_t count, flagcxDataType_t datatype,
+                                      flagcxInnerComm_t comm,
+                                      flagcxStream_t stream) {
   int nranks;
   ncclResult_t res = ncclSuccess;
   res = ncclCommCount(comm->base, &nranks);
@@ -232,11 +231,12 @@ flagcxResult_t ppu_ncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   return (flagcxResult_t)res;
 }
 
-flagcxResult_t
-ppu_ncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
-                         size_t *sdispls, void *recvbuff, size_t *recvcounts,
-                         size_t *rdispls, flagcxDataType_t datatype,
-                         flagcxInnerComm_t comm, flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
+                                       size_t *sdispls, void *recvbuff,
+                                       size_t *recvcounts, size_t *rdispls,
+                                       flagcxDataType_t datatype,
+                                       flagcxInnerComm_t comm,
+                                       flagcxStream_t stream) {
   int nranks;
   ncclResult_t res = ncclSuccess;
   res = ncclCommCount(comm->base, &nranks);
@@ -263,74 +263,74 @@ ppu_ncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   return (flagcxResult_t)res;
 }
 
-flagcxResult_t ppu_ncclAdaptorSend(const void *sendbuff, size_t count,
-                                   flagcxDataType_t datatype, int peer,
-                                   flagcxInnerComm_t comm,
-                                   flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorSend(const void *sendbuff, size_t count,
+                                  flagcxDataType_t datatype, int peer,
+                                  flagcxInnerComm_t comm,
+                                  flagcxStream_t stream) {
   return (flagcxResult_t)ncclSend(sendbuff, count, (ncclDataType_t)datatype,
                                   peer, comm->base, stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorRecv(void *recvbuff, size_t count,
-                                   flagcxDataType_t datatype, int peer,
-                                   flagcxInnerComm_t comm,
-                                   flagcxStream_t stream) {
+flagcxResult_t ppuncclAdaptorRecv(void *recvbuff, size_t count,
+                                  flagcxDataType_t datatype, int peer,
+                                  flagcxInnerComm_t comm,
+                                  flagcxStream_t stream) {
   return (flagcxResult_t)ncclRecv(recvbuff, count, (ncclDataType_t)datatype,
                                   peer, comm->base, stream->base);
 }
 
-flagcxResult_t ppu_ncclAdaptorGroupStart() {
+flagcxResult_t ppuncclAdaptorGroupStart() {
   return (flagcxResult_t)ncclGroupStart();
 }
 
-flagcxResult_t ppu_ncclAdaptorGroupEnd() {
+flagcxResult_t ppuncclAdaptorGroupEnd() {
   return (flagcxResult_t)ncclGroupEnd();
 }
 
 flagcxResult_t
-ppu_ncclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
-                               flagcxDevCommRequirements * /*reqs*/) {
+ppuncclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                              flagcxDevCommRequirements * /*reqs*/) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t
-ppu_ncclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
-                             const flagcxDevCommRequirements * /*reqs*/,
-                             flagcxInnerDevComm_t * /*devComm*/) {
+ppuncclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                            const flagcxDevCommRequirements * /*reqs*/,
+                            flagcxInnerDevComm_t * /*devComm*/) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_ncclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
-                                             flagcxInnerDevComm_t /*devComm*/) {
+flagcxResult_t ppuncclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                            flagcxInnerDevComm_t /*devComm*/) {
   return flagcxNotSupported;
 }
 
-struct flagcxCCLAdaptor ppu_ncclAdaptor = {
+struct flagcxCCLAdaptor ppuncclAdaptor = {
     "PPU_NCCL",
     // Basic functions
-    ppu_ncclAdaptorGetVersion, ppu_ncclAdaptorGetUniqueId,
-    ppu_ncclAdaptorGetErrorString, ppu_ncclAdaptorGetLastError,
-    ppu_ncclAdaptorGetStagedBuffer,
+    ppuncclAdaptorGetVersion, ppuncclAdaptorGetUniqueId,
+    ppuncclAdaptorGetErrorString, ppuncclAdaptorGetLastError,
+    ppuncclAdaptorGetStagedBuffer,
     // Communicator functions
-    ppu_ncclAdaptorCommInitRank, ppu_ncclAdaptorCommFinalize,
-    ppu_ncclAdaptorCommDestroy, ppu_ncclAdaptorCommAbort,
-    ppu_ncclAdaptorCommResume, ppu_ncclAdaptorCommSuspend,
-    ppu_ncclAdaptorCommCount, ppu_ncclAdaptorCommCuDevice,
-    ppu_ncclAdaptorCommUserRank, ppu_ncclAdaptorCommGetAsyncError,
-    ppu_ncclAdaptorMemAlloc, ppu_ncclAdaptorMemFree,
-    ppu_ncclAdaptorCommRegister, ppu_ncclAdaptorCommDeregister,
+    ppuncclAdaptorCommInitRank, ppuncclAdaptorCommFinalize,
+    ppuncclAdaptorCommDestroy, ppuncclAdaptorCommAbort,
+    ppuncclAdaptorCommResume, ppuncclAdaptorCommSuspend,
+    ppuncclAdaptorCommCount, ppuncclAdaptorCommCuDevice,
+    ppuncclAdaptorCommUserRank, ppuncclAdaptorCommGetAsyncError,
+    ppuncclAdaptorMemAlloc, ppuncclAdaptorMemFree, ppuncclAdaptorCommRegister,
+    ppuncclAdaptorCommDeregister,
     // Symmetric functions
-    ppu_ncclAdaptorCommWindowRegister, ppu_ncclAdaptorCommWindowDeregister,
+    ppuncclAdaptorCommWindowRegister, ppuncclAdaptorCommWindowDeregister,
     // Communication functions
-    ppu_ncclAdaptorReduce, ppu_ncclAdaptorGather, ppu_ncclAdaptorScatter,
-    ppu_ncclAdaptorBroadcast, ppu_ncclAdaptorAllReduce,
-    ppu_ncclAdaptorReduceScatter, ppu_ncclAdaptorAllGather,
-    ppu_ncclAdaptorAlltoAll, ppu_ncclAdaptorAlltoAllv, ppu_ncclAdaptorSend,
-    ppu_ncclAdaptorRecv,
+    ppuncclAdaptorReduce, ppuncclAdaptorGather, ppuncclAdaptorScatter,
+    ppuncclAdaptorBroadcast, ppuncclAdaptorAllReduce,
+    ppuncclAdaptorReduceScatter, ppuncclAdaptorAllGather,
+    ppuncclAdaptorAlltoAll, ppuncclAdaptorAlltoAllv, ppuncclAdaptorSend,
+    ppuncclAdaptorRecv,
     // Group semantics
-    ppu_ncclAdaptorGroupStart, ppu_ncclAdaptorGroupEnd,
+    ppuncclAdaptorGroupStart, ppuncclAdaptorGroupEnd,
     // Device API
-    ppu_ncclAdaptorDevCommReqsInit, ppu_ncclAdaptorDevCommCreate,
-    ppu_ncclAdaptorDevCommDestroy};
+    ppuncclAdaptorDevCommReqsInit, ppuncclAdaptorDevCommCreate,
+    ppuncclAdaptorDevCommDestroy};
 
 #endif // USE_PPU_ADAPTOR

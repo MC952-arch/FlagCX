@@ -11,14 +11,14 @@ std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyDeviceToDevice, cudaMemcpyDeviceToDevice},
 };
 
-flagcxResult_t ppu_cudaAdaptorDeviceSynchronize() {
+flagcxResult_t ppucudaAdaptorDeviceSynchronize() {
   DEVCHECK(cudaDeviceSynchronize());
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
-                                           flagcxMemcpyType_t type,
-                                           flagcxStream_t stream, void *args) {
+flagcxResult_t ppucudaAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
+                                          flagcxMemcpyType_t type,
+                                          flagcxStream_t stream, void *args) {
   if (stream == NULL) {
     DEVCHECK(cudaMemcpy(dst, src, size, memcpy_type_map[type]));
   } else {
@@ -28,9 +28,9 @@ flagcxResult_t ppu_cudaAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorDeviceMemset(void *ptr, int value, size_t size,
-                                           flagcxMemType_t type,
-                                           flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorDeviceMemset(void *ptr, int value, size_t size,
+                                          flagcxMemType_t type,
+                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     memset(ptr, value, size);
   } else {
@@ -43,9 +43,9 @@ flagcxResult_t ppu_cudaAdaptorDeviceMemset(void *ptr, int value, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorDeviceMalloc(void **ptr, size_t size,
-                                           flagcxMemType_t type,
-                                           flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorDeviceMalloc(void **ptr, size_t size,
+                                          flagcxMemType_t type,
+                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     DEVCHECK(cudaHostAlloc(ptr, size, cudaHostAllocMapped));
   } else if (type == flagcxMemManaged) {
@@ -60,8 +60,8 @@ flagcxResult_t ppu_cudaAdaptorDeviceMalloc(void **ptr, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
-                                         flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
+                                        flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     DEVCHECK(cudaFreeHost(ptr));
   } else if (type == flagcxMemManaged) {
@@ -76,34 +76,33 @@ flagcxResult_t ppu_cudaAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSetDevice(int dev) {
+flagcxResult_t ppucudaAdaptorSetDevice(int dev) {
   DEVCHECK(cudaSetDevice(dev));
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetDevice(int *dev) {
+flagcxResult_t ppucudaAdaptorGetDevice(int *dev) {
   DEVCHECK(cudaGetDevice(dev));
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetDeviceCount(int *count) {
+flagcxResult_t ppucudaAdaptorGetDeviceCount(int *count) {
   DEVCHECK(cudaGetDeviceCount(count));
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetVendor(char *vendor) {
+flagcxResult_t ppucudaAdaptorGetVendor(char *vendor) {
   strcpy(vendor, "PPU");
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorHostGetDevicePointer(void **pDevice,
-                                                   void *pHost) {
+flagcxResult_t ppucudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
-                                          void *memHandle) {
+flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
+                                         void *memHandle) {
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -116,7 +115,7 @@ flagcxResult_t ppu_cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
+flagcxResult_t ppucudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
@@ -124,7 +123,7 @@ flagcxResult_t ppu_cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamCreate(flagcxStream_t *stream) {
+flagcxResult_t ppucudaAdaptorStreamCreate(flagcxStream_t *stream) {
   (*stream) = NULL;
   flagcxCalloc(stream, 1);
   DEVCHECK(cudaStreamCreateWithFlags((cudaStream_t *)(*stream),
@@ -132,7 +131,7 @@ flagcxResult_t ppu_cudaAdaptorStreamCreate(flagcxStream_t *stream) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamDestroy(flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorStreamDestroy(flagcxStream_t stream) {
   if (stream != NULL) {
     DEVCHECK(cudaStreamDestroy(stream->base));
     free(stream);
@@ -141,15 +140,15 @@ flagcxResult_t ppu_cudaAdaptorStreamDestroy(flagcxStream_t stream) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamCopy(flagcxStream_t *newStream,
-                                         void *oldStream) {
+flagcxResult_t ppucudaAdaptorStreamCopy(flagcxStream_t *newStream,
+                                        void *oldStream) {
   (*newStream) = NULL;
   flagcxCalloc(newStream, 1);
   (*newStream)->base = (cudaStream_t)oldStream;
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamFree(flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorStreamFree(flagcxStream_t stream) {
   if (stream != NULL) {
     free(stream);
     stream = NULL;
@@ -157,14 +156,14 @@ flagcxResult_t ppu_cudaAdaptorStreamFree(flagcxStream_t stream) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamSynchronize(flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorStreamSynchronize(flagcxStream_t stream) {
   if (stream != NULL) {
     DEVCHECK(cudaStreamSynchronize(stream->base));
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamQuery(flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorStreamQuery(flagcxStream_t stream) {
   flagcxResult_t res = flagcxSuccess;
   if (stream != NULL) {
     cudaError error = cudaStreamQuery(stream->base);
@@ -179,8 +178,8 @@ flagcxResult_t ppu_cudaAdaptorStreamQuery(flagcxStream_t stream) {
   return res;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamWaitEvent(flagcxStream_t stream,
-                                              flagcxEvent_t event) {
+flagcxResult_t ppucudaAdaptorStreamWaitEvent(flagcxStream_t stream,
+                                             flagcxEvent_t event) {
   if (stream != NULL && event != NULL) {
     DEVCHECK(
         cudaStreamWaitEvent(stream->base, event->base, cudaEventWaitDefault));
@@ -188,9 +187,9 @@ flagcxResult_t ppu_cudaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamWaitValue64(flagcxStream_t stream,
-                                                void *addr, uint64_t value,
-                                                int flags) {
+flagcxResult_t ppucudaAdaptorStreamWaitValue64(flagcxStream_t stream,
+                                               void *addr, uint64_t value,
+                                               int flags) {
   (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
@@ -200,9 +199,9 @@ flagcxResult_t ppu_cudaAdaptorStreamWaitValue64(flagcxStream_t stream,
   return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t ppu_cudaAdaptorStreamWriteValue64(flagcxStream_t stream,
-                                                 void *addr, uint64_t value,
-                                                 int flags) {
+flagcxResult_t ppucudaAdaptorStreamWriteValue64(flagcxStream_t stream,
+                                                void *addr, uint64_t value,
+                                                int flags) {
   (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
@@ -212,8 +211,8 @@ flagcxResult_t ppu_cudaAdaptorStreamWriteValue64(flagcxStream_t stream,
   return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventCreate(flagcxEvent_t *event,
-                                          flagcxEventType_t eventType) {
+flagcxResult_t ppucudaAdaptorEventCreate(flagcxEvent_t *event,
+                                         flagcxEventType_t eventType) {
   (*event) = NULL;
   flagcxCalloc(event, 1);
   const unsigned int flags = (eventType == flagcxEventDefault)
@@ -223,7 +222,7 @@ flagcxResult_t ppu_cudaAdaptorEventCreate(flagcxEvent_t *event,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventDestroy(flagcxEvent_t event) {
+flagcxResult_t ppucudaAdaptorEventDestroy(flagcxEvent_t event) {
   if (event != NULL) {
     DEVCHECK(cudaEventDestroy(event->base));
     free(event);
@@ -232,8 +231,8 @@ flagcxResult_t ppu_cudaAdaptorEventDestroy(flagcxEvent_t event) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventRecord(flagcxEvent_t event,
-                                          flagcxStream_t stream) {
+flagcxResult_t ppucudaAdaptorEventRecord(flagcxEvent_t event,
+                                         flagcxStream_t stream) {
   if (event != NULL) {
     if (stream != NULL) {
       DEVCHECK(cudaEventRecordWithFlags(event->base, stream->base,
@@ -245,14 +244,14 @@ flagcxResult_t ppu_cudaAdaptorEventRecord(flagcxEvent_t event,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventSynchronize(flagcxEvent_t event) {
+flagcxResult_t ppucudaAdaptorEventSynchronize(flagcxEvent_t event) {
   if (event != NULL) {
     DEVCHECK(cudaEventSynchronize(event->base));
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventQuery(flagcxEvent_t event) {
+flagcxResult_t ppucudaAdaptorEventQuery(flagcxEvent_t event) {
   flagcxResult_t res = flagcxSuccess;
   if (event != NULL) {
     cudaError error = cudaEventQuery(event->base);
@@ -267,8 +266,8 @@ flagcxResult_t ppu_cudaAdaptorEventQuery(flagcxEvent_t event) {
   return res;
 }
 
-flagcxResult_t ppu_cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
-                                               flagcxEvent_t end) {
+flagcxResult_t ppucudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                              flagcxEvent_t end) {
   if (ms == NULL || start == NULL || end == NULL) {
     return flagcxInvalidArgument;
   }
@@ -282,8 +281,8 @@ flagcxResult_t ppu_cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-flagcxResult_t ppu_cudaAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
-                                                 size_t *size) {
+flagcxResult_t ppucudaAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
+                                                size_t *size) {
   flagcxCalloc(handle, 1);
   if (size != NULL) {
     *size = sizeof(cudaIpcMemHandle_t);
@@ -291,8 +290,8 @@ flagcxResult_t ppu_cudaAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
-                                              void *devPtr) {
+flagcxResult_t ppucudaAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
+                                             void *devPtr) {
   if (handle == NULL || devPtr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -300,8 +299,8 @@ flagcxResult_t ppu_cudaAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
-                                               void **devPtr) {
+flagcxResult_t ppucudaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
+                                              void **devPtr) {
   if (handle == NULL || devPtr == NULL || *devPtr != NULL) {
     return flagcxInvalidArgument;
   }
@@ -310,7 +309,7 @@ flagcxResult_t ppu_cudaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorIpcMemHandleClose(void *devPtr) {
+flagcxResult_t ppucudaAdaptorIpcMemHandleClose(void *devPtr) {
   if (devPtr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -318,22 +317,22 @@ flagcxResult_t ppu_cudaAdaptorIpcMemHandleClose(void *devPtr) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
+flagcxResult_t ppucudaAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
   if (handle != NULL) {
     free(handle);
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorLaunchHostFunc(flagcxStream_t stream,
-                                             void (*fn)(void *), void *args) {
+flagcxResult_t ppucudaAdaptorLaunchHostFunc(flagcxStream_t stream,
+                                            void (*fn)(void *), void *args) {
   if (stream != NULL) {
     DEVCHECK(cudaLaunchHostFunc(stream->base, fn, args));
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorDmaSupport(bool *dmaBufferSupport) {
+flagcxResult_t ppucudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
@@ -341,13 +340,13 @@ flagcxResult_t ppu_cudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorMemGetHandleForAddressRange(
+flagcxResult_t ppucudaAdaptorMemGetHandleForAddressRange(
     void *handleOut, void *buffer, size_t size, unsigned long long flags) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
-                                                  int dev) {
+flagcxResult_t ppucudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
+                                                 int dev) {
   if (props == NULL) {
     return flagcxInvalidArgument;
   }
@@ -363,8 +362,8 @@ flagcxResult_t ppu_cudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetDevicePciBusId(char *pciBusId, int len,
-                                                int dev) {
+flagcxResult_t ppucudaAdaptorGetDevicePciBusId(char *pciBusId, int len,
+                                               int dev) {
   if (pciBusId == NULL) {
     return flagcxInvalidArgument;
   }
@@ -372,8 +371,8 @@ flagcxResult_t ppu_cudaAdaptorGetDevicePciBusId(char *pciBusId, int len,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorGetDeviceByPciBusId(int *dev,
-                                                  const char *pciBusId) {
+flagcxResult_t ppucudaAdaptorGetDeviceByPciBusId(int *dev,
+                                                 const char *pciBusId) {
   if (dev == NULL || pciBusId == NULL) {
     return flagcxInvalidArgument;
   }
@@ -381,22 +380,22 @@ flagcxResult_t ppu_cudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorHostRegister(void *ptr, size_t size) {
+flagcxResult_t ppucudaAdaptorHostRegister(void *ptr, size_t size) {
   DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorHostUnregister(void *ptr) {
+flagcxResult_t ppucudaAdaptorHostUnregister(void *ptr) {
   DEVCHECK(cudaHostUnregister(ptr));
   return flagcxSuccess;
 }
 
 // Symmetric memory VMM stubs (not supported on PPU)
-flagcxResult_t ppu_cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
-                                           void **physHandle,
-                                           void *shareableHandle,
-                                           size_t *handleSize,
-                                           size_t *allocSize) {
+flagcxResult_t ppucudaAdaptorSymPhysAlloc(void *ptr, size_t size,
+                                          void **physHandle,
+                                          void *shareableHandle,
+                                          size_t *handleSize,
+                                          size_t *allocSize) {
   if (ptr == NULL || physHandle == NULL || shareableHandle == NULL ||
       handleSize == NULL || allocSize == NULL)
     return flagcxInvalidArgument;
@@ -424,7 +423,7 @@ flagcxResult_t ppu_cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymPhysFree(void *physHandle) {
+flagcxResult_t ppucudaAdaptorSymPhysFree(void *physHandle) {
   if (physHandle == NULL)
     return flagcxSuccess;
   CUmemGenericAllocationHandle *cuHandle =
@@ -434,9 +433,9 @@ flagcxResult_t ppu_cudaAdaptorSymPhysFree(void *physHandle) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
-                                         int selfIndex, void *selfPhysHandle,
-                                         size_t allocSize, void **flatBase) {
+flagcxResult_t ppucudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
+                                        int selfIndex, void *selfPhysHandle,
+                                        size_t allocSize, void **flatBase) {
   if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
       nPeers <= 0 || allocSize == 0)
     return flagcxInvalidArgument;
@@ -478,8 +477,8 @@ flagcxResult_t ppu_cudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
-                                           int nPeers) {
+flagcxResult_t ppucudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
+                                          int nPeers) {
   if (flatBase == NULL)
     return flagcxSuccess;
   CUdeviceptr base = (CUdeviceptr)flatBase;
@@ -489,7 +488,7 @@ flagcxResult_t ppu_cudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymMulticastSupported(int *supported) {
+flagcxResult_t ppucudaAdaptorSymMulticastSupported(int *supported) {
   if (supported == NULL)
     return flagcxInvalidArgument;
 
@@ -497,11 +496,11 @@ flagcxResult_t ppu_cudaAdaptorSymMulticastSupported(int *supported) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymMulticastCreate(size_t allocSize,
-                                                 int nLocalDevices,
-                                                 const int *localDeviceOrdinals,
-                                                 void **mcHandle,
-                                                 int *shareableFd) {
+flagcxResult_t ppucudaAdaptorSymMulticastCreate(size_t allocSize,
+                                                int nLocalDevices,
+                                                const int *localDeviceOrdinals,
+                                                void **mcHandle,
+                                                int *shareableFd) {
   if (mcHandle)
     *mcHandle = NULL;
   if (shareableFd)
@@ -509,11 +508,11 @@ flagcxResult_t ppu_cudaAdaptorSymMulticastCreate(size_t allocSize,
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
-                                               void *physHandle,
-                                               size_t allocSize, int localRank,
-                                               int nLocalDevices, void **mcBase,
-                                               size_t *mcMapSize) {
+flagcxResult_t ppucudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
+                                              void *physHandle,
+                                              size_t allocSize, int localRank,
+                                              int nLocalDevices, void **mcBase,
+                                              size_t *mcMapSize) {
   if (mcBase)
     *mcBase = NULL;
   if (mcMapSize)
@@ -521,62 +520,62 @@ flagcxResult_t ppu_cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   return flagcxNotSupported;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymMulticastTeardown(void *mcBase,
-                                                   size_t mcMapSize) {
+flagcxResult_t ppucudaAdaptorSymMulticastTeardown(void *mcBase,
+                                                  size_t mcMapSize) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ppu_cudaAdaptorSymMulticastFree(void *mcHandle) {
+flagcxResult_t ppucudaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
 }
 
-struct flagcxDeviceAdaptor ppu_cudaAdaptor {
+struct flagcxDeviceAdaptor ppucudaAdaptor {
   "PPU_CUDA",
       // Basic functions
-      ppu_cudaAdaptorDeviceSynchronize, ppu_cudaAdaptorDeviceMemcpy,
-      ppu_cudaAdaptorDeviceMemset, ppu_cudaAdaptorDeviceMalloc,
-      ppu_cudaAdaptorDeviceFree, ppu_cudaAdaptorSetDevice,
-      ppu_cudaAdaptorGetDevice, ppu_cudaAdaptorGetDeviceCount,
-      ppu_cudaAdaptorGetVendor, ppu_cudaAdaptorHostGetDevicePointer,
+      ppucudaAdaptorDeviceSynchronize, ppucudaAdaptorDeviceMemcpy,
+      ppucudaAdaptorDeviceMemset, ppucudaAdaptorDeviceMalloc,
+      ppucudaAdaptorDeviceFree, ppucudaAdaptorSetDevice,
+      ppucudaAdaptorGetDevice, ppucudaAdaptorGetDeviceCount,
+      ppucudaAdaptorGetVendor, ppucudaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // memHandleInit
       NULL, // memHandleDestroy
-      ppu_cudaAdaptorGdrMemAlloc, ppu_cudaAdaptorGdrMemFree,
+      ppucudaAdaptorGdrMemAlloc, ppucudaAdaptorGdrMemFree,
       NULL, // hostShareMemAlloc
       NULL, // hostShareMemFree
       NULL, // gdrPtrMmap
       NULL, // gdrPtrMunmap
       // Stream functions
-      ppu_cudaAdaptorStreamCreate, ppu_cudaAdaptorStreamDestroy,
-      ppu_cudaAdaptorStreamCopy, ppu_cudaAdaptorStreamFree,
-      ppu_cudaAdaptorStreamSynchronize, ppu_cudaAdaptorStreamQuery,
-      ppu_cudaAdaptorStreamWaitEvent, ppu_cudaAdaptorStreamWaitValue64,
-      ppu_cudaAdaptorStreamWriteValue64,
+      ppucudaAdaptorStreamCreate, ppucudaAdaptorStreamDestroy,
+      ppucudaAdaptorStreamCopy, ppucudaAdaptorStreamFree,
+      ppucudaAdaptorStreamSynchronize, ppucudaAdaptorStreamQuery,
+      ppucudaAdaptorStreamWaitEvent, ppucudaAdaptorStreamWaitValue64,
+      ppucudaAdaptorStreamWriteValue64,
       // Event functions
-      ppu_cudaAdaptorEventCreate, ppu_cudaAdaptorEventDestroy,
-      ppu_cudaAdaptorEventRecord, ppu_cudaAdaptorEventSynchronize,
-      ppu_cudaAdaptorEventQuery, ppu_cudaAdaptorEventElapsedTime,
+      ppucudaAdaptorEventCreate, ppucudaAdaptorEventDestroy,
+      ppucudaAdaptorEventRecord, ppucudaAdaptorEventSynchronize,
+      ppucudaAdaptorEventQuery, ppucudaAdaptorEventElapsedTime,
       // IpcMemHandle functions
-      ppu_cudaAdaptorIpcMemHandleCreate, ppu_cudaAdaptorIpcMemHandleGet,
-      ppu_cudaAdaptorIpcMemHandleOpen, ppu_cudaAdaptorIpcMemHandleClose,
-      ppu_cudaAdaptorIpcMemHandleFree,
+      ppucudaAdaptorIpcMemHandleCreate, ppucudaAdaptorIpcMemHandleGet,
+      ppucudaAdaptorIpcMemHandleOpen, ppucudaAdaptorIpcMemHandleClose,
+      ppucudaAdaptorIpcMemHandleFree,
       // Kernel launch
       NULL, // launchKernel
       NULL, // copyArgsInit
       NULL, // copyArgsFree
       NULL, // launchDeviceFunc
       // Others
-      ppu_cudaAdaptorGetDeviceProperties, ppu_cudaAdaptorGetDevicePciBusId,
-      ppu_cudaAdaptorGetDeviceByPciBusId, ppu_cudaAdaptorLaunchHostFunc,
+      ppucudaAdaptorGetDeviceProperties, ppucudaAdaptorGetDevicePciBusId,
+      ppucudaAdaptorGetDeviceByPciBusId, ppucudaAdaptorLaunchHostFunc,
       // DMA buffer
-      ppu_cudaAdaptorDmaSupport, ppu_cudaAdaptorMemGetHandleForAddressRange,
-      ppu_cudaAdaptorHostRegister, ppu_cudaAdaptorHostUnregister,
+      ppucudaAdaptorDmaSupport, ppucudaAdaptorMemGetHandleForAddressRange,
+      ppucudaAdaptorHostRegister, ppucudaAdaptorHostUnregister,
       // Symmetric memory VMM functions
-      ppu_cudaAdaptorSymPhysAlloc, ppu_cudaAdaptorSymPhysFree,
-      ppu_cudaAdaptorSymFlatMap, ppu_cudaAdaptorSymFlatUnmap,
-      ppu_cudaAdaptorSymMulticastSupported, ppu_cudaAdaptorSymMulticastCreate,
-      ppu_cudaAdaptorSymMulticastBind, ppu_cudaAdaptorSymMulticastTeardown,
-      ppu_cudaAdaptorSymMulticastFree,
+      ppucudaAdaptorSymPhysAlloc, ppucudaAdaptorSymPhysFree,
+      ppucudaAdaptorSymFlatMap, ppucudaAdaptorSymFlatUnmap,
+      ppucudaAdaptorSymMulticastSupported, ppucudaAdaptorSymMulticastCreate,
+      ppucudaAdaptorSymMulticastBind, ppucudaAdaptorSymMulticastTeardown,
+      ppucudaAdaptorSymMulticastFree,
 };
 
 #endif // USE_PPU_ADAPTOR
