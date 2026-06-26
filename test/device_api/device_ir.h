@@ -81,4 +81,55 @@ void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
                                          float *output, int N,
                                          flagcxStream_t stream);
 
+// =========================================================================
+// Barrier Ordering Variant Launchers
+// =========================================================================
+
+// K7b: Intra Barrier Sync(AcqRel) — single sync call
+void launchKernelIntraBarrierSyncAcqRel(const void *devCommPtr,
+                                        const void *devMemPtr, float *buffer,
+                                        float *output, int N,
+                                        flagcxStream_t stream);
+
+// K8b: Arrive(Release) + Wait(AcqRel)
+void launchKernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
+                                              const void *devMemPtr,
+                                              float *buffer, float *output,
+                                              int N, flagcxStream_t stream);
+
+// S5b: ArriveS(Release) + WaitS(Acquire)
+void launchKernelIntraBarrierArriveWaitSplitS(const void *devCommPtr,
+                                              const void *devMemPtr,
+                                              float *buffer, float *output,
+                                              int N, flagcxStream_t stream);
+
+// S5c: SyncS(Release) + read + SyncS(Acquire) — matches K7 pattern
+void launchKernelIntraBarrierSyncSplitS(const void *devCommPtr,
+                                        const void *devMemPtr, float *buffer,
+                                        float *output, int N,
+                                        flagcxStream_t stream);
+
+// =========================================================================
+// Extended Coop Kinds (S-suffixed)
+// =========================================================================
+
+// S7: TILE_SPAN coop — threadRankEx, sizeEx, syncEx
+void launchKernelCoopTileSpanS(int *devResults, int nBlocks, int nThreads,
+                               flagcxStream_t stream);
+
+// S8: LANES coop — threadRankEx, sizeEx, syncEx (full warp mask)
+void launchKernelCoopLanesS(int *devResults, flagcxStream_t stream);
+
+// =========================================================================
+// S-API Transport Tests
+// =========================================================================
+
+// S9: GetFromCommS — verify transport handle non-null
+void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
+                                 flagcxStream_t stream);
+
+// S10: Signal/Counter local read/reset/shadow
+void launchKernelNetSignalCounterS(const void *devCommPtr, int *devResults,
+                                   flagcxStream_t stream);
+
 #endif // TEST_KERNEL_DEVICE_IR_H_

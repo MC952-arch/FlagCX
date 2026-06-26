@@ -25,6 +25,12 @@
 #include <new>
 #include <sched.h> // sched_yield
 
+// Host-visible helpers implemented in device_api_host_helpers.cu (compiled by
+// nvcc)
+extern "C" size_t flagcxDevNetSizeOf();
+extern "C" void flagcxDevNetConstructArray(void *dst, const void *comm,
+                                           int count);
+
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
 // ==========================================================================
@@ -1056,6 +1062,9 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
 
   // Device pointer cache cleanup
+  if (devComm->cachedNetContextsPtr) {
+    flagcxCommDeferFree(comm, devComm->cachedNetContextsPtr, flagcxMemDevice);
+  }
   if (devComm->cachedDevicePtr) {
     flagcxCommDeferFree(comm, devComm->cachedDevicePtr, flagcxMemDevice);
   }
@@ -1268,6 +1277,32 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
   // Construct value struct on host stack
   flagcxDevComm hostCopy(*devComm);
 
+  // Pre-allocate net contexts (one flagcxDevNet per context) in device memory
+  void *netDevPtr = nullptr;
+  if (hostCopy._contextCount > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
+    // Build array on host heap
+    void *hostNets = malloc(netArraySize);
+    if (hostNets) {
+      flagcxDevNetConstructArray(hostNets, &hostCopy, hostCopy._contextCount);
+      // Copy to device
+      flagcxResult_t netRes = deviceAdaptor->deviceMalloc(
+          &netDevPtr, netArraySize, flagcxMemDevice, NULL);
+      if (netRes == flagcxSuccess) {
+        netRes =
+            deviceAdaptor->deviceMemcpy(netDevPtr, hostNets, netArraySize,
+                                        flagcxMemcpyHostToDevice, NULL, NULL);
+      }
+      if (netRes != flagcxSuccess) {
+        if (netDevPtr)
+          deviceAdaptor->deviceFree(netDevPtr, flagcxMemDevice, NULL);
+        netDevPtr = nullptr;
+      }
+      free(hostNets);
+    }
+    hostCopy._netContexts = netDevPtr;
+  }
+
   // Allocate device memory and copy
   void *dPtr = nullptr;
   flagcxResult_t res = flagcxSuccess;
@@ -1280,12 +1315,16 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
       res, fail);
 
   devComm->cachedDevicePtr = dPtr;
+  devComm->cachedNetContextsPtr = netDevPtr;
   *devPtr = dPtr;
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
   return flagcxSuccess;
 
 fail:
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
+  if (netDevPtr) {
+    deviceAdaptor->deviceFree(netDevPtr, flagcxMemDevice, NULL);
+  }
   if (dPtr) {
     deviceAdaptor->deviceFree(dPtr, flagcxMemDevice, NULL);
   }
@@ -1298,9 +1337,14 @@ extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
   void *ptr = devComm->cachedDevicePtr;
+  void *netPtr = devComm->cachedNetContextsPtr;
   devComm->cachedDevicePtr = nullptr;
+  devComm->cachedNetContextsPtr = nullptr;
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
 
+  if (netPtr) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(netPtr, flagcxMemDevice, NULL));
+  }
   if (ptr) {
     FLAGCXCHECK(deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL));
   }

@@ -71,14 +71,20 @@ struct flagcxDevComm {
   int _contextCount;
   int _nInterPeers;
 
+  // Pre-allocated net contexts (one per _contextCount, device memory).
+  // Set by flagcxDevCommGetDevicePtr; nullptr when contextCount == 0.
+  // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
+  void *_netContexts;
+
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
-        _nInterPeers(0) {}
+        _nInterPeers(0), _netContexts(nullptr) {}
 
 #ifndef __clang_llvm_bitcode_lib__
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
-        _contextCount(di.contextCount), _nInterPeers(di.nInterPeers) {
+        _contextCount(di.contextCount), _nInterPeers(di.nInterPeers),
+        _netContexts(nullptr) {
     if (di.devComm) {
       _commBase = *(typename DeviceAPI::Comm *)di.devComm;
     } else {

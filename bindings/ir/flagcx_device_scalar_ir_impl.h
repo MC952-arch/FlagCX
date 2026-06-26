@@ -1,13 +1,11 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * FlagCX Device Scalar IR API — Implementation (Step 2: Coop + Team).
+ * FlagCX Device Scalar IR API — Implementation.
  *
- * This file implements the scalar cooperative group and team functions.
+ * This file implements the scalar (S-suffixed) IR functions.
  * It is included by the bitcode compilation unit alongside the existing
  * flagcx_device_wrapper_impl.h.
- *
- * Remaining categories (barrier, net) will be added in subsequent steps.
  ************************************************************************/
 #ifndef FLAGCX_DEVICE_SCALAR_IR_IMPL_H_
 #define FLAGCX_DEVICE_SCALAR_IR_IMPL_H_
@@ -323,20 +321,24 @@ flagcxWorldBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
 /* ================================================================
  * Category 9: Net — Obtain Pre-Allocated Transport (1)
  *
- * Constructs a flagcxDevNet on the stack and returns a pointer.
- * NOTE: This returns a stack pointer — the caller must use it
- * immediately within the same kernel invocation scope. The returned
- * pointer is valid for the duration of the calling function.
+ * Returns a pointer into the comm-owned pre-allocated flagcxDevNet[]
+ * array (device-resident, built by flagcxDevCommGetDevicePtr).
+ * Lifetime: valid as long as the DevComm device pointer is alive
+ * (freed on flagcxDevCommDestroy or flagcxDevCommFreeDevicePtr).
+ * The returned pointer is read-only and safe to use from any thread.
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR const void *
 flagcxDevNetGetFromCommS(const void *commOpaque, int idx) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  // When always-inlined, the static local is promoted into the caller's
-  // scope by LLVM. This provides stable storage for the returned pointer.
-  static flagcxDevNet storage;
-  ::new (&storage) flagcxDevNet(*comm, idx);
-  return &storage;
+  // Return pointer into pre-allocated device array (built by
+  // flagcxDevCommGetDevicePtr). Each entry is a fully-constructed
+  // flagcxDevNet for that context index — no per-call construction.
+  const flagcxDevNet *nets = (const flagcxDevNet *)comm->_netContexts;
+  if (!nets || comm->_contextCount <= 0)
+    return (const void *)0;
+  int safeIdx = (int)((unsigned)idx % (unsigned)comm->_contextCount);
+  return &nets[safeIdx];
 }
 
 /* ================================================================

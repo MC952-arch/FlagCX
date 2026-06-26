@@ -80,6 +80,9 @@ int main(int argc, char *argv[]) {
   // Create DevComm
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = 4;
+  reqs.interBarrierCount = 4;
+  reqs.interSignalCount = 2;
+  reqs.interCounterCount = 1;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
@@ -536,13 +539,276 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(s6Output, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
+  // K7b: Intra Barrier Sync(AcqRel)
+  // -------------------------------------------------------------------------
+  int NK7b = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK7b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *k7bOutput = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&k7bOutput, NK7b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(k7bOutput, 0, NK7b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierSyncAcqRel(devCommPtr, devMemPtr, (float *)regBuff,
+                                     k7bOutput, NK7b, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostK7b = new float[NK7b];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostK7b, k7bOutput, NK7b * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedK7b = (float)(peer + 200);
+  bool k7bPass = true;
+  for (int i = 0; i < NK7b; i++) {
+    if (fabsf(hostK7b[i] - expectedK7b) > 1e-3f) {
+      k7bPass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("K7b IntraBarrierSync(AcqRel): %s\n", k7bPass ? "PASS" : "FAIL");
+  }
+  delete[] hostK7b;
+  FLAGCXCHECK(devHandle->deviceFree(k7bOutput, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // K8b: Arrive(Release) + Wait(AcqRel)
+  // -------------------------------------------------------------------------
+  int NK8b = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK8b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *k8bOutput = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&k8bOutput, NK8b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(k8bOutput, 0, NK8b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierArriveWaitAcqRel(
+      devCommPtr, devMemPtr, (float *)regBuff, k8bOutput, NK8b, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostK8b = new float[NK8b];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostK8b, k8bOutput, NK8b * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedK8b = (float)(peer + 300);
+  bool k8bPass = true;
+  for (int i = 0; i < NK8b; i++) {
+    if (fabsf(hostK8b[i] - expectedK8b) > 1e-3f) {
+      k8bPass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("K8b IntraBarrierArriveWait(AcqRel): %s\n",
+           k8bPass ? "PASS" : "FAIL");
+  }
+  delete[] hostK8b;
+  FLAGCXCHECK(devHandle->deviceFree(k8bOutput, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S5b: ArriveS(Release) + WaitS(Acquire)
+  // -------------------------------------------------------------------------
+  int NS5b = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *s5bOutput = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s5bOutput, NS5b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s5bOutput, 0, NS5b * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierArriveWaitSplitS(
+      devCommPtr, devMemPtr, (float *)regBuff, s5bOutput, NS5b, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostS5b = new float[NS5b];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS5b, s5bOutput, NS5b * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedS5b = (float)(peer + 400);
+  bool s5bPass = true;
+  for (int i = 0; i < NS5b; i++) {
+    if (fabsf(hostS5b[i] - expectedS5b) > 1e-3f) {
+      s5bPass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S5b IntraBarrierArriveWait(Split): %s\n",
+           s5bPass ? "PASS" : "FAIL");
+  }
+  delete[] hostS5b;
+  FLAGCXCHECK(devHandle->deviceFree(s5bOutput, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S5c: SyncS(Release) + read + SyncS(Acquire)
+  // -------------------------------------------------------------------------
+  int NS5c = 4 * 256;
+  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5c * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  float *s5cOutput = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s5cOutput, NS5c * sizeof(float),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s5cOutput, 0, NS5c * sizeof(float),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelIntraBarrierSyncSplitS(devCommPtr, devMemPtr, (float *)regBuff,
+                                     s5cOutput, NS5c, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  float *hostS5c = new float[NS5c];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS5c, s5cOutput, NS5c * sizeof(float),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  float expectedS5c = (float)(peer + 500);
+  bool s5cPass = true;
+  for (int i = 0; i < NS5c; i++) {
+    if (fabsf(hostS5c[i] - expectedS5c) > 1e-3f) {
+      s5cPass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S5c IntraBarrierSync(Split): %s\n", s5cPass ? "PASS" : "FAIL");
+  }
+  delete[] hostS5c;
+  FLAGCXCHECK(devHandle->deviceFree(s5cOutput, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S7: TILE_SPAN Cooperative Group
+  // -------------------------------------------------------------------------
+  if (proc == 0) {
+    printf("\n--- Extended Coop Tests ---\n");
+  }
+
+  int nBlocksS7 = 4, nThreadsS7 = 128;
+  int totalThreadsS7 = nBlocksS7 * nThreadsS7;
+  int *s7Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s7Results,
+                                      totalThreadsS7 * 2 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelCoopTileSpanS(s7Results, nBlocksS7, nThreadsS7, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int *hostS7 = new int[totalThreadsS7 * 2];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS7, s7Results,
+                                      totalThreadsS7 * 2 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s7Pass = true;
+  for (int i = 0; i < totalThreadsS7; i++) {
+    // TILE_SPAN with nTiles=1: rank = threadIdx % 32, size = 32
+    int expectedRank = (i % nThreadsS7) % 32;
+    int expectedSize = 32;
+    if (hostS7[i * 2 + 0] != expectedRank ||
+        hostS7[i * 2 + 1] != expectedSize) {
+      s7Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S7 CoopTileSpan: %s\n", s7Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostS7;
+  FLAGCXCHECK(devHandle->deviceFree(s7Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S8: LANES Cooperative Group (full warp mask)
+  // -------------------------------------------------------------------------
+  int *s8Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s8Results, 32 * 2 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelCoopLanesS(s8Results, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int *hostS8 = new int[32 * 2];
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS8, s8Results, 32 * 2 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s8Pass = true;
+  for (int i = 0; i < 32; i++) {
+    // Full warp mask: rank = lane index, size = 32
+    if (hostS8[i * 2 + 0] != i || hostS8[i * 2 + 1] != 32) {
+      s8Pass = false;
+      break;
+    }
+  }
+  if (proc == 0) {
+    printf("S8 CoopLanes: %s\n", s8Pass ? "PASS" : "FAIL");
+  }
+  delete[] hostS8;
+  FLAGCXCHECK(devHandle->deviceFree(s8Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S9: Net GetFromCommS
+  // -------------------------------------------------------------------------
+  // NOTE: Full two-sided/one-sided transport tests are in test_device_api
+  // which has the multi-node harness. Here we only test what's possible
+  // single-node: handle acquisition and local signal/counter ops.
+  if (proc == 0) {
+    printf("\n--- S-API Transport Tests ---\n");
+  }
+
+  int *s9Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s9Results, 4 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s9Results, 0, 4 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelNetGetFromCommS(devCommPtr, s9Results, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int hostS9[4] = {0};
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS9, s9Results, 4 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  bool s9Pass = (hostS9[0] == 1); // net pointer should be non-null
+  if (proc == 0) {
+    printf("S9 NetGetFromComm: %s\n", s9Pass ? "PASS" : "FAIL");
+  }
+  FLAGCXCHECK(devHandle->deviceFree(s9Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
+  // S10: Signal/Counter local read/reset/shadow
+  // -------------------------------------------------------------------------
+  int *s10Results = nullptr;
+  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s10Results, 4 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+  FLAGCXCHECK(devHandle->deviceMemset(s10Results, 0, 4 * sizeof(int),
+                                      flagcxMemDevice, NULL));
+
+  launchKernelNetSignalCounterS(devCommPtr, s10Results, stream);
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  int hostS10[4] = {0};
+  FLAGCXCHECK(devHandle->deviceMemcpy(hostS10, s10Results, 4 * sizeof(int),
+                                      flagcxMemcpyDeviceToHost, NULL));
+
+  // results[0]: signal reset+read==0, results[1]: shadow doesn't change signal,
+  // results[2]: counter reset+read==0
+  bool s10Pass = (hostS10[0] == 1) && (hostS10[1] == 1) && (hostS10[2] == 1);
+  if (proc == 0) {
+    printf("S10 NetSignalCounter: %s\n", s10Pass ? "PASS" : "FAIL");
+  }
+  FLAGCXCHECK(devHandle->deviceFree(s10Results, flagcxMemDevice, NULL));
+
+  // -------------------------------------------------------------------------
   // Summary
   // -------------------------------------------------------------------------
   MPI_Barrier(MPI_COMM_WORLD);
 
   int allPass = k1Pass && k2Pass && k3Pass && k4Pass && k5Pass && k6Pass &&
                 k7Pass && k8Pass && s1Pass && s2Pass && s3Pass && s4Pass &&
-                s5Pass && s6Pass;
+                s5Pass && s6Pass && k7bPass && k8bPass && s5bPass && s5cPass &&
+                s7Pass && s8Pass && s9Pass && s10Pass;
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 

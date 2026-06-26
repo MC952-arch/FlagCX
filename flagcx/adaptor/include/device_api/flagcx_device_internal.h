@@ -99,8 +99,10 @@ struct flagcxDevCommInternal {
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
 
   // ---- Device pointer cache (for Triton integration) ----
-  void *cachedDevicePtr; // Lazily allocated by flagcxDevCommGetDevicePtr
-  pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  void *cachedDevicePtr;      // Lazily allocated by flagcxDevCommGetDevicePtr
+  void *cachedNetContextsPtr; // Device memory for pre-allocated flagcxDevNet[]
+  pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
+                                  // cachedNetContextsPtr
 };
 
 // ============================================================
