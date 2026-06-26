@@ -84,11 +84,13 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   memset(ctx.hello, 0, hBufSize);
 
   // Zero-init device buffers to avoid UB in tests without custom dataInitFn
-  ctx.devHandle->deviceMemset(ctx.sendbuff, 0, sBufSize, flagcxMemDevice,
-                              ctx.stream);
-  ctx.devHandle->deviceMemset(ctx.recvbuff, 0, rBufSize, flagcxMemDevice,
-                              ctx.stream);
-  ctx.devHandle->streamSynchronize(ctx.stream);
+  if (ctx.sendbuff && ctx.recvbuff) {
+    ctx.devHandle->deviceMemset(ctx.sendbuff, 0, sBufSize, flagcxMemDevice,
+                                ctx.stream);
+    ctx.devHandle->deviceMemset(ctx.recvbuff, 0, rBufSize, flagcxMemDevice,
+                                ctx.stream);
+    ctx.devHandle->streamSynchronize(ctx.stream);
+  }
 
   ctx.userData = nullptr;
 }
@@ -114,6 +116,10 @@ void perfTeardown(PerfContext &ctx) {
 
 void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
   size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
+  if (typeSize == 0) {
+    fprintf(stderr, "Error: unknown datatype (size=0)\n");
+    return;
+  }
   // Warmup for large size
   size_t largeCount = ctx.maxBytes / typeSize;
   for (int i = 0; i < ctx.numWarmupIters; i++) {
