@@ -4,7 +4,7 @@
  * Device IR Function Tests — host driver exercising FlagCX Device API
  * IR wrapper functions via device pointers (simulates Triton usage path).
  *
- * Tests 8 kernel categories covering C-suffixed (struct-based) IR functions:
+ * Tests 8 kernel categories covering struct-based IR functions:
  *   K1: Comm Queries (GetRank, GetSize, GetIntraRank, GetIntraSize)
  *   K2: Cooperative Group (InitBlock, ThreadRank, Size, Sync)
  *   K3: Team Queries (GetTeamIntra, RankToWorld, RankToIntra)

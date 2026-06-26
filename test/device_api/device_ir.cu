@@ -5,7 +5,7 @@
  * Device API IR functions via device pointers.
  *
  * Covers both:
- *   - C-suffixed (struct-based) API: K1–K8
+ *   - Struct-based API: K1–K8
  *   - S-suffixed (scalar) API:       S1–S10
  *
  * Compiled by nvcc into device_ir.o, linked by g++ into test_device_ir.
@@ -54,7 +54,7 @@ void launchKernelCommQueries(const void *devCommPtr, int *devResults,
 
 __global__ void kernelCoopGroup(const void *devCommPtr, int *results) {
   flagcxCoopAny coop;
-  flagcxCoopAnyInitBlockC(&coop);
+  flagcxCoopAnyInitBlock(&coop);
 
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   results[tid * 2 + 0] = flagcxCoopThreadRankC(&coop);
@@ -75,7 +75,7 @@ void launchKernelCoopGroup(const void *devCommPtr, int *devResults,
 __global__ void kernelTeamQueries(const void *devCommPtr, int *results) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
     flagcxTeam teamIntra;
-    flagcxGetTeamIntraC(devCommPtr, &teamIntra);
+    flagcxGetTeamIntra(devCommPtr, &teamIntra);
 
     int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
     int worldRank = flagcxTeamRankToWorldC(devCommPtr, &teamIntra, intraRank);
@@ -159,13 +159,13 @@ __global__ void kernelIntraBarrierSync(const void *devCommPtr,
                                        const void *devMemPtr, float *buffer,
                                        float *output, int N) {
   flagcxCoopAny coop;
-  flagcxCoopAnyInitBlockC(&coop);
+  flagcxCoopAnyInitBlock(&coop);
 
   flagcxTeam teamIntra;
-  flagcxGetTeamIntraC(devCommPtr, &teamIntra);
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
 
   flagcxIntraBarrierSession_C session;
-  flagcxIntraBarrierSessionInitC(&session, &coop, devCommPtr, &teamIntra,
+  flagcxIntraBarrierSessionInit(&session, &coop, devCommPtr, &teamIntra,
                                 blockIdx.x, false);
 
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -175,7 +175,7 @@ __global__ void kernelIntraBarrierSync(const void *devCommPtr,
     buffer[tid] = (float)myRank;
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderRelease);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderRelease);
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -185,7 +185,7 @@ __global__ void kernelIntraBarrierSync(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderAcquire);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderAcquire);
 }
 
 void launchKernelIntraBarrierSync(const void *devCommPtr,
@@ -204,13 +204,13 @@ __global__ void kernelIntraBarrierArriveWait(const void *devCommPtr,
                                              float *buffer, float *output,
                                              int N) {
   flagcxCoopAny coop;
-  flagcxCoopAnyInitBlockC(&coop);
+  flagcxCoopAnyInitBlock(&coop);
 
   flagcxTeam teamIntra;
-  flagcxGetTeamIntraC(devCommPtr, &teamIntra);
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
 
   flagcxIntraBarrierSession_C session;
-  flagcxIntraBarrierSessionInitC(&session, &coop, devCommPtr, &teamIntra,
+  flagcxIntraBarrierSessionInit(&session, &coop, devCommPtr, &teamIntra,
                                 blockIdx.x, false);
 
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -220,8 +220,8 @@ __global__ void kernelIntraBarrierArriveWait(const void *devCommPtr,
     buffer[tid] = (float)(myRank + 100);
   }
 
-  flagcxIntraBarrierSessionArriveC(&session, flagcxDeviceMemoryOrderRelease);
-  flagcxIntraBarrierSessionWaitC(&session, flagcxDeviceMemoryOrderAcquire);
+  flagcxIntraBarrierSessionArrive(&session, flagcxDeviceMemoryOrderRelease);
+  flagcxIntraBarrierSessionWait(&session, flagcxDeviceMemoryOrderAcquire);
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -231,7 +231,7 @@ __global__ void kernelIntraBarrierArriveWait(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderAcquire);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderAcquire);
 }
 
 void launchKernelIntraBarrierArriveWait(const void *devCommPtr,
@@ -417,13 +417,13 @@ __global__ void kernelIntraBarrierSyncAcqRel(const void *devCommPtr,
                                              float *buffer, float *output,
                                              int N) {
   flagcxCoopAny coop;
-  flagcxCoopAnyInitBlockC(&coop);
+  flagcxCoopAnyInitBlock(&coop);
 
   flagcxTeam teamIntra;
-  flagcxGetTeamIntraC(devCommPtr, &teamIntra);
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
 
   flagcxIntraBarrierSession_C session;
-  flagcxIntraBarrierSessionInitC(&session, &coop, devCommPtr, &teamIntra,
+  flagcxIntraBarrierSessionInit(&session, &coop, devCommPtr, &teamIntra,
                                 blockIdx.x, false);
 
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -433,7 +433,7 @@ __global__ void kernelIntraBarrierSyncAcqRel(const void *devCommPtr,
     buffer[tid] = (float)(myRank + 200);
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderAcqRel);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderAcqRel);
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -443,7 +443,7 @@ __global__ void kernelIntraBarrierSyncAcqRel(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderAcqRel);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderAcqRel);
 }
 
 void launchKernelIntraBarrierSyncAcqRel(const void *devCommPtr,
@@ -463,13 +463,13 @@ __global__ void kernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
                                                    float *buffer,
                                                    float *output, int N) {
   flagcxCoopAny coop;
-  flagcxCoopAnyInitBlockC(&coop);
+  flagcxCoopAnyInitBlock(&coop);
 
   flagcxTeam teamIntra;
-  flagcxGetTeamIntraC(devCommPtr, &teamIntra);
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
 
   flagcxIntraBarrierSession_C session;
-  flagcxIntraBarrierSessionInitC(&session, &coop, devCommPtr, &teamIntra,
+  flagcxIntraBarrierSessionInit(&session, &coop, devCommPtr, &teamIntra,
                                 blockIdx.x, false);
 
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -479,8 +479,8 @@ __global__ void kernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
     buffer[tid] = (float)(myRank + 300);
   }
 
-  flagcxIntraBarrierSessionArriveC(&session, flagcxDeviceMemoryOrderRelease);
-  flagcxIntraBarrierSessionWaitC(&session, flagcxDeviceMemoryOrderAcqRel);
+  flagcxIntraBarrierSessionArrive(&session, flagcxDeviceMemoryOrderRelease);
+  flagcxIntraBarrierSessionWait(&session, flagcxDeviceMemoryOrderAcqRel);
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -490,7 +490,7 @@ __global__ void kernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
-  flagcxIntraBarrierSessionSyncC(&session, flagcxDeviceMemoryOrderAcquire);
+  flagcxIntraBarrierSessionSync(&session, flagcxDeviceMemoryOrderAcquire);
 }
 
 void launchKernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
