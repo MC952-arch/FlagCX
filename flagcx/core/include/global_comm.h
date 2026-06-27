@@ -43,7 +43,6 @@ struct flagcxDeferredFree {
 struct flagcxDevCommBufferHandle {
   void *localBarrierFlags;     // flagcxMemDevice — peers write via IPC
   void *epochBuffer;           // flagcxMemDevice
-  void *epochShadow;           // flagcxMemDevice — S-API split barrier shadow
   void *signalBuffer;          // flagcxMemHost or flagcxMemDevice (GDR)
   void *shadowBuffer;          // flagcxMemDevice
   void *counterBuffer;         // flagcxMemHost

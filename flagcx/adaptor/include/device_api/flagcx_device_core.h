@@ -76,19 +76,15 @@ struct flagcxDevComm {
   // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
   void *_netContexts;
 
-  // S-API epoch shadow buffer (framework-owned, always allocated).
-  // Layout: [CTA_COUNT intra epochs, CTA_COUNT inter epochs].
-  uint64_t *_epochShadow;
-
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
-        _nInterPeers(0), _netContexts(nullptr), _epochShadow(nullptr) {}
+        _nInterPeers(0), _netContexts(nullptr) {}
 
 #ifndef __clang_llvm_bitcode_lib__
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers),
-        _netContexts(nullptr), _epochShadow(di.epochShadow) {
+        _netContexts(nullptr) {
     if (di.devComm) {
       _commBase = *(typename DeviceAPI::Comm *)di.devComm;
     } else {
@@ -119,18 +115,6 @@ struct flagcxDevComm {
   FLAGCX_DEVICE_INLINE_DECORATOR typename DeviceAPI::Multimem
   getMulticastHandle() const {
     return _commBase.getMulticastHandle();
-  }
-
-  // S-API epoch shadow accessors
-  FLAGCX_DEVICE_INLINE_DECORATOR void sessionInit(uint32_t index) const {
-    _commBase.sessionInit(_epochShadow, index);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpochShadow(uint32_t idx) const {
-    return _epochShadow[idx];
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochShadow(uint32_t idx,
-                                                     uint64_t val) const {
-    _epochShadow[idx] = val;
   }
 };
 
@@ -765,15 +749,13 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 // ============================================================
 struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
-  uint64_t *_epochShadow;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
       : DeviceAPI::Net(devComm._commBase, devComm._contextCount > 0
                                               ? idx % devComm._contextCount
                                               : 0),
-        _nInterPeers(devComm._nInterPeers), _epochShadow(devComm._epochShadow) {
-  }
+        _nInterPeers(devComm._nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
       flagcxDevNetSignal_t signalId, int bits = 64,
@@ -900,15 +882,6 @@ struct flagcxDevNet : DeviceAPI::Net {
       Coop coop = flagcxCoopBlock{}) const {
     DeviceAPI::Net::get(team._teamBase, peer, src._winBase, srcOffset,
                         dst._winBase, dstOffset, bytes, coop._base);
-  }
-
-  // S-API epoch shadow accessors (delegated from devComm)
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpochShadow(uint32_t idx) const {
-    return _epochShadow[idx];
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochShadow(uint32_t idx,
-                                                     uint64_t val) const {
-    _epochShadow[idx] = val;
   }
 };
 

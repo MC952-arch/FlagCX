@@ -179,13 +179,6 @@ struct CommTraits<Default<PlatformTag>> {
       return mm;
     }
 
-    // S-API session init: snapshot epochBuffer[index] → shadow[index]
-    FLAGCX_DEVICE_INLINE_DECORATOR void sessionInit(uint64_t *shadow,
-                                                    uint32_t index) const {
-      shadow[index] =
-          Atomic::load(&epochBuffer[index], flagcxDeviceMemoryOrderRelaxed);
-    }
-
     // Populate from host-side handle (deferred template avoids forward-decl)
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
@@ -869,8 +862,10 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       }
     }
     _epoch += 1;
-    Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
-                  flagcxDeviceMemoryOrderRelaxed);
+    if (_coop.threadRank() == 0) {
+      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                    flagcxDeviceMemoryOrderRelease);
+    }
 #ifndef FLAGCX_BARRIER_NO_DEBUG
     if (_coop.threadRank() == 0 && _ctaIndex == 0) {
       printf("[wait] rank=%d idx=%d DONE new_epoch=%llu\n", _myRank,
@@ -934,7 +929,9 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _epoch += _nInterPeers;
-    Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelaxed);
+    if (_coop.threadRank() == 0) {
+      Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelease);
+    }
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
       CommTraits<Default<P>>::fifoEnqueue(

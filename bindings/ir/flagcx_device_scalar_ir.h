@@ -8,7 +8,7 @@
  *
  * Design:
  *   - CoopAny/Team replaced by flagcxCoopKind_t / flagcxTeamKind_t enums
- *   - Barrier sessions use pre-allocated epochShadow buffer in DevComm
+ *   - Barrier split arrive/wait use stampEpoch internally
  *   - Net (transport) obtained via flagcxDevNetGetFromCommS (pre-allocated)
  *
  * When compiled to LLVM bitcode (clang -x cuda --cuda-device-only),
@@ -148,12 +148,10 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR size_t
 flagcxDataTypeSizeDevice(flagcxDataType_t dt);
 
 /* ================================================================
- * Category 6: Scalar Barrier — Intra-Node (4)
+ * Category 6: Scalar Barrier — Intra-Node (3)
  *
- * Split arrive/wait uses a pre-allocated epochShadow buffer in DevComm
- * so that WaitS sees the same epoch that ArriveS used.
- * SessionInit snapshots epochBuffer into epochShadow for the given index.
- * SyncS does not need SessionInit (uses a single internal object).
+ * Split arrive/wait: ArriveS signals peers, WaitS waits for peers.
+ * SyncS combines both into a single call.
  *
  * @param comm      Opaque pointer to flagcxDevComm.
  * @param coopKind  Cooperation level for the barrier operation.
@@ -161,11 +159,6 @@ flagcxDataTypeSizeDevice(flagcxDataType_t dt);
  * @param multimem  Whether to use multicast memory barrier variant.
  * @param order     Memory ordering semantics (acquire/release/relaxed).
  * ================================================================ */
-
-/** @brief Initialize epoch shadow for intra-node barrier at index.
- *  Must be called (by thread-0) before first ArriveS/WaitS on this index. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxIntraBarrierSessionInit(const void *comm, uint32_t index);
 
 /** @brief Signal arrival at intra-node barrier. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
@@ -186,7 +179,7 @@ flagcxIntraBarrierSyncS(const void *comm, flagcxCoopKind_t coopKind,
                         flagcxDeviceMemoryOrder_t order);
 
 /* ================================================================
- * Category 7: Scalar Barrier — Inter-Node (4)
+ * Category 7: Scalar Barrier — Inter-Node (3)
  *
  * @param net       Opaque pointer to flagcxDevNet (transport handle).
  * @param coopKind  Cooperation level for the barrier operation.
@@ -194,10 +187,6 @@ flagcxIntraBarrierSyncS(const void *comm, flagcxCoopKind_t coopKind,
  * @param order     Memory ordering semantics.
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
-
-/** @brief Initialize epoch shadow for inter-node barrier at index. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxInterBarrierSessionInit(const void *net, uint32_t index);
 
 /** @brief Signal arrival at inter-node barrier. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
@@ -218,10 +207,10 @@ flagcxInterBarrierSyncS(const void *net, flagcxCoopKind_t coopKind,
                         flagcxDevNetFenceLevel fence);
 
 /* ================================================================
- * Category 8: Scalar Barrier — World (4)
+ * Category 8: Scalar Barrier — World (3)
  *
  * Combines intra-node + inter-node barrier into a single world-level
- * synchronization. SessionInit snapshots both intra and inter epochs.
+ * synchronization.
  *
  * @param net       Opaque pointer to flagcxDevNet (transport handle).
  * @param coopKind  Cooperation level for the barrier operation.
@@ -230,10 +219,6 @@ flagcxInterBarrierSyncS(const void *net, flagcxCoopKind_t coopKind,
  * @param order     Memory ordering semantics.
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
-
-/** @brief Initialize epoch shadow for world barrier at index. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxWorldBarrierSessionInit(const void *net, uint32_t index, bool multimem);
 
 /** @brief Signal arrival at world barrier (intra + inter). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierArriveS(

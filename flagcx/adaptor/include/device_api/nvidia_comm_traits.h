@@ -160,10 +160,6 @@ struct CommTraits<NvidiaVendor> {
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &,
                                                                const DI &) {}
-
-    // S-API session init: NCCL sessions manage epoch internally — no-op
-    FLAGCX_DEVICE_INLINE_DECORATOR void sessionInit(uint64_t * /*shadow*/,
-                                                    uint32_t /*index*/) const {}
   };
 
 #if NCCL_CHECK_CUDACC

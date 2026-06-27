@@ -191,17 +191,10 @@ flagcxMakeInterTeamFromNet(const flagcxDevNet &net) {
 }
 
 /* ================================================================
- * Category 6: Scalar Barrier — Intra (4)
+ * Category 6: Scalar Barrier — Intra (3)
  *
- * SessionInit snapshots epochBuffer[index] → epochShadow[index].
- * ArriveS/WaitS read/write epochShadow[index] only.
+ * ArriveS/WaitS construct a fresh barrier that reads epoch from epochBuffer.
  * ================================================================ */
-
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxIntraBarrierSessionInit(const void *commOpaque, uint32_t index) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  comm->sessionInit(index);
-}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
@@ -212,9 +205,7 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
-  bar.setEpoch(comm->getEpochShadow(index));
   bar.arrive(order);
-  // intra arrive() does not modify epoch — no writeback
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -226,10 +217,7 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
-  bar.setEpoch(comm->getEpochShadow(index));
   bar.wait(order);
-  // wait() advanced epoch; write back to shadow
-  comm->setEpochShadow(index, bar.getEpoch());
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -245,19 +233,10 @@ flagcxIntraBarrierSyncS(const void *commOpaque, flagcxCoopKind_t coopKind,
 }
 
 /* ================================================================
- * Category 7: Scalar Barrier — Inter (4)
+ * Category 7: Scalar Barrier — Inter (3)
  *
  * Inter barriers take a flagcxDevNet (which contains the full comm).
- * epochShadow offset for inter = CTA_COUNT + index.
  * ================================================================ */
-
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxInterBarrierSessionInit(const void *netOpaque, uint32_t index) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  // Snapshot inter epoch: delegate to commBase sessionInit at inter offset
-  uint32_t shadowIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  net->_dc.sessionInit(net->_epochShadow, shadowIdx);
-}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxInterBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
@@ -268,11 +247,7 @@ flagcxInterBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxMakeInterTeamFromNet(*net);
   flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(coop, *net, team,
                                                           index);
-  uint32_t shadowIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  bar.setEpoch(net->getEpochShadow(shadowIdx));
   bar.arrive(order, fence);
-  // inter arrive() advances epoch; write back
-  net->setEpochShadow(shadowIdx, bar.getEpoch());
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -284,10 +259,7 @@ flagcxInterBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxMakeInterTeamFromNet(*net);
   flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(coop, *net, team,
                                                           index);
-  uint32_t shadowIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  bar.setEpoch(net->getEpochShadow(shadowIdx));
   bar.wait(order, fence);
-  // inter wait() does not modify epoch — no writeback
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -303,25 +275,10 @@ flagcxInterBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
 }
 
 /* ================================================================
- * Category 8: Scalar Barrier — World (4)
+ * Category 8: Scalar Barrier — World (3)
  *
  * World barriers use flagcxTeamTagWorld tag dispatch.
- * SessionInit snapshots both intra (epochShadow[index]) and inter
- * (epochShadow[CTA_COUNT + index]).
  * ================================================================ */
-
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxWorldBarrierSessionInit(const void *netOpaque, uint32_t index,
-                              bool multimem) {
-  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-  flagcxCoopAny coop = flagcxCoopAny(flagcxCoopThread());
-  flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
-      coop, flagcxTeamTagWorld{}, *net, index, multimem);
-  // Snapshot both sub-epochs into shadow via accessors
-  net->setEpochShadow(index, bar.getIntraEpoch());
-  uint32_t interIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  net->setEpochShadow(interIdx, bar.getInterEpoch());
-}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxWorldBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
@@ -332,13 +289,7 @@ flagcxWorldBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
-  uint32_t interIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  bar.setIntraEpoch(net->getEpochShadow(index));
-  bar.setInterEpoch(net->getEpochShadow(interIdx));
   bar.arrive(order, fence);
-  // Write back: arrive advances both sub-epochs
-  net->setEpochShadow(index, bar.getIntraEpoch());
-  net->setEpochShadow(interIdx, bar.getInterEpoch());
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -350,13 +301,7 @@ flagcxWorldBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
-  uint32_t interIdx = FLAGCX_DEVICE_CTA_COUNT + index;
-  bar.setIntraEpoch(net->getEpochShadow(index));
-  bar.setInterEpoch(net->getEpochShadow(interIdx));
   bar.wait(order, fence);
-  // Write back: wait advances both sub-epochs
-  net->setEpochShadow(index, bar.getIntraEpoch());
-  net->setEpochShadow(interIdx, bar.getInterEpoch());
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
