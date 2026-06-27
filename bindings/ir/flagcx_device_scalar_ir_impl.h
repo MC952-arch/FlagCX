@@ -191,10 +191,26 @@ flagcxMakeInterTeamFromNet(const flagcxDevNet &net) {
 }
 
 /* ================================================================
- * Category 6: Scalar Barrier — Intra (3)
+ * Category 6: Scalar Barrier — Intra (4)
  *
- * ArriveS/WaitS construct a fresh barrier that reads epoch from epochBuffer.
+ * SessionInit snapshots epochBuffer[index] → epochBuffer[SHADOW + index].
+ * ArriveS/WaitS read/write the shadow slot only.
  * ================================================================ */
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierSessionInitS(const void *commOpaque, uint32_t index) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+  uint64_t *epochBuf = comm->_commBase.epochBuffer;
+  uint64_t epoch =
+      DeviceAPI::Atomic::load(&epochBuf[index], flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index], epoch,
+                           flagcxDeviceMemoryOrderRelaxed);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  printf("[SessionInitS] rank=%d idx=%u live=%llu shadow_offset=%u\n",
+         comm->_commBase.intraRank, index, (unsigned long long)epoch,
+         (unsigned)(FLAGCX_EPOCH_SHADOW_OFFSET + index));
+#endif
+}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
@@ -205,7 +221,24 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+  uint64_t *epochBuf = comm->_commBase.epochBuffer;
+  uint64_t shadowEpoch =
+      DeviceAPI::Atomic::load(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
+                              flagcxDeviceMemoryOrderRelaxed);
+  bar.setEpoch(shadowEpoch);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  if (coop.threadRank() == 0) {
+    printf("[ArriveS] rank=%d idx=%u epoch=%llu nRanks=%d nBarriers=%d\n",
+           comm->_commBase.intraRank, index, (unsigned long long)shadowEpoch,
+           team._teamBase.nRanks, comm->_commBase.nBarriers);
+  }
+#endif
   bar.arrive(order);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  if (coop.threadRank() == 0) {
+    printf("[ArriveS] rank=%d idx=%u DONE\n", comm->_commBase.intraRank, index);
+  }
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -217,7 +250,29 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+  uint64_t *epochBuf = comm->_commBase.epochBuffer;
+  uint64_t shadowEpoch =
+      DeviceAPI::Atomic::load(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
+                              flagcxDeviceMemoryOrderRelaxed);
+  bar.setEpoch(shadowEpoch);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  if (coop.threadRank() == 0) {
+    printf("[WaitS] rank=%d idx=%u epoch=%llu nRanks=%d peerBuf=%p\n",
+           comm->_commBase.intraRank, index, (unsigned long long)shadowEpoch,
+           team._teamBase.nRanks, (void *)comm->_commBase.barrierPeers);
+  }
+#endif
   bar.wait(order);
+  // wait() advanced epoch; write back to shadow
+  DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
+                           bar.getEpoch(), flagcxDeviceMemoryOrderRelaxed);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  if (coop.threadRank() == 0) {
+    printf("[WaitS] rank=%d idx=%u DONE new_shadow=%llu\n",
+           comm->_commBase.intraRank, index,
+           (unsigned long long)bar.getEpoch());
+  }
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -233,10 +288,24 @@ flagcxIntraBarrierSyncS(const void *commOpaque, flagcxCoopKind_t coopKind,
 }
 
 /* ================================================================
- * Category 7: Scalar Barrier — Inter (3)
+ * Category 7: Scalar Barrier — Inter (4)
  *
  * Inter barriers take a flagcxDevNet (which contains the full comm).
+ * Shadow offset for inter = FLAGCX_EPOCH_SHADOW_OFFSET + CTA_COUNT + index.
  * ================================================================ */
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxInterBarrierSessionInitS(const void *netOpaque, uint32_t index) {
+  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  uint32_t liveIdx = FLAGCX_DEVICE_CTA_COUNT + index;
+  uint32_t shadowIdx =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  uint64_t epoch = DeviceAPI::Atomic::load(&epochBuf[liveIdx],
+                                           flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[shadowIdx], epoch,
+                           flagcxDeviceMemoryOrderRelaxed);
+}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxInterBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
@@ -247,7 +316,15 @@ flagcxInterBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxMakeInterTeamFromNet(*net);
   flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(coop, *net, team,
                                                           index);
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  uint32_t shadowIdx =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  bar.setEpoch(DeviceAPI::Atomic::load(&epochBuf[shadowIdx],
+                                       flagcxDeviceMemoryOrderRelaxed));
   bar.arrive(order, fence);
+  // inter arrive() advances epoch; write back to shadow
+  DeviceAPI::Atomic::store(&epochBuf[shadowIdx], bar.getEpoch(),
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -259,6 +336,11 @@ flagcxInterBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxMakeInterTeamFromNet(*net);
   flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(coop, *net, team,
                                                           index);
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  uint32_t shadowIdx =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  bar.setEpoch(DeviceAPI::Atomic::load(&epochBuf[shadowIdx],
+                                       flagcxDeviceMemoryOrderRelaxed));
   bar.wait(order, fence);
 }
 
@@ -275,10 +357,31 @@ flagcxInterBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
 }
 
 /* ================================================================
- * Category 8: Scalar Barrier — World (3)
+ * Category 8: Scalar Barrier — World (4)
  *
  * World barriers use flagcxTeamTagWorld tag dispatch.
+ * SessionInit snapshots both intra shadow and inter shadow.
  * ================================================================ */
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxWorldBarrierSessionInitS(const void *netOpaque, uint32_t index,
+                               bool multimem) {
+  const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  // Snapshot intra live → intra shadow
+  uint64_t intraEpoch =
+      DeviceAPI::Atomic::load(&epochBuf[index], flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
+                           intraEpoch, flagcxDeviceMemoryOrderRelaxed);
+  // Snapshot inter live → inter shadow
+  uint32_t interLive = FLAGCX_DEVICE_CTA_COUNT + index;
+  uint32_t interShadow =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  uint64_t interEpoch = DeviceAPI::Atomic::load(&epochBuf[interLive],
+                                                flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[interShadow], interEpoch,
+                           flagcxDeviceMemoryOrderRelaxed);
+}
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxWorldBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
@@ -289,7 +392,20 @@ flagcxWorldBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  uint32_t intraShadow = FLAGCX_EPOCH_SHADOW_OFFSET + index;
+  uint32_t interShadow =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  bar.setIntraEpoch(DeviceAPI::Atomic::load(&epochBuf[intraShadow],
+                                            flagcxDeviceMemoryOrderRelaxed));
+  bar.setInterEpoch(DeviceAPI::Atomic::load(&epochBuf[interShadow],
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.arrive(order, fence);
+  // Write back advanced epochs to shadow
+  DeviceAPI::Atomic::store(&epochBuf[intraShadow], bar.getIntraEpoch(),
+                           flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[interShadow], bar.getInterEpoch(),
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -301,7 +417,20 @@ flagcxWorldBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
+  uint64_t *epochBuf = net->_dc.epochBuffer;
+  uint32_t intraShadow = FLAGCX_EPOCH_SHADOW_OFFSET + index;
+  uint32_t interShadow =
+      FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
+  bar.setIntraEpoch(DeviceAPI::Atomic::load(&epochBuf[intraShadow],
+                                            flagcxDeviceMemoryOrderRelaxed));
+  bar.setInterEpoch(DeviceAPI::Atomic::load(&epochBuf[interShadow],
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.wait(order, fence);
+  // Write back advanced epochs to shadow
+  DeviceAPI::Atomic::store(&epochBuf[intraShadow], bar.getIntraEpoch(),
+                           flagcxDeviceMemoryOrderRelaxed);
+  DeviceAPI::Atomic::store(&epochBuf[interShadow], bar.getInterEpoch(),
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void

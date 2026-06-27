@@ -732,6 +732,8 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 #ifndef FLAGCX_DEVICE_CTA_COUNT
 #define FLAGCX_DEVICE_CTA_COUNT 36
 #endif
+// Shadow epoch offset: split ArriveS/WaitS use epochBuffer[SHADOW_OFFSET + idx]
+#define FLAGCX_EPOCH_SHADOW_OFFSET (2 * FLAGCX_DEVICE_CTA_COUNT)
 #ifndef FLAGCX_DEVICE_THREADS_PER_CTA
 #define FLAGCX_DEVICE_THREADS_PER_CTA 512
 #endif

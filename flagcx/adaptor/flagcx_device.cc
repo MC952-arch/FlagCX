@@ -784,10 +784,11 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
       memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
     }
 
-    // Allocate persistent epoch buffer (per-CTA intra + inter epochs).
-    // Layout: [intra epochs (CTA_COUNT)] [inter epochs (CTA_COUNT)]
+    // Allocate persistent epoch buffer (per-CTA intra + inter epochs +
+    // shadows). Layout: [intra live (CTA_COUNT)] [inter live (CTA_COUNT)]
+    //         [intra shadow (CTA_COUNT)] [inter shadow (CTA_COUNT)]
     {
-      size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+      size_t epochBufSize = 4 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
       flagcxResult_t res = deviceAdaptor->deviceMalloc(
           (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
       if (res != flagcxSuccess) {

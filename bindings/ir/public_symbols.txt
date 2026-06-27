@@ -102,11 +102,13 @@ flagcxGetTeamInter
 flagcxGetTeamIntra
 flagcxGetTeamWorld
 flagcxInterBarrierArriveS
+flagcxInterBarrierSessionInitS
 flagcxInterBarrierSessionSync
 flagcxInterBarrierSyncS
 flagcxInterBarrierWaitS
 flagcxIntraBarrierArriveS
 flagcxIntraBarrierSessionArrive
+flagcxIntraBarrierSessionInitS
 flagcxIntraBarrierSessionSync
 flagcxIntraBarrierSessionWait
 flagcxIntraBarrierSyncS
@@ -116,6 +118,7 @@ flagcxTeamRankToIntraS
 flagcxTeamRankToWorldC
 flagcxTeamRankToWorldS
 flagcxWorldBarrierArriveS
+flagcxWorldBarrierSessionInitS
 flagcxWorldBarrierSessionSync
 flagcxWorldBarrierSyncS
 flagcxWorldBarrierWaitS

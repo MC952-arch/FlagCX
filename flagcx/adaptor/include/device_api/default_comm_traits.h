@@ -146,7 +146,8 @@ struct CommTraits<Default<PlatformTag>> {
 
     // IPC barriers
     uint64_t **barrierPeers;
-    uint64_t *epochBuffer; // Device pointer: [CTA_COUNT intra, CTA_COUNT inter]
+    uint64_t *epochBuffer; // Device pointer: [intra live, inter live, intra
+                           // shadow, inter shadow] × CTA_COUNT
     int nBarriers;
 
     // Inter-node signal relay
