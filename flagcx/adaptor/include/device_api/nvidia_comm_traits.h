@@ -160,6 +160,10 @@ struct CommTraits<NvidiaVendor> {
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &,
                                                                const DI &) {}
+
+    // S-API session init: NCCL sessions manage epoch internally — no-op
+    FLAGCX_DEVICE_INLINE_DECORATOR void sessionInit(uint64_t * /*shadow*/,
+                                                    uint32_t /*index*/) const {}
   };
 
 #if NCCL_CHECK_CUDACC
@@ -500,6 +504,10 @@ struct Barrier<NvidiaVendor, flagcxTeamTagIntra, Coop> {
     reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
         ->sync(ncclCoopCta(), Atomic::toNativeOrder(order));
   }
+
+  // S-API epoch accessors — NCCL manages epoch internally; no-op
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t) {}
 };
 
 // ---- Barrier<NvidiaVendor, flagcxTeamTagInter, Coop> ----
@@ -555,6 +563,10 @@ struct Barrier<NvidiaVendor, flagcxTeamTagInter, Coop> {
                  flagcxDevNetFenceLevelMap[static_cast<int>(fence)]);
     }
   }
+
+  // S-API epoch accessors — NCCL manages epoch internally; no-op
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t) {}
 };
 
 // ---- Barrier<NvidiaVendor, flagcxTeamTagWorld, Coop> ----
@@ -653,6 +665,12 @@ struct Barrier<NvidiaVendor, flagcxTeamTagWorld, Coop> {
                  flagcxDevNetFenceLevelMap[static_cast<int>(fence)]);
     }
   }
+
+  // S-API epoch accessors — NCCL manages epoch internally; no-op
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getIntraEpoch() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setIntraEpoch(uint64_t) {}
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInterEpoch() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpoch(uint64_t) {}
 };
 #endif // NCCL_CHECK_CUDACC
 

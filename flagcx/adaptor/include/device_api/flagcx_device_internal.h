@@ -48,6 +48,8 @@ struct flagcxDevCommInternal {
   uint64_t *epochBuffer;  // Device memory: per-CTA epoch counters
                           // Layout: [CTA_COUNT intra epochs, CTA_COUNT inter
                           // epochs]
+  uint64_t *epochShadow;  // Device memory: S-API split barrier shadow
+                          // Same layout as epochBuffer, used by ArriveS/WaitS
   int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)

@@ -179,6 +179,13 @@ struct CommTraits<Default<PlatformTag>> {
       return mm;
     }
 
+    // S-API session init: snapshot epochBuffer[index] → shadow[index]
+    FLAGCX_DEVICE_INLINE_DECORATOR void sessionInit(uint64_t *shadow,
+                                                    uint32_t index) const {
+      shadow[index] =
+          Atomic::load(&epochBuffer[index], flagcxDeviceMemoryOrderRelaxed);
+    }
+
     // Populate from host-side handle (deferred template avoids forward-decl)
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
@@ -811,7 +818,7 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderAcquire)) {}
+                            flagcxDeviceMemoryOrderRelaxed)) {}
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -831,27 +838,6 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
 #endif
       Atomic::store(slot, _epoch + 1, flagcxDeviceMemoryOrderRelease);
     }
-    _coop.sync();
-  }
-
-  // stampEpoch: re-write current _epoch to epochBuffer (no increment).
-  // Used by ArriveS to protect epochBuffer against spurious overwrites
-  // between a split arrive/wait pair.  Uses Release ordering so that a
-  // subsequent Acquire load in WaitS is guaranteed to observe this store.
-  FLAGCX_DEVICE_INLINE_DECORATOR void stampEpoch() {
-    if (_coop.threadRank() == 0) {
-      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
-                    flagcxDeviceMemoryOrderRelease);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-      // Immediate readback via volatile to confirm store hit memory
-      volatile uint64_t *raw = (volatile uint64_t *)&_epochBuffer[_ctaIndex];
-      uint64_t rb = *raw;
-      printf("[stampEpoch] rank=%d idx=%d wrote=%llu readback=%llu addr=%p\n",
-             _myRank, (int)_ctaIndex, (unsigned long long)_epoch,
-             (unsigned long long)rb, (void *)&_epochBuffer[_ctaIndex]);
-#endif
-    }
-    _coop.sync();
   }
 
   // wait: thread-striped spin on own inbox slots from each peer
@@ -883,10 +869,8 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       }
     }
     _epoch += 1;
-    if (_coop.threadRank() == 0) {
-      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
-                    flagcxDeviceMemoryOrderRelease);
-    }
+    Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                  flagcxDeviceMemoryOrderRelaxed);
 #ifndef FLAGCX_BARRIER_NO_DEBUG
     if (_coop.threadRank() == 0 && _ctaIndex == 0) {
       printf("[wait] rank=%d idx=%d DONE new_epoch=%llu\n", _myRank,
@@ -902,6 +886,10 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
     arrive(order);
     wait(order);
   }
+
+  // S-API epoch accessors
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return _epoch; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) { _epoch = e; }
 };
 
 // ---- Barrier<Default<P>, flagcxTeamTagInter, Coop> ----
@@ -946,9 +934,7 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _epoch += _nInterPeers;
-    if (_coop.threadRank() == 0) {
-      Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelease);
-    }
+    Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelaxed);
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
       CommTraits<Default<P>>::fifoEnqueue(
@@ -981,6 +967,10 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
     arrive(order);
     wait(order);
   }
+
+  // S-API epoch accessors
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return _epoch; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) { _epoch = e; }
 };
 
 // ---- Barrier<Default<P>, flagcxTeamTagWorld, Coop> ----
@@ -1065,6 +1055,20 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
       _intra.arrive(order);
       _intra.wait(order);
     }
+  }
+
+  // S-API epoch accessors (world = intra + inter)
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getIntraEpoch() const {
+    return _intra.getEpoch();
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setIntraEpoch(uint64_t e) {
+    _intra.setEpoch(e);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInterEpoch() const {
+    return _inter.getEpoch();
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpoch(uint64_t e) {
+    _inter.setEpoch(e);
   }
 };
 

@@ -371,6 +371,12 @@ __global__ void kernelScalarIntraBarrierArriveWait(const void *devCommPtr,
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
+  // Initialize epoch shadow (thread-0 only)
+  if (threadIdx.x == 0) {
+    flagcxIntraBarrierSessionInit(devCommPtr, blockIdx.x);
+  }
+  __syncthreads();
+
   if (tid < N) {
     buffer[tid] = (float)(myRank + 100);
   }
@@ -527,6 +533,11 @@ __global__ void kernelScalarIntraBarrierArriveWaitSplit(
     int N) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+  if (threadIdx.x == 0) {
+    flagcxIntraBarrierSessionInit(devCommPtr, blockIdx.x);
+  }
+  __syncthreads();
 
   if (tid < N) {
     buffer[tid] = (float)(myRank + 400);

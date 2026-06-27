@@ -802,6 +802,24 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
       }
     }
 
+    // Allocate epoch shadow buffer for S-API split barriers (same layout as
+    // epochBuffer).
+    {
+      size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+      flagcxResult_t res = deviceAdaptor->deviceMalloc(
+          (void **)&handle->epochShadow, epochBufSize, flagcxMemDevice, NULL);
+      if (res != flagcxSuccess) {
+        flagcxDevCommDestroy(comm, handle);
+        return res;
+      }
+      res = deviceAdaptor->deviceMemset(handle->epochShadow, 0, epochBufSize,
+                                        flagcxMemDevice, NULL);
+      if (res != flagcxSuccess) {
+        flagcxDevCommDestroy(comm, handle);
+        return res;
+      }
+    }
+
     // One-sided Default layer: if signals or counters requested AND inter-node
     // peers exist
     if (handle->nInterPeers > 0 &&
@@ -1032,6 +1050,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                     NULL);
         if (h->epochBuffer)
           deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
+        if (h->epochShadow)
+          deviceAdaptor->deviceFree(h->epochShadow, flagcxMemDevice, NULL);
         if (h->signalBuffer) {
           if (h->signalHostEnable)
             deviceAdaptor->deviceFree(h->signalBuffer, flagcxMemHost, NULL);
@@ -1058,6 +1078,7 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     if (devComm->localBarrierShmPtr == nullptr)
       bufHandle->localBarrierFlags = devComm->localBarrierFlags;
     bufHandle->epochBuffer = devComm->epochBuffer;
+    bufHandle->epochShadow = devComm->epochShadow;
     bufHandle->signalBuffer = devComm->signalBuffer;
     bufHandle->shadowBuffer = devComm->shadowBuffer;
     bufHandle->counterBuffer = devComm->counterBuffer;
@@ -1503,6 +1524,8 @@ flagcxResult_t flagcxCommDrainDeferredBuffers(flagcxComm_t comm) {
       deviceAdaptor->deviceFree(h->localBarrierFlags, flagcxMemDevice, NULL);
     if (h->epochBuffer)
       deviceAdaptor->deviceFree(h->epochBuffer, flagcxMemDevice, NULL);
+    if (h->epochShadow)
+      deviceAdaptor->deviceFree(h->epochShadow, flagcxMemDevice, NULL);
     if (h->signalBuffer) {
       if (h->signalHostEnable)
         deviceAdaptor->deviceFree(h->signalBuffer, flagcxMemHost, NULL);
