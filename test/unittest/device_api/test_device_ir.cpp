@@ -475,7 +475,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // S5: Intra Barrier Sync (Scalar)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NS5 = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5 * sizeof(float),
                                       flagcxMemDevice, NULL));
@@ -511,7 +510,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // S6: Intra Barrier Arrive/Wait (Scalar)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NS6 = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS6 * sizeof(float),
                                       flagcxMemDevice, NULL));
@@ -547,7 +545,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // K7b: Intra Barrier Sync(AcqRel)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NK7b = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK7b * sizeof(float),
                                       flagcxMemDevice, NULL));
@@ -583,7 +580,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // K8b: Arrive(Release) + Wait(AcqRel)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NK8b = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK8b * sizeof(float),
                                       flagcxMemDevice, NULL));
@@ -620,7 +616,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // S5b: ArriveS(Release) + WaitS(Acquire)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NS5b = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5b * sizeof(float),
                                       flagcxMemDevice, NULL));
@@ -657,7 +652,6 @@ int main(int argc, char *argv[]) {
   // -------------------------------------------------------------------------
   // S5c: SyncS(Release) + read + SyncS(Acquire)
   // -------------------------------------------------------------------------
-  MPI_Barrier(MPI_COMM_WORLD);
   int NS5c = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5c * sizeof(float),
                                       flagcxMemDevice, NULL));

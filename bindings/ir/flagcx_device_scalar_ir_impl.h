@@ -206,17 +206,27 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxTeam team = flagcxTeamIntra(*comm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
   if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
-    printf("[ArriveS] rank=%d idx=%d epoch=%llu nRanks=%d nBarriers=%d\n",
+    printf("[ArriveS] rank=%d idx=%d epoch=%llu epochBuf=%p epochBuf[0]=%llu\n",
            (int)comm->getIntraRank(), (int)index,
-           (unsigned long long)bar._impl._epoch, (int)bar._impl._nRanks,
-           (int)bar._impl._nBarriers);
+           (unsigned long long)bar._impl._epoch, (void *)bar._impl._epochBuffer,
+           (unsigned long long)bar._impl._epochBuffer[index]);
   }
+#endif
   bar.arrive(order);
+  // Re-stamp epochBuffer with the pre-arrive epoch so that a subsequent
+  // WaitS (which constructs a fresh barrier and re-reads epochBuffer)
+  // picks up the same epoch value that this arrive used.
+  bar._impl.stampEpoch();
+#ifndef FLAGCX_BARRIER_NO_DEBUG
   if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
-    printf("[ArriveS] rank=%d idx=%d DONE\n", (int)comm->getIntraRank(),
-           (int)index);
+    printf("[ArriveS] rank=%d idx=%d DONE stamped=%llu readback=%llu\n",
+           (int)comm->getIntraRank(), (int)index,
+           (unsigned long long)bar._impl._epoch,
+           (unsigned long long)bar._impl._epochBuffer[index]);
   }
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -226,20 +236,34 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   flagcxTeam team = flagcxTeamIntra(*comm);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+  if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
+    // Raw volatile read to see what memory actually contains before barrier
+    // ctor
+    volatile uint64_t *rawEpoch =
+        (volatile uint64_t *)&comm->_commBase.epochBuffer[index];
+    printf("[WaitS-PRE] rank=%d idx=%d rawEpoch=%llu epochBufAddr=%p\n",
+           (int)comm->getIntraRank(), (int)index, (unsigned long long)*rawEpoch,
+           (void *)rawEpoch);
+  }
+#endif
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
   if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
-    printf("[WaitS] rank=%d idx=%d epoch=%llu nRanks=%d peerBuf=%p\n",
+    printf("[WaitS] rank=%d idx=%d epoch=%llu nRanks=%d\n",
            (int)comm->getIntraRank(), (int)index,
-           (unsigned long long)bar._impl._epoch, (int)bar._impl._nRanks,
-           (void *)bar._impl._peerBuffers);
+           (unsigned long long)bar._impl._epoch, (int)bar._impl._nRanks);
   }
+#endif
   bar.wait(order);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
   if (FLAGCX_THREAD_IDX_X == 0 && index == 0) {
     printf("[WaitS] rank=%d idx=%d DONE epoch_after=%llu\n",
            (int)comm->getIntraRank(), (int)index,
            (unsigned long long)bar._impl._epoch);
   }
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void

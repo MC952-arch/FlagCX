@@ -811,7 +811,7 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderRelaxed)) {}
+                            flagcxDeviceMemoryOrderAcquire)) {}
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -831,6 +831,27 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
 #endif
       Atomic::store(slot, _epoch + 1, flagcxDeviceMemoryOrderRelease);
     }
+    _coop.sync();
+  }
+
+  // stampEpoch: re-write current _epoch to epochBuffer (no increment).
+  // Used by ArriveS to protect epochBuffer against spurious overwrites
+  // between a split arrive/wait pair.  Uses Release ordering so that a
+  // subsequent Acquire load in WaitS is guaranteed to observe this store.
+  FLAGCX_DEVICE_INLINE_DECORATOR void stampEpoch() {
+    if (_coop.threadRank() == 0) {
+      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                    flagcxDeviceMemoryOrderRelease);
+#ifndef FLAGCX_BARRIER_NO_DEBUG
+      // Immediate readback via volatile to confirm store hit memory
+      volatile uint64_t *raw = (volatile uint64_t *)&_epochBuffer[_ctaIndex];
+      uint64_t rb = *raw;
+      printf("[stampEpoch] rank=%d idx=%d wrote=%llu readback=%llu addr=%p\n",
+             _myRank, (int)_ctaIndex, (unsigned long long)_epoch,
+             (unsigned long long)rb, (void *)&_epochBuffer[_ctaIndex]);
+#endif
+    }
+    _coop.sync();
   }
 
   // wait: thread-striped spin on own inbox slots from each peer
@@ -862,8 +883,10 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       }
     }
     _epoch += 1;
-    Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
-                  flagcxDeviceMemoryOrderRelaxed);
+    if (_coop.threadRank() == 0) {
+      Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
+                    flagcxDeviceMemoryOrderRelease);
+    }
 #ifndef FLAGCX_BARRIER_NO_DEBUG
     if (_coop.threadRank() == 0 && _ctaIndex == 0) {
       printf("[wait] rank=%d idx=%d DONE new_epoch=%llu\n", _myRank,
@@ -923,7 +946,9 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _epoch += _nInterPeers;
-    Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelaxed);
+    if (_coop.threadRank() == 0) {
+      Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelease);
+    }
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
       CommTraits<Default<P>>::fifoEnqueue(
