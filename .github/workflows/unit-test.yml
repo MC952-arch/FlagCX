@@ -108,25 +108,30 @@ jobs:
       #    export PATH=$MPI_HOME/bin:$PATH
       #    mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL ./build/bin/kernel_mpi_tests
 
-      - name: Run device_api correctness tests with mpirun
+      - name: Run intra-node device_api tests with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest/device_api
           export MPI_HOME=/usr/local/mpi
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
-          mpirun -np 8 --allow-run-as-root \
-            -x FLAGCX_USE_HETERO_COMM=1 \
-            -x FLAGCX_MEM_ENABLE=1 \
-            -x FLAGCX_VMM_ENABLE=0 \
-            -x FLAGCX_P2P_DISABLE=1 \
-            -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
-            -x LD_LIBRARY_PATH \
-            build/bin/test_device_api -b 1M -e 4M -f 2 -R 2
-          mpirun -np 8 --allow-run-as-root \
-            -x FLAGCX_USE_HETERO_COMM=1 \
-            -x FLAGCX_MEM_ENABLE=1 \
-            -x FLAGCX_VMM_ENABLE=0 \
-            -x FLAGCX_P2P_DISABLE=1 \
-            -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
-            -x LD_LIBRARY_PATH \
-            build/bin/test_device_ir -b 1M -e 4M -f 2 -R 2
+          COMMON_ENV="-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 -x LD_LIBRARY_PATH"
+          FLAGS="-b 1M -e 4M -f 2 -R 2"
+          mpirun -np 8 --allow-run-as-root ${COMMON_ENV} build/bin/test_device_api ${FLAGS}
+          mpirun -np 8 --allow-run-as-root ${COMMON_ENV} build/bin/test_device_ir_intra ${FLAGS}
+
+      - name: Run inter-node device_api tests with mpirun (simulate 2 nodes)
+        run: |
+          cd /__w/FlagCX/FlagCX/test/unittest/device_api
+          export MPI_HOME=/usr/local/mpi
+          export PATH=$MPI_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
+          COMMON_ENV="-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 -x LD_LIBRARY_PATH"
+          FLAGS="-b 1M -e 4M -f 2 -R 2"
+          NODE1_FLAG="-x CUDA_VISIBLE_DEVICES=0,1,2,3 -x FLAGCX_HOSTID=node0 -x FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3"
+          NODE2_FLAG="-x CUDA_VISIBLE_DEVICES=4,5,6,7 -x FLAGCX_HOSTID=node1 -x FLAGCX_IB_HCA=mlx5_6,mlx5_7,mlx5_8,mlx5_9"
+          mpirun --allow-run-as-root \
+            -np 4 ${COMMON_ENV} ${NODE1_FLAG} build/bin/test_device_api ${FLAGS} \
+            : -np 4 ${COMMON_ENV} ${NODE2_FLAG} build/bin/test_device_api ${FLAGS}
+          mpirun --allow-run-as-root \
+            -np 4 ${COMMON_ENV} ${NODE1_FLAG} build/bin/test_device_ir_inter ${FLAGS} \
+            : -np 4 ${COMMON_ENV} ${NODE2_FLAG} build/bin/test_device_ir_inter ${FLAGS}
