@@ -15,7 +15,7 @@
  *   K9: FollowShadow          (waitSignalFollowShadow)
  *   K10: MeetShadow           (increaseSignalShadow + waitSignalMeetShadow)
  *
- * Usage: mpirun -np N ./test_devapi_internode_onesided [options]
+ * Usage: mpirun -np N ./test_device_api [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  *   -w <warmup>    -n <iters>
  *   -R <regMode>   1=IPC(flagcxMemAlloc+CommRegister)
@@ -231,6 +231,11 @@ int main(int argc, char *argv[]) {
   // Initial K8 reset — establishes clean signal/counter/shadow state
   FLAGCXCHECK(flagcxInterTestReset(devComm, stream, dResultBuf));
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+  // Debug: dump devComm state
+  FLAGCXCHECK(flagcxDebugDumpComm(devComm, stream));
+  FLAGCXCHECK(devHandle->streamSynchronize(stream));
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // Main test loop
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {

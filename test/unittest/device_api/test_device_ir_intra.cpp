@@ -1,8 +1,8 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Device IR Function Tests — host driver exercising FlagCX Device API
- * IR wrapper functions via device pointers (simulates Triton usage path).
+ * Device IR Intra-Node Tests — host driver exercising FlagCX Device API
+ * IR wrapper functions that only require intra-node (single-node) setup.
  *
  * Tests 8 kernel categories covering struct-based IR functions:
  *   K1: Comm Queries (GetRank, GetSize, GetIntraRank, GetIntraSize)
@@ -14,7 +14,7 @@
  *   K7: Intra Barrier (SessionInit, Sync)
  *   K8: Intra Barrier Arrive/Wait (SessionArrive, Wait)
  *
- * Tests 10 kernel categories covering S-suffixed (scalar) IR functions:
+ * Tests 8 kernel categories covering S-suffixed (scalar) IR functions:
  *   S1: Cooperative Group (CoopThreadRankS, CoopSizeS, CoopSyncS)
  *   S2: Team Queries (TeamRankToWorldS)
  *   S3: Local Pointer (GetLocalPointerS)
@@ -23,10 +23,8 @@
  *   S6: Intra Barrier Arrive/Wait (IntraBarrierArriveS, WaitS)
  *   S7: Extended Coop — TileSpan (CoopThreadRankExS, CoopSizeExS)
  *   S8: Extended Coop — Lanes (CoopThreadRankExS, CoopSizeExS)
- *   S9: Net GetFromComm (flagcxDevNetGetFromCommS)
- *   S10: Net Signal/Counter (read, reset, shadow)
  *
- * Usage: mpirun -np N ./test_device_ir
+ * Usage: mpirun -np N ./test_device_ir_intra
  ************************************************************************/
 
 #include "device_ir.h"
@@ -752,68 +750,6 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(s8Results, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
-  // S9: Net GetFromCommS
-  // -------------------------------------------------------------------------
-  // NOTE: Full two-sided/one-sided transport tests are in test_device_api
-  // which has the multi-node harness. Here we only test what's possible
-  // single-node: handle acquisition and local signal/counter ops.
-  if (proc == 0) {
-    printf("\n--- S-API Transport Tests ---\n");
-  }
-
-  int *s9Results = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s9Results, 4 * sizeof(int),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(s9Results, 0, 4 * sizeof(int),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelNetGetFromCommS(devCommPtr, s9Results, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  int hostS9[4] = {0};
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostS9, s9Results, 4 * sizeof(int),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  bool s9Pass = (hostS9[0] == 1); // net pointer should be non-null
-  bool s9Skip = (hostS9[0] == 0); // net unavailable (no contexts) → skip
-  if (proc == 0) {
-    printf("S9 NetGetFromComm: %s\n", s9Skip ? "SKIP (no transport contexts)"
-                                             : (s9Pass ? "PASS" : "FAIL"));
-  }
-  if (s9Skip)
-    s9Pass = true;
-  FLAGCXCHECK(devHandle->deviceFree(s9Results, flagcxMemDevice, NULL));
-
-  // -------------------------------------------------------------------------
-  // S10: Signal/Counter local read/reset/shadow
-  // -------------------------------------------------------------------------
-  int *s10Results = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s10Results, 4 * sizeof(int),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(s10Results, 0, 4 * sizeof(int),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelNetSignalCounterS(devCommPtr, s10Results, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  int hostS10[4] = {0};
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostS10, s10Results, 4 * sizeof(int),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  // results[0]: signal reset+read==0, results[1]: shadow doesn't change signal,
-  // results[2]: counter reset+read==0
-  bool s10Pass = (hostS10[0] == 1) && (hostS10[1] == 1) && (hostS10[2] == 1);
-  bool s10Skip = (hostS10[0] == 0) && (hostS10[1] == 0) && (hostS10[2] == 0);
-  if (proc == 0) {
-    printf("S10 NetSignalCounter: %s\n", s10Skip
-                                             ? "SKIP (no transport contexts)"
-                                             : (s10Pass ? "PASS" : "FAIL"));
-  }
-  if (s10Skip)
-    s10Pass = true;
-  FLAGCXCHECK(devHandle->deviceFree(s10Results, flagcxMemDevice, NULL));
-
-  // -------------------------------------------------------------------------
   // Summary
   // -------------------------------------------------------------------------
   MPI_Barrier(MPI_COMM_WORLD);
@@ -821,7 +757,7 @@ int main(int argc, char *argv[]) {
   int allPass = k1Pass && k2Pass && k3Pass && k4Pass && k5Pass && k6Pass &&
                 k7Pass && k8Pass && s1Pass && s2Pass && s3Pass && s4Pass &&
                 s5Pass && s6Pass && k7bPass && k8bPass && s5bPass && s5cPass &&
-                s7Pass && s8Pass && s9Pass && s10Pass;
+                s7Pass && s8Pass;
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 

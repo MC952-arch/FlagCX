@@ -381,23 +381,11 @@ __global__ void kernelScalarIntraBarrierArriveWait(const void *devCommPtr,
     buffer[tid] = (float)(myRank + 100);
   }
 
-  if (threadIdx.x == 0) {
-    printf("[S6] rank=%d block=%d: BEFORE ArriveS\n", myRank, blockIdx.x);
-  }
-
   flagcxIntraBarrierArriveS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                             flagcxDeviceMemoryOrderRelease);
 
-  if (threadIdx.x == 0) {
-    printf("[S6] rank=%d block=%d: AFTER ArriveS, BEFORE WaitS\n", myRank, blockIdx.x);
-  }
-
   flagcxIntraBarrierWaitS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcquire);
-
-  if (threadIdx.x == 0) {
-    printf("[S6] rank=%d block=%d: AFTER WaitS\n", myRank, blockIdx.x);
-  }
 
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (myRank + 1) % nRanks;
@@ -407,16 +395,8 @@ __global__ void kernelScalarIntraBarrierArriveWait(const void *devCommPtr,
     output[tid] = *peerPtr;
   }
 
-  if (threadIdx.x == 0) {
-    printf("[S6] rank=%d block=%d: BEFORE SyncS\n", myRank, blockIdx.x);
-  }
-
   flagcxIntraBarrierSyncS(devCommPtr, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcquire);
-
-  if (threadIdx.x == 0) {
-    printf("[S6] rank=%d block=%d: DONE\n", myRank, blockIdx.x);
-  }
 }
 
 void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
@@ -618,7 +598,7 @@ void launchKernelIntraBarrierSyncSplitS(const void *devCommPtr,
 __global__ void kernelCoopTileSpanS(int *results) {
   // Each block: 128 threads = 4 tiles of 32
   int tileIdx = threadIdx.x / 32;
-  int t0 = blockIdx.x * 4 + tileIdx;
+  int t0 = tileIdx;  // tile index within the block (threadRank = threadIdx.x - 32*t0)
   uint32_t nTiles = 1;
   uint32_t id = 0;
 
@@ -688,31 +668,73 @@ void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
 
 __global__ void kernelNetSignalCounterS(const void *devCommPtr, int *results) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
+    // Debug: dump devComm fields
+    const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+    printf("[S10-DBG] devCommPtr=%p\n", devCommPtr);
+    printf("[S10-DBG] comm->_netContexts=%p\n", (void *)comm->_netContexts);
+    printf("[S10-DBG] comm->_contextCount=%d\n", comm->_contextCount);
+    printf("[S10-DBG] comm->_nInterPeers=%d\n", comm->_nInterPeers);
+    printf("[S10-DBG] comm->_signalCount=%d\n", comm->_signalCount);
+    printf("[S10-DBG] comm->_counterCount=%d\n", comm->_counterCount);
+    printf("[S10-DBG] comm->_commBase.signalBuffer=%p\n",
+           (void *)comm->_commBase.signalBuffer);
+    printf("[S10-DBG] comm->_commBase.signalCount=%d\n",
+           comm->_commBase.signalCount);
+    printf("[S10-DBG] comm->_commBase.counterBuffer=%p\n",
+           (void *)comm->_commBase.counterBuffer);
+
     const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    printf("[S10-DBG] net=%p\n", net);
     if (net == nullptr) {
+      printf("[S10-DBG] net is NULL, skipping\n");
       results[0] = 0; // cannot test without transport
       return;
     }
 
+    // Debug: dump net fields
+    const flagcxDevNet *netObj = (const flagcxDevNet *)net;
+    printf("[S10-DBG] netObj->signalBuffer=%p\n", (void *)netObj->signalBuffer);
+    printf("[S10-DBG] netObj->shadowBuffer=%p\n", (void *)netObj->shadowBuffer);
+    printf("[S10-DBG] netObj->counterBuffer=%p\n",
+           (void *)netObj->counterBuffer);
+    printf("[S10-DBG] netObj->signalCount=%d\n", netObj->signalCount);
+    printf("[S10-DBG] netObj->counterCount=%d\n", netObj->counterCount);
+    printf("[S10-DBG] netObj->contextId=%d\n", netObj->contextId);
+
+    if (netObj->signalBuffer == nullptr) {
+      printf("[S10-DBG] signalBuffer is NULL! Cannot proceed.\n");
+      results[0] = 0;
+      return;
+    }
+
+    printf("[S10-DBG] About to call flagcxDevNetResetSignal...\n");
     // Reset signal slot 0
     flagcxDevNetResetSignal(net, (flagcxDevNetSignal_t)0);
+    printf("[S10-DBG] ResetSignal done\n");
     // Read it — should be 0
     uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
+    printf("[S10-DBG] sig0=%llu\n", (unsigned long long)sig0);
     results[0] = (sig0 == 0) ? 1 : 0;
 
     // Increase shadow by 5, read signal (still 0, shadow is separate)
+    printf("[S10-DBG] About to call IncreaseSignalShadow...\n");
     flagcxDevNetIncreaseSignalShadow(net, (flagcxDevNetSignal_t)0, 5);
     uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
+    printf("[S10-DBG] sig1=%llu (should be 0)\n", (unsigned long long)sig1);
     results[1] = (sig1 == 0) ? 1 : 0;
 
     // Reset counter slot 0
+    printf("[S10-DBG] About to call ResetCounter...\n");
     flagcxDevNetResetCounter(net, (flagcxDevNetCounter_t)0);
     // Read counter — should be 0
     uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
                                              flagcxDeviceMemoryOrderRelaxed);
+    printf("[S10-DBG] ctr0=%llu (should be 0)\n", (unsigned long long)ctr0);
     results[2] = (ctr0 == 0) ? 1 : 0;
+    printf("[S10-DBG] All done, results=[%d,%d,%d]\n", results[0], results[1],
+           results[2]);
   }
 }
 

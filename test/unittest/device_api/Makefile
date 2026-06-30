@@ -28,9 +28,11 @@ ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 CXXFLAGS += -DCOMPILE_KERNEL
 
 # Test targets
-MPI_TARGETS := $(BINDIR)/test_device_api $(BINDIR)/test_device_ir
+MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
+               $(BINDIR)/test_device_ir_inter \
+               $(BINDIR)/test_device_api
 
-.PHONY: all clean run-unit run-mpi run
+.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run
 
 all: $(MPI_TARGETS)
 
@@ -46,15 +48,20 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
 
+$(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
 $(BINDIR)/test_device_api: test_device_api.cpp $(DEVICE_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
-
-$(BINDIR)/test_device_ir: test_device_ir.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
-	@mkdir -p $(BINDIR)
-	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)
@@ -63,9 +70,26 @@ clean:
 run-unit:
 	@echo "device_api: no unit tests (all require MPI + GPU)"
 
-run-mpi: $(MPI_TARGETS)
-	@echo "Running Device API correctness tests..."
-	mpirun --allow-run-as-root -np 8 $(BINDIR)/test_device_api -b 1M -e 4M -f 2 -R 2
-	mpirun --allow-run-as-root -np 8 $(BINDIR)/test_device_ir -b 1M -e 4M -f 2 -R 2
+# Env vars for inter-node testing on single node
+HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 \
+              -x FLAGCX_MEM_ENABLE=1 \
+              -x FLAGCX_VMM_ENABLE=0 \
+              -x FLAGCX_P2P_DISABLE=1 \
+              -x FLAGCX_DEBUG=Version \
+              -x FLAGCX_DEBUG_SUBSYS= \
+              -x LD_LIBRARY_PATH
+
+# Intra-node tests: safe to run on a single node
+run-mpi-intra: $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api
+	@echo "Running intra-node tests..."
+	mpirun -np 8 --allow-run-as-root $(BINDIR)/test_device_ir_intra
+	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_api -b 1M -e 4M -f 2 -R 2
+
+# Inter-node tests: require FLAGCX_USE_HETERO_COMM=1 or actual multi-node
+run-mpi-inter: $(BINDIR)/test_device_ir_inter
+	@echo "Running inter-node Device IR tests..."
+	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_ir_inter
+
+run-mpi: run-mpi-intra run-mpi-inter
 
 run: run-mpi
