@@ -247,12 +247,17 @@ static flagcxResult_t flagcxRmaProxyPostOp(struct flagcxHeteroComm *comm,
         WARN("flagcxRmaProxyPostOp: staging handles not initialized");
         return flagcxInternalError;
       }
-      *(volatile uint64_t *)(stagingH->baseVas[comm->rank]) = desc->putValue;
+      // Use per-peer slot to avoid staging buffer races: the NIC may still be
+      // reading a previous peer's slot when we post the next putValue.
+      size_t slot = (size_t)p * sizeof(uint64_t);
+      volatile uint64_t *staging =
+          (volatile uint64_t *)(stagingH->baseVas[comm->rank] + slot);
+      *staging = desc->putValue;
       void **stagingHandles = (void **)stagingH;
       void **dstH = (void **)comm->oneSideHandles[desc->dstMrIdx];
-      return comm->netAdaptor->iput(sendComm, 0, desc->dstOff, sizeof(uint64_t),
-                                    comm->rank, p, stagingHandles, dstH,
-                                    &desc->request);
+      return comm->netAdaptor->iput(sendComm, slot, desc->dstOff,
+                                    sizeof(uint64_t), comm->rank, p,
+                                    stagingHandles, dstH, &desc->request);
     }
   }
   return flagcxInternalError;

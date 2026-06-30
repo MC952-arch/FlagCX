@@ -872,14 +872,16 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
         }
         memset(handle->counterBuffer, 0, cntSize);
       }
-      // PutValue staging buffer (8 bytes host-pinned)
+      // PutValue staging buffer (nRanks * 8 bytes host-pinned, one slot per
+      // peer to avoid races between concurrent RDMA WRITEs)
+      size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
       res = deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
-                                        sizeof(uint64_t), flagcxMemHost, NULL);
+                                        stagingSize, flagcxMemHost, NULL);
       if (res != flagcxSuccess) {
         flagcxDevCommDestroy(comm, handle);
         return res;
       }
-      memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
+      memset(handle->putValueStagingBuffer, 0, stagingSize);
 
       // Auto-register signal buffer for RDMA one-sided access
       if (handle->signalBuffer) {
@@ -902,7 +904,7 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
       // Auto-register staging buffer for PutValue RDMA source
       if (handle->putValueStagingBuffer) {
         res = flagcxOneSideStagingRegister(comm, handle->putValueStagingBuffer,
-                                           sizeof(uint64_t));
+                                           stagingSize);
         if (res != flagcxSuccess) {
           WARN("flagcxDevCommCreate: staging buffer MR registration failed "
                "(%d), "
