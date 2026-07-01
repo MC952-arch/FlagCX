@@ -204,7 +204,7 @@ flagcxIntraBarrierSessionInitS(const void *commOpaque, uint32_t index) {
   uint64_t epoch =
       DeviceAPI::Atomic::load(&epochBuf[index], flagcxDeviceMemoryOrderRelaxed);
   DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index], epoch,
-                           flagcxDeviceMemoryOrderRelease);
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -219,7 +219,7 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
   uint64_t *epochBuf = comm->_commBase.epochBuffer;
   uint64_t shadowEpoch =
       DeviceAPI::Atomic::load(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-                              flagcxDeviceMemoryOrderAcquire);
+                              flagcxDeviceMemoryOrderRelaxed);
   bar.setEpoch(shadowEpoch);
   bar.arrive(order);
 }
@@ -236,7 +236,7 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
   uint64_t *epochBuf = comm->_commBase.epochBuffer;
   uint64_t shadowEpoch =
       DeviceAPI::Atomic::load(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-                              flagcxDeviceMemoryOrderAcquire);
+                              flagcxDeviceMemoryOrderRelaxed);
   bar.setEpoch(shadowEpoch);
   bar.setEpochBuffer(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET]);
   bar.wait(order);
@@ -271,7 +271,7 @@ flagcxInterBarrierSessionInitS(const void *netOpaque, uint32_t index) {
   uint64_t epoch = DeviceAPI::Atomic::load(&epochBuf[liveIdx],
                                            flagcxDeviceMemoryOrderRelaxed);
   DeviceAPI::Atomic::store(&epochBuf[shadowIdx], epoch,
-                           flagcxDeviceMemoryOrderRelease);
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -287,7 +287,7 @@ flagcxInterBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   uint32_t shadowIdx =
       FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
   bar.setEpoch(DeviceAPI::Atomic::load(&epochBuf[shadowIdx],
-                                       flagcxDeviceMemoryOrderAcquire));
+                                       flagcxDeviceMemoryOrderRelaxed));
   bar.setEpochBuffer(&epochBuf[shadowIdx]);
   bar.arrive(order, fence);
 }
@@ -305,7 +305,7 @@ flagcxInterBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   uint32_t shadowIdx =
       FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
   bar.setEpoch(DeviceAPI::Atomic::load(&epochBuf[shadowIdx],
-                                       flagcxDeviceMemoryOrderAcquire));
+                                       flagcxDeviceMemoryOrderRelaxed));
   bar.setEpochBuffer(&epochBuf[shadowIdx]);
   bar.wait(order, fence);
 }
@@ -338,7 +338,7 @@ flagcxWorldBarrierSessionInitS(const void *netOpaque, uint32_t index,
   uint64_t intraEpoch =
       DeviceAPI::Atomic::load(&epochBuf[index], flagcxDeviceMemoryOrderRelaxed);
   DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-                           intraEpoch, flagcxDeviceMemoryOrderRelease);
+                           intraEpoch, flagcxDeviceMemoryOrderRelaxed);
   // Snapshot inter live → inter shadow
   uint32_t interLive = FLAGCX_DEVICE_CTA_COUNT + index;
   uint32_t interShadow =
@@ -346,7 +346,7 @@ flagcxWorldBarrierSessionInitS(const void *netOpaque, uint32_t index,
   uint64_t interEpoch = DeviceAPI::Atomic::load(&epochBuf[interLive],
                                                 flagcxDeviceMemoryOrderRelaxed);
   DeviceAPI::Atomic::store(&epochBuf[interShadow], interEpoch,
-                           flagcxDeviceMemoryOrderRelease);
+                           flagcxDeviceMemoryOrderRelaxed);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -363,9 +363,9 @@ flagcxWorldBarrierArriveS(const void *netOpaque, flagcxCoopKind_t coopKind,
   uint32_t interShadow =
       FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
   bar.setIntraEpoch(DeviceAPI::Atomic::load(&epochBuf[intraShadow],
-                                            flagcxDeviceMemoryOrderAcquire));
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.setInterEpoch(DeviceAPI::Atomic::load(&epochBuf[interShadow],
-                                            flagcxDeviceMemoryOrderAcquire));
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.setIntraEpochBuffer(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET]);
   bar.setInterEpochBuffer(&epochBuf[interShadow]);
   bar.arrive(order, fence);
@@ -385,9 +385,9 @@ flagcxWorldBarrierWaitS(const void *netOpaque, flagcxCoopKind_t coopKind,
   uint32_t interShadow =
       FLAGCX_EPOCH_SHADOW_OFFSET + FLAGCX_DEVICE_CTA_COUNT + index;
   bar.setIntraEpoch(DeviceAPI::Atomic::load(&epochBuf[intraShadow],
-                                            flagcxDeviceMemoryOrderAcquire));
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.setInterEpoch(DeviceAPI::Atomic::load(&epochBuf[interShadow],
-                                            flagcxDeviceMemoryOrderAcquire));
+                                            flagcxDeviceMemoryOrderRelaxed));
   bar.setIntraEpochBuffer(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET]);
   bar.setInterEpochBuffer(&epochBuf[interShadow]);
   bar.wait(order, fence);
