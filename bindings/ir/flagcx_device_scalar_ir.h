@@ -160,11 +160,6 @@ flagcxDataTypeSizeDevice(flagcxDataType_t dt);
  * @param order     Memory ordering semantics (acquire/release/relaxed).
  * ================================================================ */
 
-/** @brief Snapshot live epoch into shadow for split arrive/wait at index.
- *  Must be called (by thread-0) before first ArriveS/WaitS on this index. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxIntraBarrierSessionInitS(const void *comm, uint32_t index);
-
 /** @brief Signal arrival at intra-node barrier. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxIntraBarrierArriveS(const void *comm, flagcxCoopKind_t coopKind,
@@ -192,10 +187,6 @@ flagcxIntraBarrierSyncS(const void *comm, flagcxCoopKind_t coopKind,
  * @param order     Memory ordering semantics.
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
-
-/** @brief Snapshot live epoch into shadow for inter-node split barrier. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxInterBarrierSessionInitS(const void *net, uint32_t index);
 
 /** @brief Signal arrival at inter-node barrier. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
@@ -228,10 +219,6 @@ flagcxInterBarrierSyncS(const void *net, flagcxCoopKind_t coopKind,
  * @param order     Memory ordering semantics.
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
-
-/** @brief Snapshot live epochs into shadow for world split barrier. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxWorldBarrierSessionInitS(const void *net, uint32_t index, bool multimem);
 
 /** @brief Signal arrival at world barrier (intra + inter). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierArriveS(

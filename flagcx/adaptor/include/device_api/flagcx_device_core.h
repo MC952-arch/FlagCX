@@ -542,9 +542,6 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) {
     _impl.setEpoch(e);
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochBuffer(uint64_t *buf) {
-    _impl.setEpochBuffer(buf);
-  }
 };
 
 // ============================================================
@@ -735,8 +732,6 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 #ifndef FLAGCX_DEVICE_CTA_COUNT
 #define FLAGCX_DEVICE_CTA_COUNT 36
 #endif
-// Shadow epoch offset: split ArriveS/WaitS use epochBuffer[SHADOW_OFFSET + idx]
-#define FLAGCX_EPOCH_SHADOW_OFFSET (2 * FLAGCX_DEVICE_CTA_COUNT)
 #ifndef FLAGCX_DEVICE_THREADS_PER_CTA
 #define FLAGCX_DEVICE_THREADS_PER_CTA 512
 #endif
@@ -931,9 +926,6 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) {
     _impl.setEpoch(e);
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochBuffer(uint64_t *buf) {
-    _impl.setEpochBuffer(buf);
-  }
 };
 
 // ---- World ----
@@ -991,12 +983,6 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpoch(uint64_t e) {
     _impl.setInterEpoch(e);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setIntraEpochBuffer(uint64_t *buf) {
-    _impl.setIntraEpochBuffer(buf);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpochBuffer(uint64_t *buf) {
-    _impl.setInterEpochBuffer(buf);
   }
 };
 

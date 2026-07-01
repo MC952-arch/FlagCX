@@ -146,8 +146,8 @@ struct CommTraits<Default<PlatformTag>> {
 
     // IPC barriers
     uint64_t **barrierPeers;
-    uint64_t *epochBuffer; // Device pointer: [intra live, inter live, intra
-                           // shadow, inter shadow] × CTA_COUNT
+    uint64_t
+        *epochBuffer; // Device pointer: [intra live, inter live] × CTA_COUNT
     int nBarriers;
 
     // Inter-node signal relay
@@ -858,9 +858,6 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
   // S-API epoch accessors
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return _epoch; }
   FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) { _epoch = e; }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochBuffer(uint64_t *buf) {
-    _epochBuffer = buf;
-  }
 };
 
 // ---- Barrier<Default<P>, flagcxTeamTagInter, Coop> ----
@@ -944,9 +941,6 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   // S-API epoch accessors
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const { return _epoch; }
   FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) { _epoch = e; }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpochBuffer(uint64_t *buf) {
-    _epochBuffer = buf;
-  }
 };
 
 // ---- Barrier<Default<P>, flagcxTeamTagWorld, Coop> ----
@@ -1045,12 +1039,6 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpoch(uint64_t e) {
     _inter.setEpoch(e);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setIntraEpochBuffer(uint64_t *buf) {
-    _intra.setEpochBuffer(buf);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpochBuffer(uint64_t *buf) {
-    _inter.setEpochBuffer(buf);
   }
 };
 
