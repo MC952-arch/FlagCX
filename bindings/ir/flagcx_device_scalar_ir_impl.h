@@ -205,18 +205,6 @@ flagcxIntraBarrierSessionInitS(const void *commOpaque, uint32_t index) {
       DeviceAPI::Atomic::load(&epochBuf[index], flagcxDeviceMemoryOrderRelaxed);
   DeviceAPI::Atomic::store(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index], epoch,
                            flagcxDeviceMemoryOrderRelease);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-  {
-    uint64_t *myLocalFlags =
-        comm->_commBase.barrierPeers[comm->_commBase.intraRank];
-    printf("[SessionInitS] rank=%d idx=%u live=%llu shadow_offset=%u "
-           "epochBuf=%p shadow_addr=%p localFlags=%p localFlags[72]=%p\n",
-           comm->_commBase.intraRank, index, (unsigned long long)epoch,
-           (unsigned)(FLAGCX_EPOCH_SHADOW_OFFSET + index), (void *)epochBuf,
-           (void *)&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-           (void *)myLocalFlags, (void *)&myLocalFlags[72]);
-  }
-#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -233,22 +221,7 @@ flagcxIntraBarrierArriveS(const void *commOpaque, flagcxCoopKind_t coopKind,
       DeviceAPI::Atomic::load(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
                               flagcxDeviceMemoryOrderAcquire);
   bar.setEpoch(shadowEpoch);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-  if (coop.threadRank() == 0) {
-    printf("[ArriveS] rank=%d idx=%u epoch=%llu nRanks=%d nBarriers=%d "
-           "epochBuf=%p shadow_addr=%p live_addr=%p\n",
-           comm->_commBase.intraRank, index, (unsigned long long)shadowEpoch,
-           team._teamBase.nRanks, comm->_commBase.nBarriers, (void *)epochBuf,
-           (void *)&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-           (void *)&epochBuf[index]);
-  }
-#endif
   bar.arrive(order);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-  if (coop.threadRank() == 0) {
-    printf("[ArriveS] rank=%d idx=%u DONE\n", comm->_commBase.intraRank, index);
-  }
-#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -266,26 +239,7 @@ flagcxIntraBarrierWaitS(const void *commOpaque, flagcxCoopKind_t coopKind,
                               flagcxDeviceMemoryOrderAcquire);
   bar.setEpoch(shadowEpoch);
   bar.setEpochBuffer(&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET]);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-  if (coop.threadRank() == 0) {
-    uint64_t liveVal = DeviceAPI::Atomic::load(&epochBuf[index],
-                                               flagcxDeviceMemoryOrderAcquire);
-    printf("[WaitS] rank=%d idx=%u shadow=%llu live=%llu epochBuf=%p "
-           "shadow_addr=%p live_addr=%p localBarrier=%p\n",
-           comm->_commBase.intraRank, index, (unsigned long long)shadowEpoch,
-           (unsigned long long)liveVal, (void *)epochBuf,
-           (void *)&epochBuf[FLAGCX_EPOCH_SHADOW_OFFSET + index],
-           (void *)&epochBuf[index], (void *)comm->_commBase.barrierPeers);
-  }
-#endif
   bar.wait(order);
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-  if (coop.threadRank() == 0) {
-    printf("[WaitS] rank=%d idx=%u DONE new_shadow=%llu\n",
-           comm->_commBase.intraRank, index,
-           (unsigned long long)bar.getEpoch());
-  }
-#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void

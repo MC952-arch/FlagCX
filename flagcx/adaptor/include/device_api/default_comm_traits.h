@@ -823,13 +823,6 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       if (peer >= _nRanks)
         peer -= _nRanks;
       uint64_t *slot = &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex];
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-      if (_coop.threadRank() == 0 && _ctaIndex == 0) {
-        printf("[arrive] rank=%d idx=%d peer=%d epoch=%llu writing=%llu\n",
-               _myRank, (int)_ctaIndex, peer, (unsigned long long)_epoch,
-               (unsigned long long)(_epoch + 1));
-      }
-#endif
       Atomic::store(slot, _epoch + 1, flagcxDeviceMemoryOrderRelease);
     }
   }
@@ -837,26 +830,11 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
   // wait: thread-striped spin on own inbox slots from each peer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-    if (_coop.threadRank() == 0 && _ctaIndex == 0) {
-      printf("[wait] rank=%d idx=%d epoch=%llu waiting_for=%llu\n", _myRank,
-             (int)_ctaIndex, (unsigned long long)_epoch,
-             (unsigned long long)(_epoch + 1));
-    }
-#endif
     for (int i = _coop.threadRank(); i < _nRanks - 1; i += _coop.size()) {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
         peer -= _nRanks;
       uint64_t *slot = &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex];
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-      if (i == _coop.threadRank() && _ctaIndex == 0) {
-        uint64_t curVal = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
-        printf("[wait] rank=%d idx=%d tid=%d peer=%d cur_val=%llu need=%llu\n",
-               _myRank, (int)_ctaIndex, _coop.threadRank(), peer,
-               (unsigned long long)curVal, (unsigned long long)(_epoch + 1));
-      }
-#endif
       int iter = 0;
       while (Atomic::load(slot, flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
         Intrin::spinBackoff(iter++);
@@ -867,12 +845,6 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
       Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
                     flagcxDeviceMemoryOrderRelease);
     }
-#ifndef FLAGCX_BARRIER_NO_DEBUG
-    if (_coop.threadRank() == 0 && _ctaIndex == 0) {
-      printf("[wait] rank=%d idx=%d DONE new_epoch=%llu\n", _myRank,
-             (int)_ctaIndex, (unsigned long long)_epoch);
-    }
-#endif
     _coop.sync();
   }
 

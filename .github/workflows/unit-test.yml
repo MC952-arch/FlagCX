@@ -128,7 +128,7 @@ jobs:
           COMMON_ENV="-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 -x LD_LIBRARY_PATH"
           FLAGS="-b 1M -e 4M -f 2 -R 2"
           NODE1_FLAG="-x CUDA_VISIBLE_DEVICES=0,1,2,3 -x FLAGCX_HOSTID=node0 -x FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3"
-          NODE2_FLAG="-x CUDA_VISIBLE_DEVICES=4,5,6,7 -x FLAGCX_HOSTID=node1 -x FLAGCX_IB_HCA=mlx5_6,mlx5_7,mlx5_8,mlx5_9"
+          NODE2_FLAG="-x CUDA_VISIBLE_DEVICES=4,5,6,7 -x FLAGCX_HOSTID=node1 -x FLAGCX_IB_HCA=mlx5_4,mlx5_5,mlx5_6,mlx5_7"
           mpirun --allow-run-as-root \
             -np 4 ${COMMON_ENV} ${NODE1_FLAG} build/bin/test_device_api ${FLAGS} \
             : -np 4 ${COMMON_ENV} ${NODE2_FLAG} build/bin/test_device_api ${FLAGS}

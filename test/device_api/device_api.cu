@@ -745,31 +745,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 // --------------------------------------------------------------------------
-// Debug kernel: dump devComm state (by-value, same as K1-K8 kernels)
-// --------------------------------------------------------------------------
-FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1)
-    flagcxDebugDumpCommKernel(flagcxDevComm devComm) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[API-DBG] _nInterPeers=%d\n", devComm._nInterPeers);
-    printf("[API-DBG] _signalCount=%d\n", devComm._signalCount);
-    printf("[API-DBG] _counterCount=%d\n", devComm._counterCount);
-    printf("[API-DBG] _contextCount=%d\n", devComm._contextCount);
-    printf("[API-DBG] _netContexts=%p\n", (void *)devComm._netContexts);
-    printf("[API-DBG] _commBase.signalBuffer=%p\n",
-           (void *)devComm._commBase.signalBuffer);
-    printf("[API-DBG] _commBase.signalCount=%d\n",
-           devComm._commBase.signalCount);
-    printf("[API-DBG] _commBase.counterBuffer=%p\n",
-           (void *)devComm._commBase.counterBuffer);
-    printf("[API-DBG] _commBase.nInterPeers=%d\n",
-           devComm._commBase.nInterPeers);
-    printf("[API-DBG] _commBase.rank=%d nRanks=%d intraRank=%d intraSize=%d\n",
-           devComm._commBase.rank, devComm._commBase.nRanks,
-           devComm._commBase.intraRank, devComm._commBase.intraSize);
-  }
-}
-
-// --------------------------------------------------------------------------
 // Host wrappers
 // --------------------------------------------------------------------------
 
@@ -784,15 +759,6 @@ flagcxResult_t flagcxInterTestPutSignalInc(flagcxDevMem_t sendMem,
   flagcxInterTestPutSignalIncKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t flagcxDebugDumpComm(flagcxDevComm_t devComm,
-                                   flagcxStream_t stream) {
-  if (!devComm) return flagcxInternalError;
-  flagcxDevComm dc(*devComm);
-  flagcxDebugDumpCommKernel<<<1, 1, 0, *(cudaStream_t *)stream>>>(dc);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

@@ -76,8 +76,4 @@ flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
                                   flagcxDevComm_t devComm,
                                   flagcxStream_t stream);
 
-// Debug: dump devComm state from GPU kernel
-flagcxResult_t flagcxDebugDumpComm(flagcxDevComm_t devComm,
-                                   flagcxStream_t stream);
-
 #endif // TEST_KERNEL_DEVICE_API_H_

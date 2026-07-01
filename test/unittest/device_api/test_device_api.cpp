@@ -231,10 +231,6 @@ int main(int argc, char *argv[]) {
   // Initial K8 reset — establishes clean signal/counter/shadow state
   FLAGCXCHECK(flagcxInterTestReset(devComm, stream, dResultBuf));
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  // Debug: dump devComm state
-  FLAGCXCHECK(flagcxDebugDumpComm(devComm, stream));
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Main test loop
