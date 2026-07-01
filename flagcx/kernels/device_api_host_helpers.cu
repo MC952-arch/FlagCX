@@ -28,6 +28,8 @@ static __global__ void flagcxDevNetConstructKernel(flagcxDevNet *nets,
 // synchronizing the stream afterwards.
 extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
                                             int count, void *stream) {
+  if (count <= 0 || devNets == nullptr || devComm == nullptr)
+    return;
   int threads = (count < 256) ? count : 256;
   int blocks = (count + threads - 1) / threads;
   flagcxDevNetConstructKernel<<<blocks, threads, 0, (cudaStream_t)stream>>>(

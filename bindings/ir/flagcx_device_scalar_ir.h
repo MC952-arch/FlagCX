@@ -8,7 +8,6 @@
  *
  * Design:
  *   - CoopAny/Team replaced by flagcxCoopKind_t / flagcxTeamKind_t enums
- *   - Barrier split arrive/wait use stampEpoch internally
  *   - Net (transport) obtained via flagcxDevNetGetFromCommS (pre-allocated)
  *
  * When compiled to LLVM bitcode (clang -x cuda --cuda-device-only),

@@ -534,14 +534,6 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
     _impl.sync(order);
   }
-
-  // S-API epoch accessors
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const {
-    return _impl.getEpoch();
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) {
-    _impl.setEpoch(e);
-  }
 };
 
 // ============================================================
@@ -918,14 +910,6 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.sync(order, fence);
   }
-
-  // S-API epoch accessors
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getEpoch() const {
-    return _impl.getEpoch();
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setEpoch(uint64_t e) {
-    _impl.setEpoch(e);
-  }
 };
 
 // ---- World ----
@@ -969,20 +953,6 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.sync(order, fence);
-  }
-
-  // S-API epoch accessors (world = intra + inter)
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getIntraEpoch() const {
-    return _impl.getIntraEpoch();
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setIntraEpoch(uint64_t e) {
-    _impl.setIntraEpoch(e);
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInterEpoch() const {
-    return _impl.getInterEpoch();
-  }
-  FLAGCX_DEVICE_INLINE_DECORATOR void setInterEpoch(uint64_t e) {
-    _impl.setInterEpoch(e);
   }
 };
 

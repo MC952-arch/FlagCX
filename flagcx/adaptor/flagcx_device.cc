@@ -1324,8 +1324,8 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
         deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
                                     flagcxMemcpyHostToDevice, NULL, NULL),
         res, fail);
-    // Ensure net construction is complete before pointer escapes
-    FLAGCXCHECKGOTO(deviceAdaptor->streamSynchronize(NULL), res, fail);
+    // Ensure net construction + pointer patch are visible to all streams
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
   }
 
   devComm->cachedDevicePtr = dPtr;
