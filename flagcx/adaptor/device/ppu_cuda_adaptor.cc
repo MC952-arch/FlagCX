@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "param.h"
+#include <unistd.h>
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -106,12 +108,75 @@ flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(cudaMalloc(ptr, size));
-  cudaPointerAttributes attrs;
-  DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
-  unsigned flags = 1;
-  DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
-                                 (CUdeviceptr)attrs.devicePointer));
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaMalloc(ptr, size));
+    cudaPointerAttributes attrs;
+    DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
+    unsigned flags = 1;
+    DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
+                                   (CUdeviceptr)attrs.devicePointer));
+    return flagcxSuccess;
+  }
+
+  size_t memGran = 0;
+  CUdevice currentDev;
+  CUmemAllocationProp memprop = {};
+  CUmemGenericAllocationHandle handle = (CUmemGenericAllocationHandle)-1;
+  int cudaDev;
+  int flag;
+  CUresult cuRes;
+
+  DEVCHECK(cudaGetDevice(&cudaDev));
+  DEVCHECK(cuDeviceGet(&currentDev, cudaDev));
+
+  size_t handleSize = size;
+  int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  memprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  memprop.requestedHandleTypes =
+      (CUmemAllocationHandleType)requestedHandleTypes;
+  memprop.location.id = currentDev;
+  // Query device to see if RDMA support is available
+  flag = 0;
+  DEVCHECK(cuDeviceGetAttribute(
+      &flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      currentDev));
+  if (flag)
+    memprop.allocFlags.gpuDirectRDMACapable = 1;
+  DEVCHECK(cuMemGetAllocationGranularity(&memGran, &memprop,
+                                         CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
+  ALIGN_SIZE(handleSize, memGran);
+  /* Allocate the physical memory on the device */
+  DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+  /* Reserve a virtual address range */
+  cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  /* Map the virtual address range to the physical allocation */
+  cuRes = cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  /* Set access for the current device */
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = currentDev;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  cuRes = cuMemSetAccess((CUdeviceptr)*ptr, handleSize, &accessDesc, 1);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemUnmap((CUdeviceptr)*ptr, handleSize);
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  /* Release the create-time handle reference; the mapping holds its own. */
+  cuMemRelease(handle);
   return flagcxSuccess;
 }
 
@@ -119,7 +184,15 @@ flagcxResult_t ppucudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-  DEVCHECK(cudaFree(ptr));
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaFree(ptr));
+    return flagcxSuccess;
+  }
+
+  size_t size = 0;
+  DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
+  DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
+  DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
   return flagcxSuccess;
 }
 
@@ -336,13 +409,18 @@ flagcxResult_t ppucudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
+  // Implement a proper check for DMA buffer support on PPU.
+  // For now, we assume that DMA buffer support is not available.
   *dmaBufferSupport = false;
   return flagcxSuccess;
 }
 
 flagcxResult_t ppucudaAdaptorMemGetHandleForAddressRange(
     void *handleOut, void *buffer, size_t size, unsigned long long flags) {
-  return flagcxNotSupported;
+  CUdeviceptr dptr = (CUdeviceptr)buffer;
+  DEVCHECK(cuMemGetHandleForAddressRange(
+      handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags));
+  return flagcxSuccess;
 }
 
 flagcxResult_t ppucudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
