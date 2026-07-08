@@ -108,6 +108,9 @@ flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
+  // PPU SDK version numbering differs from NVIDIA (e.g. CUDART_VERSION=13000
+  // does not imply identical API availability). Use runtime toggle instead
+  // of compile-time CUDART_VERSION guards.
   if (!flagcxParamVmmEnable()) {
     DEVCHECK(cudaMalloc(ptr, size));
     cudaPointerAttributes attrs;
@@ -184,6 +187,8 @@ flagcxResult_t ppucudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
+  // PPU SDK version numbering differs from NVIDIA. Use runtime toggle instead
+  // of compile-time CUDART_VERSION guards.
   if (!flagcxParamVmmEnable()) {
     DEVCHECK(cudaFree(ptr));
     return flagcxSuccess;
@@ -409,9 +414,36 @@ flagcxResult_t ppucudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
-  // Implement a proper check for DMA buffer support on PPU.
-  // For now, we assume that DMA buffer support is not available.
-  *dmaBufferSupport = false;
+  int flag = 0;
+  CUdevice dev;
+  int cudaDriverVersion = 0;
+
+  CUresult cuRes = cuDriverGetVersion(&cudaDriverVersion);
+  if (cuRes != CUDA_SUCCESS || cudaDriverVersion < 11070) {
+    *dmaBufferSupport = false;
+    return flagcxSuccess;
+  }
+
+  int deviceId = 0;
+  if (cudaGetDevice(&deviceId) != cudaSuccess) {
+    *dmaBufferSupport = false;
+    return flagcxSuccess;
+  }
+
+  CUresult devRes = cuDeviceGet(&dev, deviceId);
+  if (devRes != CUDA_SUCCESS) {
+    *dmaBufferSupport = false;
+    return flagcxSuccess;
+  }
+
+  CUresult attrRes =
+      cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, dev);
+  if (attrRes != CUDA_SUCCESS || flag == 0) {
+    *dmaBufferSupport = false;
+    return flagcxSuccess;
+  }
+
+  *dmaBufferSupport = true;
   return flagcxSuccess;
 }
 
@@ -468,7 +500,7 @@ flagcxResult_t ppucudaAdaptorHostUnregister(void *ptr) {
   return flagcxSuccess;
 }
 
-// Symmetric memory VMM stubs (not supported on PPU)
+// Symmetric memory VMM — handle export/import and flat mapping
 flagcxResult_t ppucudaAdaptorSymPhysAlloc(void *ptr, size_t size,
                                           void **physHandle,
                                           void *shareableHandle,
