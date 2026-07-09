@@ -76,7 +76,7 @@ struct flagcxMrRegistry {
   struct flagcxMrEntry *entries; /* sorted by baseAddr, contiguous */
   int count;
   int capacity;
-  uint64_t nextId; /* monotonic P2P mrId generator */
+  uint64_t nextId; /* monotonic ID generator for all subsystems */
   pthread_rwlock_t rwlock;
 };
 
@@ -98,7 +98,9 @@ flagcxResult_t flagcxMrRegistryDestroy(struct flagcxMrRegistry *reg);
  * ownerBit: one of FLAGCX_MR_OWNER_{P2P,COLL,RMA}
  * mhandle:  adaptor handle (stored in mhandles[ownerIdx])
  * ext:      subsystem extension struct pointer (ownership transferred to entry)
- * outId:    if non-NULL and ownerBit==P2P, returns the assigned mrId
+ * outId:    if non-NULL, returns a monotonic ID. For P2P, this is persisted
+ *           in p2p->mrId and stable across repeated calls. For COLL/RMA,
+ *           this is a one-shot assignment (not stored on the entry).
  */
 flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
                                         uintptr_t addr, size_t size, int ibDevN,
@@ -171,7 +173,6 @@ extern struct flagcxMrRegistry *flagcxGlobalMrRegistry;
 
 flagcxResult_t flagcxMrRegistryGlobalInit(void);
 flagcxResult_t flagcxMrRegistryGlobalRelease(void);
-flagcxResult_t flagcxMrRegistryGlobalDestroy(void);
 
 #ifdef __cplusplus
 }

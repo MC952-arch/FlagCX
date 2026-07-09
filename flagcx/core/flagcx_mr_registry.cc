@@ -189,28 +189,33 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
 
     /* Already owned by this subsystem */
     if (existing->ownerMask & ownerBit) {
-      /* If mhandle changed (e.g., reconnect with new PD), update in place */
+      /* Update mhandle if it changed */
       if (existing->mhandles[ownerIdx] != mhandle && mhandle != NULL) {
         INFO(FLAGCX_REG,
              "MrRegistry: updating mhandle for addr 0x%lx owner 0x%x",
              (unsigned long)addr, ownerBit);
         existing->mhandles[ownerIdx] = mhandle;
-        /* Only replace extension if caller provided a new one */
-        if (ext != NULL) {
-          switch (ownerBit) {
-            case FLAGCX_MR_OWNER_P2P:
-              free(existing->p2p);
-              existing->p2p = (struct flagcxMrP2pExt *)ext;
-              break;
-            case FLAGCX_MR_OWNER_COLL:
-              free(existing->coll);
-              existing->coll = (struct flagcxMrCollExt *)ext;
-              break;
-            case FLAGCX_MR_OWNER_RMA:
-              free(existing->rma);
-              existing->rma = (struct flagcxMrRmaExt *)ext;
-              break;
+      }
+      /* Replace extension if caller provided a new one */
+      if (ext != NULL) {
+        switch (ownerBit) {
+          case FLAGCX_MR_OWNER_P2P: {
+            /* Preserve the assigned mrId across ext replacement */
+            uint64_t prevMrId = existing->p2p ? existing->p2p->mrId : 0;
+            free(existing->p2p);
+            existing->p2p = (struct flagcxMrP2pExt *)ext;
+            if (existing->p2p->mrId == 0)
+              existing->p2p->mrId = prevMrId;
+            break;
           }
+          case FLAGCX_MR_OWNER_COLL:
+            free(existing->coll);
+            existing->coll = (struct flagcxMrCollExt *)ext;
+            break;
+          case FLAGCX_MR_OWNER_RMA:
+            free(existing->rma);
+            existing->rma = (struct flagcxMrRmaExt *)ext;
+            break;
         }
       }
       if (outId != NULL && ownerBit == FLAGCX_MR_OWNER_P2P && existing->p2p)
@@ -226,14 +231,22 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
     switch (ownerBit) {
       case FLAGCX_MR_OWNER_P2P:
         existing->p2p = (struct flagcxMrP2pExt *)ext;
-        if (existing->p2p && outId)
-          *outId = existing->p2p->mrId;
+        if (existing->p2p) {
+          if (existing->p2p->mrId == 0)
+            existing->p2p->mrId = reg->nextId++;
+          if (outId)
+            *outId = existing->p2p->mrId;
+        }
         break;
       case FLAGCX_MR_OWNER_COLL:
         existing->coll = (struct flagcxMrCollExt *)ext;
+        if (outId)
+          *outId = reg->nextId++;
         break;
       case FLAGCX_MR_OWNER_RMA:
         existing->rma = (struct flagcxMrRmaExt *)ext;
+        if (outId)
+          *outId = reg->nextId++;
         break;
     }
 
@@ -244,10 +257,10 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
   /* No exact match — check for overlap at insertion point */
   int pos = findInsertionPoint(reg->entries, reg->count, addr);
 
-  /* Check left neighbor overlap: entries[pos-1].baseAddr + size > addr */
+  /* Check left neighbor overlap (subtraction-based to avoid overflow) */
   if (pos > 0) {
     struct flagcxMrEntry *left = &reg->entries[pos - 1];
-    if (left->baseAddr + left->size > addr) {
+    if (addr - left->baseAddr < left->size) {
       WARN("flagcxMrRegistry: overlap with left neighbor [0x%lx, +%zu) vs new "
            "[0x%lx, +%zu)",
            (unsigned long)left->baseAddr, left->size, (unsigned long)addr,
@@ -257,10 +270,10 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
     }
   }
 
-  /* Check right neighbor overlap: addr + size > entries[pos].baseAddr */
+  /* Check right neighbor overlap (subtraction-based to avoid overflow) */
   if (pos < reg->count) {
     struct flagcxMrEntry *right = &reg->entries[pos];
-    if (addr + size > right->baseAddr) {
+    if (right->baseAddr - addr < size) {
       WARN("flagcxMrRegistry: overlap with right neighbor [0x%lx, +%zu) vs new "
            "[0x%lx, +%zu)",
            (unsigned long)right->baseAddr, right->size, (unsigned long)addr,
@@ -306,9 +319,13 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
       break;
     case FLAGCX_MR_OWNER_COLL:
       entry->coll = (struct flagcxMrCollExt *)ext;
+      if (outId)
+        *outId = reg->nextId++;
       break;
     case FLAGCX_MR_OWNER_RMA:
       entry->rma = (struct flagcxMrRmaExt *)ext;
+      if (outId)
+        *outId = reg->nextId++;
       break;
   }
 
@@ -365,6 +382,8 @@ flagcxResult_t flagcxMrRegistryDeregister(struct flagcxMrRegistry *reg,
   }
   if (outExt)
     *outExt = ext;
+  else
+    free(ext);
 
   entry->ownerMask &= ~ownerBit;
   entry->mhandles[ownerIdx] = NULL;
@@ -405,7 +424,7 @@ flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
   }
 
   struct flagcxMrEntry *entry = &reg->entries[idx];
-  if (addr >= entry->baseAddr && addr < entry->baseAddr + entry->size) {
+  if (addr >= entry->baseAddr && (addr - entry->baseAddr) < entry->size) {
     *outEntry = *entry;
     pthread_rwlock_unlock(&reg->rwlock);
     return flagcxSuccess;
@@ -520,34 +539,34 @@ struct flagcxMrEntry *flagcxMrRegistryEntries(struct flagcxMrRegistry *reg) {
 
 /* ───── Global instance management ───── */
 
-static pthread_once_t gRegistryOnce = PTHREAD_ONCE_INIT;
-static flagcxResult_t gRegistryInitResult = flagcxSuccess;
+static pthread_mutex_t gRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
 static int gRegistryRefCount = 0;
 
-static void flagcxMrRegistryGlobalInitOnce(void) {
-  gRegistryInitResult = flagcxMrRegistryCreate(&flagcxGlobalMrRegistry);
-}
-
 flagcxResult_t flagcxMrRegistryGlobalInit(void) {
-  pthread_once(&gRegistryOnce, flagcxMrRegistryGlobalInitOnce);
-  __atomic_add_fetch(&gRegistryRefCount, 1, __ATOMIC_RELAXED);
-  return gRegistryInitResult;
-}
-
-flagcxResult_t flagcxMrRegistryGlobalDestroy(void) {
-  if (flagcxGlobalMrRegistry == NULL)
-    return flagcxSuccess;
-  flagcxResult_t res = flagcxMrRegistryDestroy(flagcxGlobalMrRegistry);
-  flagcxGlobalMrRegistry = NULL;
-  return res;
+  pthread_mutex_lock(&gRegistryMutex);
+  if (gRegistryRefCount == 0) {
+    flagcxResult_t res = flagcxMrRegistryCreate(&flagcxGlobalMrRegistry);
+    if (res != flagcxSuccess) {
+      pthread_mutex_unlock(&gRegistryMutex);
+      return res;
+    }
+  }
+  gRegistryRefCount++;
+  pthread_mutex_unlock(&gRegistryMutex);
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxMrRegistryGlobalRelease(void) {
-  int prev = __atomic_load_n(&gRegistryRefCount, __ATOMIC_ACQUIRE);
-  if (prev <= 0)
+  pthread_mutex_lock(&gRegistryMutex);
+  if (gRegistryRefCount <= 0) {
+    pthread_mutex_unlock(&gRegistryMutex);
     return flagcxInternalError;
-  if (__atomic_sub_fetch(&gRegistryRefCount, 1, __ATOMIC_ACQ_REL) == 0) {
-    return flagcxMrRegistryGlobalDestroy();
   }
+  gRegistryRefCount--;
+  if (gRegistryRefCount == 0) {
+    flagcxMrRegistryDestroy(flagcxGlobalMrRegistry);
+    flagcxGlobalMrRegistry = NULL;
+  }
+  pthread_mutex_unlock(&gRegistryMutex);
   return flagcxSuccess;
 }

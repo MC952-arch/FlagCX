@@ -1194,49 +1194,79 @@ static void finalizePoolTask(PoolTransferTask *task) {
 }
 
 static bool findMemReg(uintptr_t addr, FlagcxP2pMemRegEntry *out) {
-  struct flagcxMrEntry mrEntry;
-  if (flagcxMrRegistryLookup(flagcxGlobalMrRegistry, addr, &mrEntry) !=
-      flagcxSuccess)
-    return false;
-  if (!(mrEntry.ownerMask & FLAGCX_MR_OWNER_P2P) || mrEntry.p2p == NULL)
-    return false;
-  if (out) {
-    out->mrId = mrEntry.p2p->mrId;
-    out->mhandle = mrEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P];
-    out->baseAddr = mrEntry.baseAddr;
-    out->size = mrEntry.size;
-    out->ibDevN = mrEntry.ibDevN;
-    out->ptrType = mrEntry.ptrType;
-    out->hasIpc = mrEntry.p2p->hasIpc;
-    out->ipcHandleSize = mrEntry.p2p->ipcHandleSize;
-    memcpy(out->ipcHandle, mrEntry.p2p->ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
-    memcpy(out->descBuf, mrEntry.p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
+  flagcxMrRegistryRdLock(flagcxGlobalMrRegistry);
+  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
+  struct flagcxMrEntry *entries =
+      flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
+
+  /* Binary search for containment: find largest i where baseAddr <= addr */
+  int lo = 0, hi = count - 1, result = -1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (entries[mid].baseAddr <= addr) {
+      result = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  return true;
+
+  bool found = false;
+  if (result >= 0 && addr >= entries[result].baseAddr &&
+      (addr - entries[result].baseAddr) < entries[result].size) {
+    struct flagcxMrEntry *entry = &entries[result];
+    if ((entry->ownerMask & FLAGCX_MR_OWNER_P2P) && entry->p2p != NULL) {
+      if (out) {
+        out->mrId = entry->p2p->mrId;
+        out->mhandle = entry->mhandles[FLAGCX_MR_OWNER_IDX_P2P];
+        out->baseAddr = entry->baseAddr;
+        out->size = entry->size;
+        out->ibDevN = entry->ibDevN;
+        out->ptrType = entry->ptrType;
+        out->hasIpc = entry->p2p->hasIpc;
+        out->ipcHandleSize = entry->p2p->ipcHandleSize;
+        memcpy(out->ipcHandle, entry->p2p->ipcHandle,
+               FLAGCX_P2P_IPC_HANDLE_BYTES);
+        memcpy(out->descBuf, entry->p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
+      }
+      found = true;
+    }
+  }
+  flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
+  return found;
 }
 
-static FlagcxP2pMemRegEntry *findMemRegByMr(FlagcxP2pMr mr) {
-  /* Thread-local static to hold the result (same pattern as before — caller
-   * uses the pointer under the same lock scope). */
-  static thread_local FlagcxP2pMemRegEntry tlEntry;
-  struct flagcxMrEntry mrEntry;
-  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &mrEntry) !=
-      flagcxSuccess)
-    return NULL;
-  if (!(mrEntry.ownerMask & FLAGCX_MR_OWNER_P2P) || mrEntry.p2p == NULL)
-    return NULL;
-  tlEntry.mrId = mrEntry.p2p->mrId;
-  tlEntry.mhandle = mrEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P];
-  tlEntry.baseAddr = mrEntry.baseAddr;
-  tlEntry.size = mrEntry.size;
-  tlEntry.ibDevN = mrEntry.ibDevN;
-  tlEntry.ptrType = mrEntry.ptrType;
-  tlEntry.hasIpc = mrEntry.p2p->hasIpc;
-  tlEntry.ipcHandleSize = mrEntry.p2p->ipcHandleSize;
-  memcpy(tlEntry.ipcHandle, mrEntry.p2p->ipcHandle,
-         FLAGCX_P2P_IPC_HANDLE_BYTES);
-  memcpy(tlEntry.descBuf, mrEntry.p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
-  return &tlEntry;
+static bool findMemRegByMr(FlagcxP2pMr mr, FlagcxP2pMemRegEntry *out) {
+  flagcxMrRegistryRdLock(flagcxGlobalMrRegistry);
+  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
+  struct flagcxMrEntry *entries =
+      flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
+
+  bool found = false;
+  for (int i = 0; i < count; i++) {
+    if (entries[i].p2p && entries[i].p2p->mrId == mr) {
+      struct flagcxMrEntry *entry = &entries[i];
+      if ((entry->ownerMask & FLAGCX_MR_OWNER_P2P) && entry->p2p != NULL) {
+        if (out) {
+          out->mrId = entry->p2p->mrId;
+          out->mhandle = entry->mhandles[FLAGCX_MR_OWNER_IDX_P2P];
+          out->baseAddr = entry->baseAddr;
+          out->size = entry->size;
+          out->ibDevN = entry->ibDevN;
+          out->ptrType = entry->ptrType;
+          out->hasIpc = entry->p2p->hasIpc;
+          out->ipcHandleSize = entry->p2p->ipcHandleSize;
+          memcpy(out->ipcHandle, entry->p2p->ipcHandle,
+                 FLAGCX_P2P_IPC_HANDLE_BYTES);
+          memcpy(out->descBuf, entry->p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
+        }
+        found = true;
+      }
+      break;
+    }
+  }
+  flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
+  return found;
 }
 
 static bool memRegContains(const FlagcxP2pMemRegEntry &entry, uintptr_t addr,
@@ -1744,14 +1774,12 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
   std::vector<FlagcxP2pMemRegEntry> remoteEntries(numIovs);
   std::vector<bool> haveRemoteEntry(numIovs, false);
 
-  {
-    for (int i = 0; i < numIovs; i++) {
-      if (!findMemReg((uintptr_t)localVec[i], &localEntries[i]))
-        return -1;
-      if (conn->sameProcess &&
-          findMemReg((uintptr_t)descs[i].addr, &remoteEntries[i])) {
-        haveRemoteEntry[i] = true;
-      }
+  for (int i = 0; i < numIovs; i++) {
+    if (!findMemReg((uintptr_t)localVec[i], &localEntries[i]))
+      return -1;
+    if (conn->sameProcess &&
+        findMemReg((uintptr_t)descs[i].addr, &remoteEntries[i])) {
+      haveRemoteEntry[i] = true;
     }
   }
 
@@ -1947,6 +1975,7 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
 
   if (engine->adaptor->init() != flagcxSuccess) {
+    flagcxMrRegistryGlobalRelease();
     delete engine;
     return NULL;
   }
@@ -2093,10 +2122,12 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   }
 
   {
+    /* Phase 1: deregMr adaptor handles + collect addresses under write lock */
     flagcxMrRegistryWrLock(flagcxGlobalMrRegistry);
     int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
     struct flagcxMrEntry *entries =
         flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
+    std::vector<uintptr_t> p2pAddrs;
     for (int i = 0; i < count; i++) {
       if (!(entries[i].ownerMask & FLAGCX_MR_OWNER_P2P))
         continue;
@@ -2105,12 +2136,15 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
       } devCtx = {entries[i].ibDevN};
       engine->adaptor->deregMr(&devCtx,
                                entries[i].mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
-      entries[i].mhandles[FLAGCX_MR_OWNER_IDX_P2P] = NULL;
-      free(entries[i].p2p);
-      entries[i].p2p = NULL;
-      entries[i].ownerMask &= ~FLAGCX_MR_OWNER_P2P;
+      p2pAddrs.push_back(entries[i].baseAddr);
     }
     flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+
+    /* Phase 2: deregister each (removes entry + frees ext) */
+    for (uintptr_t addr : p2pAddrs) {
+      flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, addr,
+                                 FLAGCX_MR_OWNER_P2P, NULL, NULL);
+    }
   }
 
   /* Release P2P engine's refcount on the global MR registry */
@@ -2459,6 +2493,12 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
     if (flagcxMrRegistryFindExact(flagcxGlobalMrRegistry, data, &existing) ==
         flagcxSuccess) {
       if (existing.p2p != NULL) {
+        if (existing.size != size) {
+          WARN("P2P Reg: addr 0x%lx size mismatch: existing %zu vs requested "
+               "%zu",
+               (unsigned long)data, existing.size, size);
+          return -1;
+        }
         mrId = existing.p2p->mrId;
         return 0;
       }
@@ -2544,25 +2584,42 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   if (engine == NULL || data == NULL || descBuf == NULL)
     return -1;
 
-  /* Need write access to update descBuf in-place */
+  /* Step 1: read-lock O(n) lookup by mrId to get baseAddr */
+  struct flagcxMrEntry tmpEntry;
+  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &tmpEntry) !=
+      flagcxSuccess)
+    return -1;
+
+  /* Step 2: write-lock O(log n) exact lookup for in-place descBuf update */
   flagcxMrRegistryWrLock(flagcxGlobalMrRegistry);
+  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
   struct flagcxMrEntry *entries =
       flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
-  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
-  struct flagcxMrEntry *found = NULL;
-  for (int i = 0; i < count; i++) {
-    if (entries[i].p2p && entries[i].p2p->mrId == mr) {
-      found = &entries[i];
+
+  /* Binary search by baseAddr */
+  int lo = 0, hi = count - 1, idx = -1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (entries[mid].baseAddr == tmpEntry.baseAddr) {
+      idx = mid;
       break;
+    } else if (entries[mid].baseAddr < tmpEntry.baseAddr) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
     }
   }
-  if (found == NULL) {
+  if (idx < 0 || !entries[idx].p2p || entries[idx].p2p->mrId != mr) {
     flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
     return -1;
   }
 
   FlagcxP2pMrHandleView *mrView = reinterpret_cast<FlagcxP2pMrHandleView *>(
-      found->mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
+      entries[idx].mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
+  if (mrView == NULL) {
+    flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+    return -1;
+  }
 
   FlagcxP2pRdmaDesc desc;
   memset(&desc, 0, sizeof(desc));
@@ -2571,7 +2628,7 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   desc.rkey = mrView->rkey;
 
   flagcxP2pSerializeRdmaDesc(desc, descBuf);
-  memcpy(found->p2p->descBuf, descBuf, FLAGCX_P2P_DESC_SIZE);
+  memcpy(entries[idx].p2p->descBuf, descBuf, FLAGCX_P2P_DESC_SIZE);
   flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
   return 0;
 }
@@ -2600,10 +2657,8 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   }
 
   FlagcxP2pMemRegEntry localEntry;
-  {
-    if (!findMemReg((uintptr_t)data, &localEntry))
-      return -1;
-  }
+  if (!findMemReg((uintptr_t)data, &localEntry))
+    return -1;
 
   if (getCommView(conn->sendComm)->ibDevN != localEntry.ibDevN)
     return -1;
@@ -2686,27 +2741,21 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   }
 
   std::vector<FlagcxP2pMemRegEntry> localEntries(numIovs);
-  {
-    for (int i = 0; i < numIovs; i++) {
-      FlagcxP2pMemRegEntry *entry = findMemRegByMr(mrIds[i]);
-      if (entry == NULL) {
-        fprintf(
-            stderr,
-            "[FlagCX P2P] ReadVector memReg lookup failed: iov=%d, mr=%lu\n", i,
-            (unsigned long)mrIds[i]);
-        return -1;
-      }
+  for (int i = 0; i < numIovs; i++) {
+    if (!findMemRegByMr(mrIds[i], &localEntries[i])) {
+      fprintf(stderr,
+              "[FlagCX P2P] ReadVector memReg lookup failed: iov=%d, mr=%lu\n",
+              i, (unsigned long)mrIds[i]);
+      return -1;
+    }
 
-      if (!memRegContains(*entry, reinterpret_cast<uintptr_t>(dstVec[i]),
-                          sizeVec[i])) {
-        fprintf(stderr,
-                "[FlagCX P2P] ReadVector memReg bounds check failed: iov=%d, "
-                "mr=%lu, addr=%p, size=%zu\n",
-                i, (unsigned long)mrIds[i], dstVec[i], sizeVec[i]);
-        return -1;
-      }
-
-      localEntries[i] = *entry;
+    if (!memRegContains(localEntries[i], reinterpret_cast<uintptr_t>(dstVec[i]),
+                        sizeVec[i])) {
+      fprintf(stderr,
+              "[FlagCX P2P] ReadVector memReg bounds check failed: iov=%d, "
+              "mr=%lu, addr=%p, size=%zu\n",
+              i, (unsigned long)mrIds[i], dstVec[i], sizeVec[i]);
+      return -1;
     }
   }
 
@@ -2744,10 +2793,8 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   }
 
   FlagcxP2pMemRegEntry localEntry;
-  {
-    if (!findMemReg((uintptr_t)data, &localEntry))
-      return -1;
-  }
+  if (!findMemReg((uintptr_t)data, &localEntry))
+    return -1;
 
   if (getCommView(conn->sendComm)->ibDevN != localEntry.ibDevN)
     return -1;
@@ -2810,18 +2857,13 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
     return -1;
 
   std::vector<FlagcxP2pMemRegEntry> localEntries(numIovs);
-  {
-    for (int i = 0; i < numIovs; i++) {
-      FlagcxP2pMemRegEntry *entry = findMemRegByMr(mrIds[i]);
-      if (entry == NULL)
-        return -1;
+  for (int i = 0; i < numIovs; i++) {
+    if (!findMemRegByMr(mrIds[i], &localEntries[i]))
+      return -1;
 
-      if (!memRegContains(*entry, reinterpret_cast<uintptr_t>(dstVec[i]),
-                          sizeVec[i]))
-        return -1;
-
-      localEntries[i] = *entry;
-    }
+    if (!memRegContains(localEntries[i], reinterpret_cast<uintptr_t>(dstVec[i]),
+                        sizeVec[i]))
+      return -1;
   }
 
   const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
@@ -3182,35 +3224,31 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
 
   if (conn->isLocal && conn->sameProcess) {
     std::vector<FlagcxP2pMr> mrVec(count);
-    {
-      for (int i = 0; i < count; i++) {
-        FlagcxP2pMemRegEntry localEntry;
-        if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntry)) {
-          WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
-               (unsigned long long)srcVa[i]);
-          return -1;
-        }
-        mrVec[i] = localEntry.mrId;
+    for (int i = 0; i < count; i++) {
+      FlagcxP2pMemRegEntry localEntry;
+      if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntry)) {
+        WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
+             (unsigned long long)srcVa[i]);
+        return -1;
       }
+      mrVec[i] = localEntry.mrId;
     }
     return flagcxP2pEngineWriteVectorSync(conn, mrVec, srcVec, sizeVec, descs);
   }
 
   std::vector<FlagcxP2pMemRegEntry> localEntries(count);
-  {
-    for (int i = 0; i < count; i++) {
-      if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntries[i])) {
-        WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
-             (unsigned long long)srcVa[i]);
-        return -1;
-      }
-      if (!memRegContains(localEntries[i], static_cast<uintptr_t>(srcVa[i]),
-                          static_cast<size_t>(sizes[i]))) {
-        WARN("NET/IB_P2P : BatchWriteSync source VA 0x%llx size %llu out of MR "
-             "bounds",
-             (unsigned long long)srcVa[i], (unsigned long long)sizes[i]);
-        return -1;
-      }
+  for (int i = 0; i < count; i++) {
+    if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntries[i])) {
+      WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
+           (unsigned long long)srcVa[i]);
+      return -1;
+    }
+    if (!memRegContains(localEntries[i], static_cast<uintptr_t>(srcVa[i]),
+                        static_cast<size_t>(sizes[i]))) {
+      WARN("NET/IB_P2P : BatchWriteSync source VA 0x%llx size %llu out of MR "
+           "bounds",
+           (unsigned long long)srcVa[i], (unsigned long long)sizes[i]);
+      return -1;
     }
   }
 
@@ -3286,10 +3324,8 @@ int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine, uintptr_t addr,
 
   *hasIpc = false;
   FlagcxP2pMemRegEntry entry;
-  {
-    if (!findMemReg(addr, &entry))
-      return -1;
-  }
+  if (!findMemReg(addr, &entry))
+    return -1;
 
   if (!entry.hasIpc)
     return 0;

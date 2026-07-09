@@ -1,6 +1,8 @@
 // Unit tests for the unified MR Registry (flagcx_mr_registry.h).
 // Pure C data structure — no MPI, no GPU, no network needed.
 
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <thread>
@@ -481,11 +483,13 @@ TEST_F(MrRegistryTest, GlobalInitIdempotent) {
   ASSERT_EQ(flagcxMrRegistryGlobalInit(), flagcxSuccess);
   ASSERT_NE(flagcxGlobalMrRegistry, nullptr);
 
-  // Second call is safe
+  // Second call is safe (refcount incremented)
   ASSERT_EQ(flagcxMrRegistryGlobalInit(), flagcxSuccess);
 
-  // Clean up global
-  flagcxMrRegistryGlobalDestroy();
+  // Release both refs
+  ASSERT_EQ(flagcxMrRegistryGlobalRelease(), flagcxSuccess);
+  ASSERT_EQ(flagcxMrRegistryGlobalRelease(), flagcxSuccess);
+  EXPECT_EQ(flagcxGlobalMrRegistry, nullptr);
 }
 
 TEST_F(MrRegistryTest, ConcurrentWriters) {
@@ -495,6 +499,7 @@ TEST_F(MrRegistryTest, ConcurrentWriters) {
   const int kOpsPerThread = 100;
   const uintptr_t kPageSize = 4096;
 
+  std::atomic<int> errors{0};
   auto worker = [&](int tid) {
     for (int i = 0; i < kOpsPerThread; i++) {
       // Each thread uses a unique address range: tid * large_gap + i * page
@@ -509,14 +514,19 @@ TEST_F(MrRegistryTest, ConcurrentWriters) {
       flagcxResult_t res =
           flagcxMrRegistryRegister(reg, addr, size, 0, 1, FLAGCX_MR_OWNER_P2P,
                                    (void *)(uintptr_t)(tid + 1), ext, &mrId);
-      ASSERT_EQ(res, flagcxSuccess);
+      if (res != flagcxSuccess) {
+        errors++;
+        free(ext);
+        continue;
+      }
 
       // Deregister immediately
       struct flagcxMrEntry outEntry;
       void *outExt = nullptr;
       res = flagcxMrRegistryDeregister(reg, addr, FLAGCX_MR_OWNER_P2P,
                                        &outEntry, &outExt);
-      ASSERT_EQ(res, flagcxSuccess);
+      if (res != flagcxSuccess)
+        errors++;
       free(outExt);
     }
   };
@@ -530,6 +540,7 @@ TEST_F(MrRegistryTest, ConcurrentWriters) {
     th.join();
   }
 
+  EXPECT_EQ(errors.load(), 0);
   // All entries should have been deregistered
   EXPECT_EQ(flagcxMrRegistryCount(reg), 0);
 }
