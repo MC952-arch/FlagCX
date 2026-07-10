@@ -1397,12 +1397,216 @@ out:
   return NULL;
 }
 
+// ============================================================================
+// Kernel Proxy Direct NetAdaptor Posting
+// Bypasses RMA Proxy: posts IB ops directly from kernel proxy thread.
+// ============================================================================
+
+#define FLAGCX_KPROXY_MAX_INFLIGHT 256
+#define FLAGCX_KPROXY_RING_MASK (FLAGCX_KPROXY_MAX_INFLIGHT - 1)
+
+struct flagcxKernelProxyInflight {
+  void *request;
+  uint64_t opSeq;
+};
+
+struct flagcxKernelProxyPeerState {
+  struct flagcxKernelProxyInflight ring[FLAGCX_KPROXY_MAX_INFLIGHT];
+  uint32_t head; // oldest outstanding
+  uint32_t tail; // next slot to write
+};
+
+struct flagcxKernelProxyState {
+  struct flagcxKernelProxyPeerState *peers; // [nRanks]
+  int nRanks;
+};
+
+// Poll completions for all peers. Non-blocking sweep.
+static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
+                                  struct flagcxHeteroComm *comm) {
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  struct flagcxNetAdaptor *net = comm->netAdaptor;
+  for (int p = 0; p < state->nRanks; p++) {
+    struct flagcxKernelProxyPeerState *ps = &state->peers[p];
+    while (ps->head != ps->tail) {
+      uint32_t idx = ps->head & FLAGCX_KPROXY_RING_MASK;
+      struct flagcxKernelProxyInflight *inf = &ps->ring[idx];
+      int done = 0;
+      bool failed = false;
+      if (inf->request != NULL) {
+        flagcxResult_t res = net->test(inf->request, &done, NULL);
+        if (res != flagcxSuccess) {
+          WARN("flagcxKernelProxyPoll: test failed peer=%d res=%d", p,
+               (int)res);
+          __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+          done = 1;
+          failed = true;
+        }
+      } else {
+        // Post failed earlier; retire without advancing counters.
+        done = 1;
+        failed = true;
+      }
+      if (!done)
+        break;
+      ps->head++;
+      if (!failed) {
+        __atomic_store_n(&proxy->doneSeqs[p], inf->opSeq, __ATOMIC_RELEASE);
+        if (proxy->doneSeqsCpu != NULL)
+          __atomic_store_n(&proxy->doneSeqsCpu[p], inf->opSeq,
+                           __ATOMIC_RELEASE);
+        __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+        if (!proxy->useStreamOps) {
+          pthread_mutex_lock(&proxy->doneMutex);
+          pthread_cond_broadcast(&proxy->doneCond);
+          pthread_mutex_unlock(&proxy->doneMutex);
+        }
+      }
+    }
+  }
+}
+
+// Post an IB operation directly from the kernel proxy thread.
+static flagcxResult_t
+flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
+                      struct flagcxHeteroComm *comm, int peer, int type,
+                      uint64_t srcOff, uint64_t dstOff, size_t size,
+                      int srcMrIdx, int dstMrIdx, uint64_t signalOff,
+                      uint64_t signalValue, uint64_t putValue) {
+  struct flagcxKernelProxyPeerState *ps = &state->peers[peer];
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  struct flagcxNetAdaptor *net = comm->netAdaptor;
+  if (proxy == NULL || net == NULL) {
+    WARN("flagcxKernelProxyPost: rmaProxy or netAdaptor not initialized");
+    return flagcxInternalError;
+  }
+
+  // Back-pressure: if ring is full, poll until a slot frees.
+  while ((ps->tail - ps->head) >= FLAGCX_KPROXY_MAX_INFLIGHT) {
+    flagcxKernelProxyPoll(state, comm);
+    if ((ps->tail - ps->head) >= FLAGCX_KPROXY_MAX_INFLIGHT)
+      sched_yield();
+  }
+
+  void *sendComm = comm->oneSideHandles[0]->fullSendComms[peer];
+  void **srcHandles = NULL, **dstHandles = NULL;
+  if (size > 0 && srcMrIdx >= 0) {
+    srcHandles = (void **)comm->oneSideHandles[srcMrIdx];
+    dstHandles = (void **)comm->oneSideHandles[dstMrIdx];
+  }
+
+  // Assign opSeq (shared atomic counter with RMA Proxy for ordering)
+  uint64_t opSeq =
+      __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
+
+  void *request = NULL;
+  flagcxResult_t res = flagcxSuccess;
+
+  switch (type) {
+    case FLAGCX_RMA_PUT:
+      res = net->iput(sendComm, srcOff, dstOff, size, comm->rank, peer,
+                      srcHandles, dstHandles, &request);
+      break;
+    case FLAGCX_RMA_GET:
+      res = net->iget(sendComm, srcOff, dstOff, size, peer, comm->rank,
+                      srcHandles, dstHandles, &request);
+      break;
+    case FLAGCX_RMA_PUT_SIGNAL: {
+      void **sigHandles = (void **)comm->signalHandle;
+      if (size > 0 && srcMrIdx >= 0) {
+        srcHandles = (void **)comm->oneSideHandles[srcMrIdx];
+        dstHandles = (void **)comm->oneSideHandles[dstMrIdx];
+      } else {
+        srcHandles = NULL;
+        dstHandles = NULL;
+      }
+      res = net->iputSignal(sendComm, srcOff, dstOff, size, comm->rank, peer,
+                            srcHandles, dstHandles, signalOff, sigHandles,
+                            signalValue, &request);
+      break;
+    }
+    case FLAGCX_RMA_PUT_VALUE: {
+      struct flagcxOneSideHandleInfo *stagingH = comm->stagingHandle;
+      if (stagingH == NULL || stagingH->baseVas == NULL) {
+        WARN("flagcxKernelProxyPost: staging handles not initialized");
+        res = flagcxInternalError;
+        break;
+      }
+      size_t slot = (size_t)peer * sizeof(uint64_t);
+      volatile uint64_t *staging =
+          (volatile uint64_t *)(stagingH->baseVas[comm->rank] + slot);
+      *staging = putValue;
+      void **stagingHandles = (void **)stagingH;
+      void **dstH = (void **)comm->oneSideHandles[dstMrIdx];
+      res = net->iput(sendComm, slot, dstOff, sizeof(uint64_t), comm->rank,
+                      peer, stagingHandles, dstH, &request);
+      break;
+    }
+    default:
+      WARN("flagcxKernelProxyPost: unknown type %d", type);
+      return flagcxInternalError;
+  }
+
+  if (res != flagcxSuccess) {
+    WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d", peer,
+         type, (int)res);
+    __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+    request = NULL; // will be retired as failed
+  }
+
+  uint32_t idx = ps->tail & FLAGCX_KPROXY_RING_MASK;
+  ps->ring[idx].request = request;
+  ps->ring[idx].opSeq = opSeq;
+  ps->tail++;
+
+  return res;
+}
+
+// Drain all in-flight requests (called at thread shutdown).
+static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
+                                   struct flagcxHeteroComm *comm) {
+  struct flagcxNetAdaptor *net = comm->netAdaptor;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  for (int p = 0; p < state->nRanks; p++) {
+    struct flagcxKernelProxyPeerState *ps = &state->peers[p];
+    while (ps->head != ps->tail) {
+      uint32_t idx = ps->head & FLAGCX_KPROXY_RING_MASK;
+      struct flagcxKernelProxyInflight *inf = &ps->ring[idx];
+      if (inf->request != NULL) {
+        int done = 0;
+        while (!done) {
+          flagcxResult_t res = net->test(inf->request, &done, NULL);
+          if (res != flagcxSuccess) {
+            done = 1;
+            break;
+          }
+        }
+      }
+      if (inf->request != NULL) {
+        __atomic_store_n(&proxy->doneSeqs[p], inf->opSeq, __ATOMIC_RELEASE);
+        if (proxy->doneSeqsCpu != NULL)
+          __atomic_store_n(&proxy->doneSeqsCpu[p], inf->opSeq,
+                           __ATOMIC_RELEASE);
+        __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+      }
+      ps->head++;
+    }
+  }
+  // Final broadcast to unblock any waiters
+  if (proxy && !proxy->useStreamOps) {
+    pthread_mutex_lock(&proxy->doneMutex);
+    pthread_cond_broadcast(&proxy->doneCond);
+    pthread_mutex_unlock(&proxy->doneMutex);
+  }
+}
+
 void *flagcxProxyKernelService(void *args) {
   int groupCount = 0;
   int termCount = 0;
   flagcxDeviceTrigger_t ptr = NULL;
   flagcxFifo_t fifo = NULL;
   flagcxStream_t stream = NULL;
+  struct flagcxKernelProxyState *kproxyState = NULL;
   flagcxProxyKernelServiceArg *arg = (flagcxProxyKernelServiceArg *)args;
   struct flagcxHeteroComm *comm = arg->comm;
   int contextId = arg->contextId;
@@ -1447,6 +1651,21 @@ void *flagcxProxyKernelService(void *args) {
   // Allocate trigger structure
   FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
 
+  // Initialize direct posting state (bypasses RMA Proxy for one-sided ops)
+  kproxyState =
+      (struct flagcxKernelProxyState *)calloc(1, sizeof(*kproxyState));
+  if (kproxyState == NULL) {
+    res = flagcxSystemError;
+    goto out;
+  }
+  kproxyState->nRanks = comm->nRanks;
+  kproxyState->peers = (struct flagcxKernelProxyPeerState *)calloc(
+      comm->nRanks, sizeof(struct flagcxKernelProxyPeerState));
+  if (kproxyState->peers == NULL) {
+    res = flagcxSystemError;
+    goto out;
+  }
+
   // Signal that initialization is complete
   pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
   comm->proxyState->kernelState.ready++;
@@ -1456,6 +1675,8 @@ void *flagcxProxyKernelService(void *args) {
   while (true) {
     if (comm->proxyState->kernelState.stop == 1)
       break;
+    // Poll completions for direct-posted IB ops
+    flagcxKernelProxyPoll(kproxyState, comm);
     dequeue(fifo->buffer, ptr);
     if ((ptr->getPrim() == flagcxDevicePrimSend ||
          ptr->getPrim() == flagcxDevicePrimRecv) &&
@@ -1526,8 +1747,9 @@ void *flagcxProxyKernelService(void *args) {
         size_t srcOffset = (size_t)ptr->getSrcOffset();
         size_t dstOffset = (size_t)ptr->getDstOffset();
         size_t size = (size_t)ptr->getSize();
-        res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size,
-                              srcMrIdx, dstMrIdx);
+        res = flagcxKernelProxyPost(kproxyState, comm, peerRank, FLAGCX_RMA_PUT,
+                                    srcOffset, dstOffset, size, srcMrIdx,
+                                    dstMrIdx, 0, 0, 0);
         break;
       }
       case flagcxDevicePrimSignal: {
@@ -1552,8 +1774,9 @@ void *flagcxProxyKernelService(void *args) {
             res = flagcxInternalError;
             break;
           }
-          res = flagcxHeteroPutSignal(comm, peerRank, 0, 0, 0, signalOff, 0, 0,
-                                      signalValue);
+          res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
+                                      FLAGCX_RMA_PUT_SIGNAL, 0, 0, 0, -1, -1,
+                                      signalOff, signalValue, 0);
         } else {
           // Counter buffer: local CPU atomic increment (no network operation)
           flagcxDevComm_t dc = comm->devCommHandle;
@@ -1618,16 +1841,22 @@ void *flagcxProxyKernelService(void *args) {
           res = flagcxInternalError;
           break;
         }
-        res = flagcxHeteroPutSignal(comm, peerRank, srcOffset, dstOffset, size,
-                                    signalOff, srcMrIdx, dstMrIdx, signalValue);
+        res = flagcxKernelProxyPost(
+            kproxyState, comm, peerRank, FLAGCX_RMA_PUT_SIGNAL, srcOffset,
+            dstOffset, size, srcMrIdx, dstMrIdx, signalOff, signalValue, 0);
         break;
       }
       case flagcxDevicePrimPutValue: {
         int peerRank = (int)ptr->getPeerRank();
+        res = validateOneSidedPeer(comm, peerRank);
+        if (res != flagcxSuccess)
+          break;
         int dstMrIdx = (int)ptr->getDstMrIdx();
         size_t dstOffset = (size_t)ptr->getDstOffset();
         uint64_t value = ptr->getValue();
-        res = flagcxHeteroPutValue(comm, peerRank, value, dstOffset, dstMrIdx);
+        res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
+                                    FLAGCX_RMA_PUT_VALUE, 0, dstOffset, 0, -1,
+                                    dstMrIdx, 0, 0, value);
         break;
       }
       case flagcxDevicePrimGet: {
@@ -1643,8 +1872,9 @@ void *flagcxProxyKernelService(void *args) {
         size_t srcOffset = (size_t)ptr->getSrcOffset();
         size_t dstOffset = (size_t)ptr->getDstOffset();
         size_t size = (size_t)ptr->getSize();
-        res = flagcxHeteroGet(comm, peerRank, srcOffset, dstOffset, size,
-                              srcMrIdx, dstMrIdx);
+        res = flagcxKernelProxyPost(kproxyState, comm, peerRank, FLAGCX_RMA_GET,
+                                    srcOffset, dstOffset, size, srcMrIdx,
+                                    dstMrIdx, 0, 0, 0);
         break;
       }
       case flagcxDevicePrimWait:
@@ -1692,6 +1922,13 @@ void *flagcxProxyKernelService(void *args) {
       break;
   }
 out:
+  // Drain all in-flight direct IB requests before teardown
+  if (kproxyState != NULL) {
+    flagcxKernelProxyDrain(kproxyState, comm);
+    free(kproxyState->peers);
+    free(kproxyState);
+    kproxyState = NULL;
+  }
   // destroy stream (only if created)
   if (stream != nullptr) {
     deviceAdaptor->streamSynchronize(stream);
