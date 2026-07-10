@@ -1194,79 +1194,55 @@ static void finalizePoolTask(PoolTransferTask *task) {
 }
 
 static bool findMemReg(uintptr_t addr, FlagcxP2pMemRegEntry *out) {
-  flagcxMrRegistryRdLock(flagcxGlobalMrRegistry);
-  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
-  struct flagcxMrEntry *entries =
-      flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
+  struct flagcxMrEntry entry;
+  struct flagcxMrExtension p2pExt;
+  struct flagcxMrExtension *exts[FLAGCX_MR_OWNER_COUNT] = {&p2pExt, NULL, NULL};
 
-  /* Binary search for containment: find largest i where baseAddr <= addr */
-  int lo = 0, hi = count - 1, result = -1;
-  while (lo <= hi) {
-    int mid = lo + (hi - lo) / 2;
-    if (entries[mid].baseAddr <= addr) {
-      result = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
+  if (flagcxMrRegistryLookup(flagcxGlobalMrRegistry, addr, &entry, exts) !=
+      flagcxSuccess)
+    return false;
 
-  bool found = false;
-  if (result >= 0 && addr >= entries[result].baseAddr &&
-      (addr - entries[result].baseAddr) < entries[result].size) {
-    struct flagcxMrEntry *entry = &entries[result];
-    if ((entry->ownerMask & FLAGCX_MR_OWNER_P2P) && entry->p2p != NULL) {
-      if (out) {
-        out->mrId = entry->p2p->mrId;
-        out->mhandle = entry->mhandles[FLAGCX_MR_OWNER_IDX_P2P];
-        out->baseAddr = entry->baseAddr;
-        out->size = entry->size;
-        out->ibDevN = entry->ibDevN;
-        out->ptrType = entry->ptrType;
-        out->hasIpc = entry->p2p->hasIpc;
-        out->ipcHandleSize = entry->p2p->ipcHandleSize;
-        memcpy(out->ipcHandle, entry->p2p->ipcHandle,
-               FLAGCX_P2P_IPC_HANDLE_BYTES);
-        memcpy(out->descBuf, entry->p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
-      }
-      found = true;
-    }
+  if (!(entry.ownerMask & FLAGCX_MR_OWNER_P2P) ||
+      p2pExt.type != FLAGCX_MR_OWNER_P2P)
+    return false;
+
+  if (out) {
+    out->mrId = p2pExt.p2p.mrId;
+    out->mhandle = entry.mhandles[FLAGCX_MR_OWNER_IDX_P2P];
+    out->baseAddr = entry.baseAddr;
+    out->size = entry.size;
+    out->ibDevN = entry.ibDevN;
+    out->ptrType = entry.ptrType;
+    out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
+    memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
+    memcpy(out->descBuf, p2pExt.p2p.descBuf, FLAGCX_P2P_DESC_SIZE);
   }
-  flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
-  return found;
+  return true;
 }
 
 static bool findMemRegByMr(FlagcxP2pMr mr, FlagcxP2pMemRegEntry *out) {
-  flagcxMrRegistryRdLock(flagcxGlobalMrRegistry);
-  int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
-  struct flagcxMrEntry *entries =
-      flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
-
-  bool found = false;
-  for (int i = 0; i < count; i++) {
-    if (entries[i].p2p && entries[i].p2p->mrId == mr) {
-      struct flagcxMrEntry *entry = &entries[i];
-      if ((entry->ownerMask & FLAGCX_MR_OWNER_P2P) && entry->p2p != NULL) {
-        if (out) {
-          out->mrId = entry->p2p->mrId;
-          out->mhandle = entry->mhandles[FLAGCX_MR_OWNER_IDX_P2P];
-          out->baseAddr = entry->baseAddr;
-          out->size = entry->size;
-          out->ibDevN = entry->ibDevN;
-          out->ptrType = entry->ptrType;
-          out->hasIpc = entry->p2p->hasIpc;
-          out->ipcHandleSize = entry->p2p->ipcHandleSize;
-          memcpy(out->ipcHandle, entry->p2p->ipcHandle,
-                 FLAGCX_P2P_IPC_HANDLE_BYTES);
-          memcpy(out->descBuf, entry->p2p->descBuf, FLAGCX_P2P_DESC_SIZE);
-        }
-        found = true;
-      }
-      break;
-    }
+  struct flagcxMrEntry found;
+  struct flagcxMrExtension p2pExt;
+  struct flagcxMrExtension *exts[FLAGCX_MR_OWNER_COUNT] = {&p2pExt, NULL, NULL};
+  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &found, exts) !=
+      flagcxSuccess)
+    return false;
+  if (p2pExt.type != FLAGCX_MR_OWNER_P2P)
+    return false;
+  if (out) {
+    out->mrId = p2pExt.p2p.mrId;
+    out->mhandle = found.mhandles[FLAGCX_MR_OWNER_IDX_P2P];
+    out->baseAddr = found.baseAddr;
+    out->size = found.size;
+    out->ibDevN = found.ibDevN;
+    out->ptrType = found.ptrType;
+    out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
+    memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
+    memcpy(out->descBuf, p2pExt.p2p.descBuf, FLAGCX_P2P_DESC_SIZE);
   }
-  flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
-  return found;
+  return true;
 }
 
 static bool memRegContains(const FlagcxP2pMemRegEntry &entry, uintptr_t addr,
@@ -2122,28 +2098,42 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   }
 
   {
-    /* Phase 1: deregMr adaptor handles + collect addresses under write lock */
+    /* Phase 1: collect P2P mhandle info under write lock */
+    struct P2pDeregInfo {
+      int ibDevN;
+      void *mhandle;
+      uintptr_t baseAddr;
+    };
+    std::vector<P2pDeregInfo> deregList;
+
     flagcxMrRegistryWrLock(flagcxGlobalMrRegistry);
     int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
     struct flagcxMrEntry *entries =
         flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
-    std::vector<uintptr_t> p2pAddrs;
     for (int i = 0; i < count; i++) {
       if (!(entries[i].ownerMask & FLAGCX_MR_OWNER_P2P))
         continue;
-      struct {
-        int ibDevN;
-      } devCtx = {entries[i].ibDevN};
-      engine->adaptor->deregMr(&devCtx,
-                               entries[i].mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
-      p2pAddrs.push_back(entries[i].baseAddr);
+      P2pDeregInfo info;
+      info.ibDevN = entries[i].ibDevN;
+      info.mhandle = entries[i].mhandles[FLAGCX_MR_OWNER_IDX_P2P];
+      info.baseAddr = entries[i].baseAddr;
+      deregList.push_back(info);
     }
     flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
 
-    /* Phase 2: deregister each (removes entry + frees ext) */
-    for (uintptr_t addr : p2pAddrs) {
-      flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, addr,
+    /* Phase 2: deregister from registry first (atomically removes from lookup)
+     */
+    for (const P2pDeregInfo &info : deregList) {
+      flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, info.baseAddr,
                                  FLAGCX_MR_OWNER_P2P, NULL, NULL);
+    }
+
+    /* Phase 3: call adaptor deregMr (now safe — no reader can find mhandle) */
+    for (const P2pDeregInfo &info : deregList) {
+      struct {
+        int ibDevN;
+      } devCtx = {info.ibDevN};
+      engine->adaptor->deregMr(&devCtx, info.mhandle);
     }
   }
 
@@ -2490,16 +2480,19 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   /* Check for existing exact-match registration (dedup) */
   {
     struct flagcxMrEntry existing;
-    if (flagcxMrRegistryFindExact(flagcxGlobalMrRegistry, data, &existing) ==
-        flagcxSuccess) {
-      if (existing.p2p != NULL) {
+    struct flagcxMrExtension p2pExt;
+    struct flagcxMrExtension *exts[FLAGCX_MR_OWNER_COUNT] = {&p2pExt, NULL,
+                                                             NULL};
+    if (flagcxMrRegistryFindExact(flagcxGlobalMrRegistry, data, &existing,
+                                  exts) == flagcxSuccess) {
+      if (p2pExt.type == FLAGCX_MR_OWNER_P2P) {
         if (existing.size != size) {
           WARN("P2P Reg: addr 0x%lx size mismatch: existing %zu vs requested "
                "%zu",
                (unsigned long)data, existing.size, size);
           return -1;
         }
-        mrId = existing.p2p->mrId;
+        mrId = p2pExt.p2p.mrId;
         return 0;
       }
     }
@@ -2564,19 +2557,21 @@ void flagcxP2pEngineMrDestroy(FlagcxP2pEngine *engine, FlagcxP2pMr mr) {
 
   /* Find entry by mrId to get baseAddr for deregister */
   struct flagcxMrEntry mrEntry;
-  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &mrEntry) !=
+  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &mrEntry, NULL) !=
       flagcxSuccess)
     return;
 
-  struct {
-    int ibDevN;
-  } devCtx = {mrEntry.ibDevN};
-  engine->adaptor->deregMr(&devCtx, mrEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
-
+  /* Remove from registry first — prevents concurrent readers from finding it */
   void *removedExt = NULL;
   flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, mrEntry.baseAddr,
                              FLAGCX_MR_OWNER_P2P, NULL, &removedExt);
   free(removedExt);
+
+  /* Now safe to deregister the adaptor handle */
+  struct {
+    int ibDevN;
+  } devCtx = {mrEntry.ibDevN};
+  engine->adaptor->deregMr(&devCtx, mrEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
 }
 
 int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
@@ -2584,9 +2579,9 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   if (engine == NULL || data == NULL || descBuf == NULL)
     return -1;
 
-  /* Step 1: read-lock O(n) lookup by mrId to get baseAddr */
+  /* Step 1: read-lock O(log n) lookup by mrId to get baseAddr */
   struct flagcxMrEntry tmpEntry;
-  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &tmpEntry) !=
+  if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &tmpEntry, NULL) !=
       flagcxSuccess)
     return -1;
 

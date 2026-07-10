@@ -105,6 +105,49 @@ static flagcxResult_t ensureCapacity(struct flagcxMrRegistry *reg) {
   return flagcxSuccess;
 }
 
+/*
+ * Copy extension data into caller-provided flagcxMrExtension slots.
+ * Each non-NULL slot gets a by-value copy tagged with FLAGCX_MR_OWNER_*.
+ * NULL slots in the array are skipped. NULL array means "no extensions needed."
+ */
+static inline void copyExtensions(const struct flagcxMrEntry *entry,
+                                  struct flagcxMrExtension *outExts[]) {
+  if (outExts == NULL)
+    return;
+  if (outExts[FLAGCX_MR_OWNER_IDX_P2P]) {
+    if (entry->p2p) {
+      outExts[FLAGCX_MR_OWNER_IDX_P2P]->type = FLAGCX_MR_OWNER_P2P;
+      outExts[FLAGCX_MR_OWNER_IDX_P2P]->p2p = *entry->p2p;
+    } else {
+      outExts[FLAGCX_MR_OWNER_IDX_P2P]->type = FLAGCX_MR_OWNER_NONE;
+    }
+  }
+  if (outExts[FLAGCX_MR_OWNER_IDX_COLL]) {
+    if (entry->coll) {
+      outExts[FLAGCX_MR_OWNER_IDX_COLL]->type = FLAGCX_MR_OWNER_COLL;
+      outExts[FLAGCX_MR_OWNER_IDX_COLL]->coll = *entry->coll;
+    } else {
+      outExts[FLAGCX_MR_OWNER_IDX_COLL]->type = FLAGCX_MR_OWNER_NONE;
+    }
+  }
+  if (outExts[FLAGCX_MR_OWNER_IDX_RMA]) {
+    if (entry->rma) {
+      outExts[FLAGCX_MR_OWNER_IDX_RMA]->type = FLAGCX_MR_OWNER_RMA;
+      outExts[FLAGCX_MR_OWNER_IDX_RMA]->rma = *entry->rma;
+    } else {
+      outExts[FLAGCX_MR_OWNER_IDX_RMA]->type = FLAGCX_MR_OWNER_NONE;
+    }
+  }
+}
+
+static inline void sanitizeOutEntry(struct flagcxMrEntry *entry) {
+  if (entry) {
+    entry->p2p = NULL;
+    entry->coll = NULL;
+    entry->rma = NULL;
+  }
+}
+
 static void freeEntryExtensions(struct flagcxMrEntry *entry) {
   if (entry->p2p) {
     free(entry->p2p);
@@ -120,6 +163,78 @@ static void freeEntryExtensions(struct flagcxMrEntry *entry) {
   }
 }
 
+/* ───── mrId index helpers ───── */
+
+#define ID_INDEX_INITIAL_CAPACITY 16
+
+/*
+ * Append a new {mrId, baseAddr} pair to the end of idIndex.
+ * Since mrIds are monotonically increasing, appending maintains sorted order.
+ * Must be called under write lock.
+ */
+static flagcxResult_t idIndexAppend(struct flagcxMrRegistry *reg, uint64_t mrId,
+                                    uintptr_t baseAddr) {
+  if (reg->idCount >= reg->idCapacity) {
+    int newCap =
+        reg->idCapacity == 0 ? ID_INDEX_INITIAL_CAPACITY : reg->idCapacity * 2;
+    struct flagcxMrIdEntry *newIdx = (struct flagcxMrIdEntry *)realloc(
+        reg->idIndex, (size_t)newCap * sizeof(struct flagcxMrIdEntry));
+    if (newIdx == NULL) {
+      WARN("flagcxMrRegistry: idIndex realloc failed for capacity %d", newCap);
+      return flagcxSystemError;
+    }
+    reg->idIndex = newIdx;
+    reg->idCapacity = newCap;
+  }
+  reg->idIndex[reg->idCount].mrId = mrId;
+  reg->idIndex[reg->idCount].baseAddr = baseAddr;
+  reg->idCount++;
+  return flagcxSuccess;
+}
+
+/*
+ * Binary search idIndex for mrId, remove entry with memmove.
+ * Must be called under write lock.
+ */
+static void idIndexRemove(struct flagcxMrRegistry *reg, uint64_t mrId) {
+  int lo = 0, hi = reg->idCount - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (reg->idIndex[mid].mrId == mrId) {
+      if (mid < reg->idCount - 1) {
+        memmove(&reg->idIndex[mid], &reg->idIndex[mid + 1],
+                (size_t)(reg->idCount - 1 - mid) *
+                    sizeof(struct flagcxMrIdEntry));
+      }
+      reg->idCount--;
+      return;
+    } else if (reg->idIndex[mid].mrId < mrId) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+}
+
+/*
+ * Binary search idIndex for mrId, return associated baseAddr.
+ * Returns 0 if not found (valid baseAddr is never 0 for real registrations).
+ */
+static uintptr_t idIndexFindBaseAddr(const struct flagcxMrRegistry *reg,
+                                     uint64_t mrId) {
+  int lo = 0, hi = reg->idCount - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (reg->idIndex[mid].mrId == mrId)
+      return reg->idIndex[mid].baseAddr;
+    else if (reg->idIndex[mid].mrId < mrId)
+      lo = mid + 1;
+    else
+      hi = mid - 1;
+  }
+  return 0;
+}
+
 /* ───── Lifecycle ───── */
 
 flagcxResult_t flagcxMrRegistryCreate(struct flagcxMrRegistry **reg) {
@@ -132,6 +247,9 @@ flagcxResult_t flagcxMrRegistryCreate(struct flagcxMrRegistry **reg) {
   r->count = 0;
   r->capacity = 0;
   r->nextId = 1;
+  r->idIndex = NULL;
+  r->idCount = 0;
+  r->idCapacity = 0;
 
   if (pthread_rwlock_init(&r->rwlock, NULL) != 0) {
     free(r);
@@ -152,6 +270,7 @@ flagcxResult_t flagcxMrRegistryDestroy(struct flagcxMrRegistry *reg) {
   }
 
   free(reg->entries);
+  free(reg->idIndex);
   pthread_rwlock_destroy(&reg->rwlock);
   free(reg);
   return flagcxSuccess;
@@ -164,7 +283,7 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
                                         int ptrType, uint32_t ownerBit,
                                         void *mhandle, void *ext,
                                         uint64_t *outId) {
-  if (reg == NULL || size == 0)
+  if (reg == NULL || size == 0 || addr == 0)
     return flagcxInternalError;
 
   int ownerIdx = ownerBitToIdx(ownerBit);
@@ -200,10 +319,20 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
       if (ext != NULL) {
         switch (ownerBit) {
           case FLAGCX_MR_OWNER_P2P: {
-            /* Preserve the assigned mrId across ext replacement */
+            /* Preserve the assigned mrId across ext replacement.
+             * Reject if caller provides a conflicting non-zero mrId. */
             uint64_t prevMrId = existing->p2p ? existing->p2p->mrId : 0;
+            struct flagcxMrP2pExt *newP2p = (struct flagcxMrP2pExt *)ext;
+            if (newP2p->mrId != 0 && prevMrId != 0 &&
+                newP2p->mrId != prevMrId) {
+              WARN("flagcxMrRegistry: mrId conflict on ext replacement: "
+                   "existing %lu vs new %lu",
+                   (unsigned long)prevMrId, (unsigned long)newP2p->mrId);
+              pthread_rwlock_unlock(&reg->rwlock);
+              return flagcxInternalError;
+            }
             free(existing->p2p);
-            existing->p2p = (struct flagcxMrP2pExt *)ext;
+            existing->p2p = newP2p;
             if (existing->p2p->mrId == 0)
               existing->p2p->mrId = prevMrId;
             break;
@@ -218,13 +347,23 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
             break;
         }
       }
-      if (outId != NULL && ownerBit == FLAGCX_MR_OWNER_P2P && existing->p2p)
-        *outId = existing->p2p->mrId;
+      if (outId != NULL) {
+        *outId = (ownerBit == FLAGCX_MR_OWNER_P2P && existing->p2p)
+                     ? existing->p2p->mrId
+                     : 0;
+      }
       pthread_rwlock_unlock(&reg->rwlock);
       return flagcxSuccess;
     }
 
-    /* Add new owner */
+    /* Add new owner — ext is required for new ownership */
+    if (ext == NULL) {
+      WARN(
+          "flagcxMrRegistry: NULL ext when adding new owner 0x%x to addr 0x%lx",
+          ownerBit, (unsigned long)addr);
+      pthread_rwlock_unlock(&reg->rwlock);
+      return flagcxInternalError;
+    }
     existing->ownerMask |= ownerBit;
     existing->mhandles[ownerIdx] = mhandle;
 
@@ -234,6 +373,14 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
         if (existing->p2p) {
           if (existing->p2p->mrId == 0)
             existing->p2p->mrId = reg->nextId++;
+          if (idIndexAppend(reg, existing->p2p->mrId, addr) != flagcxSuccess) {
+            /* Roll back: remove P2P ownership, caller retains ext */
+            existing->p2p = NULL;
+            existing->ownerMask &= ~ownerBit;
+            existing->mhandles[ownerIdx] = NULL;
+            pthread_rwlock_unlock(&reg->rwlock);
+            return flagcxSystemError;
+          }
           if (outId)
             *outId = existing->p2p->mrId;
         }
@@ -283,6 +430,15 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
     }
   }
 
+  /* New entry requires an extension struct */
+  if (ext == NULL) {
+    WARN(
+        "flagcxMrRegistry: NULL ext for new registration addr 0x%lx owner 0x%x",
+        (unsigned long)addr, ownerBit);
+    pthread_rwlock_unlock(&reg->rwlock);
+    return flagcxInternalError;
+  }
+
   /* Grow array if needed */
   flagcxResult_t res = ensureCapacity(reg);
   if (res != flagcxSuccess) {
@@ -313,6 +469,16 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
         /* Assign mrId from registry's monotonic counter if not pre-set */
         if (entry->p2p->mrId == 0)
           entry->p2p->mrId = reg->nextId++;
+        if (idIndexAppend(reg, entry->p2p->mrId, addr) != flagcxSuccess) {
+          /* Roll back: remove the entry we just inserted */
+          entry->p2p = NULL; /* caller retains ext ownership */
+          if (pos < reg->count) {
+            memmove(&reg->entries[pos], &reg->entries[pos + 1],
+                    (size_t)(reg->count - pos) * sizeof(struct flagcxMrEntry));
+          }
+          pthread_rwlock_unlock(&reg->rwlock);
+          return flagcxSystemError;
+        }
         if (outId)
           *outId = entry->p2p->mrId;
       }
@@ -361,14 +527,18 @@ flagcxResult_t flagcxMrRegistryDeregister(struct flagcxMrRegistry *reg,
   }
 
   /* Copy out before modification */
-  if (outEntry)
+  if (outEntry) {
     *outEntry = *entry;
+    sanitizeOutEntry(outEntry);
+  }
 
   /* Extract subsystem extension */
   void *ext = NULL;
   switch (ownerBit) {
     case FLAGCX_MR_OWNER_P2P:
       ext = entry->p2p;
+      if (entry->p2p && entry->p2p->mrId != 0)
+        idIndexRemove(reg, entry->p2p->mrId);
       entry->p2p = NULL;
       break;
     case FLAGCX_MR_OWNER_COLL:
@@ -406,7 +576,8 @@ flagcxResult_t flagcxMrRegistryDeregister(struct flagcxMrRegistry *reg,
 
 flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
                                       uintptr_t addr,
-                                      struct flagcxMrEntry *outEntry) {
+                                      struct flagcxMrEntry *outEntry,
+                                      struct flagcxMrExtension *outExts[]) {
   if (reg == NULL || outEntry == NULL)
     return flagcxInternalError;
 
@@ -426,6 +597,8 @@ flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
   struct flagcxMrEntry *entry = &reg->entries[idx];
   if (addr >= entry->baseAddr && (addr - entry->baseAddr) < entry->size) {
     *outEntry = *entry;
+    copyExtensions(entry, outExts);
+    sanitizeOutEntry(outEntry);
     pthread_rwlock_unlock(&reg->rwlock);
     return flagcxSuccess;
   }
@@ -436,7 +609,8 @@ flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
 
 flagcxResult_t flagcxMrRegistryFindExact(struct flagcxMrRegistry *reg,
                                          uintptr_t addr,
-                                         struct flagcxMrEntry *outEntry) {
+                                         struct flagcxMrEntry *outEntry,
+                                         struct flagcxMrExtension *outExts[]) {
   if (reg == NULL || outEntry == NULL)
     return flagcxInternalError;
 
@@ -449,33 +623,45 @@ flagcxResult_t flagcxMrRegistryFindExact(struct flagcxMrRegistry *reg,
   }
 
   *outEntry = reg->entries[idx];
+  copyExtensions(&reg->entries[idx], outExts);
+  sanitizeOutEntry(outEntry);
   pthread_rwlock_unlock(&reg->rwlock);
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxMrRegistryLookupById(struct flagcxMrRegistry *reg,
                                           uint64_t mrId,
-                                          struct flagcxMrEntry *outEntry) {
+                                          struct flagcxMrEntry *outEntry,
+                                          struct flagcxMrExtension *outExts[]) {
   if (reg == NULL || outEntry == NULL)
     return flagcxInternalError;
 
   pthread_rwlock_rdlock(&reg->rwlock);
 
-  for (int i = 0; i < reg->count; i++) {
-    if (reg->entries[i].p2p && reg->entries[i].p2p->mrId == mrId) {
-      *outEntry = reg->entries[i];
-      pthread_rwlock_unlock(&reg->rwlock);
-      return flagcxSuccess;
-    }
+  /* O(log n) lookup via mrId index → baseAddr → main entries[] */
+  uintptr_t baseAddr = idIndexFindBaseAddr(reg, mrId);
+  if (baseAddr == 0) {
+    pthread_rwlock_unlock(&reg->rwlock);
+    return flagcxInternalError;
   }
 
+  int idx = bsearchExact(reg->entries, reg->count, baseAddr);
+  if (idx < 0 || !reg->entries[idx].p2p) {
+    pthread_rwlock_unlock(&reg->rwlock);
+    return flagcxInternalError;
+  }
+
+  *outEntry = reg->entries[idx];
+  copyExtensions(&reg->entries[idx], outExts);
+  sanitizeOutEntry(outEntry);
   pthread_rwlock_unlock(&reg->rwlock);
-  return flagcxInternalError;
+  return flagcxSuccess;
 }
 
-flagcxResult_t flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg,
-                                            int ownerIdx, void *mhandle,
-                                            struct flagcxMrEntry *outEntry) {
+flagcxResult_t
+flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg, int ownerIdx,
+                             void *mhandle, struct flagcxMrEntry *outEntry,
+                             struct flagcxMrExtension *outExts[]) {
   if (reg == NULL || outEntry == NULL || mhandle == NULL)
     return flagcxInternalError;
   if (ownerIdx < 0 || ownerIdx >= FLAGCX_MR_OWNER_COUNT)
@@ -486,6 +672,8 @@ flagcxResult_t flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg,
   for (int i = 0; i < reg->count; i++) {
     if (reg->entries[i].mhandles[ownerIdx] == mhandle) {
       *outEntry = reg->entries[i];
+      copyExtensions(&reg->entries[i], outExts);
+      sanitizeOutEntry(outEntry);
       pthread_rwlock_unlock(&reg->rwlock);
       return flagcxSuccess;
     }

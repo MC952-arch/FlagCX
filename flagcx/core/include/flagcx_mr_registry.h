@@ -24,6 +24,7 @@ extern "C" {
 
 /* ───── Owner bitmask constants ───── */
 
+#define FLAGCX_MR_OWNER_NONE 0x00
 #define FLAGCX_MR_OWNER_P2P 0x01
 #define FLAGCX_MR_OWNER_COLL 0x02
 #define FLAGCX_MR_OWNER_RMA 0x04
@@ -55,6 +56,25 @@ struct flagcxMrRmaExt {
   int oneSideHandleIdx;
 };
 
+/* ───── Tagged extension output ───── */
+
+/*
+ * Safe by-value output for extension data from self-locking lookup APIs.
+ * The `type` field indicates which union member is valid:
+ *   FLAGCX_MR_OWNER_P2P  → .p2p
+ *   FLAGCX_MR_OWNER_COLL → .coll
+ *   FLAGCX_MR_OWNER_RMA  → .rma
+ *   FLAGCX_MR_OWNER_NONE → no data (extension not present on entry)
+ */
+struct flagcxMrExtension {
+  uint32_t type;
+  union {
+    struct flagcxMrP2pExt p2p;
+    struct flagcxMrCollExt coll;
+    struct flagcxMrRmaExt rma;
+  };
+};
+
 /* ───── Core entry ───── */
 
 struct flagcxMrEntry {
@@ -70,6 +90,13 @@ struct flagcxMrEntry {
   struct flagcxMrRmaExt *rma;   /* NULL if !(ownerMask & RMA) */
 };
 
+/* ───── mrId index entry (sorted by mrId for O(log n) lookup) ───── */
+
+struct flagcxMrIdEntry {
+  uint64_t mrId;
+  uintptr_t baseAddr; /* cross-reference into main entries[] array */
+};
+
 /* ───── Registry container ───── */
 
 struct flagcxMrRegistry {
@@ -77,6 +104,11 @@ struct flagcxMrRegistry {
   int count;
   int capacity;
   uint64_t nextId; /* monotonic ID generator for all subsystems */
+
+  struct flagcxMrIdEntry *idIndex; /* sorted by mrId (ascending, append-only) */
+  int idCount;
+  int idCapacity;
+
   pthread_rwlock_t rwlock;
 };
 
@@ -113,8 +145,9 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
  * If ownerMask becomes 0, removes entry from array.
  *
  * outEntry: if non-NULL, populated with common fields before removal.
+ *           Extension pointers (p2p, coll, rma) are NULLed to prevent UAF.
  * outExt:   if non-NULL, returns the subsystem extension pointer (caller
- * frees).
+ *           frees). If NULL, the extension is freed internally.
  */
 flagcxResult_t flagcxMrRegistryDeregister(struct flagcxMrRegistry *reg,
                                           uintptr_t addr, uint32_t ownerBit,
@@ -124,12 +157,22 @@ flagcxResult_t flagcxMrRegistryDeregister(struct flagcxMrRegistry *reg,
 /* ───── Lookup (read-locks internally) ───── */
 
 /*
+ * NOTE: Lookup functions NULL out extension pointers (p2p, coll, rma) in the
+ * returned outEntry to prevent use-after-free under concurrent deregistration.
+ * To safely obtain extension data, pass a non-NULL outExts[] array indexed by
+ * FLAGCX_MR_OWNER_IDX_*. Non-NULL slots receive a by-value copy of the
+ * extension while the read lock is held. Each slot is self-describing via its
+ * .type field. Pass NULL for the entire array if extensions are not needed.
+ */
+
+/*
  * O(log n) containment lookup: find entry where baseAddr <= addr <
  * baseAddr+size. Returns flagcxSuccess if found, flagcxInternalError if not.
  */
 flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
                                       uintptr_t addr,
-                                      struct flagcxMrEntry *outEntry);
+                                      struct flagcxMrEntry *outEntry,
+                                      struct flagcxMrExtension *outExts[]);
 
 /*
  * O(log n) exact-match lookup by baseAddr.
@@ -137,24 +180,27 @@ flagcxResult_t flagcxMrRegistryLookup(struct flagcxMrRegistry *reg,
  */
 flagcxResult_t flagcxMrRegistryFindExact(struct flagcxMrRegistry *reg,
                                          uintptr_t addr,
-                                         struct flagcxMrEntry *outEntry);
+                                         struct flagcxMrEntry *outEntry,
+                                         struct flagcxMrExtension *outExts[]);
 
 /*
- * O(n) lookup by P2P mrId. Only used in non-hot paths (PrepareDesc, MrDestroy).
+ * O(log n) lookup by P2P mrId via secondary index.
  * Returns flagcxSuccess if found, flagcxInternalError if not.
  */
 flagcxResult_t flagcxMrRegistryLookupById(struct flagcxMrRegistry *reg,
                                           uint64_t mrId,
-                                          struct flagcxMrEntry *outEntry);
+                                          struct flagcxMrEntry *outEntry,
+                                          struct flagcxMrExtension *outExts[]);
 
 /*
  * O(n) lookup by mhandle pointer for a given owner index.
  * Useful for deregistration when only the handle is known.
  * Returns flagcxSuccess if found, flagcxInternalError if not.
  */
-flagcxResult_t flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg,
-                                            int ownerIdx, void *mhandle,
-                                            struct flagcxMrEntry *outEntry);
+flagcxResult_t
+flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg, int ownerIdx,
+                             void *mhandle, struct flagcxMrEntry *outEntry,
+                             struct flagcxMrExtension *outExts[]);
 
 /* ───── Iteration (external locking) ───── */
 
