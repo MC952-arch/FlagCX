@@ -789,6 +789,9 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
       return flagcxRemoteError;
     usleep(100);
   }
+  // Check rmaError after wait: doneSeqs may have been advanced despite failure
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+    return flagcxRemoteError;
   return flagcxSuccess;
 }
 

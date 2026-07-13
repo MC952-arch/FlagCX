@@ -1426,6 +1426,7 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
                                   struct flagcxHeteroComm *comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   struct flagcxNetAdaptor *net = comm->netAdaptor;
+  bool anyCompleted = false;
   for (int p = 0; p < state->nRanks; p++) {
     struct flagcxKernelProxyPeerState *ps = &state->peers[p];
     while (ps->head != ps->tail) {
@@ -1438,31 +1439,36 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
         if (res != flagcxSuccess) {
           WARN("flagcxKernelProxyPoll: test failed peer=%d res=%d", p,
                (int)res);
-          __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+          __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
           done = 1;
           failed = true;
         }
       } else {
-        // Post failed earlier; retire without advancing counters.
+        // Post failed earlier; retire as failed.
         done = 1;
         failed = true;
       }
       if (!done)
         break;
       ps->head++;
+      // Always advance doneSeqs (even on failure) to prevent flush hangs.
+      __atomic_store_n((uint64_t *)&proxy->doneSeqs[p], inf->opSeq,
+                       __ATOMIC_RELEASE);
+      if (proxy->doneSeqsCpu != NULL)
+        __atomic_store_n((uint64_t *)&proxy->doneSeqsCpu[p], inf->opSeq,
+                         __ATOMIC_RELEASE);
       if (!failed) {
-        __atomic_store_n(&proxy->doneSeqs[p], inf->opSeq, __ATOMIC_RELEASE);
-        if (proxy->doneSeqsCpu != NULL)
-          __atomic_store_n(&proxy->doneSeqsCpu[p], inf->opSeq,
-                           __ATOMIC_RELEASE);
         __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
-        if (!proxy->useStreamOps) {
-          pthread_mutex_lock(&proxy->doneMutex);
-          pthread_cond_broadcast(&proxy->doneCond);
-          pthread_mutex_unlock(&proxy->doneMutex);
-        }
+        anyCompleted = true;
       }
     }
+  }
+  // Batch the broadcast: signal waiters once per poll sweep, not per
+  // completion.
+  if (anyCompleted && !proxy->useStreamOps) {
+    pthread_mutex_lock(&proxy->doneMutex);
+    pthread_cond_broadcast(&proxy->doneCond);
+    pthread_mutex_unlock(&proxy->doneMutex);
   }
 }
 
@@ -1481,11 +1487,34 @@ flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
     return flagcxInternalError;
   }
 
+  // Validate MR indices (mirrors flagcxHeteroPut/PutValue validation)
+  if (comm->oneSideHandleCount < 1 || comm->oneSideHandles[0] == NULL) {
+    WARN("flagcxKernelProxyPost: no oneSideHandles available");
+    return flagcxInternalError;
+  }
+  if (dstMrIdx >= 0 && dstMrIdx >= comm->oneSideHandleCount) {
+    WARN("flagcxKernelProxyPost: dstMrIdx %d out of range (count=%d)", dstMrIdx,
+         comm->oneSideHandleCount);
+    return flagcxInvalidArgument;
+  }
+  if (srcMrIdx >= 0 && srcMrIdx >= comm->oneSideHandleCount) {
+    WARN("flagcxKernelProxyPost: srcMrIdx %d out of range (count=%d)", srcMrIdx,
+         comm->oneSideHandleCount);
+    return flagcxInvalidArgument;
+  }
+
   // Back-pressure: if ring is full, poll until a slot frees.
+  int spins = 0;
   while ((ps->tail - ps->head) >= FLAGCX_KPROXY_MAX_INFLIGHT) {
     flagcxKernelProxyPoll(state, comm);
-    if ((ps->tail - ps->head) >= FLAGCX_KPROXY_MAX_INFLIGHT)
+    if ((ps->tail - ps->head) >= FLAGCX_KPROXY_MAX_INFLIGHT) {
+      if (++spins > 10000000) {
+        WARN("flagcxKernelProxyPost: back-pressure timeout peer=%d", peer);
+        __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        return flagcxInternalError;
+      }
       sched_yield();
+    }
   }
 
   void *sendComm = comm->oneSideHandles[0]->fullSendComms[peer];
@@ -1497,7 +1526,7 @@ flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
 
   // Assign opSeq (shared atomic counter with RMA Proxy for ordering)
   uint64_t opSeq =
-      __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
+      __atomic_add_fetch((uint64_t *)&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
 
   void *request = NULL;
   flagcxResult_t res = flagcxSuccess;
@@ -1513,13 +1542,8 @@ flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
       break;
     case FLAGCX_RMA_PUT_SIGNAL: {
       void **sigHandles = (void **)comm->signalHandle;
-      if (size > 0 && srcMrIdx >= 0) {
-        srcHandles = (void **)comm->oneSideHandles[srcMrIdx];
-        dstHandles = (void **)comm->oneSideHandles[dstMrIdx];
-      } else {
-        srcHandles = NULL;
-        dstHandles = NULL;
-      }
+      // srcHandles/dstHandles already set above for size>0 && srcMrIdx>=0,
+      // or NULL otherwise — no need to reassign.
       res = net->iputSignal(sendComm, srcOff, dstOff, size, comm->rank, peer,
                             srcHandles, dstHandles, signalOff, sigHandles,
                             signalValue, &request);
@@ -1550,7 +1574,7 @@ flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
   if (res != flagcxSuccess) {
     WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d", peer,
          type, (int)res);
-    __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+    __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
     request = NULL; // will be retired as failed
   }
 
@@ -1565,6 +1589,8 @@ flagcxKernelProxyPost(struct flagcxKernelProxyState *state,
 // Drain all in-flight requests (called at thread shutdown).
 static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
                                    struct flagcxHeteroComm *comm) {
+  if (state->peers == NULL)
+    return;
   struct flagcxNetAdaptor *net = comm->netAdaptor;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   for (int p = 0; p < state->nRanks; p++) {
@@ -1572,23 +1598,28 @@ static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
     while (ps->head != ps->tail) {
       uint32_t idx = ps->head & FLAGCX_KPROXY_RING_MASK;
       struct flagcxKernelProxyInflight *inf = &ps->ring[idx];
+      bool succeeded = false;
       if (inf->request != NULL) {
         int done = 0;
+        bool testFailed = false;
         while (!done) {
           flagcxResult_t res = net->test(inf->request, &done, NULL);
           if (res != flagcxSuccess) {
+            testFailed = true;
             done = 1;
             break;
           }
         }
+        succeeded = !testFailed;
       }
-      if (inf->request != NULL) {
-        __atomic_store_n(&proxy->doneSeqs[p], inf->opSeq, __ATOMIC_RELEASE);
-        if (proxy->doneSeqsCpu != NULL)
-          __atomic_store_n(&proxy->doneSeqsCpu[p], inf->opSeq,
-                           __ATOMIC_RELEASE);
+      // Always advance doneSeqs to prevent flush hangs on failed ops.
+      __atomic_store_n((uint64_t *)&proxy->doneSeqs[p], inf->opSeq,
+                       __ATOMIC_RELEASE);
+      if (proxy->doneSeqsCpu != NULL)
+        __atomic_store_n((uint64_t *)&proxy->doneSeqsCpu[p], inf->opSeq,
+                         __ATOMIC_RELEASE);
+      if (succeeded)
         __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
-      }
       ps->head++;
     }
   }
