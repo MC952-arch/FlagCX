@@ -789,7 +789,8 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
       return flagcxRemoteError;
     usleep(100);
   }
-  // Check rmaError after wait: doneSeqs may have been advanced despite failure
+  // Check rmaError after wait: kernel proxy direct-post path advances doneSeqs
+  // unconditionally (even on failure) to prevent flush hangs.
   if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
     return flagcxRemoteError;
   return flagcxSuccess;
@@ -830,6 +831,10 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
       usleep(100);
     }
   }
+  // Check rmaError after wait: kernel proxy direct-post path advances doneSeqs
+  // unconditionally (even on failure) to prevent flush hangs.
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+    return flagcxRemoteError;
   return flagcxSuccess;
 }
 
