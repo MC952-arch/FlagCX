@@ -40,8 +40,10 @@ protected:
 
 TEST_F(MrRegistryTest, CreateAndDestroy) {
   // SetUp already verified creation; this tests the empty state
+  ASSERT_EQ(flagcxMrRegistryRdLock(reg), flagcxSuccess);
   EXPECT_EQ(flagcxMrRegistryCount(reg), 0);
   EXPECT_EQ(flagcxMrRegistryEntries(reg), nullptr);
+  ASSERT_EQ(flagcxMrRegistryRdUnlock(reg), flagcxSuccess);
 }
 
 TEST_F(MrRegistryTest, RegisterSingleEntry) {
@@ -525,9 +527,8 @@ TEST_F(MrRegistryTest, ConcurrentWriters) {
   std::atomic<int> errors{0};
   auto worker = [&](int tid) {
     for (int i = 0; i < kOpsPerThread; i++) {
-      // Each thread uses a unique address range: tid * large_gap + i * page
-      uintptr_t addr =
-          (uintptr_t)(tid + 1) * 0x100000000ULL + (uintptr_t)i * kPageSize;
+      // Each thread uses a unique address range: tid * (1<<20) + i * page
+      uintptr_t addr = ((uintptr_t)(tid + 1) << 20) + (uintptr_t)i * kPageSize;
       size_t size = kPageSize;
 
       struct flagcxMrP2pExt *ext =

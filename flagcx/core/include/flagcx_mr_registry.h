@@ -105,7 +105,7 @@ struct flagcxMrRegistry {
   int capacity;
   uint64_t nextId; /* monotonic ID generator for all subsystems */
 
-  struct flagcxMrIdEntry *idIndex; /* sorted by mrId (ascending, append-only) */
+  struct flagcxMrIdEntry *idIndex; /* sorted by mrId (ascending) */
   int idCount;
   int idCapacity;
 
@@ -130,9 +130,10 @@ flagcxResult_t flagcxMrRegistryDestroy(struct flagcxMrRegistry *reg);
  * ownerBit: one of FLAGCX_MR_OWNER_{P2P,COLL,RMA}
  * mhandle:  adaptor handle (stored in mhandles[ownerIdx])
  * ext:      subsystem extension struct pointer (ownership transferred to entry)
- * outId:    if non-NULL, returns a monotonic ID. For P2P, this is persisted
- *           in p2p->mrId and stable across repeated calls. For COLL/RMA,
- *           this is a one-shot assignment (not stored on the entry).
+ * outId:    if non-NULL, receives a monotonic ID on first registration.
+ *           For P2P: persisted in p2p->mrId, stable across repeated calls.
+ *           For COLL/RMA: one-shot assignment (not stored on entry);
+ *           re-registration of an already-owned entry sets *outId = 0.
  */
 flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
                                         uintptr_t addr, size_t size, int ibDevN,
@@ -218,6 +219,16 @@ struct flagcxMrEntry *flagcxMrRegistryEntries(struct flagcxMrRegistry *reg);
 extern struct flagcxMrRegistry *flagcxGlobalMrRegistry;
 
 flagcxResult_t flagcxMrRegistryGlobalInit(void);
+
+/*
+ * Release one reference to the global registry. Destroys when refcount
+ * reaches 0.
+ *
+ * Precondition: all data-path operations (Lookup, LookupById, PrepareDesc)
+ * must be quiesced before the final release. The caller is responsible for
+ * ensuring no concurrent registry access is in flight when the last
+ * reference is dropped. Violating this is undefined behavior (use-after-free).
+ */
 flagcxResult_t flagcxMrRegistryGlobalRelease(void);
 
 #ifdef __cplusplus

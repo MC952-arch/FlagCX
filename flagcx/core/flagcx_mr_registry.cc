@@ -174,6 +174,12 @@ static void freeEntryExtensions(struct flagcxMrEntry *entry) {
  */
 static flagcxResult_t idIndexAppend(struct flagcxMrRegistry *reg, uint64_t mrId,
                                     uintptr_t baseAddr) {
+  if (reg->idCount > 0 && mrId <= reg->idIndex[reg->idCount - 1].mrId) {
+    WARN("flagcxMrRegistry: non-monotonic mrId %lu (last %lu)",
+         (unsigned long)mrId,
+         (unsigned long)reg->idIndex[reg->idCount - 1].mrId);
+    return flagcxInternalError;
+  }
   if (reg->idCount >= reg->idCapacity) {
     int newCap =
         reg->idCapacity == 0 ? ID_INDEX_INITIAL_CAPACITY : reg->idCapacity * 2;
@@ -306,6 +312,16 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
       return flagcxInternalError;
     }
 
+    /* ibDevN / ptrType mismatch from another owner is an error */
+    if (existing->ibDevN != ibDevN || existing->ptrType != ptrType) {
+      WARN("flagcxMrRegistry: addr 0x%lx metadata mismatch: "
+           "ibDevN %d vs %d, ptrType %d vs %d",
+           (unsigned long)addr, existing->ibDevN, ibDevN, existing->ptrType,
+           ptrType);
+      pthread_rwlock_unlock(&reg->rwlock);
+      return flagcxInternalError;
+    }
+
     /* Already owned by this subsystem */
     if (existing->ownerMask & ownerBit) {
       /* Update mhandle if it changed */
@@ -373,13 +389,17 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
         if (existing->p2p) {
           if (existing->p2p->mrId == 0)
             existing->p2p->mrId = reg->nextId++;
-          if (idIndexAppend(reg, existing->p2p->mrId, addr) != flagcxSuccess) {
+          if (existing->p2p->mrId >= reg->nextId)
+            reg->nextId = existing->p2p->mrId + 1;
+          flagcxResult_t appendRes =
+              idIndexAppend(reg, existing->p2p->mrId, addr);
+          if (appendRes != flagcxSuccess) {
             /* Roll back: remove P2P ownership, caller retains ext */
             existing->p2p = NULL;
             existing->ownerMask &= ~ownerBit;
             existing->mhandles[ownerIdx] = NULL;
             pthread_rwlock_unlock(&reg->rwlock);
-            return flagcxSystemError;
+            return appendRes;
           }
           if (outId)
             *outId = existing->p2p->mrId;
@@ -469,7 +489,10 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
         /* Assign mrId from registry's monotonic counter if not pre-set */
         if (entry->p2p->mrId == 0)
           entry->p2p->mrId = reg->nextId++;
-        if (idIndexAppend(reg, entry->p2p->mrId, addr) != flagcxSuccess) {
+        if (entry->p2p->mrId >= reg->nextId)
+          reg->nextId = entry->p2p->mrId + 1;
+        flagcxResult_t appendRes = idIndexAppend(reg, entry->p2p->mrId, addr);
+        if (appendRes != flagcxSuccess) {
           /* Roll back: remove the entry we just inserted */
           entry->p2p = NULL; /* caller retains ext ownership */
           if (pos < reg->count) {
@@ -477,7 +500,7 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
                     (size_t)(reg->count - pos) * sizeof(struct flagcxMrEntry));
           }
           pthread_rwlock_unlock(&reg->rwlock);
-          return flagcxSystemError;
+          return appendRes;
         }
         if (outId)
           *outId = entry->p2p->mrId;
@@ -688,28 +711,32 @@ flagcxMrRegistryFindByHandle(struct flagcxMrRegistry *reg, int ownerIdx,
 flagcxResult_t flagcxMrRegistryRdLock(struct flagcxMrRegistry *reg) {
   if (reg == NULL)
     return flagcxInternalError;
-  pthread_rwlock_rdlock(&reg->rwlock);
+  if (pthread_rwlock_rdlock(&reg->rwlock) != 0)
+    return flagcxInternalError;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxMrRegistryRdUnlock(struct flagcxMrRegistry *reg) {
   if (reg == NULL)
     return flagcxInternalError;
-  pthread_rwlock_unlock(&reg->rwlock);
+  if (pthread_rwlock_unlock(&reg->rwlock) != 0)
+    return flagcxInternalError;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxMrRegistryWrLock(struct flagcxMrRegistry *reg) {
   if (reg == NULL)
     return flagcxInternalError;
-  pthread_rwlock_wrlock(&reg->rwlock);
+  if (pthread_rwlock_wrlock(&reg->rwlock) != 0)
+    return flagcxInternalError;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxMrRegistryWrUnlock(struct flagcxMrRegistry *reg) {
   if (reg == NULL)
     return flagcxInternalError;
-  pthread_rwlock_unlock(&reg->rwlock);
+  if (pthread_rwlock_unlock(&reg->rwlock) != 0)
+    return flagcxInternalError;
   return flagcxSuccess;
 }
 

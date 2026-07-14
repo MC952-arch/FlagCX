@@ -372,6 +372,8 @@ static uint64_t &nextXferId() {
 #define gXferMutex xferMutex()
 #define gNextXferId nextXferId()
 
+static pthread_mutex_t gMrLifecycleMutex = PTHREAD_MUTEX_INITIALIZER;
+
 struct FlagcxSliceCache {
   static constexpr size_t kCap = 4096;
   std::vector<FlagcxSlice *> ring;
@@ -2098,7 +2100,9 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   }
 
   {
-    /* Phase 1: collect P2P mhandle info under write lock */
+    pthread_mutex_lock(&gMrLifecycleMutex);
+
+    /* Phase 1: collect P2P mhandle info under read lock */
     struct P2pDeregInfo {
       int ibDevN;
       void *mhandle;
@@ -2106,7 +2110,7 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
     };
     std::vector<P2pDeregInfo> deregList;
 
-    flagcxMrRegistryWrLock(flagcxGlobalMrRegistry);
+    flagcxMrRegistryRdLock(flagcxGlobalMrRegistry);
     int count = flagcxMrRegistryCount(flagcxGlobalMrRegistry);
     struct flagcxMrEntry *entries =
         flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
@@ -2119,22 +2123,29 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
       info.baseAddr = entries[i].baseAddr;
       deregList.push_back(info);
     }
-    flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+    flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
 
     /* Phase 2: deregister from registry first (atomically removes from lookup)
      */
-    for (const P2pDeregInfo &info : deregList) {
-      flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, info.baseAddr,
-                                 FLAGCX_MR_OWNER_P2P, NULL, NULL);
+    for (P2pDeregInfo &info : deregList) {
+      if (flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, info.baseAddr,
+                                     FLAGCX_MR_OWNER_P2P, NULL,
+                                     NULL) != flagcxSuccess) {
+        info.mhandle = NULL;
+      }
     }
 
-    /* Phase 3: call adaptor deregMr (now safe — no reader can find mhandle) */
+    /* Phase 3: call adaptor deregMr (only for entries actually removed) */
     for (const P2pDeregInfo &info : deregList) {
+      if (info.mhandle == NULL)
+        continue;
       struct {
         int ibDevN;
       } devCtx = {info.ibDevN};
       engine->adaptor->deregMr(&devCtx, info.mhandle);
     }
+
+    pthread_mutex_unlock(&gMrLifecycleMutex);
   }
 
   /* Release P2P engine's refcount on the global MR registry */
@@ -2477,6 +2488,8 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   if (engine == NULL || data == 0)
     return -1;
 
+  pthread_mutex_lock(&gMrLifecycleMutex);
+
   /* Check for existing exact-match registration (dedup) */
   {
     struct flagcxMrEntry existing;
@@ -2485,14 +2498,16 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
                                                              NULL};
     if (flagcxMrRegistryFindExact(flagcxGlobalMrRegistry, data, &existing,
                                   exts) == flagcxSuccess) {
+      if (existing.size != size) {
+        WARN("P2P Reg: addr 0x%lx size mismatch: existing %zu vs requested "
+             "%zu",
+             (unsigned long)data, existing.size, size);
+        pthread_mutex_unlock(&gMrLifecycleMutex);
+        return -1;
+      }
       if (p2pExt.type == FLAGCX_MR_OWNER_P2P) {
-        if (existing.size != size) {
-          WARN("P2P Reg: addr 0x%lx size mismatch: existing %zu vs requested "
-               "%zu",
-               (unsigned long)data, existing.size, size);
-          return -1;
-        }
         mrId = p2pExt.p2p.mrId;
+        pthread_mutex_unlock(&gMrLifecycleMutex);
         return 0;
       }
     }
@@ -2520,6 +2535,7 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
                              ptrType, FLAGCX_NET_MR_FLAG_NONE,
                              &mhandle) != flagcxSuccess ||
       mhandle == NULL) {
+    pthread_mutex_unlock(&gMrLifecycleMutex);
     return -1;
   }
 
@@ -2528,6 +2544,7 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
       (struct flagcxMrP2pExt *)calloc(1, sizeof(struct flagcxMrP2pExt));
   if (p2pExt == NULL) {
     engine->adaptor->deregMr(&devCtx, mhandle);
+    pthread_mutex_unlock(&gMrLifecycleMutex);
     return -1;
   }
   /* mrId=0 signals registry to assign from its monotonic counter */
@@ -2544,10 +2561,12 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   if (res != flagcxSuccess) {
     engine->adaptor->deregMr(&devCtx, mhandle);
     free(p2pExt);
+    pthread_mutex_unlock(&gMrLifecycleMutex);
     return -1;
   }
 
   mrId = assignedId;
+  pthread_mutex_unlock(&gMrLifecycleMutex);
   return 0;
 }
 
@@ -2555,23 +2574,35 @@ void flagcxP2pEngineMrDestroy(FlagcxP2pEngine *engine, FlagcxP2pMr mr) {
   if (engine == NULL)
     return;
 
+  pthread_mutex_lock(&gMrLifecycleMutex);
+
   /* Find entry by mrId to get baseAddr for deregister */
   struct flagcxMrEntry mrEntry;
   if (flagcxMrRegistryLookupById(flagcxGlobalMrRegistry, mr, &mrEntry, NULL) !=
-      flagcxSuccess)
+      flagcxSuccess) {
+    pthread_mutex_unlock(&gMrLifecycleMutex);
     return;
+  }
 
   /* Remove from registry first — prevents concurrent readers from finding it */
   void *removedExt = NULL;
-  flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, mrEntry.baseAddr,
-                             FLAGCX_MR_OWNER_P2P, NULL, &removedExt);
-  free(removedExt);
-
-  /* Now safe to deregister the adaptor handle */
+  flagcxResult_t res;
   struct {
     int ibDevN;
   } devCtx = {mrEntry.ibDevN};
+  FLAGCXCHECKGOTO(
+      flagcxMrRegistryDeregister(flagcxGlobalMrRegistry, mrEntry.baseAddr,
+                                 FLAGCX_MR_OWNER_P2P, NULL, &removedExt),
+      res, fail);
+  free(removedExt);
+
+  /* Now safe to deregister the adaptor handle */
   engine->adaptor->deregMr(&devCtx, mrEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
+  pthread_mutex_unlock(&gMrLifecycleMutex);
+  return;
+
+fail:
+  pthread_mutex_unlock(&gMrLifecycleMutex);
 }
 
 int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
@@ -2612,6 +2643,23 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   FlagcxP2pMrHandleView *mrView = reinterpret_cast<FlagcxP2pMrHandleView *>(
       entries[idx].mhandles[FLAGCX_MR_OWNER_IDX_P2P]);
   if (mrView == NULL) {
+    flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+    return -1;
+  }
+
+  /* Verify (data, size) falls within registered MR region (overflow-safe) */
+  uintptr_t dataAddr = (uintptr_t)data;
+  if (dataAddr < entries[idx].baseAddr) {
+    flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+    return -1;
+  }
+  size_t offset = (size_t)(dataAddr - entries[idx].baseAddr);
+  if (offset > entries[idx].size || size > entries[idx].size - offset) {
+    flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
+    return -1;
+  }
+
+  if (size > UINT32_MAX) {
     flagcxMrRegistryWrUnlock(flagcxGlobalMrRegistry);
     return -1;
   }
