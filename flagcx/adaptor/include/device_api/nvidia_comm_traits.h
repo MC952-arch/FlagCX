@@ -669,4 +669,11 @@ using DeviceAPI = CommTraits<Default<NvidiaPlatform>>;
 
 #endif // NCCL version check
 
+// Override: if NVSHMEM path is explicitly requested, use it instead
+#if defined(FLAGCX_COMM_TRAITS_NVSHMEM)
+#undef FLAGCX_DEVICE_API_VENDOR
+#include "nvshmem_comm_traits.h"
+using DeviceAPI = CommTraits<NvshmemBackend>;
+#endif
+
 #endif // FLAGCX_NVIDIA_DEVICE_TRAITS_H_
