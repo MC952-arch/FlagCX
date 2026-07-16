@@ -30,7 +30,7 @@ enum flagcxProxyOpState {
 struct flagcxProxyKernelState {
   pthread_t threads[FLAGCX_DEVICE_CTA_COUNT];
   flagcxFifo_t fifos[FLAGCX_DEVICE_CTA_COUNT];
-  int contextCount = 1;
+  int contextCount = 0;
   flagcxStream_t stream;
   int stop = 0;
   // Synchronization for initialization

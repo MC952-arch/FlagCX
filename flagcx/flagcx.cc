@@ -252,29 +252,29 @@ flagcxResult_t flagcxMemFree(void *ptr) {
 // Build full-mesh IB connections (including self-loopback) for one-sided ops.
 // Called once on the first flagcxOneSideRegister invocation; stored in
 // handle[0]. Pattern aligned with NCCL GIN gin.cc:146-158.
+// Build one full-mesh of IB connections for a single context.
+// On success, stores sendComms[peer] and recvComms[peer] arrays into
+// *outSend/*outRecv.
 static flagcxResult_t
-flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
-                           struct flagcxOneSideHandleInfo *info) {
-  int nranks = heteroComm->nRanks;
-  int rank = heteroComm->rank;
+flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
+                             int rank, int contextIdx, void ***outSend,
+                             void ***outRecv) {
   flagcxResult_t res = flagcxSuccess;
-
   void *listenComm = NULL;
   flagcxNetHandle_t *allHandles = NULL;
+  void **sendComms = NULL;
+  void **recvComms = NULL;
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->fullSendComms, nranks), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->fullRecvComms, nranks), res, fail);
-  info->nRanks = nranks;
+  FLAGCXCHECKGOTO(flagcxCalloc(&sendComms, nranks), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&recvComms, nranks), res, fail);
 
   {
-    // 1. Create listen comm and allgather listen handles
     flagcxNetHandle_t myListenHandle = {};
     FLAGCXCHECKGOTO(heteroComm->netAdaptor->listen(heteroComm->netDev,
                                                    (void *)myListenHandle,
                                                    &listenComm),
                     res, fail);
 
-    // Allgather listen handles from all ranks
     FLAGCXCHECKGOTO(flagcxCalloc(&allHandles, nranks), res, fail_listen);
     memcpy(&allHandles[rank], &myListenHandle, sizeof(flagcxNetHandle_t));
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
@@ -282,72 +282,137 @@ flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
                                            sizeof(flagcxNetHandle_t)),
                     res, fail_handles);
 
-    // 2. Deadlock-free full-mesh connection (NCCL GIN pattern)
+    // Deadlock-free full-mesh connection (NCCL GIN pattern)
     for (int i = 0; i < nranks; i++) {
-      int connectPeer = (rank + i) % nranks; // i=0 → self
+      int connectPeer = (rank + i) % nranks;
       int acceptPeer = (rank - i + nranks) % nranks;
 
-      // Connect to connectPeer + accept from acceptPeer in lockstep
-      void *sendComm = NULL, *recvComm = NULL;
-      while (sendComm == NULL || recvComm == NULL) {
-        if (sendComm == NULL) {
+      void *sc = NULL, *rc = NULL;
+      while (sc == NULL || rc == NULL) {
+        if (sc == NULL) {
           res = heteroComm->netAdaptor->connect(
-              heteroComm->netDev, (void *)&allHandles[connectPeer], &sendComm);
+              heteroComm->netDev, (void *)&allHandles[connectPeer], &sc);
           if (res != flagcxSuccess && res != flagcxInProgress) {
-            INFO(FLAGCX_REG,
-                 "flagcxOneSideBuildFullMesh: connect to peer %d failed, "
-                 "res=%d",
-                 connectPeer, res);
+            INFO(
+                FLAGCX_REG,
+                "flagcxOneSideBuildFullMesh: ctx %d connect to peer %d failed, "
+                "res=%d",
+                contextIdx, connectPeer, res);
             goto fail_handles;
           }
         }
-        if (recvComm == NULL) {
-          res = heteroComm->netAdaptor->accept(listenComm, &recvComm);
+        if (rc == NULL) {
+          res = heteroComm->netAdaptor->accept(listenComm, &rc);
           if (res != flagcxSuccess && res != flagcxInProgress) {
             INFO(FLAGCX_REG,
-                 "flagcxOneSideBuildFullMesh: accept from peer %d failed, "
+                 "flagcxOneSideBuildFullMesh: ctx %d accept from peer %d "
+                 "failed, "
                  "res=%d",
-                 acceptPeer, res);
+                 contextIdx, acceptPeer, res);
             goto fail_handles;
           }
         }
-        if (sendComm == NULL || recvComm == NULL)
+        if (sc == NULL || rc == NULL)
           sched_yield();
       }
-      info->fullSendComms[connectPeer] = sendComm;
-      info->fullRecvComms[acceptPeer] = recvComm;
-      INFO(FLAGCX_REG,
-           "flagcxOneSideBuildFullMesh: rank %d connected peer %d (i=%d)", rank,
-           connectPeer, i);
+      sendComms[connectPeer] = sc;
+      recvComms[acceptPeer] = rc;
     }
 
     free(allHandles);
     heteroComm->netAdaptor->closeListen(listenComm);
   }
 
-  INFO(FLAGCX_REG,
-       "flagcxOneSideBuildFullMesh: rank %d, %d full-mesh connections "
-       "(including self-loopback)",
-       rank, nranks);
+  INFO(FLAGCX_REG, "flagcxOneSideBuildFullMesh: rank %d ctx %d, %d connections",
+       rank, contextIdx, nranks);
+  *outSend = sendComms;
+  *outRecv = recvComms;
   return flagcxSuccess;
 
 fail_handles:
-  // cleanup partial connections on error
   for (int i = 0; i < nranks; i++) {
-    if (info->fullSendComms[i])
-      heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-    if (info->fullRecvComms[i])
-      heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+    if (sendComms[i])
+      heteroComm->netAdaptor->closeSend(sendComms[i]);
+    if (recvComms[i])
+      heteroComm->netAdaptor->closeRecv(recvComms[i]);
   }
   free(allHandles);
 fail_listen:
   heteroComm->netAdaptor->closeListen(listenComm);
 fail:
-  free(info->fullSendComms);
-  free(info->fullRecvComms);
+  free(sendComms);
+  free(recvComms);
+  *outSend = NULL;
+  *outRecv = NULL;
+  return res;
+}
+
+static flagcxResult_t
+flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
+                           struct flagcxOneSideHandleInfo *info) {
+  int nranks = heteroComm->nRanks;
+  int rank = heteroComm->rank;
+  flagcxResult_t res = flagcxSuccess;
+
+  // Determine number of contexts: 1 (RMA proxy) + N (kernel proxy threads).
+  // contextCount defaults to 0; only set by flagcxProxyInit when
+  // COMPILE_KERNEL_HOST. Ensure proxy is initialized so contextCount is
+  // reliable.
+  int nContexts = 1;
+  if (heteroComm->proxyState != NULL &&
+      heteroComm->proxyState->initialized == 0) {
+    FLAGCXCHECKGOTO(flagcxProxyInit(heteroComm), res, fail);
+  }
+  if (heteroComm->proxyState != NULL)
+    nContexts = 1 + heteroComm->proxyState->kernelState.contextCount;
+  info->nContexts = nContexts;
+  info->nRanks = nranks;
+
+  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextSendComms, nContexts), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextRecvComms, nContexts), res, fail);
+
+  // Build one full-mesh per context (collective: all ranks participate per
+  // round)
+  for (int ctx = 0; ctx < nContexts; ctx++) {
+    FLAGCXCHECKGOTO(flagcxOneSideBuildOneContext(heteroComm, nranks, rank, ctx,
+                                                 &info->contextSendComms[ctx],
+                                                 &info->contextRecvComms[ctx]),
+                    res, fail_partial);
+  }
+
+  // Legacy aliases: context 0 = RMA proxy
+  info->fullSendComms = info->contextSendComms[0];
+  info->fullRecvComms = info->contextRecvComms[0];
+
+  INFO(FLAGCX_REG,
+       "flagcxOneSideBuildFullMesh: rank %d, %d contexts × %d peers "
+       "(including self-loopback)",
+       rank, nContexts, nranks);
+  return flagcxSuccess;
+
+fail_partial:
+  // Cleanup contexts that were successfully created
+  for (int ctx = 0; ctx < nContexts; ctx++) {
+    if (info->contextSendComms[ctx] != NULL) {
+      for (int i = 0; i < nranks; i++) {
+        if (info->contextSendComms[ctx][i])
+          heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
+        if (info->contextRecvComms[ctx][i])
+          heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
+      }
+      free(info->contextSendComms[ctx]);
+      free(info->contextRecvComms[ctx]);
+    }
+  }
+  free(info->contextSendComms);
+  free(info->contextRecvComms);
+fail:
+  info->contextSendComms = NULL;
+  info->contextRecvComms = NULL;
   info->fullSendComms = NULL;
   info->fullRecvComms = NULL;
   info->nRanks = 0;
+  info->nContexts = 0;
   return res;
 }
 
@@ -503,15 +568,21 @@ fail_mr:
     heteroComm->netAdaptor->deregMr(regComm, mrHandle);
 fail_mesh:
   if (isFirstHandle) {
-    // Clean up full-mesh connections on first-handle failure
-    for (int i = 0; i < heteroComm->nRanks; i++) {
-      if (info->fullSendComms && info->fullSendComms[i])
-        heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-      if (info->fullRecvComms && info->fullRecvComms[i])
-        heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+    // Clean up per-context full-mesh connections on first-handle failure
+    for (int ctx = 0; ctx < info->nContexts; ctx++) {
+      if (info->contextSendComms && info->contextSendComms[ctx]) {
+        for (int i = 0; i < heteroComm->nRanks; i++) {
+          if (info->contextSendComms[ctx][i])
+            heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
+          if (info->contextRecvComms[ctx][i])
+            heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
+        }
+        free(info->contextSendComms[ctx]);
+        free(info->contextRecvComms[ctx]);
+      }
     }
-    free(info->fullSendComms);
-    free(info->fullRecvComms);
+    free(info->contextSendComms);
+    free(info->contextRecvComms);
   }
 fail_info:
   free(info);
@@ -550,16 +621,24 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
         heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
       }
 
-      // Close full-mesh connections (only in the first handle)
-      if (info->fullSendComms != NULL) {
-        for (int i = 0; i < info->nRanks; i++) {
-          if (info->fullSendComms[i])
-            heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-          if (info->fullRecvComms[i])
-            heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+      // Close per-context full-mesh connections (only in the first handle)
+      if (info->contextSendComms != NULL) {
+        for (int ctx = 0; ctx < info->nContexts; ctx++) {
+          if (info->contextSendComms[ctx] != NULL) {
+            for (int j = 0; j < info->nRanks; j++) {
+              if (info->contextSendComms[ctx][j])
+                heteroComm->netAdaptor->closeSend(
+                    info->contextSendComms[ctx][j]);
+              if (info->contextRecvComms[ctx][j])
+                heteroComm->netAdaptor->closeRecv(
+                    info->contextRecvComms[ctx][j]);
+            }
+            free(info->contextSendComms[ctx]);
+            free(info->contextRecvComms[ctx]);
+          }
         }
-        free(info->fullSendComms);
-        free(info->fullRecvComms);
+        free(info->contextSendComms);
+        free(info->contextRecvComms);
       }
     }
 
