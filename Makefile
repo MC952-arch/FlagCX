@@ -24,6 +24,10 @@ USE_SUNRISE ?= 0
 USE_PPU ?= 0
 COMPILE_KERNEL ?= 0
 
+# Device API backend selection (nccl | nvshmem)
+FLAGCX_COMM_TRAITS ?= nccl
+NVSHMEM_HOME ?= /usr/local/nvshmem
+
 # set to empty if not provided
 DEVICE_HOME ?=
 CCL_HOME ?=
@@ -279,6 +283,12 @@ ifeq ($(FORCE_DEFAULT_PATH), 1)
 	ADAPTOR_FLAG += -DFLAGCX_FORCE_DEFAULT_PATH
 endif
 
+ifeq ($(FLAGCX_COMM_TRAITS), nvshmem)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_NVSHMEM
+	INCLUDEDIR += $(NVSHMEM_HOME)/include
+	DEVICE_LINK += -L$(NVSHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+endif
+
 ifeq ($(USE_GLOO), 1)
 	HOST_CCL_LIB = $(HOST_CCL_HOME)/lib
 	HOST_CCL_INCLUDE = $(HOST_CCL_HOME)/include
@@ -341,6 +351,7 @@ BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
 	$(abspath flagcx/adaptor/include) \
+	$(abspath flagcx/adaptor/shmem) \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
 	$(abspath flagcx/service/include) \
@@ -356,6 +367,10 @@ LIBSRCFILES:= \
 	$(wildcard flagcx/runner/*.cc) \
 	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/service/*.cc)
+
+ifeq ($(FLAGCX_COMM_TRAITS), nvshmem)
+LIBSRCFILES += $(wildcard flagcx/adaptor/shmem/*.cc)
+endif
 
 ifeq ($(COMPILE_KERNEL), 1)
 DEVSRCFILES:= \
