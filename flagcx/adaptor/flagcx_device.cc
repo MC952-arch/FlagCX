@@ -26,6 +26,10 @@
 #include <new>        // std::nothrow
 #include <sched.h>    // sched_yield
 
+#ifdef FLAGCX_COMM_TRAITS_NVSHMEM
+#include "shmem/shmem_adaptor.h"
+#endif
+
 // Host-visible helpers implemented in device_api_host_helpers.cu (compiled by
 // nvcc). Other vendors provide equivalent implementations.
 // When kernels are not compiled, provide stubs so the library links.
@@ -717,6 +721,29 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
     }
   }
 
+#ifdef FLAGCX_COMM_TRAITS_NVSHMEM
+  // ---- NVSHMEM path: symmetric heap signals/barriers, team creation ----
+  if (shmemAdaptor != nullptr) {
+    flagcxShmemComm_t shmemComm = nullptr;
+    flagcxResult_t ret = shmemAdaptor->devCommCreate(comm, reqs, &shmemComm);
+    if (ret != flagcxSuccess) {
+      WARN("flagcxDevCommCreate: NVSHMEM devCommCreate failed (%d)", ret);
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
+      free(handle);
+      return ret;
+    }
+    handle->devComm = (flagcxInnerDevComm_t)shmemComm;
+    handle->signalCount = shmemComm->signalCount;
+    handle->counterCount = shmemComm->counterCount;
+    handle->contextCount = 0;
+    int interSize =
+        (handle->intraSize > 0) ? handle->nRanks / handle->intraSize : 1;
+    handle->nInterPeers = (interSize > 1) ? interSize - 1 : 0;
+    *devComm = handle;
+    return flagcxSuccess;
+  }
+#endif // FLAGCX_COMM_TRAITS_NVSHMEM
+
   // ---- Vendor path: try devCommCreate via adaptor ----
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm != nullptr &&
@@ -946,6 +973,17 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (devComm == nullptr) {
     return flagcxSuccess;
   }
+
+#ifdef FLAGCX_COMM_TRAITS_NVSHMEM
+  // NVSHMEM path: destroy symmetric heap state
+  if (shmemAdaptor != nullptr && devComm->devComm != nullptr) {
+    shmemAdaptor->devCommDestroy((flagcxShmemComm_t)devComm->devComm);
+    devComm->devComm = nullptr;
+    pthread_mutex_destroy(&devComm->cachedPtrMutex);
+    free(devComm);
+    return flagcxSuccess;
+  }
+#endif // FLAGCX_COMM_TRAITS_NVSHMEM
 
   // Vendor layer cleanup via adaptor
   if (comm != nullptr && devComm->devComm != nullptr) {
