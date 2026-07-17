@@ -37,14 +37,12 @@ extern "C" {
 /* ───── Subsystem extension structs ───── */
 
 #define FLAGCX_MR_IPC_HANDLE_BYTES 64
-#define FLAGCX_MR_DESC_SIZE 64
 
 struct flagcxMrP2pExt {
   uint64_t mrId;
   bool hasIpc;
   uint32_t ipcHandleSize;
   char ipcHandle[FLAGCX_MR_IPC_HANDLE_BYTES];
-  char descBuf[FLAGCX_MR_DESC_SIZE];
 };
 
 struct flagcxMrCollExt {
@@ -210,7 +208,9 @@ flagcxResult_t flagcxMrRegistryRdUnlock(struct flagcxMrRegistry *reg);
 flagcxResult_t flagcxMrRegistryWrLock(struct flagcxMrRegistry *reg);
 flagcxResult_t flagcxMrRegistryWrUnlock(struct flagcxMrRegistry *reg);
 
-/* Access entries directly (only valid while holding lock) */
+/* Access entries directly (only valid while holding lock).
+ * flagcxMrRegistryEntries returns NULL if registry is empty (count == 0).
+ * Callers must check count before dereferencing the returned pointer. */
 int flagcxMrRegistryCount(struct flagcxMrRegistry *reg);
 struct flagcxMrEntry *flagcxMrRegistryEntries(struct flagcxMrRegistry *reg);
 

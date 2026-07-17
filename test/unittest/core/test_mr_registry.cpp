@@ -51,8 +51,8 @@ TEST_F(MrRegistryTest, RegisterSingleEntry) {
   uint64_t mrId = 0;
 
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x1000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xDEAD, ext,
-                                     &mrId),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xDEAD, ext, &mrId),
             flagcxSuccess);
 
   EXPECT_GT(mrId, 0u);
@@ -63,8 +63,8 @@ TEST_F(MrRegistryTest, LookupContainment) {
   auto *ext = makeP2pExt();
   uint64_t mrId = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x1000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xDEAD, ext,
-                                     &mrId),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xDEAD, ext, &mrId),
             flagcxSuccess);
 
   // Addr within range
@@ -90,8 +90,8 @@ TEST_F(MrRegistryTest, LookupContainment) {
 TEST_F(MrRegistryTest, FindExact) {
   auto *ext = makeP2pExt();
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x2000, 8192, 1, 2,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xBEEF, ext,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xBEEF, ext, nullptr),
             flagcxSuccess);
 
   struct flagcxMrEntry found;
@@ -109,8 +109,8 @@ TEST_F(MrRegistryTest, LookupById) {
   auto *ext = makeP2pExt();
   uint64_t mrId = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x3000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xCAFE, ext,
-                                     &mrId),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xCAFE, ext, &mrId),
             flagcxSuccess);
 
   struct flagcxMrEntry found;
@@ -126,14 +126,14 @@ TEST_F(MrRegistryTest, IdempotentRegistration) {
   auto *ext1 = makeP2pExt();
   uint64_t mrId1 = 0, mrId2 = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x4000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x1, ext1,
-                                     &mrId1),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x1, ext1, &mrId1),
             flagcxSuccess);
 
   // Same addr+size, same owner → idempotent, returns same mrId
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x4000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x2, nullptr,
-                                     &mrId2),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x2, nullptr, &mrId2),
             flagcxSuccess);
   EXPECT_EQ(mrId1, mrId2);
   EXPECT_EQ(flagcxMrRegistryCount(reg), 1);
@@ -144,8 +144,8 @@ TEST_F(MrRegistryTest, MhandleUpdate) {
   ext1->mrId = 0; // let registry assign
   uint64_t mrId1 = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x9000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x10, ext1,
-                                     &mrId1),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x10, ext1, &mrId1),
             flagcxSuccess);
   ASSERT_NE(mrId1, 0u);
 
@@ -154,8 +154,8 @@ TEST_F(MrRegistryTest, MhandleUpdate) {
   ext2->hasIpc = true;
   uint64_t mrId2 = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x9000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x20, ext2,
-                                     &mrId2),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x20, ext2, &mrId2),
             flagcxSuccess);
   // mrId preserved from original registration
   EXPECT_EQ(mrId2, mrId1);
@@ -167,7 +167,7 @@ TEST_F(MrRegistryTest, MhandleUpdate) {
   struct flagcxMrExtension *exts[FLAGCX_MR_OWNER_COUNT] = {&p2pExt, NULL, NULL};
   ASSERT_EQ(flagcxMrRegistryFindExact(reg, 0x9000, &found, exts),
             flagcxSuccess);
-  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)0x20);
+  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)(uintptr_t)0x20);
   EXPECT_EQ(p2pExt.type, (uint32_t)FLAGCX_MR_OWNER_P2P);
   EXPECT_EQ(p2pExt.p2p.hasIpc, true);
 
@@ -175,13 +175,13 @@ TEST_F(MrRegistryTest, MhandleUpdate) {
   // preserved
   uint64_t mrId3 = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x9000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x30, nullptr,
-                                     &mrId3),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x30, nullptr, &mrId3),
             flagcxSuccess);
   EXPECT_EQ(mrId3, mrId1);
   ASSERT_EQ(flagcxMrRegistryFindExact(reg, 0x9000, &found, exts),
             flagcxSuccess);
-  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)0x30);
+  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)(uintptr_t)0x30);
   // ext2 still present (not freed since new ext was NULL)
   EXPECT_EQ(p2pExt.type, (uint32_t)FLAGCX_MR_OWNER_P2P);
   EXPECT_EQ(p2pExt.p2p.hasIpc, true);
@@ -195,12 +195,12 @@ TEST_F(MrRegistryTest, MultiOwnerRegistration) {
 
   uint64_t mrId = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x5000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xA, p2pExt,
-                                     &mrId),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xA, p2pExt, &mrId),
             flagcxSuccess);
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x5000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_COLL, (void *)0xB, collExt,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_COLL,
+                                     (void *)(uintptr_t)0xB, collExt, nullptr),
             flagcxSuccess);
 
   EXPECT_EQ(flagcxMrRegistryCount(reg), 1);
@@ -213,8 +213,8 @@ TEST_F(MrRegistryTest, MultiOwnerRegistration) {
             flagcxSuccess);
   EXPECT_EQ(found.ownerMask,
             (uint32_t)(FLAGCX_MR_OWNER_P2P | FLAGCX_MR_OWNER_COLL));
-  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)0xA);
-  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_COLL], (void *)0xB);
+  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)(uintptr_t)0xA);
+  EXPECT_EQ(found.mhandles[FLAGCX_MR_OWNER_IDX_COLL], (void *)(uintptr_t)0xB);
   EXPECT_EQ(collExt2.type, (uint32_t)FLAGCX_MR_OWNER_COLL);
   EXPECT_EQ(collExt2.coll.channelId, 7);
 }
@@ -222,16 +222,16 @@ TEST_F(MrRegistryTest, MultiOwnerRegistration) {
 TEST_F(MrRegistryTest, SizeMismatchRejected) {
   auto *ext = makeP2pExt();
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x6000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x1, ext,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x1, ext, nullptr),
             flagcxSuccess);
 
   auto *collExt =
       (struct flagcxMrCollExt *)calloc(1, sizeof(struct flagcxMrCollExt));
   // Different size → error
   EXPECT_NE(flagcxMrRegistryRegister(reg, 0x6000, 8192, 0, 0,
-                                     FLAGCX_MR_OWNER_COLL, (void *)0x2, collExt,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_COLL,
+                                     (void *)(uintptr_t)0x2, collExt, nullptr),
             flagcxSuccess);
   free(collExt); // caller retains ownership on failure
 }
@@ -239,15 +239,15 @@ TEST_F(MrRegistryTest, SizeMismatchRejected) {
 TEST_F(MrRegistryTest, OverlapRejected) {
   auto *ext1 = makeP2pExt();
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x7000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x1, ext1,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x1, ext1, nullptr),
             flagcxSuccess);
 
   auto *ext2 = makeP2pExt();
   // Overlapping region
   EXPECT_NE(flagcxMrRegistryRegister(reg, 0x7800, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x2, ext2,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x2, ext2, nullptr),
             flagcxSuccess);
   free(ext2);
 }
@@ -256,8 +256,8 @@ TEST_F(MrRegistryTest, Deregister) {
   auto *ext = makeP2pExt();
   uint64_t mrId = 0;
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x8000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0xF00D, ext,
-                                     &mrId),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0xF00D, ext, &mrId),
             flagcxSuccess);
 
   void *removedExt = nullptr;
@@ -266,7 +266,8 @@ TEST_F(MrRegistryTest, Deregister) {
                                        &removedEntry, &removedExt),
             flagcxSuccess);
   EXPECT_EQ(removedEntry.baseAddr, (uintptr_t)0x8000);
-  EXPECT_EQ(removedEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P], (void *)0xF00D);
+  EXPECT_EQ(removedEntry.mhandles[FLAGCX_MR_OWNER_IDX_P2P],
+            (void *)(uintptr_t)0xF00D);
   EXPECT_NE(removedExt, nullptr);
   free(removedExt);
 
@@ -281,12 +282,12 @@ TEST_F(MrRegistryTest, DeregisterMultiOwnerPartial) {
   rmaExt->oneSideHandleIdx = 42;
 
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x9000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_P2P, (void *)0x1, p2pExt,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x1, p2pExt, nullptr),
             flagcxSuccess);
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x9000, 4096, 0, 0,
-                                     FLAGCX_MR_OWNER_RMA, (void *)0x2, rmaExt,
-                                     nullptr),
+                                     FLAGCX_MR_OWNER_RMA,
+                                     (void *)(uintptr_t)0x2, rmaExt, nullptr),
             flagcxSuccess);
 
   // Remove P2P owner — entry should remain with RMA
@@ -330,12 +331,12 @@ TEST_F(MrRegistryTest, SortedInsertionOrder) {
 
   EXPECT_EQ(flagcxMrRegistryCount(reg), 10);
 
-  flagcxMrRegistryRdLock(reg);
+  ASSERT_EQ(flagcxMrRegistryRdLock(reg), flagcxSuccess);
   struct flagcxMrEntry *entries = flagcxMrRegistryEntries(reg);
   for (int i = 1; i < 10; i++) {
     EXPECT_LT(entries[i - 1].baseAddr, entries[i].baseAddr);
   }
-  flagcxMrRegistryRdUnlock(reg);
+  ASSERT_EQ(flagcxMrRegistryRdUnlock(reg), flagcxSuccess);
 }
 
 TEST_F(MrRegistryTest, MrIdMonotonicallyIncreasing) {
@@ -387,7 +388,7 @@ TEST_F(MrRegistryTest, ConcurrentLookup) {
 
 TEST_F(MrRegistryTest, FindByHandle) {
   auto *ext = makeP2pExt();
-  void *handle = (void *)0xBEEF;
+  void *handle = (void *)(uintptr_t)0xBEEF;
   uint64_t mrId = 0;
 
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x5000, 8192, 0, 0,
@@ -410,7 +411,8 @@ TEST_F(MrRegistryTest, FindByHandle) {
 
   // Non-existent handle — should not find
   EXPECT_NE(flagcxMrRegistryFindByHandle(reg, FLAGCX_MR_OWNER_IDX_P2P,
-                                         (void *)0xDEADDEAD, &found, NULL),
+                                         (void *)(uintptr_t)0xDEADDEAD, &found,
+                                         NULL),
             flagcxSuccess);
 
   // NULL handle — should return error
@@ -424,7 +426,7 @@ TEST_F(MrRegistryTest, RmaOwnerRegistration) {
   struct flagcxMrRmaExt *ext =
       (struct flagcxMrRmaExt *)calloc(1, sizeof(struct flagcxMrRmaExt));
   ext->oneSideHandleIdx = 0; // data buffer slot 0
-  void *handle = (void *)0xABCD;
+  void *handle = (void *)(uintptr_t)0xABCD;
   uint64_t mrId = 0;
 
   ASSERT_EQ(flagcxMrRegistryRegister(reg, 0x8000, 16384, 0, 2,
@@ -639,5 +641,16 @@ TEST_F(MrRegistryTest, LookupByIdWithIndex) {
               flagcxSuccess);
     free(removedExt);
   }
+  EXPECT_EQ(flagcxMrRegistryCount(reg), 0);
+}
+
+TEST_F(MrRegistryTest, RejectWraparoundRegion) {
+  auto *ext = makeP2pExt();
+  // addr + size wraps uintptr_t — should be rejected
+  EXPECT_NE(flagcxMrRegistryRegister(reg, UINTPTR_MAX - 10, 100, 0, 0,
+                                     FLAGCX_MR_OWNER_P2P,
+                                     (void *)(uintptr_t)0x1, ext, nullptr),
+            flagcxSuccess);
+  free(ext);
   EXPECT_EQ(flagcxMrRegistryCount(reg), 0);
 }

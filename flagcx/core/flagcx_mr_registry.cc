@@ -292,6 +292,10 @@ flagcxResult_t flagcxMrRegistryRegister(struct flagcxMrRegistry *reg,
   if (reg == NULL || size == 0 || addr == 0)
     return flagcxInternalError;
 
+  /* Reject regions that wrap the address space */
+  if (addr + size < addr)
+    return flagcxInternalError;
+
   int ownerIdx = ownerBitToIdx(ownerBit);
   if (ownerIdx < 0)
     return flagcxInternalError;
@@ -747,7 +751,7 @@ int flagcxMrRegistryCount(struct flagcxMrRegistry *reg) {
 }
 
 struct flagcxMrEntry *flagcxMrRegistryEntries(struct flagcxMrRegistry *reg) {
-  if (reg == NULL)
+  if (reg == NULL || reg->count == 0)
     return NULL;
   return reg->entries;
 }
