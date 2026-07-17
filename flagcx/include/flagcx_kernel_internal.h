@@ -107,33 +107,6 @@ struct flagcxCommProperties {
 };
 typedef struct flagcxCommProperties flagcxCommProperties_t;
 
-// Query communicator properties.
-// Currently returns placeholder defaults; will delegate to backend
-// (e.g. ncclCommQueryProperties) when wired through the adaptor layer.
-flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
-                                         flagcxCommProperties_t *props);
-
-// Forward declarations for types defined in flagcx_device.h.
-struct flagcxTeam;
-typedef struct flagcxTeam flagcxTeam_t;
-struct flagcxDevCommRequirements;
-struct flagcxIntraBarrierHandle;
-typedef struct flagcxIntraBarrierHandle flagcxIntraBarrierHandle_t;
-struct flagcxInterBarrierHandle;
-typedef struct flagcxInterBarrierHandle flagcxInterBarrierHandle_t;
-
-// Create barrier requirement handles (stub — returns flagcxNotSupported).
-// FlagCX currently uses intraBarrierCount in DevCommCreate directly;
-// the resource-handle model will be implemented when needed.
-flagcxResult_t
-flagcxIntraBarrierCreateRequirement(flagcxTeam_t team, int nBarriers,
-                                    flagcxIntraBarrierHandle_t *outHandle,
-                                    flagcxDevCommRequirements *outReq);
-
-flagcxResult_t flagcxInterBarrierCreateRequirement(
-    flagcxComm_t comm, flagcxTeam_t team, int nBarriers,
-    flagcxInterBarrierHandle_t *outHandle, flagcxDevCommRequirements *outReq);
-
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Vendor),
 // or IPC barrier state on default path (Default).
@@ -185,6 +158,10 @@ flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm);
 flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr);
 flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
 
+// Comm-level cleanup — delegates to devApiBackend->commCleanup.
+// Called from flagcxCommDestroy before heteroComm teardown.
+flagcxResult_t flagcxCommCleanup(flagcxComm_t comm);
+
 #ifdef __cplusplus
 }
 #endif
@@ -200,12 +177,6 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot);
 
 // Drain deferred IPC entries queued by releaseIpcTableSlot.
 flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
-
-// Tear down inter-node signal relay stored on heteroComm.
-// Must be called before flagcxHeteroCommDestroy (which frees proxyState and
-// heteroComm). Internally drains FIFOs and performs a cross-rank barrier
-// before closing RDMA connections.
-flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm);
 
 // Deferred device/host-pinned memory free.
 // Collects pointers during DevComm/DevMem cleanup.
