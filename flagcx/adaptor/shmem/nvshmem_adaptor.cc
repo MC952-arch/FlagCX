@@ -6,6 +6,7 @@
  * state (signals, counters, barriers, teams).
  ************************************************************************/
 
+#include "nvshmem_adaptor.h"
 #include "shmem_adaptor.h"
 
 #include <cstring>
@@ -16,27 +17,6 @@
 // ============================================================
 // Internal state for one devComm backed by NVSHMEM
 // ============================================================
-struct flagcxShmemCommInternal {
-  int rank, nRanks;
-  int intraRank, intraSize;
-  nvshmem_team_t intraTeam;
-  nvshmem_team_t interTeam;
-
-  uint64_t *signalBuffer;
-  int signalCount;
-  uint64_t *counterBuffer;
-  int counterCount;
-  uint64_t *shadowBuffer;
-
-  uint64_t *intraBarrierSignals;
-  uint64_t *interBarrierSignals;
-  uint64_t *worldBarrierSignals;
-  uint64_t *barrierUsage;
-
-  int intraBarrierCount;
-  int interBarrierCount;
-  int worldBarrierCount;
-};
 
 // ============================================================
 // Lifecycle: reference-counted init/finalize

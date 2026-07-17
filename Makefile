@@ -23,9 +23,9 @@ USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
 COMPILE_KERNEL ?= 0
 
-# Device API backend selection (nccl | nvshmem)
-FLAGCX_COMM_TRAITS ?= nccl
-NVSHMEM_HOME ?= /usr/local/nvshmem
+# Device API backend selection
+USE_SHMEM ?= 0
+SHMEM_HOME ?= /usr/local/nvshmem
 
 # set to empty if not provided
 DEVICE_HOME ?=
@@ -156,6 +156,24 @@ ifeq ($(USE_NVIDIA), 1)
 ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
 	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
 endif
+# Device API backend selection (nested inside USE_NVIDIA)
+ifeq ($(USE_SHMEM), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
+	INCLUDEDIR += $(SHMEM_HOME)/include
+	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+else ifeq ($(FORCE_DEFAULT_PATH), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
+else
+	# Auto-detect NCCL version from header
+	NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
+	NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
+	NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
+ifeq ($(NCCL_VERSION_OK), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL
+else
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
+endif
+endif
 else ifeq ($(USE_ASCEND), 1)
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
@@ -263,17 +281,24 @@ else
 ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
 	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
 endif
+# Device API backend selection (fallback NVIDIA path)
+ifeq ($(USE_SHMEM), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
+	INCLUDEDIR += $(SHMEM_HOME)/include
+	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+else ifeq ($(FORCE_DEFAULT_PATH), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
+else
+	NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
+	NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
+	NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
+ifeq ($(NCCL_VERSION_OK), 1)
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL
+else
+	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
+endif
+endif
 	USE_NVIDIA := 1
-endif
-
-ifeq ($(FORCE_DEFAULT_PATH), 1)
-	ADAPTOR_FLAG += -DFLAGCX_FORCE_DEFAULT_PATH
-endif
-
-ifeq ($(FLAGCX_COMM_TRAITS), nvshmem)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_NVSHMEM
-	INCLUDEDIR += $(NVSHMEM_HOME)/include
-	DEVICE_LINK += -L$(NVSHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
 endif
 
 ifeq ($(USE_GLOO), 1)
@@ -338,6 +363,7 @@ BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
 	$(abspath flagcx/adaptor/include) \
+	$(abspath flagcx/adaptor/device_api) \
 	$(abspath flagcx/adaptor/shmem) \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
@@ -355,8 +381,16 @@ LIBSRCFILES:= \
 	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/service/*.cc)
 
-ifeq ($(FLAGCX_COMM_TRAITS), nvshmem)
+# Device API backend source selection
+ifeq ($(USE_SHMEM), 1)
 LIBSRCFILES += $(wildcard flagcx/adaptor/shmem/*.cc)
+LIBSRCFILES += flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
+else ifeq ($(FORCE_DEFAULT_PATH), 1)
+LIBSRCFILES += flagcx/adaptor/device_api/default_dev_api_backend.cc
+else ifeq ($(NCCL_VERSION_OK), 1)
+LIBSRCFILES += flagcx/adaptor/device_api/nccl_dev_api_backend.cc
+else
+LIBSRCFILES += flagcx/adaptor/device_api/default_dev_api_backend.cc
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)

@@ -2271,11 +2271,10 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   if (!useHomoComm(comm)) {
-    // Tear down inter-node signal relay first: drains FIFOs and closes RDMA
-    // connections. Must run before flagcxHeteroCommDestroy, which frees
-    // proxyState and heteroComm. Proxy threads are stopped inside
-    // flagcxCommRelayDestroy via the bootstrap barrier before any teardown.
-    FLAGCXCHECK(flagcxCommRelayDestroy(comm));
+    // Backend-level comm cleanup: relay teardown, IPC table cleanup.
+    // Must run before flagcxHeteroCommDestroy, which frees proxyState and
+    // heteroComm.
+    FLAGCXCHECK(flagcxCommCleanup(comm));
     // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
     flagcxOneSideStagingDeregister(comm);
     flagcxOneSideSignalDeregister(comm);

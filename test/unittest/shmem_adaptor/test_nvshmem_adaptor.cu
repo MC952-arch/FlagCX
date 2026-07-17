@@ -2,7 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Unit tests for NVSHMEM CommTraits and host-side adaptor.
- * Build: nvcc -DFLAGCX_COMM_TRAITS_NVSHMEM -DUSE_NVIDIA_ADAPTOR ...
+ * Build: nvcc -DFLAGCX_COMM_TRAITS_SHMEM -DUSE_NVIDIA_ADAPTOR ...
  *
  * Multi-PE tests require: nvshmrun -np 2 ./test_nvshmem_adaptor
  ************************************************************************/
@@ -15,7 +15,7 @@
 #include <nvshmemx.h>
 
 // Pull in the traits under test
-#define FLAGCX_COMM_TRAITS_NVSHMEM
+#define FLAGCX_COMM_TRAITS_SHMEM
 #define USE_NVIDIA_ADAPTOR
 #include "device_api/comm_traits.h"
 #include "shmem_adaptor.h"
