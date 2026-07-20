@@ -495,8 +495,13 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   // Register MR for this buffer
   {
     int type = FLAGCX_PTR_CUDA;
+    INFO(FLAGCX_REG,
+         "[OneSideRegister] calling regMr: buff=%p size=%zu type=%d", buff,
+         size, type);
     res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
                                         FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+    INFO(FLAGCX_REG, "[OneSideRegister] regMr result: res=%d mrHandle=%p",
+         (int)res, mrHandle);
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);

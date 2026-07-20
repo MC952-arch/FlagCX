@@ -145,22 +145,31 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   DEVCHECK(cuDeviceGetAttribute(
       &flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
       currentDev));
+  INFO(FLAGCX_INIT,
+       "[gdrMemAlloc] dev=%d GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED=%d "
+       "size=%zu",
+       cudaDev, flag, size);
   if (flag)
     memprop.allocFlags.gpuDirectRDMACapable = 1;
   DEVCHECK(cuMemGetAllocationGranularity(&memGran, &memprop,
                                          CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
   ALIGN_SIZE(handleSize, memGran);
+  INFO(FLAGCX_INIT,
+       "[gdrMemAlloc] memGran=%zu handleSize=%zu gpuDirectRDMACapable=%d",
+       memGran, handleSize, (int)memprop.allocFlags.gpuDirectRDMACapable);
   /* Allocate the physical memory on the device */
   DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
   /* Reserve a virtual address range */
   cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
   if (cuRes != CUDA_SUCCESS) {
+    WARN("[gdrMemAlloc] cuMemAddressReserve FAILED: %d", (int)cuRes);
     cuMemRelease(handle);
     return flagcxUnhandledDeviceError;
   }
   /* Map the virtual address range to the physical allocation */
   cuRes = cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0);
   if (cuRes != CUDA_SUCCESS) {
+    WARN("[gdrMemAlloc] cuMemMap FAILED: %d", (int)cuRes);
     cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
     cuMemRelease(handle);
     *ptr = NULL;
@@ -173,12 +182,15 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   cuRes = cuMemSetAccess((CUdeviceptr)*ptr, handleSize, &accessDesc, 1);
   if (cuRes != CUDA_SUCCESS) {
+    WARN("[gdrMemAlloc] cuMemSetAccess FAILED: %d", (int)cuRes);
     cuMemUnmap((CUdeviceptr)*ptr, handleSize);
     cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
     cuMemRelease(handle);
     *ptr = NULL;
     return flagcxUnhandledDeviceError;
   }
+  INFO(FLAGCX_INIT, "[gdrMemAlloc] VMM alloc OK: ptr=%p size=%zu", *ptr,
+       handleSize);
   /* Release the create-time handle reference; the mapping holds its own. */
   cuMemRelease(handle);
 #else
@@ -544,11 +556,22 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     return flagcxSystemError;
 
   // Retain the physical allocation handle from the VMM-backed pointer
-  DEVCHECK(cuMemRetainAllocationHandle(cuHandle, ptr));
+  INFO(FLAGCX_INIT, "[symPhysAlloc] retaining handle for ptr=%p size=%zu", ptr,
+       size);
+  CUresult retainRes = cuMemRetainAllocationHandle(cuHandle, ptr);
+  if (retainRes != CUDA_SUCCESS) {
+    WARN("[symPhysAlloc] cuMemRetainAllocationHandle FAILED: %d ptr=%p",
+         (int)retainRes, ptr);
+    free(cuHandle);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "[symPhysAlloc] retain OK, handle=0x%llx",
+       (unsigned long long)*cuHandle);
 
   // Discover actual physical allocation size (already granularity-aligned)
   size_t actualAllocSize = 0;
   DEVCHECK(cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr));
+  INFO(FLAGCX_INIT, "[symPhysAlloc] actualAllocSize=%zu", actualAllocSize);
   *allocSize = actualAllocSize;
 
   // Export as POSIX fd for IPC sharing
@@ -556,8 +579,16 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     free(cuHandle);
     return flagcxInvalidArgument;
   }
-  DEVCHECK(cuMemExportToShareableHandle(
-      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  INFO(FLAGCX_INIT, "[symPhysAlloc] exporting shareable handle...");
+  CUresult exportRes = cuMemExportToShareableHandle(
+      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
+  if (exportRes != CUDA_SUCCESS) {
+    WARN("[symPhysAlloc] cuMemExportToShareableHandle FAILED: %d",
+         (int)exportRes);
+    free(cuHandle);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "[symPhysAlloc] export OK, fd=%d", *(int *)shareableHandle);
   *handleSize = sizeof(int); // POSIX fd is an int
   *physHandle = cuHandle;
   return flagcxSuccess;

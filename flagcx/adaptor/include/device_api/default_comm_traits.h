@@ -494,8 +494,10 @@ struct CommTraits<Default<PlatformTag>> {
     // ---- MR offset helper ----
     FLAGCX_DEVICE_INLINE_DECORATOR
     static size_t toDataOffset(const Window &win, size_t off) {
-      void *ptr = win.getLocalPointer(off);
-      return (uintptr_t)ptr - win.mrBase;
+      // Use rawPtr (the original buffer VA used for MR registration) rather
+      // than getLocalPointer() which may return a VMM flat-mapped VA that
+      // differs from the MR-registered VA.
+      return (uintptr_t)win.getRawPtr() + off - win.mrBase;
     }
 
     // ---- Action decomposition helpers ----

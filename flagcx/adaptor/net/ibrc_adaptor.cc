@@ -1623,6 +1623,10 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
             "regAddr=0x%lx size=%lld rkey=0x%x lkey=0x%x fd=%d",
             (unsigned long)addr, (long long)pages * pageSize, mr->rkey,
             mr->lkey, fd);
+      INFO(FLAGCX_REG,
+           "[ibRegMr] NEW MR: addr=0x%lx size=%lld rkey=0x%x lkey=0x%x fd=%d",
+           (unsigned long)addr, (long long)pages * pageSize, mr->rkey, mr->lkey,
+           fd);
       if (slot != cache->population)
         memmove(cache->slots + slot + 1, cache->slots + slot,
                 (cache->population - slot) * sizeof(struct flagcxIbMr));
@@ -2437,6 +2441,14 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
   int lkey = srcInfo->lkeys[srcRank];
   int rkey = dstInfo->rkeys[dstRank];
+  WARN("flagcxIbIput: srcRank=%d dstRank=%d srcOff=%lu dstOff=%lu "
+       "size=%zu srcPtr=%p dstPtr=%p lkey=0x%x rkey=0x%x "
+       "srcBase=0x%lx dstBase=0x%lx regionSize=%zu/%zu",
+       srcRank, dstRank, (unsigned long)srcOff, (unsigned long)dstOff, size,
+       srcPtr, dstPtr, (unsigned)lkey, (unsigned)rkey,
+       (unsigned long)srcInfo->baseVas[srcRank],
+       (unsigned long)dstInfo->baseVas[dstRank], srcInfo->regionSize,
+       dstInfo->regionSize);
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
   req->type = FLAGCX_NET_IB_REQ_IPUT;

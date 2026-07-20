@@ -271,14 +271,31 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
     return flagcxInternalError;
   }
 
+  // Clear any prior sticky error
+  cudaError_t priorErr = cudaGetLastError();
+  if (priorErr != cudaSuccess) {
+    printf("[flagcxInterOneSidedAlltoAll] WARNING: prior CUDA error before "
+           "launch: %s (%d)\n",
+           cudaGetErrorString(priorErr), (int)priorErr);
+  }
+
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
+
+  printf("[flagcxInterOneSidedAlltoAll] launching kernel: CTAs=%d threads=%d "
+         "count=%zu stream=%p\n",
+         FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, count,
+         (void *)*(cudaStream_t *)stream);
 
   flagcxInterOneSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[flagcxInterOneSidedAlltoAll] kernel launch FAILED: %s (%d)\n",
+           cudaGetErrorString(err), (int)err);
+  }
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
