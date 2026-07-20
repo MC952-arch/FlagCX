@@ -328,8 +328,6 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
          "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
          (int)d->isVMM, buff, size);
     flagcxResult_t regRes = flagcxOneSideRegisterInternal(comm, buff, size);
-    INFO(FLAGCX_INIT, "[symWindowRegister] OneSideRegisterInternal result=%d",
-         (int)regRes);
     if (regRes == flagcxSuccess) {
       for (int i = 0; i < comm->oneSideHandleCount; i++) {
         struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[i];

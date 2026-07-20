@@ -540,8 +540,13 @@ flagcxResult_t
 cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                        size_t size, unsigned long long flags) {
   CUdeviceptr dptr = (CUdeviceptr)buffer;
-  DEVCHECK(cuMemGetHandleForAddressRange(
-      handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags));
+  CUresult err = cuMemGetHandleForAddressRange(
+      handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
+  if (err != CUDA_SUCCESS) {
+    // Clear the sticky CUDA error so downstream kernel launches aren't affected
+    (void)cudaGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
   return flagcxSuccess;
 }
 
@@ -575,8 +580,6 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     return flagcxSystemError;
 
   // Retain the physical allocation handle from the VMM-backed pointer
-  INFO(FLAGCX_INIT, "[symPhysAlloc] retaining handle for ptr=%p size=%zu", ptr,
-       size);
   CUresult retainRes = cuMemRetainAllocationHandle(cuHandle, ptr);
   if (retainRes != CUDA_SUCCESS) {
     WARN("[symPhysAlloc] cuMemRetainAllocationHandle FAILED: %d ptr=%p",
@@ -584,13 +587,10 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     free(cuHandle);
     return flagcxUnhandledDeviceError;
   }
-  INFO(FLAGCX_INIT, "[symPhysAlloc] retain OK, handle=0x%llx",
-       (unsigned long long)*cuHandle);
 
   // Discover actual physical allocation size (already granularity-aligned)
   size_t actualAllocSize = 0;
   DEVCHECK(cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr));
-  INFO(FLAGCX_INIT, "[symPhysAlloc] actualAllocSize=%zu", actualAllocSize);
   *allocSize = actualAllocSize;
 
   // Export as POSIX fd for IPC sharing
@@ -598,7 +598,6 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     free(cuHandle);
     return flagcxInvalidArgument;
   }
-  INFO(FLAGCX_INIT, "[symPhysAlloc] exporting shareable handle...");
   CUresult exportRes = cuMemExportToShareableHandle(
       shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
   if (exportRes != CUDA_SUCCESS) {
@@ -607,7 +606,8 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     free(cuHandle);
     return flagcxUnhandledDeviceError;
   }
-  INFO(FLAGCX_INIT, "[symPhysAlloc] export OK, fd=%d", *(int *)shareableHandle);
+  INFO(FLAGCX_INIT, "[symPhysAlloc] ptr=%p allocSize=%zu fd=%d", ptr,
+       actualAllocSize, *(int *)shareableHandle);
   *handleSize = sizeof(int); // POSIX fd is an int
   *physHandle = cuHandle;
   return flagcxSuccess;

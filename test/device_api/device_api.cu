@@ -282,11 +282,6 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  printf("[flagcxInterOneSidedAlltoAll] launching kernel: CTAs=%d threads=%d "
-         "count=%zu stream=%p\n",
-         FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, count,
-         (void *)*(cudaStream_t *)stream);
-
   flagcxInterOneSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);

@@ -512,7 +512,8 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
              "[OneSideRegister] using DMA-BUF: buff=%p size=%zu fd=%d", buff,
              size, dmaBufFd);
       } else {
-        WARN("[OneSideRegister] getHandleForAddressRange failed (res=%d), "
+        INFO(FLAGCX_REG,
+             "[OneSideRegister] getHandleForAddressRange failed (res=%d), "
              "falling back to nvidia-peermem",
              (int)fdRes);
         dmaBufFd = -1;
@@ -520,23 +521,14 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     }
 
     if (dmaBufFd >= 0) {
-      INFO(FLAGCX_REG,
-           "[OneSideRegister] calling regMrDmaBuf: buff=%p size=%zu type=%d "
-           "fd=%d",
-           buff, size, type, dmaBufFd);
       res = heteroComm->netAdaptor->regMrDmaBuf(
           regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
           &mrHandle);
       close(dmaBufFd);
     } else {
-      INFO(FLAGCX_REG,
-           "[OneSideRegister] calling regMr: buff=%p size=%zu type=%d", buff,
-           size, type);
       res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
                                           FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
     }
-    INFO(FLAGCX_REG, "[OneSideRegister] regMr result: res=%d mrHandle=%p",
-         (int)res, mrHandle);
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
@@ -779,7 +771,8 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
              "[OneSideSignalRegister] using DMA-BUF: buff=%p size=%zu fd=%d",
              buff, size, dmaBufFd);
       } else {
-        WARN("[OneSideSignalRegister] getHandleForAddressRange failed (res=%d),"
+        INFO(FLAGCX_REG,
+             "[OneSideSignalRegister] getHandleForAddressRange failed (res=%d),"
              " falling back to nvidia-peermem",
              (int)fdRes);
         dmaBufFd = -1;
@@ -1231,7 +1224,10 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Step 2b: Create IPC handle for the buffer (hetero path only)
-  // Write-once: if localIpcHandleData is already populated, skip
+  // Write-once: if localIpcHandleData is already populated, skip.
+  // Note: cudaIpcGetMemHandle is incompatible with VMM buffers (cuMemCreate/
+  // cuMemMap). When it fails, we skip IPC handle creation and still proceed
+  // to Step 3 (one-sided MR registration) which handles VMM buffers correctly.
   {
     char zeros[sizeof(flagcxIpcHandleData)] = {};
     if (memcmp(&regItem->localIpcHandleData, zeros,
@@ -1239,22 +1235,32 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
       flagcxIpcMemHandle_t handlePtr = nullptr;
       size_t ipcSize = 0;
       res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-      if (res != flagcxSuccess)
-        goto fail;
+      if (res != flagcxSuccess) {
+        res = flagcxSuccess;
+        goto skip_ipc;
+      }
       res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
       if (res != flagcxSuccess) {
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        goto fail;
+        INFO(FLAGCX_REG,
+             "flagcxCommRegister: ipcMemHandleGet failed (%d) for buff %p "
+             "(likely VMM memory), skipping IPC handle",
+             (int)res, buff);
+        res = flagcxSuccess;
+        goto skip_ipc;
       }
       if (ipcSize > sizeof(flagcxIpcHandleData)) {
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        res = flagcxInternalError;
-        goto fail;
+        INFO(FLAGCX_REG,
+             "flagcxCommRegister: ipcSize %zu exceeds storage, skipping IPC",
+             ipcSize);
+        goto skip_ipc;
       }
       memcpy(&regItem->localIpcHandleData, handlePtr, ipcSize);
       deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
+skip_ipc:
 
   // Step 3: One-sided MR registration (hetero path only)
   {
