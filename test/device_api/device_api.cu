@@ -271,14 +271,6 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
     return flagcxInternalError;
   }
 
-  // Clear any prior sticky error
-  cudaError_t priorErr = cudaGetLastError();
-  if (priorErr != cudaSuccess) {
-    printf("[flagcxInterOneSidedAlltoAll] WARNING: prior CUDA error before "
-           "launch: %s (%d)\n",
-           cudaGetErrorString(priorErr), (int)priorErr);
-  }
-
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 

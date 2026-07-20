@@ -1193,7 +1193,14 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
     pthread_cond_wait(&comm->proxyState->kernelState.initCond,
                       &comm->proxyState->kernelState.initMutex);
   }
+  int initFailed = comm->proxyState->kernelState.initFailed;
   pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
+
+  if (initFailed > 0) {
+    WARN("flagcxProxyInit: %d kernel proxy thread(s) failed initialization",
+         initFailed);
+    return flagcxSystemError;
+  }
 
   if (nStarted == 0) {
     WARN("flagcxProxyInit: no kernel proxy threads started");
@@ -1845,6 +1852,8 @@ init_done:
   // deadlock)
   pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
   comm->proxyState->kernelState.ready++;
+  if (res != flagcxSuccess)
+    comm->proxyState->kernelState.initFailed++;
   pthread_cond_broadcast(&comm->proxyState->kernelState.initCond);
   pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
 

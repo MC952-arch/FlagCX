@@ -813,7 +813,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
-
+    info->signalIpcSlot = -1;
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
                                            (void *)info->baseVas,
                                            sizeof(uintptr_t)),
@@ -836,11 +836,12 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Register signal buffer in IPC table for intra-node D2D bypass.
-  // Guard on ptrType only (global env var, uniform across all ranks) to ensure
-  // all ranks enter the collective allGather inside buildIpcPeerPointers.
-  if (ptrType == FLAGCX_PTR_CUDA) {
+  // Skip when VMM is enabled: VMM buffers don't support cudaIpcGetMemHandle,
+  // and flagcxDevMemCreate uses flat VA peer access (Priority 1) instead.
+  if (!flagcxParamVmmEnable()) {
     int idx = buildIpcPeerPointers(comm, buff, size);
     if (idx >= 0) {
+      info->signalIpcSlot = idx;
       INFO(FLAGCX_REG, "Signal buffer IPC registered (slot %d) for D2D bypass",
            idx);
     }
@@ -878,6 +879,12 @@ flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm) {
       }
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
     }
+  }
+
+  // Release IPC table slot if one was allocated for D2D bypass.
+  if (heteroComm->ipcTable != NULL && info->signalIpcSlot >= 0 &&
+      info->signalIpcSlot < heteroComm->ipcTableSize) {
+    heteroComm->ipcTable[info->signalIpcSlot].inUse = false;
   }
 
   free(info->baseVas);

@@ -37,6 +37,7 @@ struct flagcxProxyKernelState {
   pthread_mutex_t initMutex;
   pthread_cond_t initCond;
   int ready = 0;
+  int initFailed = 0;
   // Shared per-peer spinlocks for PUT_VALUE staging slot protection.
   // All kernel proxy threads lock pvLocks[peer] before writing the staging
   // buffer and posting iput, preventing cross-thread corruption.
