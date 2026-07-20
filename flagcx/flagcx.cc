@@ -25,6 +25,7 @@
 #include <cassert>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <unordered_map>
 
 flagcxRegPool globalRegPool;
@@ -495,11 +496,45 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   // Register MR for this buffer
   {
     int type = FLAGCX_PTR_CUDA;
-    INFO(FLAGCX_REG,
-         "[OneSideRegister] calling regMr: buff=%p size=%zu type=%d", buff,
-         size, type);
-    res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
-                                        FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+    int dmaBufFd = -1;
+
+    // For VMM-allocated memory, use DMA-BUF registration (ibv_reg_dmabuf_mr)
+    // instead of nvidia-peermem (ibv_reg_mr). nvidia-peermem cannot correctly
+    // map VMM memory for RDMA, causing IBV_WC_REM_ACCESS_ERR at runtime.
+    if (flagcxParamVmmEnable() &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
+        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
+      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, buff, size, 0);
+      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
+        type = FLAGCX_PTR_DMABUF;
+        INFO(FLAGCX_REG,
+             "[OneSideRegister] using DMA-BUF: buff=%p size=%zu fd=%d", buff,
+             size, dmaBufFd);
+      } else {
+        WARN("[OneSideRegister] getHandleForAddressRange failed (res=%d), "
+             "falling back to nvidia-peermem",
+             (int)fdRes);
+        dmaBufFd = -1;
+      }
+    }
+
+    if (dmaBufFd >= 0) {
+      INFO(FLAGCX_REG,
+           "[OneSideRegister] calling regMrDmaBuf: buff=%p size=%zu type=%d "
+           "fd=%d",
+           buff, size, type, dmaBufFd);
+      res = heteroComm->netAdaptor->regMrDmaBuf(
+          regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
+          &mrHandle);
+      close(dmaBufFd);
+    } else {
+      INFO(FLAGCX_REG,
+           "[OneSideRegister] calling regMr: buff=%p size=%zu type=%d", buff,
+           size, type);
+      res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
+                                          FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+    }
     INFO(FLAGCX_REG, "[OneSideRegister] regMr result: res=%d mrHandle=%p",
          (int)res, mrHandle);
   }
@@ -730,8 +765,36 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   {
-    res = heteroComm->netAdaptor->regMr(regComm, buff, size, ptrType,
-                                        FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    int dmaBufFd = -1;
+
+    // For VMM-allocated signal buffers (FLAGCX_PTR_CUDA + VMM), use DMA-BUF
+    if (ptrType == FLAGCX_PTR_CUDA && flagcxParamVmmEnable() &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
+        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
+      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, buff, size, 0);
+      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
+        ptrType = FLAGCX_PTR_DMABUF;
+        INFO(FLAGCX_REG,
+             "[OneSideSignalRegister] using DMA-BUF: buff=%p size=%zu fd=%d",
+             buff, size, dmaBufFd);
+      } else {
+        WARN("[OneSideSignalRegister] getHandleForAddressRange failed (res=%d),"
+             " falling back to nvidia-peermem",
+             (int)fdRes);
+        dmaBufFd = -1;
+      }
+    }
+
+    if (dmaBufFd >= 0) {
+      res = heteroComm->netAdaptor->regMrDmaBuf(
+          regComm, buff, size, ptrType, 0ULL, dmaBufFd,
+          FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+      close(dmaBufFd);
+    } else {
+      res = heteroComm->netAdaptor->regMr(
+          regComm, buff, size, ptrType, FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    }
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);

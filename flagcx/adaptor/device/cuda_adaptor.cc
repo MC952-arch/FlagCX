@@ -5,7 +5,12 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "param.h"
+#include <mutex>
 #include <unistd.h>
+#include <unordered_map>
+
+static std::mutex gVmmHandleMapMtx;
+static std::unordered_map<void *, CUmemGenericAllocationHandle> gVmmHandleMap;
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -191,8 +196,12 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   }
   INFO(FLAGCX_INIT, "[gdrMemAlloc] VMM alloc OK: ptr=%p size=%zu", *ptr,
        handleSize);
-  /* Release the create-time handle reference; the mapping holds its own. */
-  cuMemRelease(handle);
+  /* Retain the handle so cuMemGetHandleForAddressRange can export DMA-BUF fds.
+     Released in cudaAdaptorGdrMemFree. */
+  {
+    std::lock_guard<std::mutex> lk(gVmmHandleMapMtx);
+    gVmmHandleMap[*ptr] = handle;
+  }
 #else
   DEVCHECK(cudaMalloc(ptr, size));
   cudaPointerAttributes attrs;
@@ -218,6 +227,16 @@ flagcxResult_t cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
   DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
   DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
+
+  // Release the VMM handle we retained at alloc time
+  {
+    std::lock_guard<std::mutex> lk(gVmmHandleMapMtx);
+    auto it = gVmmHandleMap.find(ptr);
+    if (it != gVmmHandleMap.end()) {
+      cuMemRelease(it->second);
+      gVmmHandleMap.erase(it);
+    }
+  }
 #else
   DEVCHECK(cudaFree(ptr));
 #endif
