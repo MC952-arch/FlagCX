@@ -860,10 +860,10 @@ fail_mr:
   return res;
 }
 
-flagcxResult_t
-flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm) {
-  if (heteroComm == NULL)
+flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
+  if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInternalError;
+  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   struct flagcxOneSideHandleInfo *info = heteroComm->signalHandle;
   if (info == NULL)
     return flagcxSuccess;
@@ -881,10 +881,9 @@ flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm) {
     }
   }
 
-  // Release IPC table slot if one was allocated for D2D bypass.
-  if (heteroComm->ipcTable != NULL && info->signalIpcSlot >= 0 &&
-      info->signalIpcSlot < heteroComm->ipcTableSize) {
-    heteroComm->ipcTable[info->signalIpcSlot].inUse = false;
+  // Release IPC table slot (resources deferred to comm destroy).
+  if (info->signalIpcSlot >= 0) {
+    releaseIpcTableSlot(comm, info->signalIpcSlot);
   }
 
   free(info->baseVas);
@@ -2279,7 +2278,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     FLAGCXCHECK(flagcxCommRelayDestroy(comm));
     // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
     flagcxOneSideStagingDeregister(comm);
-    flagcxOneSideSignalDeregister(comm->heteroComm);
+    flagcxOneSideSignalDeregister(comm);
     flagcxOneSideDeregister(comm->heteroComm);
 
     // Destroy hetero comm
@@ -2293,6 +2292,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+
+  // Drain deferred IPC entries (slots released at runtime).
+  FLAGCXCHECK(flagcxCommDrainDeferredIpc(comm));
 
   // Drain deferred DevComm buffer queue.
   FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));
