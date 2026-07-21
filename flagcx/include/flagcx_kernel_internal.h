@@ -194,6 +194,13 @@ flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
 // so that cudaFree does not deadlock on device synchronization.
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
+// Release an IPC table slot at runtime — moves resources to a deferred queue
+// so the slot can be reused by buildIpcPeerPointers. Actual cleanup at destroy.
+void releaseIpcTableSlot(flagcxComm_t comm, int slot);
+
+// Drain deferred IPC entries queued by releaseIpcTableSlot.
+flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
+
 // Tear down inter-node signal relay stored on heteroComm.
 // Must be called before flagcxHeteroCommDestroy (which frees proxyState and
 // heteroComm). Internally drains FIFOs and performs a cross-rank barrier
@@ -215,8 +222,7 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm);
 // Release signal buffer resources (MR, network connections, handle arrays).
 // flagcxOneSideSignalRegister / flagcxOneSideStagingRegister /
 // flagcxOneSideStagingDeregister are declared in flagcx.h (extern "C").
-flagcxResult_t
-flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm);
+flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm);
 
 // One-sided barrier MR registration (host-pinned memory for inter-node
 // barrier). Collective: ALL ranks must call. Leaders pass recvComm+buff,

@@ -25,6 +25,7 @@
 #include <cassert>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <unordered_map>
 
 flagcxRegPool globalRegPool;
@@ -252,29 +253,29 @@ flagcxResult_t flagcxMemFree(void *ptr) {
 // Build full-mesh IB connections (including self-loopback) for one-sided ops.
 // Called once on the first flagcxOneSideRegister invocation; stored in
 // handle[0]. Pattern aligned with NCCL GIN gin.cc:146-158.
+// Build one full-mesh of IB connections for a single context.
+// On success, stores sendComms[peer] and recvComms[peer] arrays into
+// *outSend/*outRecv.
 static flagcxResult_t
-flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
-                           struct flagcxOneSideHandleInfo *info) {
-  int nranks = heteroComm->nRanks;
-  int rank = heteroComm->rank;
+flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
+                             int rank, int contextIdx, void ***outSend,
+                             void ***outRecv) {
   flagcxResult_t res = flagcxSuccess;
-
   void *listenComm = NULL;
   flagcxNetHandle_t *allHandles = NULL;
+  void **sendComms = NULL;
+  void **recvComms = NULL;
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->fullSendComms, nranks), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->fullRecvComms, nranks), res, fail);
-  info->nRanks = nranks;
+  FLAGCXCHECKGOTO(flagcxCalloc(&sendComms, nranks), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&recvComms, nranks), res, fail);
 
   {
-    // 1. Create listen comm and allgather listen handles
     flagcxNetHandle_t myListenHandle = {};
     FLAGCXCHECKGOTO(heteroComm->netAdaptor->listen(heteroComm->netDev,
                                                    (void *)myListenHandle,
                                                    &listenComm),
                     res, fail);
 
-    // Allgather listen handles from all ranks
     FLAGCXCHECKGOTO(flagcxCalloc(&allHandles, nranks), res, fail_listen);
     memcpy(&allHandles[rank], &myListenHandle, sizeof(flagcxNetHandle_t));
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
@@ -282,72 +283,137 @@ flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
                                            sizeof(flagcxNetHandle_t)),
                     res, fail_handles);
 
-    // 2. Deadlock-free full-mesh connection (NCCL GIN pattern)
+    // Deadlock-free full-mesh connection (NCCL GIN pattern)
     for (int i = 0; i < nranks; i++) {
-      int connectPeer = (rank + i) % nranks; // i=0 → self
+      int connectPeer = (rank + i) % nranks;
       int acceptPeer = (rank - i + nranks) % nranks;
 
-      // Connect to connectPeer + accept from acceptPeer in lockstep
-      void *sendComm = NULL, *recvComm = NULL;
-      while (sendComm == NULL || recvComm == NULL) {
-        if (sendComm == NULL) {
+      void *sc = NULL, *rc = NULL;
+      while (sc == NULL || rc == NULL) {
+        if (sc == NULL) {
           res = heteroComm->netAdaptor->connect(
-              heteroComm->netDev, (void *)&allHandles[connectPeer], &sendComm);
+              heteroComm->netDev, (void *)&allHandles[connectPeer], &sc);
           if (res != flagcxSuccess && res != flagcxInProgress) {
-            INFO(FLAGCX_REG,
-                 "flagcxOneSideBuildFullMesh: connect to peer %d failed, "
-                 "res=%d",
-                 connectPeer, res);
+            INFO(
+                FLAGCX_REG,
+                "flagcxOneSideBuildFullMesh: ctx %d connect to peer %d failed, "
+                "res=%d",
+                contextIdx, connectPeer, res);
             goto fail_handles;
           }
         }
-        if (recvComm == NULL) {
-          res = heteroComm->netAdaptor->accept(listenComm, &recvComm);
+        if (rc == NULL) {
+          res = heteroComm->netAdaptor->accept(listenComm, &rc);
           if (res != flagcxSuccess && res != flagcxInProgress) {
             INFO(FLAGCX_REG,
-                 "flagcxOneSideBuildFullMesh: accept from peer %d failed, "
+                 "flagcxOneSideBuildFullMesh: ctx %d accept from peer %d "
+                 "failed, "
                  "res=%d",
-                 acceptPeer, res);
+                 contextIdx, acceptPeer, res);
             goto fail_handles;
           }
         }
-        if (sendComm == NULL || recvComm == NULL)
+        if (sc == NULL || rc == NULL)
           sched_yield();
       }
-      info->fullSendComms[connectPeer] = sendComm;
-      info->fullRecvComms[acceptPeer] = recvComm;
-      INFO(FLAGCX_REG,
-           "flagcxOneSideBuildFullMesh: rank %d connected peer %d (i=%d)", rank,
-           connectPeer, i);
+      sendComms[connectPeer] = sc;
+      recvComms[acceptPeer] = rc;
     }
 
     free(allHandles);
     heteroComm->netAdaptor->closeListen(listenComm);
   }
 
-  INFO(FLAGCX_REG,
-       "flagcxOneSideBuildFullMesh: rank %d, %d full-mesh connections "
-       "(including self-loopback)",
-       rank, nranks);
+  INFO(FLAGCX_REG, "flagcxOneSideBuildFullMesh: rank %d ctx %d, %d connections",
+       rank, contextIdx, nranks);
+  *outSend = sendComms;
+  *outRecv = recvComms;
   return flagcxSuccess;
 
 fail_handles:
-  // cleanup partial connections on error
   for (int i = 0; i < nranks; i++) {
-    if (info->fullSendComms[i])
-      heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-    if (info->fullRecvComms[i])
-      heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+    if (sendComms[i])
+      heteroComm->netAdaptor->closeSend(sendComms[i]);
+    if (recvComms[i])
+      heteroComm->netAdaptor->closeRecv(recvComms[i]);
   }
   free(allHandles);
 fail_listen:
   heteroComm->netAdaptor->closeListen(listenComm);
 fail:
-  free(info->fullSendComms);
-  free(info->fullRecvComms);
+  free(sendComms);
+  free(recvComms);
+  *outSend = NULL;
+  *outRecv = NULL;
+  return res;
+}
+
+static flagcxResult_t
+flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
+                           struct flagcxOneSideHandleInfo *info) {
+  int nranks = heteroComm->nRanks;
+  int rank = heteroComm->rank;
+  flagcxResult_t res = flagcxSuccess;
+
+  // Determine number of contexts: 1 (RMA proxy) + N (kernel proxy threads).
+  // contextCount defaults to 0; only set by flagcxProxyInit when
+  // COMPILE_KERNEL_HOST. Ensure proxy is initialized so contextCount is
+  // reliable.
+  int nContexts = 1;
+  if (heteroComm->proxyState != NULL &&
+      heteroComm->proxyState->initialized == 0) {
+    FLAGCXCHECKGOTO(flagcxProxyInit(heteroComm), res, fail);
+  }
+  if (heteroComm->proxyState != NULL)
+    nContexts = 1 + heteroComm->proxyState->kernelState.contextCount;
+  info->nContexts = nContexts;
+  info->nRanks = nranks;
+
+  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextSendComms, nContexts), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextRecvComms, nContexts), res, fail);
+
+  // Build one full-mesh per context (collective: all ranks participate per
+  // round)
+  for (int ctx = 0; ctx < nContexts; ctx++) {
+    FLAGCXCHECKGOTO(flagcxOneSideBuildOneContext(heteroComm, nranks, rank, ctx,
+                                                 &info->contextSendComms[ctx],
+                                                 &info->contextRecvComms[ctx]),
+                    res, fail_partial);
+  }
+
+  // Legacy aliases: context 0 = RMA proxy
+  info->fullSendComms = info->contextSendComms[0];
+  info->fullRecvComms = info->contextRecvComms[0];
+
+  INFO(FLAGCX_REG,
+       "flagcxOneSideBuildFullMesh: rank %d, %d contexts × %d peers "
+       "(including self-loopback)",
+       rank, nContexts, nranks);
+  return flagcxSuccess;
+
+fail_partial:
+  // Cleanup contexts that were successfully created
+  for (int ctx = 0; ctx < nContexts; ctx++) {
+    if (info->contextSendComms[ctx] != NULL) {
+      for (int i = 0; i < nranks; i++) {
+        if (info->contextSendComms[ctx][i])
+          heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
+        if (info->contextRecvComms[ctx][i])
+          heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
+      }
+      free(info->contextSendComms[ctx]);
+      free(info->contextRecvComms[ctx]);
+    }
+  }
+  free(info->contextSendComms);
+  free(info->contextRecvComms);
+fail:
+  info->contextSendComms = NULL;
+  info->contextRecvComms = NULL;
   info->fullSendComms = NULL;
   info->fullRecvComms = NULL;
   info->nRanks = 0;
+  info->nContexts = 0;
   return res;
 }
 
@@ -430,8 +496,39 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   // Register MR for this buffer
   {
     int type = FLAGCX_PTR_CUDA;
-    res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
-                                        FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+    int dmaBufFd = -1;
+
+    // For VMM-allocated memory, use DMA-BUF registration (ibv_reg_dmabuf_mr)
+    // instead of nvidia-peermem (ibv_reg_mr). nvidia-peermem cannot correctly
+    // map VMM memory for RDMA, causing IBV_WC_REM_ACCESS_ERR at runtime.
+    if (flagcxParamVmmEnable() &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
+        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
+      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, buff, size, 0);
+      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
+        type = FLAGCX_PTR_DMABUF;
+        INFO(FLAGCX_REG,
+             "[OneSideRegister] using DMA-BUF: buff=%p size=%zu fd=%d", buff,
+             size, dmaBufFd);
+      } else {
+        INFO(FLAGCX_REG,
+             "[OneSideRegister] getHandleForAddressRange failed (res=%d), "
+             "falling back to nvidia-peermem",
+             (int)fdRes);
+        dmaBufFd = -1;
+      }
+    }
+
+    if (dmaBufFd >= 0) {
+      res = heteroComm->netAdaptor->regMrDmaBuf(
+          regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
+          &mrHandle);
+      close(dmaBufFd);
+    } else {
+      res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
+                                          FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+    }
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
@@ -503,15 +600,21 @@ fail_mr:
     heteroComm->netAdaptor->deregMr(regComm, mrHandle);
 fail_mesh:
   if (isFirstHandle) {
-    // Clean up full-mesh connections on first-handle failure
-    for (int i = 0; i < heteroComm->nRanks; i++) {
-      if (info->fullSendComms && info->fullSendComms[i])
-        heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-      if (info->fullRecvComms && info->fullRecvComms[i])
-        heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+    // Clean up per-context full-mesh connections on first-handle failure
+    for (int ctx = 0; ctx < info->nContexts; ctx++) {
+      if (info->contextSendComms && info->contextSendComms[ctx]) {
+        for (int i = 0; i < heteroComm->nRanks; i++) {
+          if (info->contextSendComms[ctx][i])
+            heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
+          if (info->contextRecvComms[ctx][i])
+            heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
+        }
+        free(info->contextSendComms[ctx]);
+        free(info->contextRecvComms[ctx]);
+      }
     }
-    free(info->fullSendComms);
-    free(info->fullRecvComms);
+    free(info->contextSendComms);
+    free(info->contextRecvComms);
   }
 fail_info:
   free(info);
@@ -550,16 +653,24 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
         heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
       }
 
-      // Close full-mesh connections (only in the first handle)
-      if (info->fullSendComms != NULL) {
-        for (int i = 0; i < info->nRanks; i++) {
-          if (info->fullSendComms[i])
-            heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
-          if (info->fullRecvComms[i])
-            heteroComm->netAdaptor->closeRecv(info->fullRecvComms[i]);
+      // Close per-context full-mesh connections (only in the first handle)
+      if (info->contextSendComms != NULL) {
+        for (int ctx = 0; ctx < info->nContexts; ctx++) {
+          if (info->contextSendComms[ctx] != NULL) {
+            for (int j = 0; j < info->nRanks; j++) {
+              if (info->contextSendComms[ctx][j])
+                heteroComm->netAdaptor->closeSend(
+                    info->contextSendComms[ctx][j]);
+              if (info->contextRecvComms[ctx][j])
+                heteroComm->netAdaptor->closeRecv(
+                    info->contextRecvComms[ctx][j]);
+            }
+            free(info->contextSendComms[ctx]);
+            free(info->contextRecvComms[ctx]);
+          }
         }
-        free(info->fullSendComms);
-        free(info->fullRecvComms);
+        free(info->contextSendComms);
+        free(info->contextRecvComms);
       }
     }
 
@@ -646,8 +757,37 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   {
-    res = heteroComm->netAdaptor->regMr(regComm, buff, size, ptrType,
-                                        FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    int dmaBufFd = -1;
+
+    // For VMM-allocated signal buffers (FLAGCX_PTR_CUDA + VMM), use DMA-BUF
+    if (ptrType == FLAGCX_PTR_CUDA && flagcxParamVmmEnable() &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
+        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
+      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, buff, size, 0);
+      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
+        ptrType = FLAGCX_PTR_DMABUF;
+        INFO(FLAGCX_REG,
+             "[OneSideSignalRegister] using DMA-BUF: buff=%p size=%zu fd=%d",
+             buff, size, dmaBufFd);
+      } else {
+        INFO(FLAGCX_REG,
+             "[OneSideSignalRegister] getHandleForAddressRange failed (res=%d),"
+             " falling back to nvidia-peermem",
+             (int)fdRes);
+        dmaBufFd = -1;
+      }
+    }
+
+    if (dmaBufFd >= 0) {
+      res = heteroComm->netAdaptor->regMrDmaBuf(
+          regComm, buff, size, ptrType, 0ULL, dmaBufFd,
+          FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+      close(dmaBufFd);
+    } else {
+      res = heteroComm->netAdaptor->regMr(
+          regComm, buff, size, ptrType, FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    }
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);
@@ -673,7 +813,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
-
+    info->signalIpcSlot = -1;
     FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
                                            (void *)info->baseVas,
                                            sizeof(uintptr_t)),
@@ -696,11 +836,12 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Register signal buffer in IPC table for intra-node D2D bypass.
-  // Guard on ptrType only (global env var, uniform across all ranks) to ensure
-  // all ranks enter the collective allGather inside buildIpcPeerPointers.
-  if (ptrType == FLAGCX_PTR_CUDA) {
+  // Skip when VMM is enabled: VMM buffers don't support cudaIpcGetMemHandle,
+  // and flagcxDevMemCreate uses flat VA peer access (Priority 1) instead.
+  if (ptrType == FLAGCX_PTR_CUDA && !flagcxParamVmmEnable()) {
     int idx = buildIpcPeerPointers(comm, buff, size);
     if (idx >= 0) {
+      info->signalIpcSlot = idx;
       INFO(FLAGCX_REG, "Signal buffer IPC registered (slot %d) for D2D bypass",
            idx);
     }
@@ -719,10 +860,10 @@ fail_mr:
   return res;
 }
 
-flagcxResult_t
-flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm) {
-  if (heteroComm == NULL)
+flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
+  if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInternalError;
+  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   struct flagcxOneSideHandleInfo *info = heteroComm->signalHandle;
   if (info == NULL)
     return flagcxSuccess;
@@ -738,6 +879,11 @@ flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm) {
       }
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
     }
+  }
+
+  // Release IPC table slot (resources deferred to comm destroy).
+  if (info->signalIpcSlot >= 0) {
+    releaseIpcTableSlot(comm, info->signalIpcSlot);
   }
 
   free(info->baseVas);
@@ -1084,7 +1230,10 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Step 2b: Create IPC handle for the buffer (hetero path only)
-  // Write-once: if localIpcHandleData is already populated, skip
+  // Write-once: if localIpcHandleData is already populated, skip.
+  // Note: cudaIpcGetMemHandle is incompatible with VMM buffers (cuMemCreate/
+  // cuMemMap). When it fails, we skip IPC handle creation and still proceed
+  // to Step 3 (one-sided MR registration) which handles VMM buffers correctly.
   {
     char zeros[sizeof(flagcxIpcHandleData)] = {};
     if (memcmp(&regItem->localIpcHandleData, zeros,
@@ -1092,22 +1241,32 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
       flagcxIpcMemHandle_t handlePtr = nullptr;
       size_t ipcSize = 0;
       res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-      if (res != flagcxSuccess)
-        goto fail;
+      if (res != flagcxSuccess) {
+        res = flagcxSuccess;
+        goto skip_ipc;
+      }
       res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
       if (res != flagcxSuccess) {
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        goto fail;
+        INFO(FLAGCX_REG,
+             "flagcxCommRegister: ipcMemHandleGet failed (%d) for buff %p "
+             "(likely VMM memory), skipping IPC handle",
+             (int)res, buff);
+        res = flagcxSuccess;
+        goto skip_ipc;
       }
       if (ipcSize > sizeof(flagcxIpcHandleData)) {
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        res = flagcxInternalError;
-        goto fail;
+        INFO(FLAGCX_REG,
+             "flagcxCommRegister: ipcSize %zu exceeds storage, skipping IPC",
+             ipcSize);
+        goto skip_ipc;
       }
       memcpy(&regItem->localIpcHandleData, handlePtr, ipcSize);
       deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
+skip_ipc:
 
   // Step 3: One-sided MR registration (hetero path only)
   {
@@ -2119,7 +2278,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     FLAGCXCHECK(flagcxCommRelayDestroy(comm));
     // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
     flagcxOneSideStagingDeregister(comm);
-    flagcxOneSideSignalDeregister(comm->heteroComm);
+    flagcxOneSideSignalDeregister(comm);
     flagcxOneSideDeregister(comm->heteroComm);
 
     // Destroy hetero comm
@@ -2133,6 +2292,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+
+  // Drain deferred IPC entries (slots released at runtime).
+  FLAGCXCHECK(flagcxCommDrainDeferredIpc(comm));
 
   // Drain deferred DevComm buffer queue.
   FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));

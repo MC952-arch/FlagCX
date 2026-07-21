@@ -279,6 +279,10 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[flagcxInterOneSidedAlltoAll] kernel launch FAILED: %s (%d)\n",
+           cudaGetErrorString(err), (int)err);
+  }
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

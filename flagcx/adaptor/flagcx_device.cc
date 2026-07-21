@@ -1008,7 +1008,7 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (comm != nullptr && comm->heteroComm != nullptr &&
       comm->heteroComm->devCommHandle == devComm) {
     if (devComm->signalBuffer) {
-      flagcxOneSideSignalDeregister(comm->heteroComm);
+      flagcxOneSideSignalDeregister(comm);
     }
     comm->heteroComm->devCommHandle = nullptr;
   }
@@ -1244,11 +1244,10 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
-  // Mark IPC table entry as no longer in use (actual cleanup deferred to
-  // flagcxCommDestroy.
-  if (comm != nullptr && devMem->ipcIndex >= 0 &&
-      devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
-    comm->ipcTable[devMem->ipcIndex].inUse = false;
+  // Release IPC table slot (resources moved to deferred queue for cleanup at
+  // comm destroy).
+  if (devMem->ipcIndex >= 0) {
+    releaseIpcTableSlot(comm, devMem->ipcIndex);
   }
 
   // Free window allocation if present
@@ -1461,6 +1460,65 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     e->inUse = false;
   }
 
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Deferred IPC table slot release.
+// ==========================================================================
+void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
+  if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES)
+    return;
+  struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
+  if (e->hostPeerPtrs == nullptr && e->devPeerPtrs == nullptr) {
+    e->inUse = false;
+    return;
+  }
+
+  // Move resources to deferred linked list for cleanup at comm destroy
+  struct flagcxDeferredIpcEntry *d =
+      (struct flagcxDeferredIpcEntry *)malloc(sizeof(*d));
+  if (d == nullptr) {
+    // OOM: leave slot occupied so flagcxCommCleanupIpcTable handles it at
+    // destroy. The slot won't be reusable, but resources are still safe.
+    WARN(
+        "releaseIpcTableSlot: OOM, keeping slot %d occupied until comm destroy",
+        slot);
+    e->inUse = false;
+    return;
+  }
+  d->hostPeerPtrs = e->hostPeerPtrs;
+  d->devPeerPtrs = e->devPeerPtrs;
+  d->nPeers = e->nPeers;
+  d->basePtr = e->basePtr;
+  d->next = nullptr;
+  flagcxIntruQueueEnqueue(&comm->deferredIpcQueue, d);
+
+  // Clear slot — now reusable by buildIpcPeerPointers
+  e->hostPeerPtrs = nullptr;
+  e->devPeerPtrs = nullptr;
+  e->nPeers = 0;
+  e->basePtr = nullptr;
+  e->inUse = false;
+}
+
+flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+  while (!flagcxIntruQueueEmpty(&comm->deferredIpcQueue)) {
+    struct flagcxDeferredIpcEntry *d =
+        flagcxIntruQueueDequeue(&comm->deferredIpcQueue);
+    if (d->hostPeerPtrs) {
+      for (int j = 0; j < d->nPeers; j++) {
+        if (d->hostPeerPtrs[j] && d->hostPeerPtrs[j] != d->basePtr)
+          deviceAdaptor->ipcMemHandleClose(d->hostPeerPtrs[j]);
+      }
+      free(d->hostPeerPtrs);
+    }
+    if (d->devPeerPtrs)
+      deviceAdaptor->deviceFree(d->devPeerPtrs, flagcxMemDevice, NULL);
+    free(d);
+  }
   return flagcxSuccess;
 }
 
