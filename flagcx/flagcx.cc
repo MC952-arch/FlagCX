@@ -838,7 +838,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   // Register signal buffer in IPC table for intra-node D2D bypass.
   // Skip when VMM is enabled: VMM buffers don't support cudaIpcGetMemHandle,
   // and flagcxDevMemCreate uses flat VA peer access (Priority 1) instead.
-  if (!flagcxParamVmmEnable()) {
+  if (ptrType == FLAGCX_PTR_CUDA && !flagcxParamVmmEnable()) {
     int idx = buildIpcPeerPointers(comm, buff, size);
     if (idx >= 0) {
       info->signalIpcSlot = idx;

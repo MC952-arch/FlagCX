@@ -1478,6 +1478,15 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   // Move resources to deferred linked list for cleanup at comm destroy
   struct flagcxDeferredIpcEntry *d =
       (struct flagcxDeferredIpcEntry *)malloc(sizeof(*d));
+  if (d == nullptr) {
+    // OOM: leave slot occupied so flagcxCommCleanupIpcTable handles it at
+    // destroy. The slot won't be reusable, but resources are still safe.
+    WARN(
+        "releaseIpcTableSlot: OOM, keeping slot %d occupied until comm destroy",
+        slot);
+    e->inUse = false;
+    return;
+  }
   d->hostPeerPtrs = e->hostPeerPtrs;
   d->devPeerPtrs = e->devPeerPtrs;
   d->nPeers = e->nPeers;

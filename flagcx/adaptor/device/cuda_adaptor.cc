@@ -543,8 +543,6 @@ cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
   CUresult err = cuMemGetHandleForAddressRange(
       handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
   if (err != CUDA_SUCCESS) {
-    // Clear the sticky CUDA error so downstream kernel launches aren't affected
-    (void)cudaGetLastError();
     return flagcxUnhandledDeviceError;
   }
   return flagcxSuccess;
