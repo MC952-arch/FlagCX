@@ -346,8 +346,8 @@ struct CommTraits<NvshmemBackend> {
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalInc ra, LA la) const {
       uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
-      nvshmemx_putmem_signal(dst, src, bytes, sigAddr, 1, NVSHMEM_SIGNAL_ADD,
-                             pe);
+      nvshmem_putmem_signal(dst, src, bytes, sigAddr, 1, NVSHMEM_SIGNAL_ADD,
+                            pe);
       counterImpl(la);
     }
 
@@ -356,8 +356,8 @@ struct CommTraits<NvshmemBackend> {
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalAdd ra, LA la) const {
       uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
-      nvshmemx_putmem_signal(dst, src, bytes, sigAddr, ra.value,
-                             NVSHMEM_SIGNAL_ADD, pe);
+      nvshmem_putmem_signal(dst, src, bytes, sigAddr, ra.value,
+                            NVSHMEM_SIGNAL_ADD, pe);
       counterImpl(la);
     }
 

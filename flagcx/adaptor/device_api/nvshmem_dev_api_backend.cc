@@ -7,8 +7,21 @@
 
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
+#include "device_api/nvshmem_comm_traits.h"
 #include "nvshmem_adaptor.h"
 #include "shmem_adaptor.h"
+
+#include <cstddef>
+
+// Verify that flagcxShmemCommInternal and CommTraits<NvshmemBackend>::Comm have
+// compatible layout — the constructor in flagcx_device_core.h does a raw cast.
+static_assert(
+    sizeof(flagcxShmemCommInternal) == sizeof(CommTraits<NvshmemBackend>::Comm),
+    "ShmemCommInternal and CommTraits<NvshmemBackend>::Comm size mismatch");
+static_assert(
+    offsetof(flagcxShmemCommInternal, worldBarrierCount) ==
+        offsetof(CommTraits<NvshmemBackend>::Comm, worldBarrierCount),
+    "ShmemCommInternal and CommTraits::Comm last-field offset mismatch");
 
 static flagcxResult_t
 nvshmemDevApiCommCreate(flagcxComm_t comm,
@@ -32,6 +45,8 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
   handle->counterCount = shmemComm->counterCount;
   // NVSHMEM does not use FIFO contexts — leave contextCount at 0.
   handle->contextCount = 0;
+  // NVSHMEM handles inter-node transparently — no relay peers needed.
+  handle->nInterPeers = 0;
 
   return flagcxSuccess;
 }
@@ -50,17 +65,26 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t handle) {
   (void)comm;
-  (void)buff;
-  (void)size;
   (void)win;
-  (void)handle;
+  // Populate NVSHMEM Window — buff is already in symmetric heap.
+  using Window = CommTraits<NvshmemBackend>::Window;
+  auto *w = new Window();
+  w->symBase = buff;
+  w->allocSize = size;
+  w->rawPtr = buff;
+  handle->window = (void *)w;
+  handle->hasWindow = true;
+  handle->isSymmetric = true;
   return flagcxSuccess;
 }
 
 static flagcxResult_t nvshmemDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
   (void)comm;
-  (void)devMem;
+  if (devMem->window) {
+    delete (CommTraits<NvshmemBackend>::Window *)devMem->window;
+    devMem->window = nullptr;
+  }
   return flagcxSuccess;
 }
 
