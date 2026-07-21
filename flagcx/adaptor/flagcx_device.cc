@@ -243,8 +243,9 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
 // Deferred IPC table slot release.
 // ==========================================================================
 void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
-  if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES)
+  if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES) {
     return;
+  }
   struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
   if (e->hostPeerPtrs == nullptr && e->devPeerPtrs == nullptr) {
     e->inUse = false;
