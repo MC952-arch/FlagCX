@@ -271,15 +271,6 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
       hetero->interSignalFlags = (uint64_t *)hetero->interSignalFlagsHost;
     }
 
-    // Register barrier MR for one-sided access
-    struct flagcxOneSideHandleInfo *barrierInfo = nullptr;
-    // Use first barrierRecvComm for MR registration
-    FLAGCXCHECKGOTO(flagcxOneSideBarrierRegister(comm, nullptr,
-                                                 hetero->interSignalFlagsHost,
-                                                 flagsSize, &barrierInfo),
-                    res, relay_fail);
-    hetero->barrierHandleInfo = barrierInfo;
-
     // Establish send/recv connections to peer leaders
     hetero->signalSendComms = (void **)malloc(nInterPeers * sizeof(void *));
     hetero->barrierRecvComms = (void **)malloc(nInterPeers * sizeof(void *));
@@ -327,7 +318,29 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
       hetero->signalSendComms[p] = sendComm;
       hetero->barrierRecvComms[p] = recvComm;
     }
+    net->closeListen(listenComm);
     free(allHandles);
+  }
+
+  // ALL ranks: register barrier MR (collective AllGather inside).
+  // Leaders provide recvComm and buffer; non-leaders participate in AllGather.
+  {
+    struct flagcxOneSideHandleInfo *barrierInfo = nullptr;
+    res = flagcxOneSideBarrierRegister(
+        comm, hetero->isInterLeader ? hetero->barrierRecvComms[0] : nullptr,
+        hetero->isInterLeader ? hetero->interSignalFlagsHost : nullptr,
+        hetero->isInterLeader ? flagsSize : 0, &barrierInfo);
+    if (res != flagcxSuccess) {
+      WARN("setupInterNodeSignalRelay: barrier MR registration failed (%d)",
+           res);
+      goto relay_fail;
+    }
+    if (hetero->isInterLeader) {
+      hetero->barrierHandleInfo = barrierInfo;
+    } else {
+      // Non-leader participated in AllGather but doesn't need the result
+      flagcxOneSideBarrierDeregister(comm, barrierInfo);
+    }
   }
 
   // All ranks barrier to ensure connections are established

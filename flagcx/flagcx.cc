@@ -861,12 +861,17 @@ fail_mr:
 }
 
 flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
-  if (comm == NULL || comm->heteroComm == NULL)
+  if (comm == NULL || comm->heteroComm == NULL) {
+    WARN("DEBUG: flagcxOneSideSignalDeregister early return — comm=%p "
+         "heteroComm=%p",
+         (void *)comm, comm ? (void *)comm->heteroComm : NULL);
     return flagcxInternalError;
+  }
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   struct flagcxOneSideHandleInfo *info = heteroComm->signalHandle;
-  if (info == NULL)
+  if (info == NULL) {
     return flagcxSuccess;
+  }
 
   if (heteroComm->netAdaptor != NULL) {
     if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
@@ -2270,7 +2275,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
         cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
   }
 
-  if (!useHomoComm(comm)) {
+  if (!useHomoComm(comm) || useHeteroComm()) {
     // Backend-level comm cleanup: relay teardown, IPC table cleanup.
     // Must run before flagcxHeteroCommDestroy, which frees proxyState and
     // heteroComm.
