@@ -5,8 +5,9 @@
  *
  * Selects the active CommTraits specialization based on build-time macros:
  *   FLAGCX_COMM_TRAITS_SHMEM   → NvshmemBackend (NVSHMEM)
- *   FLAGCX_COMM_TRAITS_CCL     → NvidiaVendor (NCCL device API)
- *   FLAGCX_COMM_TRAITS_DEFAULT → Default<NvidiaPlatform> (IPC + one-sided)
+ *   FLAGCX_COMM_TRAITS_CCL     → NcclBackend (NCCL device API)
+ *   FLAGCX_COMM_TRAITS_DEFAULT → DefaultBackend<NvidiaPlatform> (IPC +
+ *one-sided)
  ************************************************************************/
 
 #ifndef FLAGCX_NVIDIA_DEVICE_TRAITS_H_
@@ -24,7 +25,7 @@ using DeviceAPI = CommTraits<NvshmemBackend>;
 
 #else // FLAGCX_COMM_TRAITS_DEFAULT
 #include "default_comm_traits.h"
-using DeviceAPI = CommTraits<Default<NvidiaPlatform>>;
+using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;
 
 #endif
 

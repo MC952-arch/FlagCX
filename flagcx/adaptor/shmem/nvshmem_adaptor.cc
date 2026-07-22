@@ -9,6 +9,9 @@
 #include "nvshmem_adaptor.h"
 #include "shmem_adaptor.h"
 
+#include "flagcx_kernel_internal.h"
+#include "global_comm.h"
+
 #include <cstring>
 #include <cuda_runtime.h>
 #include <nvshmem.h>

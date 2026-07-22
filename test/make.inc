@@ -96,10 +96,18 @@ else
 endif
 
 # ---------------------------------------------------------------------------
-# NCCL version detection — mirror main Makefile logic for COMM_TRAITS selection.
+# NVSHMEM / NCCL backend selection — mirror main Makefile logic.
+# USE_SHMEM=1 takes priority over NCCL version detection.
 # ---------------------------------------------------------------------------
+USE_SHMEM ?= 0
+SHMEM_HOME ?= /usr/local/nvshmem
+
 ifeq ($(USE_NVIDIA), 1)
-ifneq ($(FORCE_DEFAULT_PATH), 1)
+ifeq ($(USE_SHMEM), 1)
+  ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_SHMEM
+  DEVICE_INCLUDE += -I$(SHMEM_HOME)/include
+  DEVICE_LINK    += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+else ifneq ($(FORCE_DEFAULT_PATH), 1)
   NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
   NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
   NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)

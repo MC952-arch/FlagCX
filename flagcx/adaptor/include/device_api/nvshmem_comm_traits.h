@@ -15,6 +15,24 @@
 #include <nvshmem.h>
 #include <nvshmemx.h>
 
+// nvshmem_uint64_wait_until and nvshmem_putmem_signal are device-only (no host
+// declaration in NVSHMEM headers). Provide inline no-op stubs so template
+// bodies compile in host .cc files (never actually called at runtime).
+// nvshmemx_signal_op already has a host declaration — do NOT stub it.
+#ifndef __CUDACC__
+#include <cstddef>
+#include <cstdint>
+#ifndef NVSHMEM_CMP_GE
+#define NVSHMEM_CMP_GE 3
+#endif
+#ifndef NVSHMEM_SIGNAL_ADD
+#define NVSHMEM_SIGNAL_ADD 1
+#endif
+static inline void nvshmem_uint64_wait_until(uint64_t *, int, uint64_t) {}
+static inline void nvshmem_putmem_signal(void *, const void *, size_t,
+                                         uint64_t *, uint64_t, int, int) {}
+#endif
+
 struct NvshmemBackend {};
 
 template <>
@@ -45,11 +63,26 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
     }
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
+                                                         int peer) const {
+      // NVSHMEM: symmetric addressing — peer's buffer at same symBase + offset
+      // (nvshmem_ptr resolves local peer VA, but for device-side we use
+      // symBase)
+      (void)peer;
+      return symBase ? (char *)symBase + offset : nullptr;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getMulticastPointer(size_t, const Multimem &) const {
+      return nullptr; // NVSHMEM doesn't use multicast
+    }
     FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return rawPtr; }
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
       return symBase != nullptr;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR int getMrIndex() const { return 0; }
+    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
+      return nullptr; // NVSHMEM uses symmetric addressing, not IPC pointers
+    }
+    FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return 0; }
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
       return symBase == o.symBase;
     }
@@ -100,24 +133,27 @@ struct CommTraits<NvshmemBackend> {
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {
+      // Only copy fields present in flagcxDevCommInternal (baseline).
+      // NVSHMEM-specific fields (teams, barriers) are populated via devComm
+      // pointer path, so this fallback only needs baseline fields.
       dc.rank = di.rank;
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
       dc.intraSize = di.intraSize;
-      dc.intraTeam = di.intraTeam;
-      dc.interTeam = di.interTeam;
+      dc.intraTeam = {};
+      dc.interTeam = {};
       dc.signalBuffer = di.signalBuffer;
       dc.signalCount = di.signalCount;
       dc.counterBuffer = di.counterBuffer;
       dc.counterCount = di.counterCount;
       dc.shadowBuffer = di.shadowBuffer;
-      dc.intraBarrierSignals = di.intraBarrierSignals;
-      dc.interBarrierSignals = di.interBarrierSignals;
-      dc.worldBarrierSignals = di.worldBarrierSignals;
-      dc.barrierUsage = di.barrierUsage;
-      dc.intraBarrierCount = di.intraBarrierCount;
-      dc.interBarrierCount = di.interBarrierCount;
-      dc.worldBarrierCount = di.worldBarrierCount;
+      dc.intraBarrierSignals = nullptr;
+      dc.interBarrierSignals = nullptr;
+      dc.worldBarrierSignals = nullptr;
+      dc.barrierUsage = nullptr;
+      dc.intraBarrierCount = 0;
+      dc.interBarrierCount = 0;
+      dc.worldBarrierCount = 0;
     }
   };
 
@@ -341,6 +377,49 @@ struct CommTraits<NvshmemBackend> {
                           flagcxDeviceMemoryOrderAcquire);
     }
 
+    // ---- Two-sided: send/recv/term/wait (NVSHMEM uses one-sided, these are
+    //      no-op stubs to satisfy the DeviceAPI interface) ----
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+    send(Coop coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+      (void)coop;
+      return flagcxSuccess;
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+    recv(Coop coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+      (void)coop;
+      return flagcxSuccess;
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
+      (void)coop;
+      return flagcxSuccess;
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
+      (void)coop;
+      return flagcxSuccess;
+    }
+
+    // ---- One-sided: get ----
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    get(Team team, int peer, Window src, size_t srcOff, Window dst,
+        size_t dstOff, size_t bytes, Coop coop) const {
+      (void)team;
+      coop.sync();
+      if (coop.threadRank() == 0) {
+        void *dstPtr = (char *)dst.rawPtr + dstOff;
+        void *srcPtr = (char *)src.symBase + srcOff;
+        nvshmem_getmem(dstPtr, srcPtr, bytes, peer);
+      }
+      coop.sync();
+    }
+
   private:
     // ---- put dispatch: select fused put+signal vs plain put ----
     template <typename LA>
@@ -401,6 +480,14 @@ struct CommTraits<NvshmemBackend> {
     }
     template <typename LA>
     FLAGCX_DEVICE_INLINE_DECORATOR void counterImpl(LA) const {}
+
+    // ---- reset counter ----
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    resetCounter(flagcxDevNetCounter_t counterId) const {
+      int idx = contextId * _dc.counterCount + (int)counterId;
+      Atomic::store(&_dc.counterBuffer[idx], (uint64_t)0,
+                    flagcxDeviceMemoryOrderRelease);
+    }
   }; // struct Net
 };   // struct CommTraits<NvshmemBackend>
 

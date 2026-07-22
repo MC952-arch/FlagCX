@@ -164,7 +164,6 @@ endif
 # Device API backend selection (nested inside USE_NVIDIA)
 ifeq ($(USE_SHMEM), 1)
 	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
-	INCLUDEDIR += $(SHMEM_HOME)/include
 	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
 else ifeq ($(FORCE_DEFAULT_PATH), 1)
 	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
@@ -297,7 +296,6 @@ endif
 # Device API backend selection (fallback NVIDIA path)
 ifeq ($(USE_SHMEM), 1)
 	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
-	INCLUDEDIR += $(SHMEM_HOME)/include
 	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
 else ifeq ($(FORCE_DEFAULT_PATH), 1)
 	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
@@ -382,6 +380,11 @@ INCLUDEDIR := \
 	$(abspath flagcx/core/include) \
 	$(abspath flagcx/service/include) \
 	$(abspath third-party/json/single_include)
+
+# Append NVSHMEM include path (must come after INCLUDEDIR := assignment)
+ifeq ($(USE_SHMEM), 1)
+INCLUDEDIR += $(SHMEM_HOME)/include
+endif
 
 LIBSRCFILES:= \
 	$(wildcard flagcx/*.cc) \
