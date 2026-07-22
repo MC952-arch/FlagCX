@@ -663,7 +663,7 @@ __global__ void kernelNetSignalCounterS(const void *devCommPtr, int *results) {
     }
 
     const flagcxDevNet *netObj = (const flagcxDevNet *)net;
-    if (netObj->signalBuffer == nullptr) {
+    if (!netObj->isValid()) {
       results[0] = 0;
       return;
     }

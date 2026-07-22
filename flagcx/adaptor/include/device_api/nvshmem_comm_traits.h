@@ -155,6 +155,8 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int contextIndex) : _dc(dc), _contextId(contextIndex) {}
 
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const { return true; }
+
     // ---- Helper: resolve PE from team + peer index ----
     FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(Team team, int peer) const {
       // team.rank is my rank within team; peer is absolute rank

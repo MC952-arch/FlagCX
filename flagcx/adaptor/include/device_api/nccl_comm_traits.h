@@ -290,6 +290,8 @@ struct CommTraits<NvidiaVendor> {
       return peer >= intraBase && peer < intraBase + _dc.getIntraSize();
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const { return true; }
+
     // --- One-sided: put (raw Window) ---
     template <typename RA, typename LA, typename Coop, typename Desc>
     FLAGCX_DEVICE_INLINE_DECORATOR void

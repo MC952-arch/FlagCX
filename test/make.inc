@@ -95,6 +95,24 @@ else
   PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
 endif
 
+# ---------------------------------------------------------------------------
+# NCCL version detection — mirror main Makefile logic for COMM_TRAITS selection.
+# ---------------------------------------------------------------------------
+ifeq ($(USE_NVIDIA), 1)
+ifneq ($(FORCE_DEFAULT_PATH), 1)
+  NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
+  NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
+  NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
+  ifeq ($(NCCL_VERSION_OK), 1)
+    ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_CCL
+  else
+    ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_DEFAULT
+  endif
+else
+  ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_DEFAULT
+endif
+endif
+
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target
 # in leaf Makefiles). This is just a variable definition.
