@@ -26,10 +26,10 @@
 
 #include "nccl_device.h"
 
-struct NvidiaVendor {};
+struct NcclBackend {};
 
 template <>
-struct CommTraits<NvidiaVendor> {
+struct CommTraits<NcclBackend> {
   // Platform capabilities (via using, not inheritance)
   using Intrin = PlatformTraits<NvidiaPlatform>::Intrin;
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
@@ -252,7 +252,7 @@ struct CommTraits<NvidiaVendor> {
   // ---- Barrier alias: delegates to standalone Barrier<Backend, Tag>
   // ----
   template <typename Tag, typename Coop>
-  using Barrier = ::Barrier<NvidiaVendor, Tag, Coop>;
+  using Barrier = ::Barrier<NcclBackend, Tag, Coop>;
 
   // ---- Action type conversion helpers (flagcx -> NCCL) ----
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None toNccl(flagcxDevNet_None) {
@@ -440,18 +440,18 @@ static_assert(sizeof(flagcxDevNetFenceLevelMap) /
 #endif
 
 // ============================================================
-// Barrier specializations for NvidiaVendor
+// Barrier specializations for NcclBackend
 // ============================================================
 #if NCCL_CHECK_CUDACC
 
-// ---- Barrier<NvidiaVendor, flagcxTeamTagIntra, Coop> ----
+// ---- Barrier<NcclBackend, flagcxTeamTagIntra, Coop> ----
 // Wraps ncclLsaBarrierSession<ncclCoopCta> via placement new.
 template <typename Coop>
-struct Barrier<NvidiaVendor, flagcxTeamTagIntra, Coop> {
+struct Barrier<NcclBackend, flagcxTeamTagIntra, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using Comm = CommTraits<NvidiaVendor>::Comm;
-  using Team = CommTraits<NvidiaVendor>::Team;
-  using Multimem = CommTraits<NvidiaVendor>::Multimem;
+  using Comm = CommTraits<NcclBackend>::Comm;
+  using Team = CommTraits<NcclBackend>::Team;
+  using Multimem = CommTraits<NcclBackend>::Multimem;
 
   Coop _coop;
   alignas(ncclLsaBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
@@ -498,14 +498,14 @@ struct Barrier<NvidiaVendor, flagcxTeamTagIntra, Coop> {
   }
 };
 
-// ---- Barrier<NvidiaVendor, flagcxTeamTagInter, Coop> ----
+// ---- Barrier<NcclBackend, flagcxTeamTagInter, Coop> ----
 // Wraps ncclGinBarrierSession<ncclCoopCta> via placement new.
 template <typename Coop>
-struct Barrier<NvidiaVendor, flagcxTeamTagInter, Coop> {
+struct Barrier<NcclBackend, flagcxTeamTagInter, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using Comm = CommTraits<NvidiaVendor>::Comm;
-  using Team = CommTraits<NvidiaVendor>::Team;
-  using Net = CommTraits<NvidiaVendor>::Net;
+  using Comm = CommTraits<NcclBackend>::Comm;
+  using Team = CommTraits<NcclBackend>::Team;
+  using Net = CommTraits<NcclBackend>::Net;
 
   Coop _coop;
   alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
@@ -553,14 +553,14 @@ struct Barrier<NvidiaVendor, flagcxTeamTagInter, Coop> {
   }
 };
 
-// ---- Barrier<NvidiaVendor, flagcxTeamTagWorld, Coop> ----
+// ---- Barrier<NcclBackend, flagcxTeamTagWorld, Coop> ----
 // World: wraps ncclBarrierSession. Intra: wraps ncclLsaBarrierSession.
 // Uses placement new for the union of both types.
 template <typename Coop>
-struct Barrier<NvidiaVendor, flagcxTeamTagWorld, Coop> {
+struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using Comm = CommTraits<NvidiaVendor>::Comm;
-  using Net = CommTraits<NvidiaVendor>::Net;
+  using Comm = CommTraits<NcclBackend>::Comm;
+  using Net = CommTraits<NcclBackend>::Net;
 
   // Storage large enough for the larger of the two session types
   static constexpr size_t kWorldSize = sizeof(ncclBarrierSession<ncclCoopCta>);
@@ -653,13 +653,13 @@ struct Barrier<NvidiaVendor, flagcxTeamTagWorld, Coop> {
 #endif // NCCL_CHECK_CUDACC
 
 #define FLAGCX_DEVICE_API_VENDOR 1
-using DeviceAPI = CommTraits<NvidiaVendor>;
+using DeviceAPI = CommTraits<NcclBackend>;
 
 #else
 // NCCL version too old — fall back to default
 #include "default_comm_traits.h"
 #undef FLAGCX_DEVICE_API_VENDOR
-using DeviceAPI = CommTraits<Default<NvidiaPlatform>>;
+using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;
 
 #endif // NCCL version check
 
