@@ -339,6 +339,11 @@ struct CommTraits<Default<PlatformTag>> {
       return peer >= intraBase && peer < intraBase + _dc.intraSize;
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
+      return signalBuffer != nullptr && counterBuffer != nullptr &&
+             fifoBuffer != nullptr;
+    }
+
     // ---- Two-sided FIFO encoders ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     enqueueFifoSend(const Window &mem, size_t offset, size_t count,
