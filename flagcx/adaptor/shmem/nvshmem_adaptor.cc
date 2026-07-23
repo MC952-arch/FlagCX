@@ -180,6 +180,8 @@ nvshmemDevCommCreate(flagcxComm_t comm,
     } else {
       sc->interTeam = NVSHMEM_TEAM_INVALID;
     }
+
+    sc->worldTeam = NVSHMEM_TEAM_WORLD;
   }
 
   *shmemComm = sc;

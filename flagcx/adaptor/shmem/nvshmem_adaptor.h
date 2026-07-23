@@ -16,6 +16,7 @@ struct flagcxShmemCommInternal {
   int intraRank, intraSize;
   nvshmem_team_t intraTeam;
   nvshmem_team_t interTeam;
+  nvshmem_team_t worldTeam;
 
   uint64_t *signalBuffer;
   int signalCount;
