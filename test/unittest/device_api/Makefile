@@ -10,6 +10,16 @@ DEVICE_API_DIR := $(PROJECT_ROOT)/test/device_api
 DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o
 DEVICE_IR_OBJ  := $(DEVICE_API_DIR)/build/obj/device_ir.o
 
+# Device-link objects (only needed for NVSHMEM)
+# Split: IR tests use dlink_ir.o, API test uses dlink_api.o
+ifeq ($(USE_SHMEM), 1)
+DLINK_API_OBJ := $(DEVICE_API_DIR)/build/obj/dlink_api.o
+DLINK_IR_OBJ  := $(DEVICE_API_DIR)/build/obj/dlink_ir.o
+else
+DLINK_API_OBJ :=
+DLINK_IR_OBJ  :=
+endif
+
 # Shared tools object
 TOOLS_SRC := $(PROJECT_ROOT)/test/tools.cc
 TOOLS_OBJ := $(OBJDIR)/tools.o
@@ -37,31 +47,40 @@ MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
 all: $(MPI_TARGETS)
 
 # Build shared CUDA objects
-$(DEVICE_API_OBJ):
-	@$(MAKE) -C $(DEVICE_API_DIR) device_api.o USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU)
+DEVICE_API_SUB_TARGETS := device_api.o
+DEVICE_IR_SUB_TARGETS  := device_ir.o
+ifeq ($(USE_SHMEM), 1)
+DEVICE_API_SUB_TARGETS += dlink_api.o
+DEVICE_IR_SUB_TARGETS  += dlink_ir.o
+endif
 
-$(DEVICE_IR_OBJ):
-	@$(MAKE) -C $(DEVICE_API_DIR) device_ir.o USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU)
+$(DEVICE_API_OBJ) $(DLINK_API_OBJ):
+	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_API_SUB_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
+		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+
+$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
+	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_IR_SUB_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
+		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
 
 $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
 
-$(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
-$(BINDIR)/test_device_api: test_device_api.cpp $(DEVICE_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_api: test_device_api.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)
