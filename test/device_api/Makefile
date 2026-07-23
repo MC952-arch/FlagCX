@@ -36,13 +36,13 @@ device_ir.o: $(OBJDIR)/device_ir.o
 $(OBJDIR)/device_api.o: device_api.cu device_api.h
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_api.cu (CUDA)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -dc -o $@ $< \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 $(OBJDIR)/device_ir.o: device_ir.cu device_ir.h
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_ir.cu (CUDA)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -dc -o $@ $< \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 clean:

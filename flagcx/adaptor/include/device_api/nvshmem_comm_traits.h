@@ -97,6 +97,7 @@ struct CommTraits<NvshmemBackend> {
     int intraRank, intraSize;
     nvshmem_team_t intraTeam;
     nvshmem_team_t interTeam;
+    nvshmem_team_t worldTeam;
 
     uint64_t *signalBuffer;
     int signalCount;
@@ -142,6 +143,7 @@ struct CommTraits<NvshmemBackend> {
       dc.intraSize = di.intraSize;
       dc.intraTeam = {};
       dc.interTeam = {};
+      dc.worldTeam = NVSHMEM_TEAM_WORLD;
       dc.signalBuffer = di.signalBuffer;
       dc.signalCount = di.signalCount;
       dc.counterBuffer = di.counterBuffer;
@@ -186,10 +188,9 @@ struct CommTraits<NvshmemBackend> {
   // ---- Net ----
   struct Net {
     Comm _dc;
-    int _contextId;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
-    Net(const Comm &dc, int contextIndex) : _dc(dc), _contextId(contextIndex) {}
+    Net(const Comm &dc, int /*contextIndex*/) : _dc(dc) {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const { return true; }
 
@@ -481,10 +482,11 @@ struct CommTraits<NvshmemBackend> {
     template <typename LA>
     FLAGCX_DEVICE_INLINE_DECORATOR void counterImpl(LA) const {}
 
+  public:
     // ---- reset counter ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetCounter(flagcxDevNetCounter_t counterId) const {
-      int idx = contextId * _dc.counterCount + (int)counterId;
+      int idx = (int)counterId;
       Atomic::store(&_dc.counterBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
@@ -568,6 +570,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
   using Comm = CommTraits<NvshmemBackend>::Comm;
   using Team = CommTraits<NvshmemBackend>::Team;
+  using Net = CommTraits<NvshmemBackend>::Net;
   using Multimem = CommTraits<NvshmemBackend>::Multimem;
 
   Coop _coop;
@@ -581,8 +584,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
         _barrierSignals(nullptr), _usageCount(nullptr) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
-          const Multimem & = {})
+  Barrier(Coop coop, const Net &, const Comm &dc, Team, uint32_t index, int = 0)
       : _coop(coop), _team(dc.interTeam),
         _teamSize((dc.intraSize > 0) ? dc.nRanks / dc.intraSize : 1),
         _teamRank((dc.intraSize > 0) ? dc.rank / dc.intraSize : 0),
@@ -592,7 +594,8 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
         _usageCount(&dc.barrierUsage[dc.intraBarrierCount + index]) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
     _coop.sync();
     if (_coop.threadRank() == 0)
       nvshmem_fence();
@@ -608,7 +611,8 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
     uint64_t target = *_usageCount + 1;
     for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
       int peer = 1 + _teamRank + i;
@@ -623,9 +627,10 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(order);
-    wait(order);
+  sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    arrive(order, fence);
+    wait(order, fence);
   }
 };
 
@@ -636,60 +641,78 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
   using Comm = CommTraits<NvshmemBackend>::Comm;
   using Team = CommTraits<NvshmemBackend>::Team;
+  using Net = CommTraits<NvshmemBackend>::Net;
   using Multimem = CommTraits<NvshmemBackend>::Multimem;
 
   Coop _coop;
-  int _teamSize, _teamRank;
-  uint64_t *_barrierSignals;
-  uint64_t *_usageCount;
+  Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> _intra;
+  Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> _inter;
+  int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
-      : _coop(), _teamSize(0), _teamRank(0), _barrierSignals(nullptr),
-        _usageCount(nullptr) {}
+      : _coop(), _intra(), _inter(), _nInterPeers(0) {}
 
+  // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
-          const Multimem & = {})
-      : _coop(coop), _teamSize(dc.nRanks), _teamRank(dc.rank),
-        _barrierSignals(dc.worldBarrierSignals + index * dc.nRanks),
-        _usageCount(&dc.barrierUsage[dc.intraBarrierCount +
-                                     dc.interBarrierCount + index]) {}
+  Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
+          uint32_t index, bool multimem, int nInterPeers)
+      : _coop(coop), _intra(coop, dc, Team{}, index),
+        _inter(coop, net, dc, Team{}, index, nInterPeers),
+        _nInterPeers(nInterPeers) {}
+
+  // Intra-only barrier
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
+          uint32_t index, bool, int)
+      : _coop(coop), _intra(coop, dc, Team{}, index), _inter(),
+        _nInterPeers(0) {}
+
+  // Inter-only barrier
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &dc,
+          uint32_t index, bool, int nInterPeers)
+      : _coop(coop), _intra(),
+        _inter(coop, net, dc, Team{}, index, nInterPeers),
+        _nInterPeers(nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      nvshmem_fence();
-    _coop.sync();
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      // World barrier uses NVSHMEM_TEAM_WORLD: PE = peer directly
-      nvshmemx_signal_op(_barrierSignals + _teamRank, 1, NVSHMEM_SIGNAL_ADD,
-                         peer);
+  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (_nInterPeers > 0) {
+      _intra.arrive(flagcxDeviceMemoryOrderRelease);
+      _intra.wait(flagcxDeviceMemoryOrderRelease);
+      _inter.arrive(order);
+    } else {
+      _intra.arrive(order);
     }
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    uint64_t target = *_usageCount + 1;
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      nvshmem_uint64_wait_until(_barrierSignals + peer, NVSHMEM_CMP_GE, target);
+  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (_nInterPeers > 0) {
+      _inter.wait(order);
+      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
+      _intra.wait(flagcxDeviceMemoryOrderAcquire);
+    } else {
+      _intra.wait(order);
     }
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      *_usageCount = target;
-    _coop.sync();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(order);
-    wait(order);
+  sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (_nInterPeers > 0) {
+      _intra.arrive(flagcxDeviceMemoryOrderRelease);
+      _intra.wait(flagcxDeviceMemoryOrderRelease);
+      _inter.arrive(order);
+      _inter.wait(order);
+      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
+      _intra.wait(flagcxDeviceMemoryOrderAcquire);
+    } else {
+      _intra.arrive(order);
+      _intra.wait(order);
+    }
   }
 };
 
