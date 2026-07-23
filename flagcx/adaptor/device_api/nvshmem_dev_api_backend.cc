@@ -31,9 +31,16 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
     return flagcxInternalError;
   }
 
-  flagcxShmemComm_t shmemComm = nullptr;
-  flagcxResult_t ret = shmemAdaptor->devCommCreate(comm, reqs, &shmemComm);
+  // Initialize NVSHMEM (reference-counted, safe to call multiple times)
+  flagcxResult_t ret = shmemAdaptor->init(comm->rank, comm->nranks);
   if (ret != flagcxSuccess) {
+    return ret;
+  }
+
+  flagcxShmemComm_t shmemComm = nullptr;
+  ret = shmemAdaptor->devCommCreate(comm, reqs, &shmemComm);
+  if (ret != flagcxSuccess) {
+    shmemAdaptor->finalize();
     return ret;
   }
 
@@ -57,6 +64,7 @@ static flagcxResult_t nvshmemDevApiCommDestroy(flagcxComm_t comm,
   if (shmemAdaptor != nullptr && devComm->devComm != nullptr) {
     shmemAdaptor->devCommDestroy((flagcxShmemComm_t)devComm->devComm);
     devComm->devComm = nullptr;
+    shmemAdaptor->finalize();
   }
   return flagcxSuccess;
 }
