@@ -22,6 +22,10 @@
 #include <cstring>
 #include <iostream>
 
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+extern "C" void flagcxNvshmemSyncDeviceState();
+#endif
+
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
@@ -60,6 +64,12 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  // Sync NVSHMEM device state into this binary's __constant__ symbol.
+  // Must happen after flagcxCommInitRank (which calls nvshmem_init internally).
+  flagcxNvshmemSyncDeviceState();
+#endif
 
   // Create device communicator for custom kernel usage
   flagcxDevComm_t devComm = nullptr;

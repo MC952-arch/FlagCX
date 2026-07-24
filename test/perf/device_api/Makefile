@@ -21,8 +21,10 @@ DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o
 # Use dlink_api.o — perf tests only link device_api.o, not device_ir.o
 ifeq ($(USE_SHMEM), 1)
 DLINK_OBJ := $(DEVICE_API_DIR)/build/obj/dlink_api.o
+SHMEM_SYNC_OBJ := $(DEVICE_API_DIR)/build/obj/nvshmem_state_sync.o
 else
 DLINK_OBJ :=
+SHMEM_SYNC_OBJ :=
 endif
 
 # Includes: flagcx, perf headers, MPI, device SDK, device_api headers
@@ -42,17 +44,17 @@ all: $(BINS)
 # Build device_api.o (and dlink_api.o if USE_SHMEM) via shared Makefile
 DEVICE_API_TARGETS := device_api.o
 ifeq ($(USE_SHMEM), 1)
-DEVICE_API_TARGETS += dlink_api.o
+DEVICE_API_TARGETS += nvshmem_state_sync.o dlink_api.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_OBJ):
+$(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ):
 	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_API_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
 		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
 
-$(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS) $(DEVICE_API_OBJ) $(DLINK_OBJ)
+$(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS) $(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Compiling $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(COMMON_SRCS) $(DEVICE_API_OBJ) $(DLINK_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(COMMON_SRCS) $(DEVICE_API_OBJ) $(SHMEM_SYNC_OBJ) $(DLINK_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)

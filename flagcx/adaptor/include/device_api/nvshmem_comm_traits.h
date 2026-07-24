@@ -15,9 +15,9 @@
 #include <nvshmem.h>
 #include <nvshmemx.h>
 
-// nvshmem_uint64_wait_until and nvshmem_putmem_signal are device-only (no host
-// declaration in NVSHMEM headers). Provide inline no-op stubs so template
-// bodies compile in host .cc files (never actually called at runtime).
+// nvshmem_uint64_wait_until, nvshmem_putmem_signal, and nvshmem_ptr are
+// device-only (no host declaration in NVSHMEM headers). Provide inline no-op
+// stubs so template bodies compile in host .cc files (never called at runtime).
 // nvshmemx_signal_op already has a host declaration — do NOT stub it.
 #ifndef __CUDACC__
 #include <cstddef>
@@ -31,6 +31,7 @@
 static inline void nvshmem_uint64_wait_until(uint64_t *, int, uint64_t) {}
 static inline void nvshmem_putmem_signal(void *, const void *, size_t,
                                          uint64_t *, uint64_t, int, int) {}
+static inline void *nvshmem_ptr(void *, int) { return nullptr; }
 #endif
 
 struct NvshmemBackend {};
@@ -58,14 +59,26 @@ struct CommTraits<NvshmemBackend> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &, int peer) const {
-      return (char *)nvshmem_ptr(symBase, peer) + offset;
+#ifdef __CUDA_ARCH__
+      return nvshmem_ptr((char *)symBase + offset, peer);
+#else
+      (void)offset;
+      (void)peer;
+      return nullptr;
+#endif
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      return (char *)nvshmem_ptr(symBase, peer) + offset;
+#ifdef __CUDA_ARCH__
+      return nvshmem_ptr((char *)symBase + offset, peer);
+#else
+      (void)offset;
+      (void)peer;
+      return nullptr;
+#endif
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t, const Multimem &) const {
