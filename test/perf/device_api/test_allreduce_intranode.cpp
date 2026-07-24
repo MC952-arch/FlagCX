@@ -87,20 +87,27 @@ int main(int argc, char *argv[]) {
   flagcxDevMem_t devMem = nullptr;
   // -R 0 uses cudaMalloc (IPC-compatible).
   // -R 1/-R 2 use flagcxMemAlloc with comm.
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
   if (localRegister == 0) {
     FLAGCXCHECK(
         devHandle->deviceMalloc(&regBuff, maxBytes, flagcxMemDevice, NULL));
   } else {
-    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes));
+    FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes, memAllocator));
   }
   if (localRegister == 2) {
     // Window mode: either go on Vendor path or Default path
     FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));
   } else if (localRegister == 1) {
     // IPC mode: explicit NIC registration + implicit IPC peer exchange
-    FLAGCXCHECK(flagcxCommRegister(comm, regBuff, maxBytes, &regHandle));
+    FLAGCXCHECK(
+        flagcxCommRegister(comm, regBuff, maxBytes, &regHandle, memAllocator));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, nullptr, &devMem));
   } else {
     // Raw mode: no explicit registration, implicit IPC via flagcxDevMemCreate
@@ -212,14 +219,14 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, devMem));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, win));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, win, memAllocator));
   } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommDeregister(comm, regHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, regHandle, memAllocator));
   }
   if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(regBuff, flagcxMemDevice, NULL));
   } else {
-    FLAGCXCHECK(flagcxMemFree(regBuff));
+    FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
   }
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));

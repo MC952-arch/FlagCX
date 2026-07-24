@@ -216,70 +216,55 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   return flagcxSuccess;
 }
 
-enum flagcxMemBackend_t {
-  MEM_BACKEND_DEFAULT = 0,
-  MEM_BACKEND_CCL = 1,
-  MEM_BACKEND_SHMEM = 2
-};
-
-static flagcxMemBackend_t getMemBackend() {
-  const char *env = flagcxGetEnv("FLAGCX_MEM_BACKEND");
-  if (env == nullptr)
-    return MEM_BACKEND_DEFAULT;
-  if (strcmp(env, "CCL") == 0)
-    return MEM_BACKEND_CCL;
-  if (strcmp(env, "SHMEM") == 0)
-    return MEM_BACKEND_SHMEM;
-  return MEM_BACKEND_DEFAULT;
-}
-
-flagcxResult_t flagcxMemAlloc(void **ptr, size_t size) {
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
+                              flagcxMemAllocator_t allocator) {
   if (ptr == NULL || size == 0) {
     WARN("Invalid ptr(NULL) or size(0) for allocation.");
     return flagcxInvalidArgument;
   }
-  flagcxMemBackend_t backend = getMemBackend();
-  if (backend == MEM_BACKEND_SHMEM) {
+  if (allocator == flagcxMemSHMEM) {
     if (shmemAdaptor == nullptr) {
-      WARN("flagcxMemAlloc: FLAGCX_MEM_BACKEND=SHMEM but shmemAdaptor not "
-           "loaded");
+      WARN("flagcxMemAlloc: flagcxMemSHMEM but shmemAdaptor not loaded");
       return flagcxInternalError;
     }
     FLAGCXCHECK(shmemAdaptor->symMalloc(ptr, size));
     INFO(FLAGCX_REG, "flagcxMemAlloc: SHMEM allocated [%p, %ld]", *ptr, size);
-  } else if (backend == MEM_BACKEND_CCL) {
-    FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
-    if (*ptr != NULL) {
-      INFO(FLAGCX_REG, "flagcxMemAlloc: GDR allocated [%p, %ld]", *ptr, size);
-    } else {
-      WARN("flagcxMemAlloc: GDR allocation failed");
-      return flagcxUnhandledDeviceError;
-    }
   } else {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
+    // flagcxMemCCL: dispatch based on homo/hetero
+    if (useHeteroComm()) {
+      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
+      if (*ptr != NULL) {
+        INFO(FLAGCX_REG, "flagcxMemAlloc: GDR allocated [%p, %ld]", *ptr, size);
+      } else {
+        WARN("flagcxMemAlloc: GDR allocation failed");
+        return flagcxUnhandledDeviceError;
+      }
+    } else {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
+    }
   }
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxMemFree(void *ptr) {
+flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator) {
   if (ptr == NULL) {
     WARN("Invalid pointer(=NULL) for de-allocation.");
     return flagcxSuccess;
   }
-  flagcxMemBackend_t backend = getMemBackend();
-  if (backend == MEM_BACKEND_SHMEM) {
+  if (allocator == flagcxMemSHMEM) {
     if (shmemAdaptor == nullptr) {
-      WARN("flagcxMemFree: FLAGCX_MEM_BACKEND=SHMEM but shmemAdaptor not "
-           "loaded");
+      WARN("flagcxMemFree: flagcxMemSHMEM but shmemAdaptor not loaded");
       return flagcxInternalError;
     }
     FLAGCXCHECK(shmemAdaptor->symFree(ptr));
     INFO(FLAGCX_REG, "flagcxMemFree: SHMEM memory deallocated");
-  } else if (backend == MEM_BACKEND_CCL) {
-    FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
-    INFO(FLAGCX_REG, "flagcxMemFree: GDR memory deallocated");
   } else {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
+    if (useHeteroComm()) {
+      FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
+      INFO(FLAGCX_REG, "flagcxMemFree: GDR memory deallocated");
+    } else {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
+    }
   }
   return flagcxSuccess;
 }
@@ -1218,7 +1203,8 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
 }
 
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
-                                  size_t size, void **handle) {
+                                  size_t size, void **handle,
+                                  flagcxMemAllocator_t allocator) {
   if (comm != nullptr) {
     FLAGCXCHECK(flagcxEnsureCommReady(comm));
   }
@@ -1243,6 +1229,12 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   // Null comm: pool-only registration, skip backend steps
   if (comm == nullptr) {
+    return flagcxSuccess;
+  }
+
+  // SHMEM path: buffer is in the NVSHMEM symmetric heap,
+  // no IPC handles or MR registration needed.
+  if (allocator == flagcxMemSHMEM) {
     return flagcxSuccess;
   }
 
@@ -1335,7 +1327,8 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
+flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
+                                    flagcxMemAllocator_t allocator) {
   if (comm != nullptr) {
     FLAGCXCHECK(flagcxEnsureCommReady(comm));
   }
@@ -1391,11 +1384,18 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
-                                        int winFlags) {
+                                        int winFlags,
+                                        flagcxMemAllocator_t allocator) {
   if (win == nullptr || *win != nullptr) {
     return flagcxInvalidArgument;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  // SHMEM path: buffer is already in the NVSHMEM symmetric heap,
+  // globally accessible via nvshmem_ptr — no registration needed.
+  if (allocator == flagcxMemSHMEM) {
+    *win = nullptr;
+    return flagcxSuccess;
+  }
   if (useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
     flagcxResult_t res =
@@ -1441,9 +1441,12 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
-                                          flagcxWindow_t win) {
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
+                                          flagcxMemAllocator_t allocator) {
   if (win == nullptr) {
+    return flagcxSuccess;
+  }
+  if (allocator == flagcxMemSHMEM) {
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));

@@ -77,13 +77,13 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           set -e
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
 
       - name: "Registration -R 1 (homoRunner)"
         run: |
@@ -96,24 +96,24 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           set -e
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1 -R 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1 -R 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1 -R 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1 -R 1
 
       - name: "Registration -R 1 (uniRunner NET)"
         run: |
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           set -e
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1 -R 1
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1 -R 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1 -R 1
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1 -R 1
 
       - name: "RMA one-sided (put/get)"
         run: |
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           set -e
-          mpirun -np 2 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_put -b 8 -e 1M -f 2 -R 2
-          mpirun -np 2 --allow-run-as-root -x FLAGCX_MEM_BACKEND=CCL -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_get -b 8 -e 1M -f 2 -R 2
+          mpirun -np 2 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_put -b 8 -e 1M -f 2 -R 2
+          mpirun -np 2 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_HETERO_COMM=1 $PERF_BIN/perf_get -b 8 -e 1M -f 2 -R 2
 
       - name: "Device API perf (intra-node)"
         run: |
@@ -121,7 +121,7 @@ jobs:
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           mpirun -np 8 --allow-run-as-root \
             -x FLAGCX_USE_HETERO_COMM=1 \
-            -x FLAGCX_MEM_BACKEND=CCL \
+            -x FLAGCX_MEM_ENABLE=1 \
             -x FLAGCX_VMM_ENABLE=0 \
             -x FLAGCX_P2P_DISABLE=1 \
             -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \

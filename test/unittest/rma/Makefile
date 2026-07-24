@@ -9,7 +9,7 @@ MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
 # Environment variables to force hetero mode on single node
-HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_BACKEND=CCL FLAGCX_VMM_ENABLE=0
+HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0
 
 .PHONY: all clean run-unit run-mpi run
 
