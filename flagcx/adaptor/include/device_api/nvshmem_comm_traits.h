@@ -57,21 +57,15 @@ struct CommTraits<NvshmemBackend> {
     void *rawPtr;
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getPeerPointer(size_t offset, const Team &, int) const {
-      return (char *)symBase + offset;
+    getPeerPointer(size_t offset, const Team &, int peer) const {
+      return (char *)nvshmem_ptr(symBase, peer) + offset;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      if (!symBase)
-        return nullptr;
-      // nvshmem_ptr returns the local VA for a peer's symmetric buffer
-      // (works for P2P-accessible intra-node peers). Returns nullptr if
-      // peer is not directly accessible.
-      void *peerBase = nvshmem_ptr(symBase, peer);
-      return peerBase ? (char *)peerBase + offset : nullptr;
+      return (char *)nvshmem_ptr(symBase, peer) + offset;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t, const Multimem &) const {
@@ -81,9 +75,7 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
       return symBase != nullptr;
     }
-    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
-      return nullptr; // NVSHMEM uses symmetric addressing, not IPC pointers
-    }
+    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const { return nullptr; }
     FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return 0; }
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
       return symBase == o.symBase;

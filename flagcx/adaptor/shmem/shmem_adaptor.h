@@ -49,8 +49,9 @@ struct flagcxShmemAdaptor {
 
 typedef struct flagcxShmemAdaptor flagcxShmemAdaptor_t;
 
-// Global adaptor instance (set at load time)
-extern flagcxShmemAdaptor_t *shmemAdaptor;
+// Global adaptor instance (set at load time by nvshmem_adaptor.cc).
+// Defaults to nullptr when USE_SHMEM is not enabled.
+extern flagcxShmemAdaptor_t *shmemAdaptor __attribute__((weak));
 
 #ifdef __cplusplus
 }

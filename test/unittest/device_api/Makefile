@@ -91,7 +91,7 @@ run-unit:
 
 # Env vars for inter-node testing on single node
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 \
-              -x FLAGCX_MEM_ENABLE=1 \
+              -x FLAGCX_MEM_BACKEND=CCL \
               -x FLAGCX_VMM_ENABLE=0 \
               -x FLAGCX_P2P_DISABLE=1 \
               -x FLAGCX_DEBUG=Version \
