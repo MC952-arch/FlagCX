@@ -18,6 +18,7 @@
 #include "proxy.h"
 #include "reg_pool.h"
 #include "runner.h"
+#include "shmem_adaptor.h"
 #include "sym_heap.h"
 #include "timer.h"
 #include "transport.h"
@@ -215,14 +216,38 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   return flagcxSuccess;
 }
 
-FLAGCX_PARAM(MemEnable, "MEM_ENABLE", 0);
+enum flagcxMemBackend_t {
+  MEM_BACKEND_DEFAULT = 0,
+  MEM_BACKEND_CCL = 1,
+  MEM_BACKEND_SHMEM = 2
+};
+
+static flagcxMemBackend_t getMemBackend() {
+  const char *env = flagcxGetEnv("FLAGCX_MEM_BACKEND");
+  if (env == nullptr)
+    return MEM_BACKEND_DEFAULT;
+  if (strcmp(env, "CCL") == 0)
+    return MEM_BACKEND_CCL;
+  if (strcmp(env, "SHMEM") == 0)
+    return MEM_BACKEND_SHMEM;
+  return MEM_BACKEND_DEFAULT;
+}
 
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size) {
   if (ptr == NULL || size == 0) {
     WARN("Invalid ptr(NULL) or size(0) for allocation.");
     return flagcxInvalidArgument;
   }
-  if (flagcxParamMemEnable()) {
+  flagcxMemBackend_t backend = getMemBackend();
+  if (backend == MEM_BACKEND_SHMEM) {
+    if (shmemAdaptor == nullptr) {
+      WARN("flagcxMemAlloc: FLAGCX_MEM_BACKEND=SHMEM but shmemAdaptor not "
+           "loaded");
+      return flagcxInternalError;
+    }
+    FLAGCXCHECK(shmemAdaptor->symMalloc(ptr, size));
+    INFO(FLAGCX_REG, "flagcxMemAlloc: SHMEM allocated [%p, %ld]", *ptr, size);
+  } else if (backend == MEM_BACKEND_CCL) {
     FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
     if (*ptr != NULL) {
       INFO(FLAGCX_REG, "flagcxMemAlloc: GDR allocated [%p, %ld]", *ptr, size);
@@ -241,7 +266,16 @@ flagcxResult_t flagcxMemFree(void *ptr) {
     WARN("Invalid pointer(=NULL) for de-allocation.");
     return flagcxSuccess;
   }
-  if (flagcxParamMemEnable()) {
+  flagcxMemBackend_t backend = getMemBackend();
+  if (backend == MEM_BACKEND_SHMEM) {
+    if (shmemAdaptor == nullptr) {
+      WARN("flagcxMemFree: FLAGCX_MEM_BACKEND=SHMEM but shmemAdaptor not "
+           "loaded");
+      return flagcxInternalError;
+    }
+    FLAGCXCHECK(shmemAdaptor->symFree(ptr));
+    INFO(FLAGCX_REG, "flagcxMemFree: SHMEM memory deallocated");
+  } else if (backend == MEM_BACKEND_CCL) {
     FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
     INFO(FLAGCX_REG, "flagcxMemFree: GDR memory deallocated");
   } else {

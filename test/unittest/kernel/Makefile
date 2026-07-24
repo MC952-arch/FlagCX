@@ -19,7 +19,7 @@ endif
 # Device linking provided by make.inc (DEVICE_LINK, DEVICE_HOME, etc.)
 
 # Environment variables to force hetero mode on single node
-HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 FLAGCX_P2P_DISABLE=1
+HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_BACKEND=CCL FLAGCX_VMM_ENABLE=0 FLAGCX_P2P_DISABLE=1
 
 # [unit] tests: test_*.cpp — no MPI, no GPU required
 UNIT_SRCS   := $(wildcard test_*.cpp)

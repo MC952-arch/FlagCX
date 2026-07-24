@@ -74,7 +74,6 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              flagcxDevMem_t handle) {
   (void)comm;
   (void)win;
-  // Populate NVSHMEM Window — buff is already in symmetric heap.
   using Window = CommTraits<NvshmemBackend>::Window;
   auto *w = new Window();
   w->symBase = buff;
