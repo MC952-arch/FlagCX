@@ -12,6 +12,7 @@
 #include "flagcx_kernel_internal.h"
 #include "global_comm.h"
 
+#include <cstdio>
 #include <cstring>
 #include <cuda_runtime.h>
 #include <nvshmem.h>
@@ -55,6 +56,7 @@ static flagcxResult_t nvshmemAdaptorFinalize() {
 // ============================================================
 static flagcxResult_t nvshmemSymMalloc(void **ptr, size_t size) {
   *ptr = nvshmem_malloc(size);
+  fprintf(stderr, "[nvshmemSymMalloc] nvshmem_malloc(%zu) = %p\n", size, *ptr);
   if (*ptr == nullptr)
     return flagcxSystemError;
   cudaMemset(*ptr, 0, size);

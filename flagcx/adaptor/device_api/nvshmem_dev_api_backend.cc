@@ -12,6 +12,15 @@
 #include "shmem_adaptor.h"
 
 #include <cstddef>
+#include <cstdio>
+
+// Provided by nvshmem_state_export.cu (compiled into libflagcx.so).
+// Reads the library's __constant__ nvshmemi_device_state_d (which IS properly
+// initialized by nvshmem_init via the callback mechanism in
+// libnvshmem_device.a) and returns the three heap fields needed by the Window
+// struct.
+extern "C" void flagcxNvshmemGetHeapState(void **heapBase, size_t *heapSize,
+                                          void ***peerHeapBaseP2P);
 
 // Verify that flagcxShmemCommInternal and CommTraits<NvshmemBackend>::Comm have
 // compatible layout — the constructor in flagcx_device_core.h does a raw cast.
@@ -79,6 +88,26 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   w->symBase = buff;
   w->allocSize = size;
   w->rawPtr = buff;
+  // Read NVSHMEM heap state from the device constant (properly initialized
+  // by nvshmem_init via libnvshmem_device.a callback mechanism).
+  void *heapBase = nullptr;
+  size_t heapSize = 0;
+  void **peerHeapBaseP2P = nullptr;
+  flagcxNvshmemGetHeapState(&heapBase, &heapSize, &peerHeapBaseP2P);
+
+  // Verify buff is in the symmetric heap — caller must use flagcxMemSHMEM
+  if (heapBase == nullptr || heapSize == 0 || (char *)buff < (char *)heapBase ||
+      (char *)buff >= (char *)heapBase + heapSize) {
+    WARN("nvshmemDevApiMemCreate: buff=%p not in NVSHMEM symmetric heap "
+         "[%p, %p+%zu]. Use flagcxMemSHMEM allocator.",
+         buff, heapBase, heapBase, heapSize);
+    delete w;
+    return flagcxInvalidArgument;
+  }
+
+  w->heapBase = heapBase;
+  w->heapSize = heapSize;
+  w->peerHeapBaseP2P = peerHeapBaseP2P;
   handle->window = (void *)w;
   handle->hasWindow = true;
   handle->isSymmetric = true;

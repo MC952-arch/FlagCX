@@ -86,6 +86,18 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     return;
   }
 
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    int rank = devComm.getIntraRank();
+    int nRanks = devComm.getIntraSize();
+    for (int p = 0; p < nRanks; p++) {
+      void *ptr = flagcxGetIntraPointer(mem, offset, p);
+      if (ptr == nullptr) {
+        printf("[rank %d] ERROR: getIntraPointer(peer=%d) returned NULL\n", rank, p);
+      }
+    }
+  }
+  __syncthreads();
+
   flagcxTeam intra = flagcxTeamIntra(devComm);
   flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
 

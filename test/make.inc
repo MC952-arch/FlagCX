@@ -106,7 +106,7 @@ ifeq ($(USE_NVIDIA), 1)
 ifeq ($(USE_SHMEM), 1)
   ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_SHMEM
   DEVICE_INCLUDE += -I$(SHMEM_HOME)/include
-  DEVICE_LINK    += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+  DEVICE_LINK    += -L$(SHMEM_HOME)/lib -lnvshmem_host
 else ifneq ($(FORCE_DEFAULT_PATH), 1)
   NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
   NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')

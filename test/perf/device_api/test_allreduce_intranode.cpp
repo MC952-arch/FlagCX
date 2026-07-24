@@ -22,6 +22,10 @@
 #include <cstring>
 #include <iostream>
 
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+extern "C" void flagcxNvshmemSyncDeviceState();
+#endif
+
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
@@ -60,6 +64,12 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  // Sync NVSHMEM device state into this binary's __constant__ symbol.
+  // Must happen after flagcxCommInitRank (which calls nvshmem_init internally).
+  flagcxNvshmemSyncDeviceState();
+#endif
 
   // Create device communicator for custom kernel usage
   flagcxDevComm_t devComm = nullptr;
@@ -215,9 +225,9 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // Cleanup
+  // Cleanup — free SHMEM buffers before DevCommDestroy (which calls
+  // nvshmem_finalize), otherwise nvshmem_free hits a finalized library.
   FLAGCXCHECK(flagcxDevMemDestroy(comm, devMem));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowDeregister(comm, win, memAllocator));
   } else if (localRegister == 1) {
@@ -228,6 +238,7 @@ int main(int argc, char *argv[]) {
   } else {
     FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
   }
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL));

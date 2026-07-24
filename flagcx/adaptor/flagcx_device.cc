@@ -11,6 +11,7 @@
 #include "p2p.h"
 #include "proxy.h"
 #include "reg_pool.h"
+#include <cstdio>
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
@@ -111,6 +112,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
+  fprintf(stderr, "[flagcxDevMemCreate] buff=%p, size=%zu, win=%p\n", buff,
+          size, (void *)win);
   if (comm == nullptr || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
