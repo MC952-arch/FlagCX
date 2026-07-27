@@ -1,110 +1,46 @@
-name: Unit Tests in Container
+name: Unit Tests
 
 on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  unit-test:
-    runs-on: [self-hosted, cx-build]
-    container:
-      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
-      options:  --gpus all  --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+  load_platforms:
+    name: Load platform configurations
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          ssh-strict: true
-          ssh-user: git
-          persist-credentials: true
-          clean: true
-          sparse-checkout-cone-mode: true
-          fetch-tags: false
-          show-progress: true
-          lfs: false
-          submodules: true
-          set-safe-directory: true
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          persist-credentials: false
 
-      - name: Set up Python and Install Dependencies
-        run: |
-          apt update -y
-          apt-get install -y python3 python3-pip python3-venv git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev
-          python3 -m venv venv
-          cd /__w/FlagCX/FlagCX
-          . venv/bin/activate
-          git config --global --add safe.directory /__w/FlagCX/FlagCX
-          git status
-          pip install setuptools pre-commit
-          pre-commit install
+      - name: Build platform matrix
+        id: config
+        run: ruby .github/scripts/ci/load_platform_matrix.rb
 
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          . venv/bin/activate
-          apt update -y
-          apt-get install clang-format -y
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
-
-      - name: Build Google Test
-        run: |
-          cd /__w/FlagCX/FlagCX/third-party/googletest
-          mkdir -p build
-          cd build
-          cmake ..
-          make -j$(nproc)
-
-      # FORCE_DEFAULT_PATH only affects kernel object compilation (comm traits);
-      # host-side library and vendor API dispatch are unchanged.
-      - name: Run `make` to build the project
-        run: |
-          cd /__w/FlagCX/FlagCX
-          export MPI_HOME=/usr/local/mpi
-          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
-
-      - name: Build unit tests
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest
-          export MPI_HOME=/usr/local/mpi
-          make -j$(nproc) COMPILE_KERNEL=1 USE_NVIDIA=1 FORCE_DEFAULT_PATH=1
-
-      - name: Run single-cluster tests with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root ./build/bin/runner_mpi_tests
-
-      - name: Run multi-cluster tests using P2P transport with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 ./build/bin/runner_mpi_tests
-
-      - name: Run multi-cluster tests using NET transport with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 ./build/bin/runner_mpi_tests
-
-      #- name: Run kernel tests with mpirun
-      #  run: |
-      #    cd /__w/FlagCX/FlagCX/test/unittest/kernel
-      #    export MPI_HOME=/usr/local/mpi
-      #    export PATH=$MPI_HOME/bin:$PATH
-      #    mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL ./build/bin/kernel_mpi_tests
-
+  unit_tests:
+    name: ${{ matrix.display_name }} unit tests
+    needs: load_platforms
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.load_platforms.outputs.matrix) }}
+    uses: ./.github/workflows/unit_tests_platform_common.yml
+    with:
+      platform: ${{ matrix.platform }}
