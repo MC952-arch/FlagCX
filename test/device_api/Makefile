@@ -61,25 +61,24 @@ ifeq ($(USE_SHMEM), 1)
 SHMEM_DEVICE_LIB := $(SHMEM_HOME)/lib/libnvshmem_device.a
 SHMEM_SYNC_OBJ := $(OBJDIR)/nvshmem_state_sync.o
 
-$(SHMEM_SYNC_OBJ): nvshmem_state_sync.cu
+$(SHMEM_SYNC_OBJ): nvshmem_state_sync.cc
 	@mkdir -p $(OBJDIR)
-	@echo "Compiling nvshmem_state_sync.cu (CUDA)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -dc -o $@ $< \
-		$(SHMEM_INCLUDE) $(ALL_INCLUDES)
+	@echo "Compiling nvshmem_state_sync.cc"
+	@$(CXX) -std=c++17 -c -o $@ $< $(SHMEM_INCLUDE) $(ALL_INCLUDES)
 
 # Individual dlinks for consumers that only need one .cu
-$(OBJDIR)/dlink_api.o: $(OBJDIR)/device_api.o $(SHMEM_SYNC_OBJ)
+$(OBJDIR)/dlink_api.o: $(OBJDIR)/device_api.o
 	@echo "Device-linking device_api (NVSHMEM)"
 	@$(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE) -dlink -o $@ $^ \
 		$(SHMEM_DEVICE_LIB) -lcudart -lcudadevrt
 
-$(OBJDIR)/dlink_ir.o: $(OBJDIR)/device_ir.o $(SHMEM_SYNC_OBJ)
+$(OBJDIR)/dlink_ir.o: $(OBJDIR)/device_ir.o
 	@echo "Device-linking device_ir (NVSHMEM)"
 	@$(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE) -dlink -o $@ $^ \
 		$(SHMEM_DEVICE_LIB) -lcudart -lcudadevrt
 
 # Combined dlink for consumers that use both device_api.o and device_ir.o
-$(OBJDIR)/dlink.o: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o $(SHMEM_SYNC_OBJ)
+$(OBJDIR)/dlink.o: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 	@echo "Device-linking all (NVSHMEM)"
 	@$(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE) -dlink -o $@ $^ \
 		$(SHMEM_DEVICE_LIB) -lcudart -lcudadevrt

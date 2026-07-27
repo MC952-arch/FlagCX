@@ -16,18 +16,16 @@
  * device functions.
  ************************************************************************/
 
-#include <cuda_runtime.h>
 #include <nvshmem.h>
-#include "non_abi/device/threadgroup/nvshmemi_common_device_defines.cuh"
 
 extern "C" void flagcxNvshmemSyncDeviceState() {
-    // Re-entrant: NVSHMEM is already initialized by libflagcx.so.
-    // This call registers the consumer binary's nvshmemi_device_state_d
-    // and populates it via nvshmemi_update_device_state().
-    nvshmem_init();
+  // Re-entrant: NVSHMEM is already initialized by libflagcx.so.
+  // This call registers the consumer binary's nvshmemi_device_state_d
+  // and populates it via nvshmemi_update_device_state().
+  nvshmem_init();
 }
 
 extern "C" void flagcxNvshmemFinalizeDeviceState() {
-    // Decrement refcount. Actual teardown happens in libflagcx.so's finalize.
-    nvshmem_finalize();
+  // Decrement refcount. Actual teardown happens in libflagcx.so's finalize.
+  nvshmem_finalize();
 }
