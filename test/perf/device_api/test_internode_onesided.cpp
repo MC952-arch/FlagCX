@@ -26,6 +26,7 @@
 
 #ifdef FLAGCX_COMM_TRAITS_SHMEM
 extern "C" void flagcxNvshmemSyncDeviceState();
+extern "C" void flagcxNvshmemFinalizeDeviceState();
 #endif
 
 #define DATATYPE flagcxFloat
@@ -282,6 +283,10 @@ int main(int argc, char *argv[]) {
 
   // Destroy device communicator (before comm destroy)
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxNvshmemFinalizeDeviceState();
+#endif
 
   // Destroy comm
   FLAGCXCHECK(flagcxCommDestroy(comm));

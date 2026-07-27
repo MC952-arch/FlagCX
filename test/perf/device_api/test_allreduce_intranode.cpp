@@ -24,6 +24,7 @@
 
 #ifdef FLAGCX_COMM_TRAITS_SHMEM
 extern "C" void flagcxNvshmemSyncDeviceState();
+extern "C" void flagcxNvshmemFinalizeDeviceState();
 #endif
 
 #define DATATYPE flagcxFloat
@@ -239,6 +240,9 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
   }
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxNvshmemFinalizeDeviceState();
+#endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL));
