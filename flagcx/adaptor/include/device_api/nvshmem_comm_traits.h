@@ -56,39 +56,17 @@ struct CommTraits<NvshmemBackend> {
     void *symBase;
     size_t allocSize;
     void *rawPtr;
-    // NVSHMEM heap state — populated on host at create time.
-    // Used to resolve symmetric addresses without relying on
-    // nvshmemi_device_state_d (which may be uninitialized in
-    // separate-compilation scenarios).
-    void *heapBase;         // symmetric heap base (device VA)
-    size_t heapSize;        // symmetric heap size
-    void **peerHeapBaseP2P; // device ptr: array of npes peer base addresses
-
-    FLAGCX_DEVICE_INLINE_DECORATOR void *resolveSymAddr(size_t offset,
-                                                        int peer) const {
-#ifdef __CUDA_ARCH__
-      ptrdiff_t heapOff = (char *)symBase - (char *)heapBase;
-      void *peerBase =
-          (void *)__ldg((const long long unsigned *)peerHeapBaseP2P + peer);
-      return peerBase ? (char *)peerBase + heapOff + (ptrdiff_t)offset
-                      : nullptr;
-#else
-      (void)offset;
-      (void)peer;
-      return nullptr;
-#endif
-    }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &, int peer) const {
-      return resolveSymAddr(offset, peer);
+      return nvshmem_ptr((char *)symBase + offset, peer);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      return resolveSymAddr(offset, peer);
+      return nvshmem_ptr((char *)symBase + offset, peer);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t, const Multimem &) const {
