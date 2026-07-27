@@ -145,171 +145,34 @@ COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
 ifeq ($(USE_NVIDIA), 1)
-	include makefiles/nvidia_gencode.mk
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
-	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_PLATFORM = CUDA
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
-	DEVICE_FILE_EXTENSION = cu
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
-ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
-	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
-endif
-# Device API backend selection (nested inside USE_NVIDIA)
-ifeq ($(USE_SHMEM), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
-	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
-else ifeq ($(FORCE_DEFAULT_PATH), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
-else
-	# Auto-detect NCCL version from header
-	NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
-	NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
-	NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
-ifeq ($(NCCL_VERSION_OK), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL
-else
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
-endif
-endif
+  include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lascendcl
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lhccl
-	ADAPTOR_FLAG = -DUSE_ASCEND_ADAPTOR
+  include makefiles/ascend.mk
 else ifeq ($(USE_ILUVATAR_COREX), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcudart -lcuda
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_ILUVATAR_COREX_ADAPTOR
+  include makefiles/iluvatar_corex.mk
 else ifeq ($(USE_CAMBRICON), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcnrt
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lcncl
-	ADAPTOR_FLAG = -DUSE_CAMBRICON_ADAPTOR
+  include makefiles/cambricon.mk
 else ifeq ($(USE_METAX), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lmccl
-	ADAPTOR_FLAG = -DUSE_METAX_ADAPTOR
+  include makefiles/metax.mk
 else ifeq ($(USE_MUSA), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lmccl -lmusa
-	ADAPTOR_FLAG = -DUSE_MUSA_ADAPTOR
+  include makefiles/musa.mk
 else ifeq ($(USE_KUNLUNXIN), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/so
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lxpurt -lcudart
-	CCL_LIB = $(CCL_HOME)/so
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lbkcl
-	ADAPTOR_FLAG = -DUSE_KUNLUNXIN_ADAPTOR
+  include makefiles/kunlunxin.mk
 else ifeq ($(USE_DU), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcudart -lcuda
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_DU_ADAPTOR
-	DEVICE_PLATFORM = DU
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC
-	DEVICE_FILE_EXTENSION = cu
+  include makefiles/du.mk
 else ifeq ($(USE_AMD), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lhiprtc
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include/rccl
-	CCL_LINK = -lrccl
-	ADAPTOR_FLAG = -DUSE_AMD_ADAPTOR -D__HIP_PLATFORM_AMD__
+  include makefiles/amd.mk
 else ifeq ($(USE_TSM), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lhpgr
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -ltccl
-	ADAPTOR_FLAG = -DUSE_TSM_ADAPTOR
+  include makefiles/tsm.mk
 else ifeq ($(USE_ENFLAME), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -ltopsrt
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -leccl
-	ADAPTOR_FLAG = -DUSE_ENFLAME_ADAPTOR
+  include makefiles/enflame.mk
 else ifeq ($(USE_SUNRISE), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/targets/linux-x86_64/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -ltangrt_shared
-	CCL_LIB = $(CCL_HOME)/lib/linux-x86_64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lpccl
-	ADAPTOR_FLAG = -DUSE_SUNRISE_ADAPTOR
+  include makefiles/sunrise.mk
 else ifeq ($(USE_PPU), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcudart -lcuda
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_PPU_ADAPTOR
+  include makefiles/ppu.mk
 else
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
-	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_PLATFORM = CUDA
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
-	DEVICE_FILE_EXTENSION = cu
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
-ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
-	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
-endif
-# Device API backend selection (fallback NVIDIA path)
-ifeq ($(USE_SHMEM), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
-	DEVICE_LINK += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
-else ifeq ($(FORCE_DEFAULT_PATH), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
-else
-	NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
-	NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
-	NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
-ifeq ($(NCCL_VERSION_OK), 1)
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL
-else
-	ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
-endif
-endif
-	USE_NVIDIA := 1
+  include makefiles/nvidia.mk
+  USE_NVIDIA := 1
 endif
 
 ifeq ($(USE_GLOO), 1)
@@ -397,30 +260,14 @@ LIBSRCFILES:= \
 	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/service/*.cc)
 
-# Device API backend source selection
-ifeq ($(USE_SHMEM), 1)
-LIBSRCFILES += $(wildcard flagcx/adaptor/shmem/*.cc)
-LIBSRCFILES += flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
-else ifeq ($(FORCE_DEFAULT_PATH), 1)
-LIBSRCFILES += flagcx/adaptor/device_api/default_dev_api_backend.cc
-else ifeq ($(NCCL_VERSION_OK), 1)
-LIBSRCFILES += flagcx/adaptor/device_api/nccl_dev_api_backend.cc
-else
-LIBSRCFILES += flagcx/adaptor/device_api/default_dev_api_backend.cc
-endif
+# Platform .mk provides extra sources (device_api backend, shmem adaptor)
+LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
 
 ifeq ($(COMPILE_KERNEL), 1)
-DEVSRCFILES:= \
-	$(wildcard flagcx/kernels/*.$(DEVICE_FILE_EXTENSION))
-ifneq ($(USE_NVIDIA), 1)
-EXCLUDE_SOURCES := custom_allreduce.cu
-else
-EXCLUDE_SOURCES :=
+DEVSRCFILES := $(PLATFORM_KERNEL_SRCS)
+DEVOBJ := $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
-DEVSRCFILES := $(filter-out flagcx/kernels/$(EXCLUDE_SOURCES), $(DEVSRCFILES))
-DEVOBJ:= $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
-endif
-LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
+LIBOBJ := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)

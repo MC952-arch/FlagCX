@@ -7,11 +7,6 @@
 
 include ../make.inc
 
-# Auto-detect GPU architectures
-ifeq ($(USE_NVIDIA), 1)
-include $(PROJECT_ROOT)/makefiles/nvidia_gencode.mk
-endif
-
 # Propagate FORCE_DEFAULT_PATH to device compilation (must match library build)
 ifeq ($(FORCE_DEFAULT_PATH), 1)
 ADAPTOR_DEFINE += -DFLAGCX_FORCE_DEFAULT_PATH
@@ -24,15 +19,14 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
     -I$(PROJECT_ROOT)/bindings/ir \
     $(PLATFORM_INCLUDES) \
     $(CCL_INCLUDE) \
-    $(DEVICE_INCLUDE)
+    $(DEVICE_INCLUDE) \
+    $(SHMEM_INCLUDE)
 
 # NVSHMEM requires relocatable device code (-dc) + device-link step
 ifeq ($(USE_SHMEM), 1)
 NVCC_RDC_FLAG := -dc
-SHMEM_INCLUDE := -I$(SHMEM_HOME)/include
 else
 NVCC_RDC_FLAG := -c
-SHMEM_INCLUDE :=
 endif
 
 .PHONY: all clean device_api.o device_ir.o nvshmem_state_sync.o dlink.o dlink_api.o dlink_ir.o

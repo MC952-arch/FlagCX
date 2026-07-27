@@ -65,60 +65,35 @@ USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 
 # ---------------------------------------------------------------------------
-# Device platform resolution (for test components needing nvcc / device libs).
-# Checks USE_NVIDIA first, then USE_DU, then defaults to NVIDIA paths.
-# ---------------------------------------------------------------------------
-ifeq ($(USE_NVIDIA), 1)
-  DEVICE_HOME      ?= /usr/local/cuda
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
-else ifeq ($(USE_DU), 1)
-  DEVICE_HOME      ?= $(CUDA_PATH)
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_DU_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/du
-else
-  # Default: NVIDIA paths (same as top-level Makefile fallback)
-  DEVICE_HOME      ?= /usr/local/cuda
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
-endif
-
-# ---------------------------------------------------------------------------
-# NVSHMEM / NCCL backend selection — mirror main Makefile logic.
-# USE_SHMEM=1 takes priority over NCCL version detection.
+# Device platform resolution — include platform .mk from library build.
 # ---------------------------------------------------------------------------
 USE_SHMEM ?= 0
 SHMEM_HOME ?= /usr/local/nvshmem
 
 ifeq ($(USE_NVIDIA), 1)
-ifeq ($(USE_SHMEM), 1)
-  ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_SHMEM
-  DEVICE_INCLUDE += -I$(SHMEM_HOME)/include
-  DEVICE_LINK    += -L$(SHMEM_HOME)/lib -lnvshmem_host
-else ifneq ($(FORCE_DEFAULT_PATH), 1)
-  NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
-  NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_HOME)/include/nccl.h 2>/dev/null | awk '{print $$3}')
-  NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
-  ifeq ($(NCCL_VERSION_OK), 1)
-    ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_CCL
-  else
-    ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_DEFAULT
-  endif
+  include $(PROJECT_ROOT)/makefiles/nvidia.mk
+else ifeq ($(USE_DU), 1)
+  include $(PROJECT_ROOT)/makefiles/du.mk
+else ifeq ($(USE_ASCEND), 1)
+  include $(PROJECT_ROOT)/makefiles/ascend.mk
+else ifeq ($(USE_METAX), 1)
+  include $(PROJECT_ROOT)/makefiles/metax.mk
 else
-  ADAPTOR_DEFINE += -DFLAGCX_COMM_TRAITS_DEFAULT
+  include $(PROJECT_ROOT)/makefiles/nvidia.mk
 endif
+
+# Test-specific overrides (format for compiler flags)
+DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
+CCL_INCLUDE    := -I$(CCL_INCLUDE)
+DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
+ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
+PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+
+# SHMEM include path (used when USE_SHMEM=1)
+ifeq ($(USE_SHMEM), 1)
+SHMEM_INCLUDE := -I$(SHMEM_HOME)/include
+else
+SHMEM_INCLUDE :=
 endif
 
 # Debug helper — use 'make print-config' to verify paths.

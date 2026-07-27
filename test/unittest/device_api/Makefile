@@ -1,10 +1,5 @@
 include ../../make.inc
 
-# Auto-detect GPU architectures
-ifeq ($(USE_NVIDIA), 1)
-include $(PROJECT_ROOT)/makefiles/nvidia_gencode.mk
-endif
-
 # Shared device objects (built in test/device_api/)
 DEVICE_API_DIR := $(PROJECT_ROOT)/test/device_api
 DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o

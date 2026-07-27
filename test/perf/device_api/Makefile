@@ -1,10 +1,5 @@
 include ../../make.inc
 
-# Auto-detect GPU architectures
-ifeq ($(USE_NVIDIA), 1)
-include $(PROJECT_ROOT)/makefiles/nvidia_gencode.mk
-endif
-
 # Each test_*.cpp becomes its own binary: $(BINDIR)/perf_<name>
 SRCS := $(wildcard test_*.cpp)
 BINS := $(SRCS:test_%.cpp=$(BINDIR)/perf_%)
