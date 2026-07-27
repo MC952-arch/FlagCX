@@ -511,19 +511,29 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   // Allocate epoch buffer
   {
     size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+    INFO(FLAGCX_INIT,
+         "defaultDevApiCommCreate: allocating epochBuffer size=%zu",
+         epochBufSize);
     flagcxResult_t res = deviceAdaptor->deviceMalloc(
         (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
     if (res != flagcxSuccess) {
+      WARN("defaultDevApiCommCreate: epochBuffer malloc failed (%d)", res);
       return res;
     }
     res = deviceAdaptor->deviceMemset(handle->epochBuffer, 0, epochBufSize,
                                       flagcxMemDevice, NULL);
     if (res != flagcxSuccess) {
+      WARN("defaultDevApiCommCreate: epochBuffer memset failed (%d)", res);
       return res;
     }
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: epochBuffer OK");
   }
 
   // One-sided buffers: signals, counters, staging
+  INFO(FLAGCX_INIT,
+       "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
+       "interCounterCount=%d",
+       handle->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
   if (handle->nInterPeers > 0 &&
       (reqs->interSignalCount > 0 || reqs->interCounterCount > 0)) {
     int bufCtxCount =
@@ -532,6 +542,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
             : handle->contextCount;
     if (bufCtxCount < handle->contextCount)
       bufCtxCount = handle->contextCount;
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: bufCtxCount=%d contextCount=%d",
+         bufCtxCount, handle->contextCount);
 
     flagcxResult_t res;
 
@@ -540,30 +552,49 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       handle->signalCount = reqs->interSignalCount;
       size_t sigSize =
           (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t);
+      INFO(
+          FLAGCX_INIT,
+          "defaultDevApiCommCreate: signalBuffer sigSize=%zu (count=%d ctx=%d)",
+          sigSize, handle->signalCount, bufCtxCount);
       if (flagcxParamSignalHostEnable()) {
         res = deviceAdaptor->deviceMalloc((void **)&handle->signalBuffer,
                                           sigSize, flagcxMemHost, NULL);
-        if (res != flagcxSuccess)
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: signalBuffer host malloc failed (%d)",
+               res);
           return res;
+        }
         memset(handle->signalBuffer, 0, sigSize);
       } else {
         res = deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
                                          sigSize, NULL);
-        if (res != flagcxSuccess)
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: signalBuffer gdrMemAlloc failed (%d)",
+               res);
           return res;
+        }
         res = deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
                                           flagcxMemDevice, NULL);
-        if (res != flagcxSuccess)
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: signalBuffer memset failed (%d)", res);
           return res;
+        }
       }
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalBuffer OK at %p",
+           handle->signalBuffer);
       res = deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer, sigSize,
                                         flagcxMemDevice, NULL);
-      if (res != flagcxSuccess)
+      if (res != flagcxSuccess) {
+        WARN("defaultDevApiCommCreate: shadowBuffer malloc failed (%d)", res);
         return res;
+      }
       res = deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
                                         flagcxMemDevice, NULL);
-      if (res != flagcxSuccess)
+      if (res != flagcxSuccess) {
+        WARN("defaultDevApiCommCreate: shadowBuffer memset failed (%d)", res);
         return res;
+      }
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: shadowBuffer OK");
     }
 
     // Counter buffer (host-pinned)
@@ -571,37 +602,62 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       handle->counterCount = reqs->interCounterCount;
       size_t cntSize =
           (size_t)handle->counterCount * bufCtxCount * sizeof(uint64_t);
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer cntSize=%zu",
+           cntSize);
       res = deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
                                         cntSize, flagcxMemHost, NULL);
-      if (res != flagcxSuccess)
+      if (res != flagcxSuccess) {
+        WARN("defaultDevApiCommCreate: counterBuffer malloc failed (%d)", res);
         return res;
+      }
       memset(handle->counterBuffer, 0, cntSize);
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
     }
 
     // PutValue staging buffer
     size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
+         stagingSize);
     res = deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
                                       stagingSize, flagcxMemHost, NULL);
-    if (res != flagcxSuccess)
+    if (res != flagcxSuccess) {
+      WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
       return res;
+    }
     memset(handle->putValueStagingBuffer, 0, stagingSize);
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
 
     // Register signal buffer for RDMA one-sided access
     if (handle->signalBuffer) {
       int sigPtrType =
           flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
+      INFO(FLAGCX_INIT,
+           "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
+           sigPtrType);
       res = flagcxOneSideSignalRegister(comm, handle->signalBuffer,
                                         (size_t)handle->signalCount *
                                             bufCtxCount * sizeof(uint64_t),
                                         sigPtrType);
-      if (res != flagcxSuccess)
+      if (res != flagcxSuccess) {
+        WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed (%d)",
+             res);
         return res;
+      }
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
     }
 
     // Register staging buffer for PutValue RDMA source
     if (handle->putValueStagingBuffer) {
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
       res = flagcxOneSideStagingRegister(comm, handle->putValueStagingBuffer,
                                          stagingSize);
+      if (res != flagcxSuccess) {
+        WARN(
+            "defaultDevApiCommCreate: flagcxOneSideStagingRegister failed (%d)",
+            res);
+        return res;
+      }
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
     }
 
     INFO(FLAGCX_INIT,
@@ -611,7 +667,15 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   }
 
   // Pre-establish full-mesh connections from main thread
-  FLAGCXCHECK(preconnectFullMesh(comm));
+  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
+  {
+    flagcxResult_t res = preconnectFullMesh(comm);
+    if (res != flagcxSuccess) {
+      WARN("defaultDevApiCommCreate: preconnectFullMesh failed (%d)", res);
+      return res;
+    }
+  }
+  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
 
   return flagcxSuccess;
 }

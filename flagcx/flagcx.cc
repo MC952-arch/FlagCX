@@ -228,14 +228,11 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
       return flagcxInternalError;
     }
     FLAGCXCHECK(shmemAdaptor->symMalloc(ptr, size));
-    INFO(FLAGCX_REG, "flagcxMemAlloc: SHMEM allocated [%p, %ld]", *ptr, size);
   } else {
     // flagcxMemCCL: dispatch based on homo/hetero
     if (useHeteroComm()) {
       FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
-      if (*ptr != NULL) {
-        INFO(FLAGCX_REG, "flagcxMemAlloc: GDR allocated [%p, %ld]", *ptr, size);
-      } else {
+      if (*ptr == NULL) {
         WARN("flagcxMemAlloc: GDR allocation failed");
         return flagcxUnhandledDeviceError;
       }
@@ -433,6 +430,74 @@ fail:
   info->fullRecvComms = NULL;
   info->nRanks = 0;
   info->nContexts = 0;
+  return res;
+}
+
+// Ensure full-mesh one-sided connections exist for this heteroComm.
+// If no data handle has been registered yet, lazily build a connection-only
+// handle at slot 0 so that signal/staging registration can proceed without
+// requiring a prior flagcxCommRegister call.
+// NOTE: This is a collective operation — all ranks must call it together.
+static flagcxResult_t
+flagcxOneSideEnsureFullMesh(struct flagcxHeteroComm *heteroComm) {
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->regMr == NULL)
+    return flagcxNotSupported;
+
+  // Already have connections?
+  if (heteroComm->oneSideHandleCount > 0 &&
+      heteroComm->oneSideHandles[0] != NULL &&
+      heteroComm->oneSideHandles[0]->fullRecvComms != NULL) {
+    return flagcxSuccess;
+  }
+
+  if (heteroComm->bootstrap == NULL)
+    return flagcxNotSupported;
+
+  flagcxResult_t res = flagcxSuccess;
+  struct flagcxOneSideHandleInfo *info = NULL;
+
+  // Grow array if needed
+  if (heteroComm->oneSideHandleCount >= heteroComm->oneSideHandleCapacity) {
+    int newCap = heteroComm->oneSideHandleCapacity == 0
+                     ? 4
+                     : heteroComm->oneSideHandleCapacity * 2;
+    struct flagcxOneSideHandleInfo **newArr =
+        (struct flagcxOneSideHandleInfo **)realloc(
+            heteroComm->oneSideHandles,
+            newCap * sizeof(struct flagcxOneSideHandleInfo *));
+    if (newArr == NULL)
+      return flagcxSystemError;
+    for (int i = heteroComm->oneSideHandleCapacity; i < newCap; i++)
+      newArr[i] = NULL;
+    heteroComm->oneSideHandles = newArr;
+    heteroComm->oneSideHandleCapacity = newCap;
+  }
+
+  FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail);
+  FLAGCXCHECKGOTO(flagcxOneSideBuildFullMesh(heteroComm, info), res, fail_info);
+
+  // Store at current slot (should be slot 0 if this is truly the first)
+  {
+    int slot = heteroComm->oneSideHandleCount;
+    heteroComm->oneSideHandles[slot] = info;
+    heteroComm->oneSideHandleCount = slot + 1;
+
+    // Publish sendComms to RMA proxy so its progress thread can use them
+    if (slot == 0 && info->fullSendComms != NULL) {
+      flagcxHeteroRmaProxyPublishSendComms(heteroComm, info->fullSendComms);
+    }
+  }
+
+  INFO(FLAGCX_REG,
+       "flagcxOneSideEnsureFullMesh: lazily built full-mesh connections "
+       "(slot %d)",
+       heteroComm->oneSideHandleCount - 1);
+  return flagcxSuccess;
+
+fail_info:
+  free(info);
+fail:
   return res;
 }
 
@@ -745,19 +810,18 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Signal registration reuses full-mesh connections from this heteroComm's
-  // first data handle.  Requires at least one data handle first.
-  struct flagcxOneSideHandleInfo *firstDataHandle = NULL;
-  if (heteroComm->oneSideHandleCount > 0 &&
-      heteroComm->oneSideHandles[0] != NULL &&
-      heteroComm->oneSideHandles[0]->fullRecvComms != NULL) {
-    firstDataHandle = heteroComm->oneSideHandles[0];
+  // first data handle.  Lazily build them if not yet established.
+  {
+    flagcxResult_t meshRes = flagcxOneSideEnsureFullMesh(heteroComm);
+    if (meshRes != flagcxSuccess) {
+      INFO(FLAGCX_REG,
+           "flagcxOneSideSignalRegister: failed to ensure full-mesh (%d)",
+           (int)meshRes);
+      return meshRes;
+    }
   }
-  if (firstDataHandle == NULL) {
-    INFO(FLAGCX_REG,
-         "flagcxOneSideSignalRegister: no full-mesh connections for "
-         "this heteroComm, register a data buffer first");
-    return flagcxNotSupported;
-  }
+  struct flagcxOneSideHandleInfo *firstDataHandle =
+      heteroComm->oneSideHandles[0];
 
   flagcxResult_t res = flagcxSuccess;
   void *mrHandle = NULL;
@@ -950,19 +1014,18 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
   }
 
   // Staging registration reuses full-mesh connections from this heteroComm's
-  // first data handle.  Requires at least one data handle first.
-  struct flagcxOneSideHandleInfo *firstDataHandleStg = NULL;
-  if (heteroComm->oneSideHandleCount > 0 &&
-      heteroComm->oneSideHandles[0] != NULL &&
-      heteroComm->oneSideHandles[0]->fullRecvComms != NULL) {
-    firstDataHandleStg = heteroComm->oneSideHandles[0];
+  // first data handle.  Lazily build them if not yet established.
+  {
+    flagcxResult_t meshRes = flagcxOneSideEnsureFullMesh(heteroComm);
+    if (meshRes != flagcxSuccess) {
+      INFO(FLAGCX_REG,
+           "flagcxOneSideStagingRegister: failed to ensure full-mesh (%d)",
+           (int)meshRes);
+      return meshRes;
+    }
   }
-  if (firstDataHandleStg == NULL) {
-    INFO(FLAGCX_REG,
-         "flagcxOneSideStagingRegister: no full-mesh connections for "
-         "this heteroComm, register a data buffer first");
-    return flagcxNotSupported;
-  }
+  struct flagcxOneSideHandleInfo *firstDataHandleStg =
+      heteroComm->oneSideHandles[0];
 
   flagcxResult_t res = flagcxSuccess;
   void *mrHandle = NULL;
