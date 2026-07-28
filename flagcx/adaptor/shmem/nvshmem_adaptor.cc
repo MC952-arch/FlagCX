@@ -32,6 +32,7 @@ static flagcxResult_t nvshmemAdaptorInit(int rank, int nRanks) {
   if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED)
     return flagcxInternalError;
   if (nvshmem_my_pe() != rank || nvshmem_n_pes() != nRanks) {
+    nvshmem_finalize();
     return flagcxInternalError;
   }
   shmemInitRefCount++;
@@ -39,9 +40,8 @@ static flagcxResult_t nvshmemAdaptorInit(int rank, int nRanks) {
 }
 
 static flagcxResult_t nvshmemAdaptorFinalize() {
-  if (--shmemInitRefCount <= 0) {
+  if (shmemInitRefCount > 0 && --shmemInitRefCount == 0) {
     nvshmem_finalize();
-    shmemInitRefCount = 0;
   }
   return flagcxSuccess;
 }
@@ -73,6 +73,8 @@ nvshmemDevCommCreate(flagcxComm_t comm,
                      flagcxShmemComm_t *shmemComm) {
   auto *sc = new flagcxShmemCommInternal();
   memset(sc, 0, sizeof(*sc));
+  sc->intraTeam = NVSHMEM_TEAM_INVALID;
+  sc->interTeam = NVSHMEM_TEAM_INVALID;
 
   sc->rank = comm->rank;
   sc->nRanks = comm->nranks;
@@ -127,6 +129,13 @@ nvshmemDevCommCreate(flagcxComm_t comm,
 
   // Inter-node barrier signals (symmetric)
   {
+    if (sc->intraSize > 0 && sc->nRanks % sc->intraSize != 0) {
+      WARN(
+          "nvshmem devCommCreate: nRanks (%d) not divisible by intraSize (%d); "
+          "non-uniform topologies are not supported",
+          sc->nRanks, sc->intraSize);
+      goto fail;
+    }
     int interSize = (sc->intraSize > 0) ? sc->nRanks / sc->intraSize : 1;
     if (sc->interBarrierCount > 0 && interSize > 1) {
       size_t sz = (size_t)sc->interBarrierCount * interSize * sizeof(uint64_t);
@@ -159,6 +168,8 @@ nvshmemDevCommCreate(flagcxComm_t comm,
     }
 
     // Team creation: intra-node
+    // NOTE: assumes uniform intra-node GPU count across all nodes.
+    // Heterogeneous topologies are not supported by this strided team-split.
     int nodeId = (sc->intraSize > 0) ? sc->rank / sc->intraSize : 0;
     if (nvshmem_team_split_strided(NVSHMEM_TEAM_WORLD, nodeId * sc->intraSize,
                                    1, sc->intraSize, NULL, 0,

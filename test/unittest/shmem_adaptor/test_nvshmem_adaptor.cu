@@ -31,7 +31,9 @@ static void setup() {
   nvshmem_init();
   g_pe = nvshmem_my_pe();
   g_npes = nvshmem_n_pes();
-  int dev = g_pe % 8;
+  int devCount = 1;
+  cudaGetDeviceCount(&devCount);
+  int dev = g_pe % devCount;
   cudaSetDevice(dev);
   if (g_pe == 0)
     printf("[nvshmem_test] %d PEs initialized, device=%d\n", g_npes, dev);
@@ -255,11 +257,10 @@ static void test_counter_wait() {
 // ============================================================
 __global__ void kernel_test_barrier_world(DC::Comm *devDc, uint32_t ctaIdx) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  DC::Team team = {devDc->nRanks, devDc->rank, 1};
-  DC::Multimem mm = {nullptr};
+  DC::Net net(*devDc, 0);
   Barrier<NvshmemBackend, flagcxTeamTagWorld,
           PlatformTraits<NvidiaPlatform>::CoopBlock>
-      bar(coop, *devDc, team, ctaIdx);
+      bar(coop, flagcxTeamTagWorld{}, net, *devDc, ctaIdx, false, 0);
   bar.sync();
 }
 
@@ -269,12 +270,22 @@ static void test_barrier_world() {
     return;
   }
   const int BARRIER_COUNT = 1;
+  const int INTRA_BARRIER_COUNT = 1;
+
+  // Intra barrier signals (world barrier composes intra internally)
+  uint64_t *intraSig =
+      (uint64_t *)nvshmem_malloc(INTRA_BARRIER_COUNT * g_npes * sizeof(uint64_t));
+  assert(intraSig);
+  cudaMemset(intraSig, 0, INTRA_BARRIER_COUNT * g_npes * sizeof(uint64_t));
+
+  // World barrier signals
   uint64_t *worldSig =
       (uint64_t *)nvshmem_malloc(BARRIER_COUNT * g_npes * sizeof(uint64_t));
   assert(worldSig);
   cudaMemset(worldSig, 0, BARRIER_COUNT * g_npes * sizeof(uint64_t));
 
-  int totalBarriers = BARRIER_COUNT;
+  // barrierUsage: [intra(0..INTRA-1), inter(none), world(INTRA..INTRA+WORLD-1)]
+  int totalBarriers = INTRA_BARRIER_COUNT + BARRIER_COUNT;
   uint64_t *barrierUsage;
   cudaMalloc(&barrierUsage, totalBarriers * sizeof(uint64_t));
   cudaMemset(barrierUsage, 0, totalBarriers * sizeof(uint64_t));
@@ -284,10 +295,11 @@ static void test_barrier_world() {
   dc.nRanks = g_npes;
   dc.intraRank = g_pe;
   dc.intraSize = g_npes;
+  dc.intraBarrierSignals = intraSig;
+  dc.intraBarrierCount = INTRA_BARRIER_COUNT;
+  dc.interBarrierCount = 0;
   dc.worldBarrierSignals = worldSig;
   dc.worldBarrierCount = BARRIER_COUNT;
-  dc.intraBarrierCount = 0;
-  dc.interBarrierCount = 0;
   dc.barrierUsage = barrierUsage;
 
   DC::Comm *devDc;
@@ -306,6 +318,7 @@ static void test_barrier_world() {
   cudaFree(devDc);
   cudaFree(barrierUsage);
   nvshmem_free(worldSig);
+  nvshmem_free(intraSig);
 }
 
 // ============================================================

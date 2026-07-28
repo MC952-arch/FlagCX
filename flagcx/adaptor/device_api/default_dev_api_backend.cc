@@ -10,6 +10,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
 #include "net.h"
@@ -149,43 +150,56 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
     struct flagcxNetAdaptor *net = hetero->netAdaptor;
     int netDev = hetero->netDev;
+    struct bootstrapState *bootstrap = comm->bootstrap;
+    const int signalTagBase = 2001;
 
-    // Listen and allgather handles among inter-leaders
-    void *listenComm = nullptr;
-    flagcxNetHandle_t myListenHandle = {};
-    FLAGCXCHECKGOTO(net->listen(netDev, (void *)myListenHandle, &listenComm),
-                    res, relay_fail);
-
-    // Exchange listen handles with all peers via bootstrap
-    flagcxNetHandle_t *allHandles = nullptr;
-    FLAGCXCHECKGOTO(flagcxCalloc(&allHandles, comm->nranks), res, relay_fail);
-    memcpy(&allHandles[myRank], &myListenHandle, sizeof(flagcxNetHandle_t));
-    FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, allHandles,
-                                           sizeof(flagcxNetHandle_t)),
-                    res, relay_fail);
-
-    // Deadlock-free connect/accept (round-robin order)
+    // Exchange listen handles with each peer leader via point-to-point tagged
+    // bootstrap (NOT ring allgather — only leaders participate here, and ring
+    // allgather requires all ranks).
     for (int p = 0; p < nInterPeers; p++) {
-      int peerRank = interPeerRanks[p];
+      int peer = interPeerRanks[p];
+      int pairTag = signalTagBase + std::min(myRank, peer) * nRanks +
+                    std::max(myRank, peer);
+
+      // Listen for incoming connection from this peer
+      flagcxNetHandle_t listenHandle = {};
+      void *listenComm = nullptr;
+      FLAGCXCHECKGOTO(net->listen(netDev, &listenHandle, &listenComm), res,
+                      relay_fail);
+
+      // Exchange listen handles via tagged bootstrap send/recv
+      flagcxNetHandle_t peerHandle = {};
+      FLAGCXCHECKGOTO(bootstrapSend(bootstrap, peer, pairTag, &listenHandle,
+                                    sizeof(flagcxNetHandle_t)),
+                      res, relay_fail);
+      FLAGCXCHECKGOTO(bootstrapRecv(bootstrap, peer, pairTag, &peerHandle,
+                                    sizeof(flagcxNetHandle_t)),
+                      res, relay_fail);
+
+      // Non-blocking connect/accept loop
       void *sendComm = nullptr;
       void *recvComm = nullptr;
       while (sendComm == nullptr || recvComm == nullptr) {
         if (sendComm == nullptr) {
-          res = net->connect(netDev, (void *)&allHandles[peerRank], &sendComm);
-          if (res != flagcxSuccess && res != flagcxInProgress)
+          flagcxResult_t r = net->connect(netDev, &peerHandle, &sendComm);
+          if (r != flagcxSuccess && r != flagcxInProgress) {
+            res = r;
             goto relay_fail;
+          }
         }
         if (recvComm == nullptr) {
-          res = net->accept(listenComm, &recvComm);
-          if (res != flagcxSuccess && res != flagcxInProgress)
+          flagcxResult_t r = net->accept(listenComm, &recvComm);
+          if (r != flagcxSuccess && r != flagcxInProgress) {
+            res = r;
             goto relay_fail;
+          }
         }
       }
+      net->closeListen(listenComm);
+
       hetero->signalSendComms[p] = sendComm;
       hetero->barrierRecvComms[p] = recvComm;
     }
-    net->closeListen(listenComm);
-    free(allHandles);
   }
 
   // ALL ranks: register barrier MR (collective AllGather inside).
@@ -847,22 +861,44 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     }
     // ---- Priority 4 & 5: No window — IPC ----
     else if (win == nullptr) {
-      int existingIdx = -1;
-      for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
-        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
-          existingIdx = i;
-          break;
+      // Check if buffer supports IPC (VMM-allocated buffers do not support
+      // cudaIpcGetMemHandle). Probe via ipcMemHandleGet before entering the
+      // collective buildIpcPeerPointers.
+      bool ipcCapable = false;
+      if (deviceAdaptor->ipcMemHandleCreate && deviceAdaptor->ipcMemHandleGet &&
+          deviceAdaptor->ipcMemHandleFree) {
+        flagcxIpcMemHandle_t probe = NULL;
+        size_t probeSize = 0;
+        if (deviceAdaptor->ipcMemHandleCreate(&probe, &probeSize) ==
+            flagcxSuccess) {
+          if (deviceAdaptor->ipcMemHandleGet(probe, buff) == flagcxSuccess) {
+            ipcCapable = true;
+          }
+          deviceAdaptor->ipcMemHandleFree(probe);
         }
       }
-      if (existingIdx >= 0) {
-        handle->ipcIndex = existingIdx;
+
+      if (!ipcCapable) {
+        INFO(FLAGCX_INIT,
+             "flagcxDevMemCreate: buff %p not IPC-capable, skipping IPC", buff);
       } else {
-        int idx = buildIpcPeerPointers(comm, buff, size);
-        if (idx >= 0) {
-          handle->ipcIndex = idx;
+        int existingIdx = -1;
+        for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
+          if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
+            existingIdx = i;
+            break;
+          }
+        }
+        if (existingIdx >= 0) {
+          handle->ipcIndex = existingIdx;
         } else {
-          WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
-               "IPC layer not available");
+          int idx = buildIpcPeerPointers(comm, buff, size);
+          if (idx >= 0) {
+            handle->ipcIndex = idx;
+          } else {
+            WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
+                 "IPC layer not available");
+          }
         }
       }
     }
@@ -884,9 +920,15 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     handle->hasWindow = kWin->hasAccess();
 
     if (!handle->hasWindow && win != nullptr && win->isSymmetricDefault) {
-      WARN("flagcxDevMemCreate: symmetric default window is not supported on "
-           "the vendor Device API path. Disable FLAGCX_USE_HETERO_COMM or "
-           "rebuild with FORCE_DEFAULT_PATH=1.");
+      flagcxSymWindow_t d = win->defaultBase;
+      WARN("flagcxDevMemCreate: kWin->hasAccess() returned false for symmetric "
+           "default window. ipcIndex=%d, intraRank=%d, "
+           "defaultBase=%p, isVMM=%d, flatBase=%p, ipcDevPeerPtrs=%p",
+           handle->ipcIndex, handle->intraRank, (void *)d, (d ? d->isVMM : -1),
+           (d ? d->flatBase : nullptr),
+           (handle->ipcIndex >= 0 && comm)
+               ? (void *)comm->ipcTable[handle->ipcIndex].devPeerPtrs
+               : nullptr);
       delete kWin;
       return flagcxInvalidUsage;
     }

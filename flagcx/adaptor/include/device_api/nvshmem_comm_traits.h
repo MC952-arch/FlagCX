@@ -136,8 +136,8 @@ struct CommTraits<NvshmemBackend> {
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
       dc.intraSize = di.intraSize;
-      dc.intraTeam = {};
-      dc.interTeam = {};
+      dc.intraTeam = NVSHMEM_TEAM_INVALID;
+      dc.interTeam = NVSHMEM_TEAM_INVALID;
       dc.worldTeam = NVSHMEM_TEAM_WORLD;
       dc.signalBuffer = di.signalBuffer;
       dc.signalCount = di.signalCount;
@@ -187,7 +187,13 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int /*contextIndex*/) : _dc(dc) {}
 
-    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const { return true; }
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
+      if (_dc.signalCount > 0 && _dc.signalBuffer == nullptr)
+        return false;
+      if (_dc.counterCount > 0 && _dc.counterBuffer == nullptr)
+        return false;
+      return true;
+    }
 
     // ---- Helper: resolve PE from team + peer index ----
     FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(Team team, int peer) const {
@@ -440,11 +446,10 @@ struct CommTraits<NvshmemBackend> {
 
     template <typename LA>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    putImpl(void *dst, void *src, size_t bytes, int pe, flagcxDevNet_CounterInc,
-            LA) const {
+    putImpl(void *dst, void *src, size_t bytes, int pe,
+            flagcxDevNet_CounterInc c, LA) const {
       nvshmem_putmem(dst, src, bytes, pe);
-      Atomic::fetchAdd(&_dc.counterBuffer[0], (uint64_t)1,
-                       flagcxDeviceMemoryOrderRelease);
+      counterImpl(c);
     }
 
     template <typename RA, typename LA>

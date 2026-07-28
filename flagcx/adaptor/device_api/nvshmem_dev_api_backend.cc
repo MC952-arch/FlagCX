@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <new>
 
 // Verify that flagcxShmemCommInternal and CommTraits<NvshmemBackend>::Comm have
 // compatible layout — the constructor in flagcx_device_core.h does a raw cast.
@@ -53,8 +54,13 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
   handle->counterCount = shmemComm->counterCount;
   // NVSHMEM does not use FIFO contexts — leave contextCount at 0.
   handle->contextCount = 0;
-  // NVSHMEM handles inter-node transparently — no relay peers needed.
-  handle->nInterPeers = 0;
+  // NVSHMEM doesn't need a host-side relay, but the World barrier uses
+  // nInterPeers to decide whether to compose the inter-node barrier phase.
+  int intraSize = shmemComm->intraSize;
+  int interSize = (intraSize > 0 && shmemComm->nRanks % intraSize == 0)
+                      ? (shmemComm->nRanks / intraSize)
+                      : 1;
+  handle->nInterPeers = (interSize > 1) ? (interSize - 1) : 0;
 
   return flagcxSuccess;
 }
@@ -76,7 +82,9 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   (void)comm;
   (void)win;
   using Window = CommTraits<NvshmemBackend>::Window;
-  auto *w = new Window();
+  auto *w = new (std::nothrow) Window();
+  if (w == nullptr)
+    return flagcxSystemError;
   w->symBase = buff;
   w->allocSize = size;
   w->rawPtr = buff;
@@ -98,26 +106,34 @@ static flagcxResult_t nvshmemDevApiMemDestroy(flagcxComm_t comm,
 
 static flagcxResult_t nvshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
-  (void)devComm;
-  (void)devPtr;
-  return flagcxNotSupported;
+  if (!devComm || !devPtr)
+    return flagcxInvalidArgument;
+  // NVSHMEM kernels use __constant__ symbol path, not DevicePtr.
+  // Return host handle for API compatibility (lifecycle tests, Triton stubs).
+  WARN("nvshmem: DevCommGetDevicePtr returns host handle; "
+       "NVSHMEM kernels use __constant__ symbol path");
+  *devPtr = (void *)devComm;
+  return flagcxSuccess;
 }
 
 static flagcxResult_t nvshmemDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
   (void)devComm;
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 static flagcxResult_t nvshmemDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
-  (void)devMem;
-  (void)devPtr;
-  return flagcxNotSupported;
+  if (!devMem || !devPtr)
+    return flagcxInvalidArgument;
+  WARN("nvshmem: DevMemGetDevicePtr returns host handle; "
+       "NVSHMEM kernels use __constant__ symbol path");
+  *devPtr = (void *)devMem;
+  return flagcxSuccess;
 }
 
 static flagcxResult_t nvshmemDevApiMemFreeDevicePtr(flagcxDevMem_t devMem) {
   (void)devMem;
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 static flagcxResult_t nvshmemCommCleanup(flagcxComm_t comm) {

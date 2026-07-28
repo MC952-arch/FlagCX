@@ -87,7 +87,11 @@ DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
 CCL_INCLUDE    := -I$(CCL_INCLUDE)
 DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
 ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
-PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+ifeq ($(DEVICE_PLATFORM), CUDA)
+  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/nvidia
+else
+  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+endif
 
 # SHMEM include path (used when USE_SHMEM=1)
 ifeq ($(USE_SHMEM), 1)

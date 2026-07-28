@@ -35,6 +35,9 @@ else ifeq ($(FORCE_DEFAULT_PATH), 1)
 else
   NCCL_VERSION_MAJOR := $(shell grep '\#define NCCL_MAJOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
   NCCL_VERSION_MINOR := $(shell grep '\#define NCCL_MINOR' $(CCL_INCLUDE)/nccl.h 2>/dev/null | awk '{print $$3}')
+  ifeq ($(NCCL_VERSION_MAJOR),)
+    $(info WARNING: NCCL header not found at $(CCL_INCLUDE)/nccl.h — using DefaultBackend)
+  endif
   NCCL_VERSION_OK := $(shell [ -n "$(NCCL_VERSION_MAJOR)" ] && [ "$(NCCL_VERSION_MAJOR)" -gt 2 -o \( "$(NCCL_VERSION_MAJOR)" -eq 2 -a "$(NCCL_VERSION_MINOR)" -ge 29 \) ] 2>/dev/null && echo 1 || echo 0)
   ifeq ($(NCCL_VERSION_OK), 1)
     ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_CCL

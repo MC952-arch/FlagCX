@@ -945,9 +945,6 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
   if (comm == NULL || comm->heteroComm == NULL) {
-    WARN("DEBUG: flagcxOneSideSignalDeregister early return — comm=%p "
-         "heteroComm=%p",
-         (void *)comm, comm ? (void *)comm->heteroComm : NULL);
     return flagcxInternalError;
   }
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;

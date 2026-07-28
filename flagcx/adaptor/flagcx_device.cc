@@ -112,7 +112,7 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
-  if (comm == nullptr || devMem == nullptr) {
+  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
 
@@ -323,9 +323,23 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
              sizeof(myIpcDesc.handleData));
       myIpcDesc.size = size;
     } else {
-      // Create IPC handle on the fly
-      flagcxP2pAllocateShareableBuffer(size, 0, &myIpcDesc, (void **)&buff);
+      // Create IPC handle directly on the existing buffer (do NOT allocate new)
+      size_t ipcSize = 0;
+      flagcxIpcMemHandle_t handlePtr = NULL;
+      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+      if (res != flagcxSuccess) {
+        WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
+        return -1;
+      }
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+      if (res != flagcxSuccess) {
+        WARN("buildIpcPeerPointers: ipcMemHandleGet failed for buff %p", buff);
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+        return -1;
+      }
+      memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
       myIpcDesc.size = size;
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
 
