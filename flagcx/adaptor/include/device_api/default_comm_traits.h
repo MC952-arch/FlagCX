@@ -819,7 +819,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderRelaxed)) {}
+                            flagcxDeviceMemoryOrderAcquire)) {}
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
