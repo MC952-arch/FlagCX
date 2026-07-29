@@ -184,7 +184,7 @@ struct CommTraits<NvshmemBackend> {
   struct Net {
     Comm _dc;
 
-    FLAGCX_DEVICE_INLINE_DECORATOR
+    FLAGCX_HOST_DEVICE_INLINE
     Net(const Comm &dc, int /*contextIndex*/) : _dc(dc) {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {

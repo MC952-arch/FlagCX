@@ -28,7 +28,7 @@ static_assert(
 static flagcxResult_t
 nvshmemDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
-                        flagcxDevComm_t handle) {
+                        flagcxDevComm_t devComm) {
   if (shmemAdaptor == nullptr) {
     return flagcxInternalError;
   }
@@ -46,21 +46,21 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
     return ret;
   }
 
-  handle->devComm = (flagcxInnerDevComm_t)shmemComm;
-  handle->signalBuffer = shmemComm->signalBuffer;
-  handle->shadowBuffer = shmemComm->shadowBuffer;
-  handle->counterBuffer = shmemComm->counterBuffer;
-  handle->signalCount = shmemComm->signalCount;
-  handle->counterCount = shmemComm->counterCount;
+  devComm->devComm = (flagcxInnerDevComm_t)shmemComm;
+  devComm->signalBuffer = shmemComm->signalBuffer;
+  devComm->shadowBuffer = shmemComm->shadowBuffer;
+  devComm->counterBuffer = shmemComm->counterBuffer;
+  devComm->signalCount = shmemComm->signalCount;
+  devComm->counterCount = shmemComm->counterCount;
   // NVSHMEM does not use FIFO contexts — leave contextCount at 0.
-  handle->contextCount = 0;
+  devComm->contextCount = 0;
   // NVSHMEM doesn't need a host-side relay, but the World barrier uses
   // nInterPeers to decide whether to compose the inter-node barrier phase.
   int intraSize = shmemComm->intraSize;
   int interSize = (intraSize > 0 && shmemComm->nRanks % intraSize == 0)
                       ? (shmemComm->nRanks / intraSize)
                       : 1;
-  handle->nInterPeers = (interSize > 1) ? (interSize - 1) : 0;
+  devComm->nInterPeers = (interSize > 1) ? (interSize - 1) : 0;
 
   return flagcxSuccess;
 }
@@ -78,7 +78,7 @@ static flagcxResult_t nvshmemDevApiCommDestroy(flagcxComm_t comm,
 
 static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
-                                             flagcxDevMem_t handle) {
+                                             flagcxDevMem_t devMem) {
   (void)comm;
   (void)win;
   using Window = CommTraits<NvshmemBackend>::Window;
@@ -88,9 +88,9 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   w->symBase = buff;
   w->allocSize = size;
   w->rawPtr = buff;
-  handle->window = (void *)w;
-  handle->hasWindow = true;
-  handle->isSymmetric = true;
+  devMem->window = (void *)w;
+  devMem->hasWindow = true;
+  devMem->isSymmetric = true;
   return flagcxSuccess;
 }
 
@@ -136,7 +136,7 @@ static flagcxResult_t nvshmemDevApiMemFreeDevicePtr(flagcxDevMem_t devMem) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t nvshmemCommCleanup(flagcxComm_t comm) {
+static flagcxResult_t nvshmemDevApiCommCleanup(flagcxComm_t comm) {
   (void)comm;
   return flagcxSuccess;
 }
@@ -151,7 +151,7 @@ static struct flagcxDevApiBackend nvshmemBackend = {
     .devCommFreeDevicePtr = nvshmemDevApiCommFreeDevicePtr,
     .devMemGetDevicePtr = nvshmemDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = nvshmemDevApiMemFreeDevicePtr,
-    .commCleanup = nvshmemCommCleanup,
+    .commCleanup = nvshmemDevApiCommCleanup,
 };
 
 struct flagcxDevApiBackend *devApiBackend = &nvshmemBackend;

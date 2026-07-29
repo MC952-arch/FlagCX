@@ -20,7 +20,6 @@ typedef struct flagcxShmemCommInternal *flagcxShmemComm_t;
 
 // Forward declarations
 struct flagcxDevCommRequirements;
-struct flagcxDevMemInternal;
 
 struct flagcxShmemAdaptor {
   const char *name;
@@ -30,21 +29,14 @@ struct flagcxShmemAdaptor {
   flagcxResult_t (*finalize)();
 
   // Symmetric memory management
-  flagcxResult_t (*symMalloc)(void **ptr, size_t size);
-  flagcxResult_t (*symFree)(void *ptr);
+  flagcxResult_t (*malloc)(void **ptr, size_t size);
+  flagcxResult_t (*free)(void *ptr);
 
   // Device comm setup
   flagcxResult_t (*devCommCreate)(flagcxComm_t comm,
                                   const struct flagcxDevCommRequirements *reqs,
                                   flagcxShmemComm_t *shmemComm);
   flagcxResult_t (*devCommDestroy)(flagcxShmemComm_t shmemComm);
-
-  // Device mem setup
-  flagcxResult_t (*devMemCreate)(flagcxShmemComm_t shmemComm, void *buff,
-                                 size_t size,
-                                 struct flagcxDevMemInternal *devMem);
-  flagcxResult_t (*devMemDestroy)(flagcxShmemComm_t shmemComm,
-                                  struct flagcxDevMemInternal *devMem);
 };
 
 typedef struct flagcxShmemAdaptor flagcxShmemAdaptor_t;

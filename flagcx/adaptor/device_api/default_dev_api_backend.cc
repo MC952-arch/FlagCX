@@ -58,7 +58,7 @@ static void shmHostUnregister(void *ptr) {
 // ==========================================================================
 
 static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
-                                                flagcxDevComm_t handle) {
+                                                flagcxDevComm_t devComm) {
   struct flagcxHeteroComm *hetero = comm->heteroComm;
   if (hetero == nullptr)
     return flagcxSuccess;
@@ -71,17 +71,17 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   if (nNodes <= 1)
     return flagcxSuccess;
 
-  // Already initialized: just copy pointers into this handle
+  // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {
-    handle->nInterPeers = hetero->nInterPeers;
-    handle->isInterLeader = hetero->isInterLeader;
-    handle->interPeerRanks = hetero->interPeerRanks;
-    handle->interSignalFlags = hetero->interSignalFlags;
-    handle->interSignalFlagsHost = hetero->interSignalFlagsHost;
-    handle->signalSendComms = hetero->signalSendComms;
-    handle->barrierRecvComms = hetero->barrierRecvComms;
-    handle->barrierHandleInfo = hetero->barrierHandleInfo;
-    handle->netAdaptorPtr = hetero->netAdaptorPtr;
+    devComm->nInterPeers = hetero->nInterPeers;
+    devComm->isInterLeader = hetero->isInterLeader;
+    devComm->interPeerRanks = hetero->interPeerRanks;
+    devComm->interSignalFlags = hetero->interSignalFlags;
+    devComm->interSignalFlagsHost = hetero->interSignalFlagsHost;
+    devComm->signalSendComms = hetero->signalSendComms;
+    devComm->barrierRecvComms = hetero->barrierRecvComms;
+    devComm->barrierHandleInfo = hetero->barrierHandleInfo;
+    devComm->netAdaptorPtr = hetero->netAdaptorPtr;
     return flagcxSuccess;
   }
 
@@ -230,16 +230,16 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
   hetero->relayInitialized = true;
 
-  // Copy into handle
-  handle->nInterPeers = hetero->nInterPeers;
-  handle->isInterLeader = hetero->isInterLeader;
-  handle->interPeerRanks = hetero->interPeerRanks;
-  handle->interSignalFlags = hetero->interSignalFlags;
-  handle->interSignalFlagsHost = hetero->interSignalFlagsHost;
-  handle->signalSendComms = hetero->signalSendComms;
-  handle->barrierRecvComms = hetero->barrierRecvComms;
-  handle->barrierHandleInfo = hetero->barrierHandleInfo;
-  handle->netAdaptorPtr = hetero->netAdaptorPtr;
+  // Copy into devComm
+  devComm->nInterPeers = hetero->nInterPeers;
+  devComm->isInterLeader = hetero->isInterLeader;
+  devComm->interPeerRanks = hetero->interPeerRanks;
+  devComm->interSignalFlags = hetero->interSignalFlags;
+  devComm->interSignalFlagsHost = hetero->interSignalFlagsHost;
+  devComm->signalSendComms = hetero->signalSendComms;
+  devComm->barrierRecvComms = hetero->barrierRecvComms;
+  devComm->barrierHandleInfo = hetero->barrierHandleInfo;
+  devComm->netAdaptorPtr = hetero->netAdaptorPtr;
 
   INFO(FLAGCX_INIT,
        "setupInterNodeSignalRelay: rank %d nInterPeers=%d isLeader=%d", myRank,
@@ -281,16 +281,16 @@ relay_fail:
 // ==========================================================================
 
 static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
-                                       flagcxDevComm_t handle) {
+                                       flagcxDevComm_t devComm) {
   int localRanks = comm->localRanks;
   int myRank = comm->rank;
   int myLocalRank = comm->localRank;
 
-  handle->nLocalRanks = localRanks;
-  handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
-  if (handle->localRankToRank == nullptr)
+  devComm->nLocalRanks = localRanks;
+  devComm->localRankToRank = (int *)malloc(localRanks * sizeof(int));
+  if (devComm->localRankToRank == nullptr)
     return flagcxSystemError;
-  memcpy(handle->localRankToRank, comm->localRankToRank,
+  memcpy(devComm->localRankToRank, comm->localRankToRank,
          localRanks * sizeof(int));
 
   size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
@@ -302,28 +302,28 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                             flagcxMemDevice, NULL));
     FLAGCXCHECK(deviceAdaptor->deviceMemset(barrierFlags, 0, barrierSize,
                                             flagcxMemDevice, NULL));
-    handle->localBarrierFlags = (uint64_t *)barrierFlags;
+    devComm->localBarrierFlags = (uint64_t *)barrierFlags;
 
     int slot = buildIpcPeerPointers(comm, barrierFlags, barrierSize);
     if (slot < 0) {
       deviceAdaptor->deviceFree(barrierFlags, flagcxMemDevice, NULL);
-      handle->localBarrierFlags = nullptr;
+      devComm->localBarrierFlags = nullptr;
       return flagcxSystemError;
     }
 
-    handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
-    handle->barrierIpcIndex = slot;
-    handle->localBarrierShmPtr = nullptr;
-    handle->peerBarrierShmPtrs = nullptr;
-    handle->barrierShmSize = 0;
-    handle->barrierDevPeerPtrsRaw = nullptr;
-    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+    devComm->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
+    devComm->barrierIpcIndex = slot;
+    devComm->localBarrierShmPtr = nullptr;
+    devComm->peerBarrierShmPtrs = nullptr;
+    devComm->barrierShmSize = 0;
+    devComm->barrierDevPeerPtrsRaw = nullptr;
+    devComm->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
 
     INFO(FLAGCX_INIT,
          "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
          "barrierPeers=%p nBarriers=%d",
-         myRank, slot, barrierFlags, (void *)handle->barrierPeers,
-         handle->nBarriers);
+         myRank, slot, barrierFlags, (void *)devComm->barrierPeers,
+         devComm->nBarriers);
 
   } else {
     // ── flagcxShm + hipHostRegister path (FLAGCX_SIGNAL_HOST_ENABLE=1) ──
@@ -408,24 +408,24 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     // Get own device pointer
     myDevPtr = hostDevPtrs[myLocalRank];
 
-    handle->localBarrierFlags = (uint64_t *)myDevPtr;
-    handle->barrierPeers = (uint64_t **)devPeerPtrs;
-    handle->barrierIpcIndex = -1;
-    handle->localBarrierShmPtr = myCpuPtr;
-    handle->peerBarrierShmPtrs = peerCpuPtrs;
-    handle->barrierShmSize = barrierSize;
-    handle->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
-    handle->myShmHandle = myShmHandle;
-    handle->peerShmHandles = peerShmHandles;
-    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
-    handle->nLocalRanks = localRanks;
+    devComm->localBarrierFlags = (uint64_t *)myDevPtr;
+    devComm->barrierPeers = (uint64_t **)devPeerPtrs;
+    devComm->barrierIpcIndex = -1;
+    devComm->localBarrierShmPtr = myCpuPtr;
+    devComm->peerBarrierShmPtrs = peerCpuPtrs;
+    devComm->barrierShmSize = barrierSize;
+    devComm->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
+    devComm->myShmHandle = myShmHandle;
+    devComm->peerShmHandles = peerShmHandles;
+    devComm->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+    devComm->nLocalRanks = localRanks;
 
     free(hostDevPtrs);
 
     INFO(FLAGCX_INIT,
          "setupIpcBarriers(SHM): rank %d localBarrierFlags=%p "
          "barrierPeers=%p nBarriers=%d",
-         myRank, myDevPtr, (void *)devPeerPtrs, handle->nBarriers);
+         myRank, myDevPtr, (void *)devPeerPtrs, devComm->nBarriers);
     return flagcxSuccess;
 
   fail_peer_shm:
@@ -497,10 +497,10 @@ static flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
-                        flagcxDevComm_t handle) {
+                        flagcxDevComm_t devComm) {
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
-    flagcxResult_t res = setupIpcBarriers(comm, handle);
+    flagcxResult_t res = setupIpcBarriers(comm, devComm);
     if (res != flagcxSuccess) {
       return res;
     }
@@ -508,10 +508,10 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
   // Inter-node signal relay
   {
-    flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
+    flagcxResult_t res = setupInterNodeSignalRelay(comm, devComm);
     if (res != flagcxSuccess) {
-      handle->nInterPeers = 0;
-      handle->isInterLeader = false;
+      devComm->nInterPeers = 0;
+      devComm->isInterLeader = false;
     }
   }
 
@@ -529,12 +529,12 @@ defaultDevApiCommCreate(flagcxComm_t comm,
          "defaultDevApiCommCreate: allocating epochBuffer size=%zu",
          epochBufSize);
     flagcxResult_t res = deviceAdaptor->deviceMalloc(
-        (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
+        (void **)&devComm->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
     if (res != flagcxSuccess) {
       WARN("defaultDevApiCommCreate: epochBuffer malloc failed (%d)", res);
       return res;
     }
-    res = deviceAdaptor->deviceMemset(handle->epochBuffer, 0, epochBufSize,
+    res = deviceAdaptor->deviceMemset(devComm->epochBuffer, 0, epochBufSize,
                                       flagcxMemDevice, NULL);
     if (res != flagcxSuccess) {
       WARN("defaultDevApiCommCreate: epochBuffer memset failed (%d)", res);
@@ -547,47 +547,47 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
-       handle->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (handle->nInterPeers > 0 &&
+       devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
+  if (devComm->nInterPeers > 0 &&
       (reqs->interSignalCount > 0 || reqs->interCounterCount > 0)) {
     int bufCtxCount =
         (comm->heteroComm != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
-            : handle->contextCount;
-    if (bufCtxCount < handle->contextCount)
-      bufCtxCount = handle->contextCount;
+            : devComm->contextCount;
+    if (bufCtxCount < devComm->contextCount)
+      bufCtxCount = devComm->contextCount;
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: bufCtxCount=%d contextCount=%d",
-         bufCtxCount, handle->contextCount);
+         bufCtxCount, devComm->contextCount);
 
     flagcxResult_t res;
 
     // Signal buffer (host-pinned or GDR device memory)
     if (reqs->interSignalCount > 0) {
-      handle->signalCount = reqs->interSignalCount;
+      devComm->signalCount = reqs->interSignalCount;
       size_t sigSize =
-          (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t);
+          (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t);
       INFO(
           FLAGCX_INIT,
           "defaultDevApiCommCreate: signalBuffer sigSize=%zu (count=%d ctx=%d)",
-          sigSize, handle->signalCount, bufCtxCount);
+          sigSize, devComm->signalCount, bufCtxCount);
       if (flagcxParamSignalHostEnable()) {
-        res = deviceAdaptor->deviceMalloc((void **)&handle->signalBuffer,
+        res = deviceAdaptor->deviceMalloc((void **)&devComm->signalBuffer,
                                           sigSize, flagcxMemHost, NULL);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: signalBuffer host malloc failed (%d)",
                res);
           return res;
         }
-        memset(handle->signalBuffer, 0, sigSize);
+        memset(devComm->signalBuffer, 0, sigSize);
       } else {
-        res = deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+        res = deviceAdaptor->gdrMemAlloc((void **)&devComm->signalBuffer,
                                          sigSize, NULL);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: signalBuffer gdrMemAlloc failed (%d)",
                res);
           return res;
         }
-        res = deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
+        res = deviceAdaptor->deviceMemset(devComm->signalBuffer, 0, sigSize,
                                           flagcxMemDevice, NULL);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: signalBuffer memset failed (%d)", res);
@@ -595,14 +595,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         }
       }
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalBuffer OK at %p",
-           handle->signalBuffer);
-      res = deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer, sigSize,
-                                        flagcxMemDevice, NULL);
+           devComm->signalBuffer);
+      res = deviceAdaptor->deviceMalloc((void **)&devComm->shadowBuffer,
+                                        sigSize, flagcxMemDevice, NULL);
       if (res != flagcxSuccess) {
         WARN("defaultDevApiCommCreate: shadowBuffer malloc failed (%d)", res);
         return res;
       }
-      res = deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
+      res = deviceAdaptor->deviceMemset(devComm->shadowBuffer, 0, sigSize,
                                         flagcxMemDevice, NULL);
       if (res != flagcxSuccess) {
         WARN("defaultDevApiCommCreate: shadowBuffer memset failed (%d)", res);
@@ -613,18 +613,18 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
     // Counter buffer (host-pinned)
     if (reqs->interCounterCount > 0) {
-      handle->counterCount = reqs->interCounterCount;
+      devComm->counterCount = reqs->interCounterCount;
       size_t cntSize =
-          (size_t)handle->counterCount * bufCtxCount * sizeof(uint64_t);
+          (size_t)devComm->counterCount * bufCtxCount * sizeof(uint64_t);
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer cntSize=%zu",
            cntSize);
-      res = deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
+      res = deviceAdaptor->deviceMalloc((void **)&devComm->counterBuffer,
                                         cntSize, flagcxMemHost, NULL);
       if (res != flagcxSuccess) {
         WARN("defaultDevApiCommCreate: counterBuffer malloc failed (%d)", res);
         return res;
       }
-      memset(handle->counterBuffer, 0, cntSize);
+      memset(devComm->counterBuffer, 0, cntSize);
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
     }
 
@@ -632,24 +632,24 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
          stagingSize);
-    res = deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
+    res = deviceAdaptor->deviceMalloc((void **)&devComm->putValueStagingBuffer,
                                       stagingSize, flagcxMemHost, NULL);
     if (res != flagcxSuccess) {
       WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
       return res;
     }
-    memset(handle->putValueStagingBuffer, 0, stagingSize);
+    memset(devComm->putValueStagingBuffer, 0, stagingSize);
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
 
     // Register signal buffer for RDMA one-sided access
-    if (handle->signalBuffer) {
+    if (devComm->signalBuffer) {
       int sigPtrType =
           flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
       INFO(FLAGCX_INIT,
            "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
            sigPtrType);
-      res = flagcxOneSideSignalRegister(comm, handle->signalBuffer,
-                                        (size_t)handle->signalCount *
+      res = flagcxOneSideSignalRegister(comm, devComm->signalBuffer,
+                                        (size_t)devComm->signalCount *
                                             bufCtxCount * sizeof(uint64_t),
                                         sigPtrType);
       if (res != flagcxSuccess) {
@@ -661,9 +661,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     }
 
     // Register staging buffer for PutValue RDMA source
-    if (handle->putValueStagingBuffer) {
+    if (devComm->putValueStagingBuffer) {
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
-      res = flagcxOneSideStagingRegister(comm, handle->putValueStagingBuffer,
+      res = flagcxOneSideStagingRegister(comm, devComm->putValueStagingBuffer,
                                          stagingSize);
       if (res != flagcxSuccess) {
         WARN(
@@ -677,7 +677,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     INFO(FLAGCX_INIT,
          "defaultDevApiCommCreate: one-sided buffers allocated "
          "(signals=%d, counters=%d, contexts=%d)",
-         handle->signalCount, handle->counterCount, handle->contextCount);
+         devComm->signalCount, devComm->counterCount, devComm->contextCount);
   }
 
   // Pre-establish full-mesh connections from main thread
@@ -805,10 +805,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
-                                             flagcxDevMem_t handle) {
+                                             flagcxDevMem_t devMem) {
   // ---- Per-comm MR layer: lookup buff in heteroComm->oneSideHandles ----
-  handle->mrIndex = -1;
-  handle->mrBase = 0;
+  devMem->mrIndex = -1;
+  devMem->mrBase = 0;
   if (comm != nullptr && comm->heteroComm != nullptr) {
     struct flagcxHeteroComm *hc = comm->heteroComm;
     for (int i = 0; i < hc->oneSideHandleCount; i++) {
@@ -816,8 +816,8 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       if (info != NULL && info->baseVas != NULL) {
         uintptr_t base = info->baseVas[comm->rank];
         if ((uintptr_t)buff == base) {
-          handle->mrIndex = i;
-          handle->mrBase = base;
+          devMem->mrIndex = i;
+          devMem->mrBase = base;
           INFO(FLAGCX_INIT,
                "flagcxDevMemCreate: buff %p matched oneSideHandles[%d], "
                "mrBase=0x%lx",
@@ -829,35 +829,35 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
   }
 
   if (comm != nullptr) {
-    handle->intraRank = comm->localRank;
+    devMem->intraRank = comm->localRank;
 
     // ---- Priority 1 & 2: Symmetric default window (VMM or IPC fallback) ----
     if (win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
-      handle->hasWindow = true;
-      handle->isSymmetric = true;
-      handle->winHandle = (void *)win;
+      devMem->hasWindow = true;
+      devMem->isSymmetric = true;
+      devMem->winHandle = (void *)win;
       if (d != nullptr && d->mrIndex >= 0) {
-        handle->mrIndex = d->mrIndex;
-        handle->mrBase = d->mrBase;
+        devMem->mrIndex = d->mrIndex;
+        devMem->mrBase = d->mrBase;
       }
       if (d == nullptr || !d->isVMM || !d->flatBase) {
         // Priority 2: Symmetric IPC fallback (VMM not available)
         int idx = buildIpcPeerPointers(comm, buff, size);
         if (idx >= 0) {
-          handle->ipcIndex = idx;
+          devMem->ipcIndex = idx;
         } else {
           WARN("flagcxDevMemCreate: symmetric window VMM failed and IPC "
                "fallback also failed — no peer access");
         }
       }
-      handle->window = nullptr;
+      devMem->window = nullptr;
     }
     // ---- Priority 3: Vendor native window ----
     else if (win != nullptr && !win->isSymmetricDefault) {
-      handle->hasWindow = true;
-      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
-      handle->winHandle = (void *)win;
+      devMem->hasWindow = true;
+      devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
+      devMem->winHandle = (void *)win;
     }
     // ---- Priority 4 & 5: No window — IPC ----
     else if (win == nullptr) {
@@ -890,11 +890,11 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
           }
         }
         if (existingIdx >= 0) {
-          handle->ipcIndex = existingIdx;
+          devMem->ipcIndex = existingIdx;
         } else {
           int idx = buildIpcPeerPointers(comm, buff, size);
           if (idx >= 0) {
-            handle->ipcIndex = idx;
+            devMem->ipcIndex = idx;
           } else {
             WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
                  "IPC layer not available");
@@ -911,23 +911,23 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       WARN("flagcxDevMemCreate: failed to allocate DeviceAPI::Window");
       return flagcxSystemError;
     }
-    kWin->populateFromHost(win, handle->rawPtr, handle->intraRank,
-                           handle->mrIndex, handle->mrBase, handle->ipcIndex,
-                           (handle->ipcIndex >= 0 && comm)
-                               ? comm->ipcTable[handle->ipcIndex].devPeerPtrs
+    kWin->populateFromHost(win, devMem->rawPtr, devMem->intraRank,
+                           devMem->mrIndex, devMem->mrBase, devMem->ipcIndex,
+                           (devMem->ipcIndex >= 0 && comm)
+                               ? comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                                : nullptr);
-    handle->window = kWin;
-    handle->hasWindow = kWin->hasAccess();
+    devMem->window = kWin;
+    devMem->hasWindow = kWin->hasAccess();
 
-    if (!handle->hasWindow && win != nullptr && win->isSymmetricDefault) {
+    if (!devMem->hasWindow && win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
       WARN("flagcxDevMemCreate: kWin->hasAccess() returned false for symmetric "
            "default window. ipcIndex=%d, intraRank=%d, "
            "defaultBase=%p, isVMM=%d, flatBase=%p, ipcDevPeerPtrs=%p",
-           handle->ipcIndex, handle->intraRank, (void *)d, (d ? d->isVMM : -1),
+           devMem->ipcIndex, devMem->intraRank, (void *)d, (d ? d->isVMM : -1),
            (d ? d->flatBase : nullptr),
-           (handle->ipcIndex >= 0 && comm)
-               ? (void *)comm->ipcTable[handle->ipcIndex].devPeerPtrs
+           (devMem->ipcIndex >= 0 && comm)
+               ? (void *)comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                : nullptr);
       delete kWin;
       return flagcxInvalidUsage;

@@ -16,13 +16,13 @@ struct flagcxDevApiBackend {
   // DevComm lifecycle
   flagcxResult_t (*devCommCreate)(flagcxComm_t comm,
                                   const struct flagcxDevCommRequirements *reqs,
-                                  flagcxDevComm_t handle);
-  flagcxResult_t (*devCommDestroy)(flagcxComm_t comm, flagcxDevComm_t handle);
+                                  flagcxDevComm_t devComm);
+  flagcxResult_t (*devCommDestroy)(flagcxComm_t comm, flagcxDevComm_t devComm);
 
   // DevMem lifecycle
   flagcxResult_t (*devMemCreate)(flagcxComm_t comm, void *buff, size_t size,
-                                 flagcxWindow_t win, flagcxDevMem_t handle);
-  flagcxResult_t (*devMemDestroy)(flagcxComm_t comm, flagcxDevMem_t handle);
+                                 flagcxWindow_t win, flagcxDevMem_t devMem);
+  flagcxResult_t (*devMemDestroy)(flagcxComm_t comm, flagcxDevMem_t devMem);
 
   // Device pointer materialization (Triton)
   flagcxResult_t (*devCommGetDevicePtr)(flagcxDevComm_t devComm, void **devPtr);

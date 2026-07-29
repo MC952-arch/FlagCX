@@ -330,12 +330,12 @@ static void test_host_adaptor_lifecycle() {
   flagcxResult_t r2 = shmemAdaptor->init(g_pe, g_npes);
   bool initOk = (r1 == flagcxSuccess && r2 == flagcxSuccess);
 
-  // Test symMalloc/symFree
+  // Test malloc/free
   void *ptr = nullptr;
-  flagcxResult_t r3 = shmemAdaptor->symMalloc(&ptr, 1024);
+  flagcxResult_t r3 = shmemAdaptor->malloc(&ptr, 1024);
   bool mallocOk = (r3 == flagcxSuccess && ptr != nullptr);
   if (ptr)
-    shmemAdaptor->symFree(ptr);
+    shmemAdaptor->free(ptr);
 
   // Finalize (matches double init)
   shmemAdaptor->finalize();

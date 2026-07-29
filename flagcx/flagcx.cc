@@ -227,7 +227,7 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
       WARN("flagcxMemAlloc: flagcxMemSHMEM but shmemAdaptor not loaded");
       return flagcxInternalError;
     }
-    FLAGCXCHECK(shmemAdaptor->symMalloc(ptr, size));
+    FLAGCXCHECK(shmemAdaptor->malloc(ptr, size));
   } else {
     // flagcxMemCCL: dispatch based on homo/hetero
     if (useHeteroComm()) {
@@ -253,7 +253,7 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator) {
       WARN("flagcxMemFree: flagcxMemSHMEM but shmemAdaptor not loaded");
       return flagcxInternalError;
     }
-    FLAGCXCHECK(shmemAdaptor->symFree(ptr));
+    FLAGCXCHECK(shmemAdaptor->free(ptr));
     INFO(FLAGCX_REG, "flagcxMemFree: SHMEM memory deallocated");
   } else {
     if (useHeteroComm()) {

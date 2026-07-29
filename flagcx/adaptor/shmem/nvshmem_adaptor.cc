@@ -49,7 +49,7 @@ static flagcxResult_t nvshmemAdaptorFinalize() {
 // ============================================================
 // Symmetric memory management
 // ============================================================
-static flagcxResult_t nvshmemSymMalloc(void **ptr, size_t size) {
+static flagcxResult_t nvshmemAdaptorMalloc(void **ptr, size_t size) {
   *ptr = nvshmem_malloc(size);
   if (*ptr == nullptr)
     return flagcxSystemError;
@@ -57,7 +57,7 @@ static flagcxResult_t nvshmemSymMalloc(void **ptr, size_t size) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t nvshmemSymFree(void *ptr) {
+static flagcxResult_t nvshmemAdaptorFree(void *ptr) {
   nvshmem_free(ptr);
   return flagcxSuccess;
 }
@@ -65,12 +65,12 @@ static flagcxResult_t nvshmemSymFree(void *ptr) {
 // ============================================================
 // Device Comm Create
 // ============================================================
-static flagcxResult_t nvshmemDevCommDestroy(flagcxShmemComm_t shmemComm);
+static flagcxResult_t nvshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm);
 
 static flagcxResult_t
-nvshmemDevCommCreate(flagcxComm_t comm,
-                     const struct flagcxDevCommRequirements *reqs,
-                     flagcxShmemComm_t *shmemComm) {
+nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
+                            const struct flagcxDevCommRequirements *reqs,
+                            flagcxShmemComm_t *shmemComm) {
   auto *sc = new flagcxShmemCommInternal();
   memset(sc, 0, sizeof(*sc));
   sc->intraTeam = NVSHMEM_TEAM_INVALID;
@@ -195,14 +195,15 @@ nvshmemDevCommCreate(flagcxComm_t comm,
   return flagcxSuccess;
 
 fail:
-  nvshmemDevCommDestroy(sc);
+  nvshmemAdaptorDevCommDestroy(sc);
   return flagcxSystemError;
 }
 
 // ============================================================
 // Device Comm Destroy
 // ============================================================
-static flagcxResult_t nvshmemDevCommDestroy(flagcxShmemComm_t shmemComm) {
+static flagcxResult_t
+nvshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
   if (shmemComm == nullptr)
     return flagcxSuccess;
 
@@ -235,40 +236,16 @@ static flagcxResult_t nvshmemDevCommDestroy(flagcxShmemComm_t shmemComm) {
 }
 
 // ============================================================
-// Device Mem Create / Destroy (symmetric heap window registration)
-// ============================================================
-static flagcxResult_t nvshmemDevMemCreate(flagcxShmemComm_t shmemComm,
-                                          void *buff, size_t size,
-                                          struct flagcxDevMemInternal *devMem) {
-  (void)shmemComm;
-  (void)buff;
-  (void)size;
-  (void)devMem;
-  // For NVSHMEM, buffers are already in symmetric heap — no extra registration.
-  return flagcxSuccess;
-}
-
-static flagcxResult_t
-nvshmemDevMemDestroy(flagcxShmemComm_t shmemComm,
-                     struct flagcxDevMemInternal *devMem) {
-  (void)shmemComm;
-  (void)devMem;
-  return flagcxSuccess;
-}
-
-// ============================================================
 // Global adaptor instance
 // ============================================================
 static flagcxShmemAdaptor_t nvshmemAdaptorInstance = {
     .name = "nvshmem",
     .init = nvshmemAdaptorInit,
     .finalize = nvshmemAdaptorFinalize,
-    .symMalloc = nvshmemSymMalloc,
-    .symFree = nvshmemSymFree,
-    .devCommCreate = nvshmemDevCommCreate,
-    .devCommDestroy = nvshmemDevCommDestroy,
-    .devMemCreate = nvshmemDevMemCreate,
-    .devMemDestroy = nvshmemDevMemDestroy,
+    .malloc = nvshmemAdaptorMalloc,
+    .free = nvshmemAdaptorFree,
+    .devCommCreate = nvshmemAdaptorDevCommCreate,
+    .devCommDestroy = nvshmemAdaptorDevCommDestroy,
 };
 
 flagcxShmemAdaptor_t *shmemAdaptor = &nvshmemAdaptorInstance;

@@ -12,7 +12,7 @@
 static flagcxResult_t
 ncclDevApiCommCreate(flagcxComm_t comm,
                      const struct flagcxDevCommRequirements *reqs,
-                     flagcxDevComm_t handle) {
+                     flagcxDevComm_t devComm) {
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm == nullptr ||
       cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate == NULL) {
@@ -26,7 +26,7 @@ ncclDevApiCommCreate(flagcxComm_t comm,
     return ret;
   }
 
-  handle->devComm = innerDevComm;
+  devComm->devComm = innerDevComm;
   return flagcxSuccess;
 }
 
@@ -46,20 +46,20 @@ static flagcxResult_t ncclDevApiCommDestroy(flagcxComm_t comm,
 
 static flagcxResult_t ncclDevApiMemCreate(flagcxComm_t comm, void *buff,
                                           size_t size, flagcxWindow_t win,
-                                          flagcxDevMem_t handle) {
+                                          flagcxDevMem_t devMem) {
   (void)buff;
   (void)size;
 
   // On Vendor path, we only need the ncclWindow_t from the vendor window.
   // No IPC peer pointers needed — NCCL GIN handles all transport.
   if (comm != nullptr) {
-    handle->intraRank = comm->localRank;
+    devMem->intraRank = comm->localRank;
   }
 
   if (win != nullptr && !win->isSymmetricDefault && win->vendorBase) {
-    handle->hasWindow = true;
-    handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-    handle->winHandle = (void *)win;
+    devMem->hasWindow = true;
+    devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
+    devMem->winHandle = (void *)win;
   }
 
   // Allocate and populate kernel Window (wraps ncclWindow_t)
@@ -67,11 +67,11 @@ static flagcxResult_t ncclDevApiMemCreate(flagcxComm_t comm, void *buff,
   if (kWin == nullptr) {
     return flagcxSystemError;
   }
-  kWin->populateFromHost(win, handle->rawPtr, handle->intraRank,
-                         handle->mrIndex, handle->mrBase, handle->ipcIndex,
+  kWin->populateFromHost(win, devMem->rawPtr, devMem->intraRank,
+                         devMem->mrIndex, devMem->mrBase, devMem->ipcIndex,
                          nullptr);
-  handle->window = kWin;
-  handle->hasWindow = kWin->hasAccess();
+  devMem->window = kWin;
+  devMem->hasWindow = kWin->hasAccess();
 
   return flagcxSuccess;
 }
