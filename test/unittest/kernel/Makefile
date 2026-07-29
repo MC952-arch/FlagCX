@@ -3,15 +3,13 @@ include ../../make.inc
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
-# device_api.cu object (compiled in test/device_api/build/obj/)
-KERNEL_DIR     := $(PROJECT_ROOT)/test/device_api
-DEVICE_API_OBJ := $(KERNEL_DIR)/build/obj/device_api.o
-DEVICE_API_INCLUDE := -I$(KERNEL_DIR)
+# device_api.cu object (compiled in test/kernel/[platform]/)
+DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
+DEVICE_API_INCLUDE := $(KERNEL_INCLUDE)
 
 # Device-link object (only needed for NVSHMEM)
-# Use dlink_api.o — kernel tests only link device_api.o, not device_ir.o
 ifeq ($(USE_SHMEM), 1)
-DLINK_OBJ := $(KERNEL_DIR)/build/obj/dlink_api.o
+DLINK_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
 else
 DLINK_OBJ :=
 endif
@@ -44,15 +42,14 @@ endif
 
 all: $(ALL_TARGETS)
 
-# Build device_api.o (and dlink_api.o if USE_SHMEM) from test/device_api/
+# Build device_api.o (and dlink_api.o if USE_SHMEM) from test/kernel/
 DEVICE_API_TARGETS := device_api.o
 ifeq ($(USE_SHMEM), 1)
 DEVICE_API_TARGETS += dlink_api.o
 endif
 
 device-api-obj:
-	@$(MAKE) -C $(KERNEL_DIR) $(DEVICE_API_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
-		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+	@$(MAKE) -C $(KERNEL_DIR) $(DEVICE_API_TARGETS)
 
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)

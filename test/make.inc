@@ -79,7 +79,7 @@ else ifeq ($(USE_ASCEND), 1)
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
 else
-  include $(PROJECT_ROOT)/makefiles/nvidia.mk
+  $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, etc.)
 endif
 
 # Test-specific overrides (format for compiler flags)
@@ -102,6 +102,9 @@ endif
 
 # Test kernel build directory (platform-specific device code)
 KERNEL_DIR := $(PROJECT_ROOT)/test/kernel
+ifeq ($(strip $(DEVICE_PLATFORM)),)
+  $(error DEVICE_PLATFORM is not set by the selected makefiles/<platform>.mk; cannot determine test kernel platform)
+endif
 KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
 ifeq ($(KERNEL_PLATFORM), cuda)
   KERNEL_PLATFORM := nvidia
