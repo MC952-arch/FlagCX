@@ -11,7 +11,7 @@ runner_labels:
   - cx-build
 
 container:
-  image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
+  image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-20260228210721
   options: >-
     --gpus all
     --privileged
