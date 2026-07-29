@@ -6,8 +6,7 @@ ci_image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-202602282
 
 runner_labels:
   - self-hosted
-  - nvidia
-  - gpu-8
+  - nv-8g-cicd-flagcx
 
 container_volumes: []
 
