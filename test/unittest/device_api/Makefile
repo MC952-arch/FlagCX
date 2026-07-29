@@ -1,15 +1,13 @@
 include ../../make.inc
 
-# Shared device objects (built in test/device_api/)
-DEVICE_API_DIR := $(PROJECT_ROOT)/test/device_api
-DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o
-DEVICE_IR_OBJ  := $(DEVICE_API_DIR)/build/obj/device_ir.o
+# Shared device kernel objects (built in test/kernel/[platform]/)
+DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
+DEVICE_IR_OBJ  := $(KERNEL_OBJ_DIR)/device_ir.o
 
 # Device-link objects (only needed for NVSHMEM)
-# Split: IR tests use dlink_ir.o, API test uses dlink_api.o
 ifeq ($(USE_SHMEM), 1)
-DLINK_API_OBJ := $(DEVICE_API_DIR)/build/obj/dlink_api.o
-DLINK_IR_OBJ  := $(DEVICE_API_DIR)/build/obj/dlink_ir.o
+DLINK_API_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
+DLINK_IR_OBJ  := $(KERNEL_OBJ_DIR)/dlink_ir.o
 else
 DLINK_API_OBJ :=
 DLINK_IR_OBJ  :=
@@ -25,7 +23,7 @@ PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
 
 # All includes
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
-    -I$(DEVICE_API_DIR) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE)
+    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
@@ -41,21 +39,19 @@ MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
 
 all: $(MPI_TARGETS)
 
-# Build shared CUDA objects
-DEVICE_API_SUB_TARGETS := device_api.o
-DEVICE_IR_SUB_TARGETS  := device_ir.o
+# Build device kernel objects via dispatcher
+KERNEL_API_TARGETS := device_api.o
+KERNEL_IR_TARGETS  := device_ir.o
 ifeq ($(USE_SHMEM), 1)
-DEVICE_API_SUB_TARGETS += dlink_api.o
-DEVICE_IR_SUB_TARGETS  += dlink_ir.o
+KERNEL_API_TARGETS += dlink_api.o
+KERNEL_IR_TARGETS  += dlink_ir.o
 endif
 
 $(DEVICE_API_OBJ) $(DLINK_API_OBJ):
-	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_API_SUB_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
-		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_API_TARGETS)
 
 $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
-	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_IR_SUB_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
-		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
 $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)

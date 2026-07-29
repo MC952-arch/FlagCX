@@ -100,6 +100,15 @@ else
 SHMEM_INCLUDE :=
 endif
 
+# Test kernel build directory (platform-specific device code)
+KERNEL_DIR := $(PROJECT_ROOT)/test/kernel
+KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+ifeq ($(KERNEL_PLATFORM), cuda)
+  KERNEL_PLATFORM := nvidia
+endif
+KERNEL_OBJ_DIR := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/build/obj
+KERNEL_INCLUDE := -I$(KERNEL_DIR)/include
+
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target
 # in leaf Makefiles). This is just a variable definition.

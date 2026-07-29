@@ -8,43 +8,50 @@ BINS := $(SRCS:test_%.cpp=$(BINDIR)/perf_%)
 TOOLS_SRC   := $(PROJECT_ROOT)/test/tools.cc
 COMMON_SRCS := $(TOOLS_SRC)
 
-# Shared device_api object (built in test/device_api/)
-DEVICE_API_DIR := $(PROJECT_ROOT)/test/device_api
-DEVICE_API_OBJ := $(DEVICE_API_DIR)/build/obj/device_api.o
+# Shared device kernel object (built in test/kernel/[platform]/)
+DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 
 # Device-link object (only needed for NVSHMEM)
-# Use dlink_api.o — perf tests only link device_api.o, not device_ir.o
 ifeq ($(USE_SHMEM), 1)
-DLINK_OBJ := $(DEVICE_API_DIR)/build/obj/dlink_api.o
-SHMEM_SYNC_OBJ := $(DEVICE_API_DIR)/build/obj/nvshmem_state_sync.o
+DLINK_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
+SHMEM_ADAPTOR_DIR := $(PROJECT_ROOT)/test/unittest/shmem_adaptor
+SHMEM_SYNC_OBJ := $(OBJDIR)/nvshmem_state_sync.o
 else
 DLINK_OBJ :=
 SHMEM_SYNC_OBJ :=
 endif
 
-# Includes: flagcx, perf headers, MPI, device SDK, device_api headers
+# Includes
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
     -I$(PROJECT_ROOT)/flagcx/core -I$(PROJECT_ROOT)/flagcx/service \
-    -I$(DEVICE_API_DIR) $(DEVICE_INCLUDE)
+    $(KERNEL_INCLUDE) $(DEVICE_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
-# Kernel tests need -DCOMPILE_KERNEL
 CXXFLAGS += -DCOMPILE_KERNEL
 
 .PHONY: all clean
 
 all: $(BINS)
 
-# Build device_api.o (and dlink_api.o if USE_SHMEM) via shared Makefile
-DEVICE_API_TARGETS := device_api.o
+# Build kernel objects via dispatcher
+KERNEL_TARGETS := device_api.o
 ifeq ($(USE_SHMEM), 1)
-DEVICE_API_TARGETS += nvshmem_state_sync.o dlink_api.o
+KERNEL_TARGETS += dlink_api.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ):
-	@$(MAKE) -C $(DEVICE_API_DIR) $(DEVICE_API_TARGETS) USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU) \
-		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+$(DEVICE_API_OBJ) $(DLINK_OBJ):
+	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_TARGETS)
+
+# Build nvshmem_state_sync.o locally from shmem_adaptor source
+ifeq ($(USE_SHMEM), 1)
+$(SHMEM_SYNC_OBJ): $(SHMEM_ADAPTOR_DIR)/nvshmem_state_sync.cc
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling nvshmem_state_sync.cc"
+	@$(CXX) -std=c++17 -c -o $@ $< \
+		$(SHMEM_INCLUDE) $(FLAGCX_INCLUDES) \
+		-I$(PROJECT_ROOT)/flagcx/adaptor/include/device_api $(DEVICE_INCLUDE)
+endif
 
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS) $(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)

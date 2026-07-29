@@ -1,32 +1,47 @@
-# Build: make SHMEM_HOME=/path/to/nvshmem CUDA_HOME=/usr/local/cuda
-# Run:   nvshmrun -np 2 ./test_nvshmem_adaptor
+# test/unittest/shmem_adaptor/Makefile
+# NVSHMEM adaptor integration tests.
+# Build: make USE_NVIDIA=1 USE_SHMEM=1 SHMEM_HOME=/path/to/nvshmem
+# Run:   nvshmrun -np 2 build/bin/test_nvshmem_adaptor
 
-SHMEM_HOME ?= /usr/local/nvshmem
-CUDA_HOME ?= /usr/local/cuda
+include ../../make.inc
 
-NVCC := $(CUDA_HOME)/bin/nvcc
-NVCC_FLAGS := -std=c++17 -O2 -g \
-	-DFLAGCX_COMM_TRAITS_SHMEM -DUSE_NVIDIA_ADAPTOR \
-	-I../../../flagcx/include \
-	-I../../../flagcx/adaptor/include \
-	-I../../../flagcx/adaptor/device_api \
-	-I../../../flagcx/adaptor/shmem \
-	-I$(SHMEM_HOME)/include \
-	-I$(CUDA_HOME)/include \
-	-rdc=true
+# Kernel objects (from test/kernel/nvidia/)
+KERNEL_OBJ := $(KERNEL_OBJ_DIR)/nvshmem_adaptor_kernel.o
+DLINK_OBJ  := $(KERNEL_OBJ_DIR)/dlink_shmem_test.o
 
-LDFLAGS := -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host \
-	-L$(CUDA_HOME)/lib64 -lcudart -lcuda
+# Local objects
+SYNC_OBJ := $(OBJDIR)/nvshmem_state_sync.o
 
-TARGET := test_nvshmem_adaptor
-SRCS := test_nvshmem_adaptor.cu ../../../flagcx/adaptor/shmem/nvshmem_adaptor.cc
+ALL_INCLUDES := $(FLAGCX_INCLUDES) $(KERNEL_INCLUDE) \
+    -I$(PROJECT_ROOT)/flagcx/adaptor/include/device_api \
+    -I$(PROJECT_ROOT)/flagcx/adaptor/shmem \
+    $(SHMEM_INCLUDE) $(DEVICE_INCLUDE)
+
+ALL_LINK := -L$(SHMEM_HOME)/lib -lnvshmem_host \
+    $(DEVICE_LINK) -lcudart -lcuda
+
+TARGET := $(BINDIR)/test_nvshmem_adaptor
 
 .PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS)
-	$(NVCC) $(NVCC_FLAGS) -o $@ $^ $(LDFLAGS)
+# Build kernel object via dispatcher
+$(KERNEL_OBJ) $(DLINK_OBJ):
+	@$(MAKE) -C $(KERNEL_DIR) nvshmem_adaptor_kernel.o dlink_shmem_test.o \
+		USE_SHMEM=$(USE_SHMEM) SHMEM_HOME=$(SHMEM_HOME)
+
+$(SYNC_OBJ): nvshmem_state_sync.cc
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling nvshmem_state_sync.cc"
+	@$(CXX) -std=c++17 -c -o $@ $< $(SHMEM_INCLUDE) $(ALL_INCLUDES)
+
+$(TARGET): test_nvshmem_adaptor.cpp $(KERNEL_OBJ) $(DLINK_OBJ) $(SYNC_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(KERNEL_OBJ) $(DLINK_OBJ) $(SYNC_OBJ) \
+		$(ALL_INCLUDES) $(ALL_LINK) \
+		-L$(PROJECT_ROOT)/build/lib -Wl,-rpath,$(PROJECT_ROOT)/build/lib -lflagcx
 
 clean:
-	rm -f $(TARGET) *.o *.d
+	@rm -rf $(BUILDDIR)
