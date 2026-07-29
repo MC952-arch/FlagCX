@@ -19,6 +19,10 @@ on:
         description: CI container image
         required: true
         type: string
+      container_volumes:
+        description: JSON array of container volume mounts
+        required: true
+        type: string
       container_options:
         description: Options passed to the job container
         required: true
@@ -42,6 +46,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: ${{ inputs.image }}
+      volumes: ${{ fromJSON(inputs.container_volumes) }}
       options: ${{ inputs.container_options }}
     defaults:
       run:

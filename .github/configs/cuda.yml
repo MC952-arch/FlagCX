@@ -1,23 +1,22 @@
-# CUDA CI configuration.
-#
-# Adding another accelerator should only require another file in this directory
-# and a matching set_env script. The common workflows must remain platform
-# agnostic.
-platform: cuda
-display_name: CUDA
+# CUDA Hardware Configuration
+hardware_name: cuda
+display_name: CUDA Tests
+
+ci_image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-20260228210721
 
 runner_labels:
   - self-hosted
-  - cx-build
+  - nvidia
+  - gpu-8
 
-container:
-  image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-20260228210721
-  options: >-
-    --gpus all
-    --privileged
-    --ipc=host
-    --ulimit memlock=-1
-    --ulimit stack=67108864
+container_volumes: []
+
+container_options: >-
+  --gpus all
+  --privileged
+  --ipc=host
+  --ulimit memlock=-1
+  --ulimit stack=67108864
 
 set_env: .github/scripts/set_env/cuda.sh
 
