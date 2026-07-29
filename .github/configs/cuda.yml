@@ -5,7 +5,6 @@ display_name: CUDA Tests
 ci_image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-20260228210721
 
 runner_labels:
-  - self-hosted
   - nv-8g-cicd-flagcx
 
 container_volumes: []
