@@ -132,4 +132,77 @@ void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
 void launchKernelNetSignalCounterS(const void *devCommPtr, int *devResults,
                                    flagcxStream_t stream);
 
+// =========================================================================
+// S-API Inter-Node Transport Tests (S11-S27)
+// =========================================================================
+
+// S11: WaitSignalS + FlushS — signal peer, peer waits + flushes (hang-free =
+// PASS)
+void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
+                                     flagcxStream_t stream);
+
+// S12: WaitCounterS — signal counter, peer waits counter (hang-free = PASS)
+void launchKernelNetWaitCounterS(const void *devCommPtr, flagcxStream_t stream);
+
+// S13: WaitSignalMeetShadowS — increaseSignalShadow + signal + waitMeetShadow
+void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
+                                          flagcxStream_t stream);
+
+// S14: PutS(None,None) + SignalSigIncS + WaitSignalS + FlushS — alltoall
+void launchKernelNetPutS(const void *devCommPtr, const void *sendMemPtr,
+                         const void *recvMemPtr, size_t countPerPeer,
+                         flagcxStream_t stream);
+
+// S15: PutS_RSigInc + WaitSignalS + FlushS — alltoall
+void launchKernelNetPutRSigIncS(const void *devCommPtr, const void *sendMemPtr,
+                                const void *recvMemPtr, size_t countPerPeer,
+                                flagcxStream_t stream);
+
+// S16: PutS_RSigAdd + WaitSignalS + FlushS — alltoall
+void launchKernelNetPutRSigAddS(const void *devCommPtr, const void *sendMemPtr,
+                                const void *recvMemPtr, size_t countPerPeer,
+                                flagcxStream_t stream);
+
+// S17: PutS_RSigInc_LCtrInc + WaitSignalS + WaitCounterS + FlushS — alltoall
+void launchKernelNetPutRSigLCtrS(const void *devCommPtr, const void *sendMemPtr,
+                                 const void *recvMemPtr, size_t countPerPeer,
+                                 flagcxStream_t stream);
+
+// S18: SignalSigIncS + WaitSignalS — signal round-trip (hang-free = PASS)
+void launchKernelNetSignalSigIncS(const void *devCommPtr,
+                                  flagcxStream_t stream);
+
+// S19: SignalSigAddS + WaitSignalS — signal round-trip (hang-free = PASS)
+void launchKernelNetSignalSigAddS(const void *devCommPtr,
+                                  flagcxStream_t stream);
+
+// S21: PutValueS(None) + SignalSigIncS + WaitSignalS — uint64 value transfer
+void launchKernelNetPutValueS(const void *devCommPtr, const void *recvMemPtr,
+                              size_t putValBase, flagcxStream_t stream);
+
+// S22: PutValueS_RSigInc + WaitSignalS — uint64 value transfer with signal
+void launchKernelNetPutValueRSigS(const void *devCommPtr,
+                                  const void *recvMemPtr, size_t putValBase,
+                                  flagcxStream_t stream);
+
+// S23: GetS + FlushS — alltoall via one-sided get
+void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
+                         const void *recvMemPtr, size_t countPerPeer,
+                         flagcxStream_t stream);
+
+// S24: SendS + RecvS + TermS + WaitS — two-sided alltoall (COMMENTED)
+// void launchKernelNetTwoSidedS(const void *devCommPtr, const void *sendMemPtr,
+//                               const void *recvMemPtr, size_t countPerPeer,
+//                               flagcxStream_t stream);
+
+// S25: InterBarrierSyncS — inter-node barrier (hang-free = PASS)
+void launchKernelInterBarrierS(const void *devCommPtr, flagcxStream_t stream);
+
+// S26: WorldBarrierSyncS — world barrier (hang-free = PASS)
+void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream);
+
+// S27: WorldBarrierArriveS + WorldBarrierWaitS — split world barrier
+void launchKernelWorldBarrierSplitS(const void *devCommPtr,
+                                    flagcxStream_t stream);
+
 #endif // TEST_KERNEL_DEVICE_IR_H_

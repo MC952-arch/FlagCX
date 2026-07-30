@@ -33,7 +33,8 @@ CXXFLAGS += -DCOMPILE_KERNEL
 # Test targets
 MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
-               $(BINDIR)/test_device_api
+               $(BINDIR)/test_device_api_intra \
+               $(BINDIR)/test_device_api_inter
 
 .PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run
 
@@ -68,7 +69,12 @@ $(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(DLIN
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
-$(BINDIR)/test_device_api: test_device_api.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_api_intra: test_device_api_intra.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_api_inter: test_device_api_inter.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
@@ -90,15 +96,17 @@ HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 \
               -x LD_LIBRARY_PATH
 
 # Intra-node tests: safe to run on a single node
-run-mpi-intra: $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api
+run-mpi-intra: $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra
 	@echo "Running intra-node tests..."
 	mpirun -np 8 --allow-run-as-root $(BINDIR)/test_device_ir_intra
-	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_api -b 1M -e 4M -f 2 -R 2
+	mpirun -np 8 --allow-run-as-root $(BINDIR)/test_device_api_intra
 
 # Inter-node tests: require FLAGCX_USE_HETERO_COMM=1 or actual multi-node
-run-mpi-inter: $(BINDIR)/test_device_ir_inter
+run-mpi-inter: $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter
 	@echo "Running inter-node Device IR tests..."
 	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_ir_inter
+	@echo "Running inter-node Device API tests..."
+	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 
 run-mpi: run-mpi-intra run-mpi-inter
 

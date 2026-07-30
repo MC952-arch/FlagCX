@@ -690,3 +690,608 @@ void launchKernelNetSignalCounterS(const void *devCommPtr, int *devResults,
                                    flagcxStream_t stream) {
   kernelNetSignalCounterS<<<1, 1, 0, stream->base>>>(devCommPtr, devResults);
 }
+
+// ===========================================================================
+// S-API Inter-Node Transport Kernels (S11-S27)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// S11: WaitSignalS + FlushS
+// Each rank signals its next peer, then waits for signal from prev peer.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int next = (myRank + 1) % nRanks;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    // Read current signal value
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+
+    // Signal next peer
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_INTER, next,
+                              FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0);
+
+    // Wait for signal from prev peer
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
+                            s0 + 1, 64, flagcxDeviceMemoryOrderAcquire);
+
+    // Flush
+    flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+  }
+}
+
+void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
+                                     flagcxStream_t stream) {
+  kernelNetWaitSignalFlushS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S12: WaitCounterS
+// Each rank signals counter on next peer, waits for counter from prev.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetWaitCounterS(const void *devCommPtr) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int next = (myRank + 1) % nRanks;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    // Read current counter value
+    uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
+                                           flagcxDeviceMemoryOrderRelaxed);
+
+    // Increment counter on next peer
+    flagcxDevNetSignalCtrIncS(net, devCommPtr, FLAGCX_TEAM_INTER, next,
+                              FLAGCX_COOP_BLOCK, (flagcxDevNetCounter_t)0);
+
+    // Wait for counter from prev peer
+    flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetCounter_t)0,
+                             c0 + 1, 64, flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetWaitCounterS(const void *devCommPtr,
+                                 flagcxStream_t stream) {
+  kernelNetWaitCounterS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S13: WaitSignalMeetShadowS
+// increaseSignalShadow + signalSigInc to peer + waitSignalMeetShadow
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetWaitSignalMeetShadowS(const void *devCommPtr) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int next = (myRank + 1) % nRanks;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    // Increase our shadow expectation by 1
+    flagcxDevNetIncreaseSignalShadow(net, (flagcxDevNetSignal_t)2, 1);
+
+    // Signal next peer on slot 2
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_INTER, next,
+                              FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)2);
+
+    // Wait until signal meets shadow
+    flagcxDevNetWaitSignalMeetShadowS(net, FLAGCX_COOP_BLOCK,
+                                      (flagcxDevNetSignal_t)2, 64,
+                                      flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
+                                          flagcxStream_t stream) {
+  kernelNetWaitSignalMeetShadowS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S14: PutS (None, None) + SignalSigIncS + WaitSignalS + FlushS
+// AlltoAll: each rank puts its chunk to every inter peer, signals, waits.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutS(const void *devCommPtr, const void *sendMemPtr,
+                              const void *recvMemPtr, size_t countPerPeer) {
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    // put my data for 'peer' into peer's recv slot for me
+    flagcxDevNetPutS(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                     recvMemPtr, (size_t)myRank * chunkBytes,
+                     sendMemPtr, (size_t)peer * chunkBytes,
+                     chunkBytes, FLAGCX_COOP_THREAD);
+  }
+
+  // Signal all inter peers (single thread to avoid duplicate signals)
+  if (tid == 0) {
+    for (int peer = 0; peer < nRanks; peer++) {
+      if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                                FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0);
+    }
+  }
+  __syncthreads();
+
+  // Wait for signals from all inter peers
+  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
+                          s0 + (uint64_t)(nRanks - intraSize), 64,
+                          flagcxDeviceMemoryOrderAcquire);
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+}
+
+void launchKernelNetPutS(const void *devCommPtr, const void *sendMemPtr,
+                         const void *recvMemPtr, size_t countPerPeer,
+                         flagcxStream_t stream) {
+  kernelNetPutS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+                                              recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S15: PutS_RSigInc + WaitSignalS + FlushS
+// AlltoAll with fused remote signal increment.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutRSigIncS(const void *devCommPtr,
+                                     const void *sendMemPtr,
+                                     const void *recvMemPtr,
+                                     size_t countPerPeer) {
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                             recvMemPtr, (size_t)myRank * chunkBytes,
+                             sendMemPtr, (size_t)peer * chunkBytes,
+                             chunkBytes, FLAGCX_COOP_THREAD,
+                             (flagcxDevNetSignal_t)0);
+  }
+
+  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
+                          s0 + (uint64_t)(nRanks - intraSize), 64,
+                          flagcxDeviceMemoryOrderAcquire);
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+}
+
+void launchKernelNetPutRSigIncS(const void *devCommPtr, const void *sendMemPtr,
+                                const void *recvMemPtr, size_t countPerPeer,
+                                flagcxStream_t stream) {
+  kernelNetPutRSigIncS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+                                                     recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S16: PutS_RSigAdd + WaitSignalS + FlushS
+// AlltoAll with remote signal add (value = 1 per peer).
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutRSigAddS(const void *devCommPtr,
+                                     const void *sendMemPtr,
+                                     const void *recvMemPtr,
+                                     size_t countPerPeer) {
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+                                        flagcxDeviceMemoryOrderRelaxed);
+  int nInterPeers = nRanks - intraSize;
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS_RSigAdd(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                             recvMemPtr, (size_t)myRank * chunkBytes,
+                             sendMemPtr, (size_t)peer * chunkBytes,
+                             chunkBytes, FLAGCX_COOP_THREAD,
+                             (flagcxDevNetSignal_t)0, 2);
+  }
+
+  // Each inter peer adds 2, so wait for nInterPeers * 2
+  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
+                          s0 + (uint64_t)nInterPeers * 2, 64,
+                          flagcxDeviceMemoryOrderAcquire);
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+}
+
+void launchKernelNetPutRSigAddS(const void *devCommPtr, const void *sendMemPtr,
+                                const void *recvMemPtr, size_t countPerPeer,
+                                flagcxStream_t stream) {
+  kernelNetPutRSigAddS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+                                                     recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S17: PutS_RSigInc_LCtrInc + WaitSignalS + WaitCounterS + FlushS
+// AlltoAll with both remote signal inc and local counter inc.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutRSigLCtrS(const void *devCommPtr,
+                                      const void *sendMemPtr,
+                                      const void *recvMemPtr,
+                                      size_t countPerPeer) {
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+                                        flagcxDeviceMemoryOrderRelaxed);
+  uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+  int nInterPeers = nRanks - intraSize;
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    flagcxDevNetPutS_RSigInc_LCtrInc(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                                     recvMemPtr, (size_t)myRank * chunkBytes,
+                                     sendMemPtr, (size_t)peer * chunkBytes,
+                                     chunkBytes, FLAGCX_COOP_THREAD,
+                                     (flagcxDevNetSignal_t)0,
+                                     (flagcxDevNetCounter_t)0);
+  }
+
+  // Wait for remote signals (from peers putting to us)
+  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
+                          s0 + (uint64_t)nInterPeers, 64,
+                          flagcxDeviceMemoryOrderAcquire);
+
+  // Wait for local counter (our puts completed)
+  flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetCounter_t)0,
+                           c0 + (uint64_t)nInterPeers, 64,
+                           flagcxDeviceMemoryOrderAcquire);
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
+}
+
+void launchKernelNetPutRSigLCtrS(const void *devCommPtr, const void *sendMemPtr,
+                                 const void *recvMemPtr, size_t countPerPeer,
+                                 flagcxStream_t stream) {
+  kernelNetPutRSigLCtrS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+                                                      recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S18: SignalSigIncS + WaitSignalS
+// Each rank increments signal on next peer, waits for signal from prev.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetSignalSigIncS(const void *devCommPtr) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int next = (myRank + 1) % nRanks;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+
+    flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_INTER, next,
+                              FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1);
+
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1,
+                            s0 + 1, 64, flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetSignalSigIncS(const void *devCommPtr,
+                                  flagcxStream_t stream) {
+  kernelNetSignalSigIncS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S19: SignalSigAddS + WaitSignalS
+// Each rank adds value to signal on next peer, waits for signal from prev.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetSignalSigAddS(const void *devCommPtr) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int next = (myRank + 1) % nRanks;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+
+    flagcxDevNetSignalSigAddS(net, devCommPtr, FLAGCX_TEAM_INTER, next,
+                              FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1, 5);
+
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1,
+                            s0 + 5, 64, flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetSignalSigAddS(const void *devCommPtr,
+                                  flagcxStream_t stream) {
+  kernelNetSignalSigAddS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S21: PutValueS (None) + SignalSigIncS + WaitSignalS
+// Each rank writes uint64_t value = myRank*1000 + peer to peer's recv area.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutValueS(const void *devCommPtr,
+                                   const void *recvMemPtr,
+                                   size_t putValBase) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+    int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+    int intraBase = myRank - intraRank;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+    int nInterPeers = nRanks - intraSize;
+
+    for (int peer = 0; peer < nRanks; peer++) {
+      if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      uint64_t val = (uint64_t)myRank * 1000u + (uint64_t)peer;
+      size_t dstOff = putValBase + (size_t)myRank * sizeof(uint64_t);
+      flagcxDevNetPutValueS(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                            recvMemPtr, dstOff, val, FLAGCX_COOP_BLOCK);
+    }
+
+    // Signal all inter peers
+    for (int peer = 0; peer < nRanks; peer++) {
+      if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      flagcxDevNetSignalSigIncS(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                                FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1);
+    }
+
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1,
+                            s0 + (uint64_t)nInterPeers, 64,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetPutValueS(const void *devCommPtr, const void *recvMemPtr,
+                              size_t putValBase, flagcxStream_t stream) {
+  kernelNetPutValueS<<<1, 32, 0, stream->base>>>(devCommPtr, recvMemPtr,
+                                                  putValBase);
+}
+
+// ---------------------------------------------------------------------------
+// S22: PutValueS_RSigInc + WaitSignalS
+// Same as S21 but uses fused putValue + signal increment.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetPutValueRSigS(const void *devCommPtr,
+                                       const void *recvMemPtr,
+                                       size_t putValBase) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    int myRank = flagcxDevCommGetRank(devCommPtr);
+    int nRanks = flagcxDevCommGetSize(devCommPtr);
+    int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+    int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+    int intraBase = myRank - intraRank;
+
+    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    if (!net) return;
+
+    uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
+                                          flagcxDeviceMemoryOrderRelaxed);
+    int nInterPeers = nRanks - intraSize;
+
+    for (int peer = 0; peer < nRanks; peer++) {
+      if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      uint64_t val = (uint64_t)myRank * 1000u + (uint64_t)peer;
+      size_t dstOff = putValBase + (size_t)myRank * sizeof(uint64_t);
+      flagcxDevNetPutValueS_RSigInc(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                                    recvMemPtr, dstOff, val, FLAGCX_COOP_BLOCK,
+                                    (flagcxDevNetSignal_t)1);
+    }
+
+    flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)1,
+                            s0 + (uint64_t)nInterPeers, 64,
+                            flagcxDeviceMemoryOrderAcquire);
+  }
+}
+
+void launchKernelNetPutValueRSigS(const void *devCommPtr,
+                                  const void *recvMemPtr, size_t putValBase,
+                                  flagcxStream_t stream) {
+  kernelNetPutValueRSigS<<<1, 32, 0, stream->base>>>(devCommPtr, recvMemPtr,
+                                                      putValBase);
+}
+
+// ---------------------------------------------------------------------------
+// S23: GetS + FlushS
+// AlltoAll via one-sided get: each rank pulls from every inter peer.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
+                              const void *recvMemPtr, size_t countPerPeer) {
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraBase = myRank - intraRank;
+
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  size_t chunkBytes = countPerPeer * sizeof(float);
+
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int nthreads = blockDim.x * gridDim.x;
+
+  for (int peer = tid; peer < nRanks; peer += nthreads) {
+    if (peer >= intraBase && peer < intraBase + intraSize) continue;
+    // Get: read from peer's sendBuff[myRank chunk] into our recvBuff[peer chunk]
+    flagcxDevNetGetS(net, devCommPtr, FLAGCX_TEAM_INTER, peer,
+                     sendMemPtr, (size_t)myRank * chunkBytes,
+                     recvMemPtr, (size_t)peer * chunkBytes,
+                     chunkBytes, FLAGCX_COOP_THREAD);
+  }
+
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+}
+
+void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
+                         const void *recvMemPtr, size_t countPerPeer,
+                         flagcxStream_t stream) {
+  kernelNetGetS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+                                              recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S24: Two-sided (COMMENTED per user request)
+// ---------------------------------------------------------------------------
+// __global__ void kernelNetTwoSidedS(const void *devCommPtr,
+//                                    const void *sendMemPtr,
+//                                    const void *recvMemPtr,
+//                                    size_t countPerPeer) {
+//   int myRank = flagcxDevCommGetRank(devCommPtr);
+//   int nRanks = flagcxDevCommGetSize(devCommPtr);
+//   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+//   if (!net) return;
+//   size_t chunkBytes = countPerPeer * sizeof(float);
+//   // Post receives from all peers
+//   for (int peer = 0; peer < nRanks; peer++) {
+//     if (peer == myRank) continue;
+//     flagcxDevNetRecvS(net, FLAGCX_COOP_BLOCK, recvMemPtr,
+//                       (size_t)peer * chunkBytes, countPerPeer,
+//                       flagcxFloat, peer);
+//   }
+//   // Send to all peers
+//   for (int peer = 0; peer < nRanks; peer++) {
+//     if (peer == myRank) continue;
+//     flagcxDevNetSendS(net, FLAGCX_COOP_BLOCK, sendMemPtr,
+//                       (size_t)peer * chunkBytes, countPerPeer,
+//                       flagcxFloat, peer);
+//   }
+//   flagcxDevNetTermS(net, FLAGCX_COOP_BLOCK);
+//   flagcxDevNetWaitS(net, FLAGCX_COOP_BLOCK);
+// }
+//
+// void launchKernelNetTwoSidedS(const void *devCommPtr, const void *sendMemPtr,
+//                               const void *recvMemPtr, size_t countPerPeer,
+//                               flagcxStream_t stream) {
+//   kernelNetTwoSidedS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
+//                                                    recvMemPtr, countPerPeer);
+// }
+
+// ---------------------------------------------------------------------------
+// S25: InterBarrierSyncS
+// ---------------------------------------------------------------------------
+
+__global__ void kernelInterBarrierS(const void *devCommPtr) {
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  flagcxInterBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x,
+                          flagcxDeviceMemoryOrderAcqRel,
+                          flagcxDevNetFenceLevel::Relaxed);
+}
+
+void launchKernelInterBarrierS(const void *devCommPtr, flagcxStream_t stream) {
+  kernelInterBarrierS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S26: WorldBarrierSyncS
+// ---------------------------------------------------------------------------
+
+__global__ void kernelWorldBarrierS(const void *devCommPtr) {
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
+                          flagcxDeviceMemoryOrderAcqRel,
+                          flagcxDevNetFenceLevel::Relaxed);
+}
+
+void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream) {
+  kernelWorldBarrierS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
+
+// ---------------------------------------------------------------------------
+// S27: WorldBarrierArriveS + WorldBarrierWaitS
+// ---------------------------------------------------------------------------
+
+__global__ void kernelWorldBarrierSplitS(const void *devCommPtr) {
+  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  if (!net) return;
+
+  flagcxWorldBarrierArriveS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
+                            flagcxDeviceMemoryOrderRelease,
+                            flagcxDevNetFenceLevel::Relaxed);
+
+  flagcxWorldBarrierWaitS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
+                          flagcxDeviceMemoryOrderAcquire,
+                          flagcxDevNetFenceLevel::Relaxed);
+}
+
+void launchKernelWorldBarrierSplitS(const void *devCommPtr,
+                                    flagcxStream_t stream) {
+  kernelWorldBarrierSplitS<<<1, 32, 0, stream->base>>>(devCommPtr);
+}
