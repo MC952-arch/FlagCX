@@ -82,6 +82,9 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     devComm->barrierRecvComms = hetero->barrierRecvComms;
     devComm->barrierHandleInfo = hetero->barrierHandleInfo;
     devComm->netAdaptorPtr = hetero->netAdaptorPtr;
+    devComm->teamRank = hetero->node;
+    devComm->nTeamRanks = hetero->nNodes;
+    devComm->barrierSignalBase = 0;
     return flagcxSuccess;
   }
 
@@ -240,6 +243,9 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   devComm->barrierRecvComms = hetero->barrierRecvComms;
   devComm->barrierHandleInfo = hetero->barrierHandleInfo;
   devComm->netAdaptorPtr = hetero->netAdaptorPtr;
+  devComm->teamRank = hetero->node;
+  devComm->nTeamRanks = hetero->nNodes;
+  devComm->barrierSignalBase = 0;
 
   INFO(FLAGCX_INIT,
        "setupInterNodeSignalRelay: rank %d nInterPeers=%d isLeader=%d", myRank,
