@@ -880,8 +880,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
 };
 
 // ---- Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> ----
-// Inter-node barrier via FIFO BarrierSignal + host-mapped interSignalFlags.
-// Only the inter leader actually sends/waits; non-leaders are no-ops.
+// NCCL GIN-style: all ranks participate, interleaved signal+wait per peer.
+// No leader gating. GPU polls device memory signal buffer directly.
+// Barrier signals use regular PrimSignal FIFO entries (async, non-blocking
+// proxy).
 template <typename P, typename Coop>
 struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   using Atomic = typename PlatformTraits<P>::Atomic;
@@ -891,60 +893,85 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   using Net = typename CommTraits<DefaultBackend<P>>::Net;
 
   Coop _coop;
-  uint64_t *_interSignals;
   void *_fifoBuffer;
-  int _nInterPeers;
-  bool _isLeader;
-  uint32_t _ctaIndex;
-  uint64_t *_epochBuffer;
-  uint64_t _epoch;
+  uint64_t *_signalBuffer;
+  uint64_t *_shadowBuffer;
+  int _signalCount;
+  int _contextId;
+  int _teamRank;
+  int _nTeamRanks;
+  int _barrierSignal0; // base signal slot for this barrier instance
 
   // Default ctor (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
-      : _coop(), _interSignals(nullptr), _fifoBuffer(nullptr), _nInterPeers(0),
-        _isLeader(false), _ctaIndex(0), _epochBuffer(nullptr), _epoch(0) {}
+      : _coop(), _fifoBuffer(nullptr), _signalBuffer(nullptr),
+        _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
+        _nTeamRanks(0), _barrierSignal0(0) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Net &net, const Comm &dc, Team, uint32_t index,
           int nInterPeers)
-      : _coop(coop), _interSignals(dc.interSignalFlags),
-        _fifoBuffer(net.fifoBuffer), _nInterPeers(nInterPeers),
-        _isLeader(dc.isInterLeader), _ctaIndex(index),
-        _epochBuffer(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index]),
-        _epoch(Atomic::load(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index],
-                            flagcxDeviceMemoryOrderRelaxed)) {}
+      : _coop(coop), _fifoBuffer(net.fifoBuffer),
+        _signalBuffer(net.signalBuffer), _shadowBuffer(net.shadowBuffer),
+        _signalCount(net.signalCount), _contextId(net.contextId),
+        _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
+        _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks) {}
 
-  // arrive: FIFO BarrierSignal (leader only)
+  // arrive: signal all remote peers "I have arrived"
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    _epoch += _nInterPeers;
-    if (_coop.threadRank() == 0) {
-      Atomic::store(_epochBuffer, _epoch, flagcxDeviceMemoryOrderRelease);
-    }
+    if (_nTeamRanks <= 1)
+      return;
+    int nPeers = _nTeamRanks - 1;
     _coop.sync();
-    if (_coop.threadRank() == 0 && _isLeader) {
+    // Each thread handles a subset of peers (cooperative distribution)
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
+      int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
+      // Signal remote peer: enqueue PrimSignal to FIFO
+      // signalIdx = barrierSignal0 + myTeamRank (where peer expects my signal)
+      int signalIdx = _barrierSignal0 + _teamRank;
+      int combinedIdx = _contextId * _signalCount + signalIdx;
+      uint64_t trdSpecific =
+          ((uint64_t)0 << flagcxDeviceTriggerOffBufferType) |
+          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
+          ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
       CommTraits<DefaultBackend<P>>::fifoEnqueue(
-          _fifoBuffer, (uint64_t)_ctaIndex, 0,
-          CommTraits<DefaultBackend<P>>::buildTrd(flagcxDevicePrimBarrierSignal,
-                                                  0, 0));
+          _fifoBuffer, 0, 0,
+          CommTraits<DefaultBackend<P>>::buildTrd(flagcxDevicePrimSignal,
+                                                  peerIdx, trdSpecific));
     }
     _coop.sync();
   }
 
-  // wait: spin on host-mapped inter signal array (leader only)
+  // wait: wait for all remote peers' signals at MY buffer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (_nTeamRanks <= 1)
+      return;
+    int nPeers = _nTeamRanks - 1;
     _coop.sync();
-    if (_coop.threadRank() == 0 && _isLeader) {
+    // Each thread waits for a subset of peers (cooperative distribution)
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
+      int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
+      // Wait for peer's signal at slot [barrierSignal0 + peerIdx]
+      int signalIdx = _barrierSignal0 + peerIdx;
+      int absIdx = _contextId * _signalCount + signalIdx;
+      // Increment shadow (expected value) and spin on signal buffer
+      _shadowBuffer[absIdx] += 1;
+      uint64_t expected = _shadowBuffer[absIdx];
       int iter = 0;
-      while (Atomic::load(&_interSignals[_ctaIndex],
-                          flagcxDeviceMemoryOrderAcquire) < _epoch) {
+      while (Atomic::load(&_signalBuffer[absIdx],
+                          flagcxDeviceMemoryOrderAcquire) < expected) {
         Intrin::spinBackoff(iter++);
       }
+    }
+    // Flush: ensure all signal FIFO entries from arrive() completed on wire
+    if (_coop.threadRank() == 0 && _fifoBuffer != nullptr) {
+      CommTraits<DefaultBackend<P>>::fifoFlush(_fifoBuffer);
     }
     _coop.sync();
   }
@@ -953,8 +980,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    arrive(order);
-    wait(order);
+    arrive(order, fence);
+    wait(order, fence);
   }
 };
 
