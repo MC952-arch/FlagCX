@@ -591,7 +591,12 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
     // Signal buffer (host-pinned or GDR device memory)
     if (reqs->interSignalCount > 0) {
-      devComm->signalCount = reqs->interSignalCount;
+      // Expand signalCount to include barrier slots:
+      // barrier needs nTeamRanks slots per barrier instance (one per CTA)
+      int userSignals = reqs->interSignalCount;
+      int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
+      devComm->signalCount = userSignals + barrierSlots;
+      devComm->barrierSignalBase = userSignals;
       size_t sigSize =
           (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t);
       INFO(
