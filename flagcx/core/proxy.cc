@@ -2082,32 +2082,11 @@ init_done:
               comm->rank);
         break;
       case flagcxDevicePrimBarrierSignal: {
-        // Inter-node barrier: RDMA ATOMIC FETCH_AND_ADD to each peer's
-        // interSignalFlagsHost counter via iputSignal (signal-only, size=0).
-        flagcxDevComm_t dc = comm->devCommHandle;
-        if (dc && dc->nInterPeers > 0 && dc->barrierHandleInfo) {
-          uint32_t ctaIdx = (uint32_t)ptr->getAddr();
-          struct flagcxNetAdaptor *net =
-              (struct flagcxNetAdaptor *)dc->netAdaptorPtr;
-          size_t signalOff = (size_t)ctaIdx * sizeof(uint64_t);
-
-          void *reqs[FLAGCX_MAX_INTER_PEERS];
-          for (int p = 0; p < dc->nInterPeers; p++) {
-            reqs[p] = nullptr;
-            net->iputSignal(dc->signalSendComms[p], 0, 0, 0, comm->rank,
-                            dc->interPeerRanks[p], NULL, NULL,
-                            (uint64_t)signalOff, (void **)dc->barrierHandleInfo,
-                            1, &reqs[p]);
-          }
-          for (int p = 0; p < dc->nInterPeers; p++) {
-            if (reqs[p]) {
-              int done = 0;
-              while (!done) {
-                net->test(reqs[p], &done, nullptr);
-              }
-            }
-          }
-        }
+        // Legacy: no longer used by NCCL GIN-style barriers.
+        // New barriers use per-peer PrimSignal entries (async, non-blocking).
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimBarrierSignal (legacy no-op)",
+              comm->rank);
         break;
       }
       default:
