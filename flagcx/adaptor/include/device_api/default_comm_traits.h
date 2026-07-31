@@ -275,14 +275,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     uint64_t *slotSnd = slotFst + 1;
     uint64_t *slotTrd = slotFst + 2;
 
-    // 4. Write fst, snd (payload, relaxed)
-    Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
-    Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
+    // 4. Write fst, snd (payload) — write-through to bypass L2 cache
+    Intrin::storeWriteThrough(slotFst, fstVal);
+    Intrin::storeWriteThrough(slotSnd, sndVal);
 
-    // 5. Write trd with valid bit (release ensures payload visible before
-    // control)
-    Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
-                  flagcxDeviceMemoryOrderRelease);
+    // 5. Write trd with valid bit — write-through, naturally ordered after
+    //    payload because __stwt from same thread hits memory controller in
+    //    program order (no L2 buffering to reorder)
+    Intrin::storeWriteThrough(slotTrd, trdVal | flagcxDeviceTriggerValidMask);
 
     return flagcxSuccess;
   }

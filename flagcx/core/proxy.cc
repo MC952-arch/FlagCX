@@ -2104,9 +2104,14 @@ init_done:
       default:
         break;
     }
-    // Mark item as consumed AFTER processing
-    __sync_synchronize();
-    ((volatile uint64_t *)fifo->buffer)[flagcxFifoIdxConsumed]++;
+    // Mark item as consumed AFTER processing.
+    // Release ensures the GPU's fifoEnqueue space-check (acquire load of
+    // consumed) observes all prior CPU writes (slot clear, etc.).
+    uint64_t nextCons = __atomic_load_n(&fifo->buffer[flagcxFifoIdxConsumed],
+                                        __ATOMIC_RELAXED) +
+                        1;
+    __atomic_store_n(&fifo->buffer[flagcxFifoIdxConsumed], nextCons,
+                     __ATOMIC_RELEASE);
     if (res != flagcxSuccess)
       break;
   }

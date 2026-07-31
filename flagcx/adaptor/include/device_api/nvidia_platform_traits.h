@@ -78,6 +78,15 @@ struct PlatformTraits<NvidiaPlatform> {
       __threadfence_system();
     }
 
+    // Write-through store: bypasses GPU L2 cache, writes directly to system
+    // memory. Required for GPU→CPU FIFO communication where st.release.sys
+    // alone is insufficient (data may remain in L2 and never reach host).
+    // Maps to PTX st.wt (streaming store).
+    static FLAGCX_DEVICE_INLINE_DECORATOR void storeWriteThrough(uint64_t *addr,
+                                                                 uint64_t val) {
+      __stwt(addr, val);
+    }
+
 #else
     // Host-compiler stubs (allow template instantiation, never called at
     // runtime)
@@ -113,6 +122,11 @@ struct PlatformTraits<NvidiaPlatform> {
     }
     static inline void threadfenceSystem() {
       assert(false && "threadfenceSystem() called on host");
+    }
+    static inline void storeWriteThrough(uint64_t *addr, uint64_t val) {
+      (void)addr;
+      (void)val;
+      assert(false && "storeWriteThrough() called on host");
     }
 #endif // __CUDACC__
   };

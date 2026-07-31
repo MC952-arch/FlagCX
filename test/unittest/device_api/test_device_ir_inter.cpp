@@ -130,7 +130,6 @@ int main(int argc, char *argv[]) {
   int *devResults = nullptr;
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
                                       flagcxMemDevice, NULL));
-  int hostResults[256];
 
   if (proc == 0) {
     printf("=== Device IR Inter-Node Transport Tests ===\n");
@@ -153,9 +152,12 @@ int main(int argc, char *argv[]) {
 
   bool s9Pass = (hostS9[0] == 1); // net pointer should be non-null
   bool s9Skip = (hostS9[0] == 0); // net unavailable → skip all inter tests
+  int intraSize = hostS9[1] > 0 ? hostS9[1] : totalProcs;
+  int intraBase = proc - (proc % intraSize);
   if (proc == 0) {
-    printf("S9  NetGetFromComm: %s\n", s9Skip ? "SKIP (no transport contexts)"
-                                              : (s9Pass ? "PASS" : "FAIL"));
+    printf("S9  NetGetFromComm: %s (intraSize=%d)\n",
+           s9Skip ? "SKIP (no transport contexts)" : (s9Pass ? "PASS" : "FAIL"),
+           intraSize);
   }
   if (s9Skip)
     s9Pass = true;
@@ -204,16 +206,19 @@ int main(int argc, char *argv[]) {
                             flagcxMemcpyHostToDevice, NULL);
   };
 
-  // Helper lambda: verify alltoall pattern in recvBuff
+  // Helper lambda: verify alltoall pattern in recvBuff (inter peers only)
   auto verifyAlltoAll = [&]() -> bool {
     devHandle->deviceMemcpy(hostBuf, recvBuff, floatSize,
                             flagcxMemcpyDeviceToHost, NULL);
-    for (int src = 0; src < totalProcs; src++)
+    for (int src = 0; src < totalProcs; src++) {
+      if (src >= intraBase && src < intraBase + intraSize)
+        continue;
       for (size_t i = 0; i < countPerPeer; i++) {
         float expected = (float)(src * 1000 + proc * 100 + (int)i);
         if (hostBuf[(size_t)src * countPerPeer + i] != expected)
           return false;
       }
+    }
     return true;
   };
 
@@ -227,15 +232,17 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
-  // --- S12: WaitCounterS ---
-  if (!s9Skip) {
-    MPI_Barrier(MPI_COMM_WORLD);
-    launchKernelNetWaitCounterS(devCommPtr, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S12 WaitCounterS: PASS\n");
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
+  // --- S12: WaitCounterS (COMMENTED — standalone SignalCtrIncS is not
+  //     supported by the GIN protocol; counters are local-action only,
+  //     tested via S17 PutS_RSigInc_LCtrInc) ---
+  // if (!s9Skip) {
+  //   MPI_Barrier(MPI_COMM_WORLD);
+  //   launchKernelNetWaitCounterS(devCommPtr, stream);
+  //   FLAGCXCHECK(devHandle->streamSynchronize(stream));
+  //   if (proc == 0)
+  //     printf("S12 WaitCounterS: PASS\n");
+  //   MPI_Barrier(MPI_COMM_WORLD);
+  // }
 
   // --- S13: WaitSignalMeetShadowS ---
   // if (!s9Skip) {
@@ -355,6 +362,8 @@ int main(int argc, char *argv[]) {
                                         flagcxMemcpyDeviceToHost, NULL));
     bool s21Ok = true;
     for (int src = 0; src < totalProcs; src++) {
+      if (src >= intraBase && src < intraBase + intraSize)
+        continue;
       uint64_t expected = (uint64_t)src * 1000u + (uint64_t)proc;
       if (hostVals[src] != expected) {
         s21Ok = false;
@@ -383,6 +392,8 @@ int main(int argc, char *argv[]) {
                                         flagcxMemcpyDeviceToHost, NULL));
     bool s22Ok = true;
     for (int src = 0; src < totalProcs; src++) {
+      if (src >= intraBase && src < intraBase + intraSize)
+        continue;
       uint64_t expected = (uint64_t)src * 1000u + (uint64_t)proc;
       if (hostVals[src] != expected) {
         s22Ok = false;

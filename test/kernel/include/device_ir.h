@@ -141,8 +141,9 @@ void launchKernelNetSignalCounterS(const void *devCommPtr, int *devResults,
 void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
                                      flagcxStream_t stream);
 
-// S12: WaitCounterS — signal counter, peer waits counter (hang-free = PASS)
-void launchKernelNetWaitCounterS(const void *devCommPtr, flagcxStream_t stream);
+// S12: WaitCounterS (COMMENTED — standalone counter signal not supported by
+// GIN) void launchKernelNetWaitCounterS(const void *devCommPtr, flagcxStream_t
+// stream);
 
 // S13: WaitSignalMeetShadowS — increaseSignalShadow + signal + waitMeetShadow
 void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
