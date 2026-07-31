@@ -196,6 +196,10 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 //                               const void *recvMemPtr, size_t countPerPeer,
 //                               flagcxStream_t stream);
 
+// S11b: Inter-Barrier Stress — repeated inter-barrier sync
+void launchKernelInterBarrierStress(const void *devCommPtr, int *devResults,
+                                    int nIters, flagcxStream_t stream);
+
 // S25: InterBarrierSyncS — inter-node barrier (hang-free = PASS)
 void launchKernelInterBarrierS(const void *devCommPtr, flagcxStream_t stream);
 

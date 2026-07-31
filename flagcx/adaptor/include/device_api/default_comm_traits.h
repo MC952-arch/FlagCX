@@ -275,36 +275,38 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     uint64_t *slotSnd = slotFst + 1;
     uint64_t *slotTrd = slotFst + 2;
 
-    // 4. Write fst, snd (payload) — write-through to bypass L2 cache
-    Intrin::storeWriteThrough(slotFst, fstVal);
-    Intrin::storeWriteThrough(slotSnd, sndVal);
+    // 4. Write fst, snd (payload, relaxed)
+    Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
+    Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
 
-    // 5. Write trd with valid bit — write-through, naturally ordered after
-    //    payload because __stwt from same thread hits memory controller in
-    //    program order (no L2 buffering to reorder)
-    Intrin::storeWriteThrough(slotTrd, trdVal | flagcxDeviceTriggerValidMask);
+    // 5. Write trd with valid bit (release ensures payload visible before
+    // control)
+    Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
+                  flagcxDeviceMemoryOrderRelease);
 
     return flagcxSuccess;
   }
 
-  // Flush: snapshot produced, then spin until consumed >= snapshot.
+  // Flush: snapshot produced, then spin until completed >= snapshot.
+  // The CPU proxy advances 'completed' after IB test() confirms each op done.
+  // This replaces the old PrimWait+streamSynchronize approach that caused
+  // deadlocks.
   FLAGCX_DEVICE_INLINE_DECORATOR
   static flagcxResult_t fifoFlush(void *fifoBuffer) {
     uint64_t *buffer = (uint64_t *)fifoBuffer;
     uint64_t snapshot = Atomic::load(&buffer[flagcxFifoIdxProduced],
                                      flagcxDeviceMemoryOrderAcquire);
     int iter = 0;
-    while (Atomic::load(&buffer[flagcxFifoIdxConsumed],
+    while (Atomic::load(&buffer[flagcxFifoIdxCompleted],
                         flagcxDeviceMemoryOrderAcquire) < snapshot) {
       Intrin::spinBackoff(iter++);
     }
     return flagcxSuccess;
   }
 
-  // Wait: enqueue PrimWait + flush.
+  // Wait: just flush (no PrimWait enqueue needed with completion-based flush).
   FLAGCX_DEVICE_INLINE_DECORATOR
   static flagcxResult_t fifoWait(void *fifoBuffer) {
-    fifoEnqueue(fifoBuffer, 0, 0, buildTrd(flagcxDevicePrimWait, 0, 0));
     return fifoFlush(fifoBuffer);
   }
 

@@ -40,13 +40,16 @@ typedef enum {
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
-// Layout: [capacity][consumed][produced][terminate][data...]
+// Layout: [capacity][consumed][produced][terminate/completed][data...]
 // Note: flagcxFifoIdxTerminate is only used by flagcxReduceTrigger fifo
+// Note: flagcxFifoIdxCompleted is only used by flagcxDeviceTrigger fifo
+//       (same slot, different semantics per FIFO type)
 typedef enum {
   flagcxFifoIdxCapacity = 0,
   flagcxFifoIdxConsumed = 1,
   flagcxFifoIdxProduced = 2,
   flagcxFifoIdxTerminate = 3,
+  flagcxFifoIdxCompleted = 3, // alias: IB-completion count (DeviceTrigger FIFO)
   flagcxFifoIdxData = 4
 } flagcxFifoIndex;
 

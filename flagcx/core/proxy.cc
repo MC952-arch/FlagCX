@@ -1461,10 +1461,13 @@ struct flagcxKernelProxyPeerState {
 struct flagcxKernelProxyState {
   struct flagcxKernelProxyPeerState *peers; // [nRanks]
   int nRanks;
-  uint32_t totalInflight; // number of ops in-flight across all peers
+  uint32_t totalInflight;  // number of ops in-flight across all peers
+  struct flagcxFifo *fifo; // owning FIFO (for completed counter advancement)
 };
 
 // Poll completions for all peers. Non-blocking sweep.
+// Advances fifo->buffer[flagcxFifoIdxCompleted] for each retired IB op,
+// allowing the GPU's fifoFlush to make progress.
 static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
                                   struct flagcxHeteroComm *comm) {
   if (state->totalInflight == 0)
@@ -1473,13 +1476,13 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
   struct flagcxNetAdaptor *net = comm->netAdaptor;
   if (proxy == NULL || net == NULL)
     return;
+  struct flagcxFifo *fifo = state->fifo;
   for (int p = 0; p < state->nRanks; p++) {
     struct flagcxKernelProxyPeerState *ps = &state->peers[p];
     while (ps->head != ps->tail) {
       uint32_t idx = ps->head & FLAGCX_KPROXY_RING_MASK;
       struct flagcxKernelProxyInflight *inf = &ps->ring[idx];
       int done = 0;
-      bool failed = false;
       if (inf->request != NULL) {
         flagcxResult_t res = net->test(inf->request, &done, NULL);
         if (res != flagcxSuccess) {
@@ -1487,22 +1490,26 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
                (int)res);
           __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
           done = 1;
-          failed = true;
         }
       } else {
-        // Post failed earlier; retire as failed.
+        // Post failed earlier; retire as done.
         done = 1;
-        failed = true;
       }
       if (!done)
         break;
       ps->head++;
       state->totalInflight--;
-      // Kernel proxy threads no longer update proxy->doneSeqs/opSeqs.
-      // Completion is communicated to GPU via signal/counter mechanism.
-      if (!failed) {
-        __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
-      }
+      // Advance FIFO completed counter so GPU's fifoFlush can progress.
+      // Each inflight IB op corresponds to exactly one FIFO entry.
+      uint64_t nextCompleted =
+          __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                          __ATOMIC_RELAXED) +
+          1;
+      __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
+                       __ATOMIC_RELEASE);
+      INFO(FLAGCX_P2P,
+           "rank=%d Poll: retired peer=%d completed=%lu inflight=%u",
+           comm->rank, p, (unsigned long)nextCompleted, state->totalInflight);
     }
   }
 }
@@ -1703,9 +1710,8 @@ static flagcxResult_t flagcxKernelProxyPost(
       }
       pthread_spin_unlock(&pvLocks[peer]);
       // PUT_VALUE completes inline — no ring entry needed.
-      if (res == flagcxSuccess) {
-        __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
-      } else {
+      // completed counter is advanced by the main loop (postedIB == false).
+      if (res != flagcxSuccess) {
         WARN("flagcxKernelProxyPost: PUT_VALUE failed peer=%d res=%d", peer,
              (int)res);
         __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
@@ -1741,33 +1747,37 @@ static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (net == NULL || proxy == NULL)
     return;
+  struct flagcxFifo *fifo = state->fifo;
   for (int p = 0; p < state->nRanks; p++) {
     struct flagcxKernelProxyPeerState *ps = &state->peers[p];
     while (ps->head != ps->tail) {
       uint32_t idx = ps->head & FLAGCX_KPROXY_RING_MASK;
       struct flagcxKernelProxyInflight *inf = &ps->ring[idx];
-      bool succeeded = false;
       if (inf->request != NULL) {
         int done = 0;
-        bool testFailed = false;
         while (!done) {
           flagcxResult_t res = net->test(inf->request, &done, NULL);
           if (res != flagcxSuccess) {
             WARN("flagcxKernelProxyDrain: test failed peer=%d res=%d", p,
                  (int)res);
             __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
-            testFailed = true;
             done = 1;
             break;
           }
           if (!done)
             sched_yield();
         }
-        succeeded = !testFailed;
       }
-      if (succeeded)
-        __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
       ps->head++;
+      // Advance FIFO completed counter for each drained entry
+      if (fifo != NULL) {
+        uint64_t nextCompleted =
+            __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                            __ATOMIC_RELAXED) +
+            1;
+        __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
+                         __ATOMIC_RELEASE);
+      }
     }
   }
 }
@@ -1839,6 +1849,7 @@ void *flagcxProxyKernelService(void *args) {
   }
   kproxyState->nRanks = comm->nRanks;
   kproxyState->totalInflight = 0;
+  kproxyState->fifo = fifo;
   kproxyState->peers = (struct flagcxKernelProxyPeerState *)calloc(
       comm->nRanks, sizeof(struct flagcxKernelProxyPeerState));
   if (kproxyState->peers == NULL) {
@@ -1872,6 +1883,7 @@ init_done:
       sched_yield();
       continue;
     }
+    bool postedIB = false; // set true if entry posts async IB op
     switch (ptr->getPrim()) {
       case flagcxDevicePrimSend:
         if (groupCount == 0) {
@@ -1923,9 +1935,13 @@ init_done:
         break;
       }
       case flagcxDevicePrimPut: {
-        TRACE(FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimPut called by proxyKernelService.",
-              comm->rank);
+        INFO(FLAGCX_P2P,
+             "rank=%d PrimPut peer=%d srcOff=%lu dstOff=%lu size=%lu "
+             "inflight=%u",
+             comm->rank, (int)ptr->getPeerRank(),
+             (unsigned long)ptr->getSrcOffset(),
+             (unsigned long)ptr->getDstOffset(), (unsigned long)ptr->getSize(),
+             kproxyState->totalInflight);
         int peerRank = (int)ptr->getPeerRank();
         res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
         if (res != flagcxSuccess)
@@ -1938,12 +1954,12 @@ init_done:
         res = flagcxKernelProxyPost(kproxyState, comm, peerRank, FLAGCX_RMA_PUT,
                                     contextId, srcOffset, dstOffset, size,
                                     srcMrIdx, dstMrIdx, 0, 0, 0);
+        INFO(FLAGCX_P2P, "rank=%d PrimPut posted res=%d postedIB=%d",
+             comm->rank, (int)res, (res == flagcxSuccess));
+        postedIB = (res == flagcxSuccess);
         break;
       }
       case flagcxDevicePrimSignal: {
-        TRACE(FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimSignal called by proxyKernelService.",
-              comm->rank);
         uint64_t bufType = ptr->getBufferType();
         int signalIdx = (int)ptr->getSignalIdx();
         uint64_t signalValue = ptr->getSignalValue();
@@ -1952,6 +1968,11 @@ init_done:
         if (bufType == 0) {
           // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
           int peerRank = (int)ptr->getPeerRank();
+          INFO(FLAGCX_P2P,
+               "rank=%d PrimSignal(remote) peer=%d sigIdx=%d sigOff=%zu "
+               "sigVal=%lu inflight=%u",
+               comm->rank, peerRank, signalIdx, signalOff,
+               (unsigned long)signalValue, kproxyState->totalInflight);
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
           if (res != flagcxSuccess)
             break;
@@ -1965,6 +1986,9 @@ init_done:
           res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
                                       FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0, 0,
                                       -1, -1, signalOff, signalValue, 0);
+          INFO(FLAGCX_P2P, "rank=%d PrimSignal posted res=%d postedIB=%d",
+               comm->rank, (int)res, (res == flagcxSuccess));
+          postedIB = (res == flagcxSuccess);
         } else {
           // Counter buffer: local CPU atomic increment (no network operation)
           flagcxDevComm_t dc = comm->devCommHandle;
@@ -1979,32 +2003,12 @@ init_done:
         break;
       }
       case flagcxDevicePrimWaitSignal: {
+        // No-op: GPU now polls signal buffer directly (NCCL-style).
+        // The proxy no longer needs to call streamWaitValue64.
         TRACE(
             FLAGCX_P2P,
-            "rank=%d flagcxDevicePrimWaitSignal called by proxyKernelService.",
+            "rank=%d flagcxDevicePrimWaitSignal (no-op) by proxyKernelService.",
             comm->rank);
-        uint64_t wsBufType = ptr->getBufferType(); // 0=signal, 1=counter
-        int wsSignalIdx = (int)ptr->getSignalIdx();
-        uint32_t wsExpected = (uint32_t)ptr->getExpectedValue();
-        size_t wsSignalOff = (size_t)wsSignalIdx * sizeof(uint64_t);
-        flagcxDevComm_t dc = comm->devCommHandle;
-        if (dc == NULL) {
-          WARN("flagcxDevicePrimWaitSignal: devComm not initialized");
-          res = flagcxInternalError;
-          break;
-        }
-        // Select target buffer based on buffer type
-        uint64_t *targetBuffer =
-            (wsBufType == 0) ? dc->signalBuffer : dc->counterBuffer;
-        if (targetBuffer == NULL) {
-          WARN("flagcxDevicePrimWaitSignal: %s buffer not allocated",
-               wsBufType == 0 ? "signal" : "counter");
-          res = flagcxInternalError;
-          break;
-        }
-        void *waitAddr = (void *)((char *)targetBuffer + wsSignalOff);
-        res = deviceAdaptor->streamWaitValue64(stream, waitAddr,
-                                               (uint64_t)wsExpected, 0);
         break;
       }
       case flagcxDevicePrimPutSignal: {
@@ -2033,6 +2037,7 @@ init_done:
                                     FLAGCX_RMA_PUT_SIGNAL, contextId, srcOffset,
                                     dstOffset, size, srcMrIdx, dstMrIdx,
                                     signalOff, signalValue, 0);
+        postedIB = (res == flagcxSuccess);
         break;
       }
       case flagcxDevicePrimPutValue: {
@@ -2046,6 +2051,8 @@ init_done:
         res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
                                     FLAGCX_RMA_PUT_VALUE, contextId, 0,
                                     dstOffset, 0, -1, dstMrIdx, 0, 0, value);
+        // PUT_VALUE completes inline (no ring entry) — do NOT set postedIB,
+        // so completed is advanced immediately by the main loop.
         break;
       }
       case flagcxDevicePrimGet: {
@@ -2064,13 +2071,15 @@ init_done:
         res = flagcxKernelProxyPost(kproxyState, comm, peerRank, FLAGCX_RMA_GET,
                                     contextId, srcOffset, dstOffset, size,
                                     srcMrIdx, dstMrIdx, 0, 0, 0);
+        postedIB = (res == flagcxSuccess);
         break;
       }
       case flagcxDevicePrimWait:
+        // No-op: GPU now polls FIFO completed counter directly (NCCL-style).
+        // The proxy no longer needs to call streamSynchronize.
         TRACE(FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
+              "rank=%d flagcxDevicePrimWait (no-op) by proxyKernelService.",
               comm->rank);
-        deviceAdaptor->streamSynchronize(stream);
         break;
       case flagcxDevicePrimBarrierSignal: {
         // Inter-node barrier: RDMA ATOMIC FETCH_AND_ADD to each peer's
@@ -2112,6 +2121,17 @@ init_done:
                         1;
     __atomic_store_n(&fifo->buffer[flagcxFifoIdxConsumed], nextCons,
                      __ATOMIC_RELEASE);
+    // For entries that did NOT post async IB ops, advance completed
+    // immediately. IB-posted entries get their completed counter advanced in
+    // flagcxKernelProxyPoll when test() succeeds.
+    if (!postedIB) {
+      uint64_t nextCompleted =
+          __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                          __ATOMIC_RELAXED) +
+          1;
+      __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
+                       __ATOMIC_RELEASE);
+    }
     if (res != flagcxSuccess)
       break;
   }

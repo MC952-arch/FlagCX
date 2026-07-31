@@ -227,8 +227,25 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     launchKernelNetWaitSignalFlushS(devCommPtr, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S11 WaitSignalS+FlushS: PASS\n");
+    printf("[rank %d] S11 WaitSignalS+FlushS: PASS\n", proc);
+    fflush(stdout);
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+
+  // --- S11b: Inter-Barrier Stress Test (3 iterations) ---
+  if (!s9Skip) {
+    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 4 * sizeof(int),
+                                        flagcxMemDevice, NULL));
+    MPI_Barrier(MPI_COMM_WORLD);
+    launchKernelInterBarrierStress(devCommPtr, devResults, 3, stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+    int hostRes[1] = {0};
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
+                                        flagcxMemcpyDeviceToHost, NULL));
+    printf("[rank %d] S11b InterBarrierStress(x3): %s\n", proc,
+           hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -259,6 +276,8 @@ int main(int argc, char *argv[]) {
     initSend();
     FLAGCXCHECK(
         devHandle->deviceMemset(recvBuff, 0, floatSize, flagcxMemDevice, NULL));
+    printf("[rank %d] S14 launching kernel\n", proc);
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
 
     launchKernelNetPutS(devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
@@ -266,8 +285,9 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s14Ok = verifyAlltoAll();
-    if (proc == 0)
-      printf("S14 PutS(None,None): %s\n", s14Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S14 PutS(None,None): %s\n", proc,
+           s14Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s14Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
