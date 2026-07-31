@@ -32,8 +32,10 @@ typedef enum {
   flagcxDevicePrimWait = 3,
   flagcxDevicePrimPut = 4,
   flagcxDevicePrimSignal = 5,
-  flagcxDevicePrimBarrierSignal = 6,
-  flagcxDevicePrimWaitSignal = 7,
+  flagcxDevicePrimBarrierSignal =
+      6, // Legacy: no-op in proxy (barriers now use PrimSignal)
+  flagcxDevicePrimWaitSignal =
+      7, // Legacy: no-op in proxy (GPU polls signal buffer directly)
   flagcxDevicePrimPutValue = 8,
   flagcxDevicePrimPutSignal = 9,
   flagcxDevicePrimGet = 10
