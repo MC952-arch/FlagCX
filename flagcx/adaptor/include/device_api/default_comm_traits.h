@@ -155,6 +155,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int nInterPeers;
     bool isInterLeader;
 
+    // NCCL GIN-style barrier
+    int teamRank;          // this rank's position in inter-node team
+    int nTeamRanks;        // total nodes in team
+    int barrierSignalBase; // first signal slot for barriers
+
     // One-sided fallback
     uint64_t *signalBuffer;
     uint64_t *shadowBuffer;
@@ -196,6 +201,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.interSignalFlags = di.interSignalFlags;
       dc.nInterPeers = di.nInterPeers;
       dc.isInterLeader = di.isInterLeader;
+      dc.teamRank = di.teamRank;
+      dc.nTeamRanks = di.nTeamRanks;
+      dc.barrierSignalBase = di.barrierSignalBase;
       dc.signalBuffer = di.signalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
       dc.counterBuffer = di.counterBuffer;
@@ -322,6 +330,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int signalCount;
     int counterCount;
     int contextId;
+    int teamRank;
+    int nTeamRanks;
+    int barrierSignalBase;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int contextIndex)
@@ -334,6 +345,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           counterCount(dc.counterCount) {
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       contextId = contextIndex % cnt;
+      teamRank = dc.teamRank;
+      nTeamRanks = dc.nTeamRanks;
+      barrierSignalBase = dc.barrierSignalBase;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isIntraPeer(int peer) const {
