@@ -70,6 +70,10 @@ struct flagcxDevCommInternal {
   int nInterPeers;     // number of inter-node peers (set on ALL ranks)
   bool isInterLeader;  // true only on localRank 0 (manages connections)
   int *interPeerRanks; // global ranks of inter-node peers
+  // NCCL GIN-style barrier fields (all ranks)
+  int teamRank;          // this rank's position in the inter-node team
+  int nTeamRanks;        // total number of nodes (team size for barrier)
+  int barrierSignalBase; // first signal slot index used for barriers
   // netAdaptor connections for signal relay (one-sided RDMA atomic)
   void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
   void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
