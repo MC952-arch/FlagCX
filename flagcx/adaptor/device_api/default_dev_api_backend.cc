@@ -85,6 +85,17 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     devComm->teamRank = hetero->node;
     devComm->nTeamRanks = hetero->nNodes;
     devComm->barrierSignalBase = 0;
+    // Compute nodeLeaderRanks fresh (small O(nRanks) loop)
+    {
+      int *nlr = (int *)malloc(nNodes * sizeof(int));
+      if (nlr) {
+        for (int r = 0; r < nRanks; r++) {
+          if (hetero->rankToLocalRank[r] == 0)
+            nlr[hetero->rankToNode[r]] = r;
+        }
+      }
+      devComm->nodeLeaderRanks = nlr;
+    }
     return flagcxSuccess;
   }
 
@@ -246,6 +257,17 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   devComm->teamRank = hetero->node;
   devComm->nTeamRanks = hetero->nNodes;
   devComm->barrierSignalBase = 0;
+  // Compute nodeLeaderRanks: maps nodeIndex → leader global rank
+  {
+    int *nlr = (int *)malloc(nNodes * sizeof(int));
+    if (nlr) {
+      for (int r = 0; r < nRanks; r++) {
+        if (hetero->rankToLocalRank[r] == 0)
+          nlr[hetero->rankToNode[r]] = r;
+      }
+    }
+    devComm->nodeLeaderRanks = nlr;
+  }
 
   INFO(FLAGCX_INIT,
        "setupInterNodeSignalRelay: rank %d nInterPeers=%d isLeader=%d", myRank,

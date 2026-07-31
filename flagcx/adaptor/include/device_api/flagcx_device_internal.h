@@ -74,6 +74,8 @@ struct flagcxDevCommInternal {
   int teamRank;          // this rank's position in the inter-node team
   int nTeamRanks;        // total number of nodes (team size for barrier)
   int barrierSignalBase; // first signal slot index used for barriers
+  int *nodeLeaderRanks;  // device-accessible: nodeLeaderRanks[nodeIdx] = global
+                         // rank of that node's leader
   // netAdaptor connections for signal relay (one-sided RDMA atomic)
   void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
   void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
