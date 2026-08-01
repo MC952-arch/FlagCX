@@ -151,16 +151,12 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int nBarriers;
 
     // Inter-node signal relay
-    uint64_t *interSignalFlags;
     int nInterPeers;
-    bool isInterLeader;
 
     // NCCL GIN-style barrier
     int teamRank;          // this rank's position in inter-node team
     int nTeamRanks;        // total nodes in team
     int barrierSignalBase; // first signal slot for barriers
-    int *nodeLeaderRanks; // device-accessible: [nTeamRanks] node index → leader
-                          // global rank
 
     // One-sided fallback
     uint64_t *signalBuffer;
@@ -200,13 +196,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.barrierPeers = di.barrierPeers;
       dc.epochBuffer = di.epochBuffer;
       dc.nBarriers = di.nBarriers;
-      dc.interSignalFlags = di.interSignalFlags;
       dc.nInterPeers = di.nInterPeers;
-      dc.isInterLeader = di.isInterLeader;
       dc.teamRank = di.teamRank;
       dc.nTeamRanks = di.nTeamRanks;
       dc.barrierSignalBase = di.barrierSignalBase;
-      dc.nodeLeaderRanks = di.nodeLeaderRanks;
       dc.signalBuffer = di.signalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
       dc.counterBuffer = di.counterBuffer;
@@ -336,7 +329,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int teamRank;
     int nTeamRanks;
     int barrierSignalBase;
-    int *nodeLeaderRanks;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int contextIndex)
@@ -352,7 +344,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       teamRank = dc.teamRank;
       nTeamRanks = dc.nTeamRanks;
       barrierSignalBase = dc.barrierSignalBase;
-      nodeLeaderRanks = dc.nodeLeaderRanks;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isIntraPeer(int peer) const {
@@ -906,14 +897,15 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   int _teamRank;
   int _nTeamRanks;
   int _barrierSignal0; // base signal slot for this barrier instance
-  int *_nodeLeaderRanks;
+  int _stride;         // intraSize — used to compute target global rank
+  int _localRank;      // intra-node rank (for rank-to-rank peer mapping)
 
   // Default ctor (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _fifoBuffer(nullptr), _signalBuffer(nullptr),
         _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
-        _nTeamRanks(0), _barrierSignal0(0), _nodeLeaderRanks(nullptr) {}
+        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -924,7 +916,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
         _signalCount(net.signalCount), _contextId(net.contextId),
         _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
-        _nodeLeaderRanks(net.nodeLeaderRanks) {}
+        _stride(dc.intraSize), _localRank(dc.intraRank) {}
 
   // arrive: signal all remote peers "I have arrived"
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -933,10 +925,11 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
-    _coop.sync();
+    FLAGCX_DEVICE_SYNC_THREADS();
     // Each thread handles a subset of peers (cooperative distribution)
-    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
+    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
+      int targetRank = peerIdx * _stride + _localRank;
       // Signal remote peer: enqueue PrimSignal to FIFO
       // signalIdx = barrierSignal0 + myTeamRank (where peer expects my signal)
       int signalIdx = _barrierSignal0 + _teamRank;
@@ -947,10 +940,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
           ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
       CommTraits<DefaultBackend<P>>::fifoEnqueue(
           _fifoBuffer, 0, 0,
-          CommTraits<DefaultBackend<P>>::buildTrd(
-              flagcxDevicePrimSignal, _nodeLeaderRanks[peerIdx], trdSpecific));
+          CommTraits<DefaultBackend<P>>::buildTrd(flagcxDevicePrimSignal,
+                                                  targetRank, trdSpecific));
     }
-    _coop.sync();
+    FLAGCX_DEVICE_SYNC_THREADS();
   }
 
   // wait: wait for all remote peers' signals at MY buffer
@@ -960,9 +953,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
-    _coop.sync();
+    FLAGCX_DEVICE_SYNC_THREADS();
     // Each thread waits for a subset of peers (cooperative distribution)
-    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
+    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
       // Wait for peer's signal at slot [barrierSignal0 + peerIdx]
       int signalIdx = _barrierSignal0 + peerIdx;
@@ -977,10 +970,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
       }
     }
     // Flush: ensure all signal FIFO entries from arrive() completed on wire
-    if (_coop.threadRank() == 0 && _fifoBuffer != nullptr) {
+    if (FLAGCX_THREAD_IDX_X == 0 && _fifoBuffer != nullptr) {
       CommTraits<DefaultBackend<P>>::fifoFlush(_fifoBuffer);
     }
-    _coop.sync();
+    FLAGCX_DEVICE_SYNC_THREADS();
   }
 
   // sync = arrive + wait
@@ -1036,9 +1029,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      _inter.arrive(order);
+      _inter.arrive(order, fence);
     } else {
       _intra.arrive(order);
     }
@@ -1048,7 +1039,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
-      _inter.wait(order);
+      _inter.wait(order, fence);
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
       _intra.wait(flagcxDeviceMemoryOrderAcquire);
     } else {
@@ -1060,13 +1051,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
-      // Phase 1: intra sync
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      // Phase 2: inter signal+wait (leader only)
-      _inter.arrive(order);
-      _inter.wait(order);
-      // Phase 3: intra sync (broadcast inter completion)
+      // Phase 1: inter signal+wait (rank-to-rank across nodes)
+      _inter.arrive(order, fence);
+      _inter.wait(order, fence);
+      // Phase 2: intra sync (broadcast inter completion to local ranks)
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
       _intra.wait(flagcxDeviceMemoryOrderAcquire);
     } else {

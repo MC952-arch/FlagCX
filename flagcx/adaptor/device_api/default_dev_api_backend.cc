@@ -74,32 +74,14 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {
     devComm->nInterPeers = hetero->nInterPeers;
-    devComm->isInterLeader = hetero->isInterLeader;
     devComm->interPeerRanks = hetero->interPeerRanks;
-    devComm->interSignalFlags = hetero->interSignalFlags;
-    devComm->interSignalFlagsHost = hetero->interSignalFlagsHost;
-    devComm->signalSendComms = hetero->signalSendComms;
-    devComm->barrierRecvComms = hetero->barrierRecvComms;
-    devComm->barrierHandleInfo = hetero->barrierHandleInfo;
-    devComm->netAdaptorPtr = hetero->netAdaptorPtr;
     devComm->teamRank = hetero->node;
     devComm->nTeamRanks = hetero->nNodes;
     devComm->barrierSignalBase = 0;
-    // Compute nodeLeaderRanks fresh (small O(nRanks) loop)
-    {
-      int *nlr = (int *)malloc(nNodes * sizeof(int));
-      if (nlr) {
-        for (int r = 0; r < nRanks; r++) {
-          if (hetero->rankToLocalRank[r] == 0)
-            nlr[hetero->rankToNode[r]] = r;
-        }
-      }
-      devComm->nodeLeaderRanks = nlr;
-    }
     return flagcxSuccess;
   }
 
-  // First call: establish connections
+  // First call: compute inter-node peer info
   int *interPeerRanks = nullptr;
   int nInterPeers = 0;
 
@@ -127,117 +109,9 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
   hetero->nInterPeers = nInterPeers;
   hetero->interPeerRanks = interPeerRanks;
-  hetero->isInterLeader = (hetero->localRank == 0);
 
+  // All ranks barrier to ensure inter-node peer info is consistent
   flagcxResult_t res = flagcxSuccess;
-  size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
-
-  if (hetero->isInterLeader) {
-    hetero->netAdaptorPtr = (void *)hetero->netAdaptor;
-
-    // Allocate host-pinned interSignalFlagsHost
-    FLAGCXCHECKGOTO(
-        deviceAdaptor->deviceMalloc((void **)&hetero->interSignalFlagsHost,
-                                    flagsSize, flagcxMemHost, NULL),
-        res, relay_fail);
-    memset(hetero->interSignalFlagsHost, 0, flagsSize);
-
-    // Map to device pointer
-    if (deviceAdaptor->hostGetDevicePointer) {
-      FLAGCXCHECKGOTO(
-          deviceAdaptor->hostGetDevicePointer(
-              (void **)&hetero->interSignalFlags, hetero->interSignalFlagsHost),
-          res, relay_fail);
-    } else {
-      hetero->interSignalFlags = (uint64_t *)hetero->interSignalFlagsHost;
-    }
-
-    // Establish send/recv connections to peer leaders
-    hetero->signalSendComms = (void **)malloc(nInterPeers * sizeof(void *));
-    hetero->barrierRecvComms = (void **)malloc(nInterPeers * sizeof(void *));
-    if (!hetero->signalSendComms || !hetero->barrierRecvComms) {
-      res = flagcxSystemError;
-      goto relay_fail;
-    }
-    memset(hetero->signalSendComms, 0, nInterPeers * sizeof(void *));
-    memset(hetero->barrierRecvComms, 0, nInterPeers * sizeof(void *));
-
-    struct flagcxNetAdaptor *net = hetero->netAdaptor;
-    int netDev = hetero->netDev;
-    struct bootstrapState *bootstrap = comm->bootstrap;
-    const int signalTagBase = 2001;
-
-    // Exchange listen handles with each peer leader via point-to-point tagged
-    // bootstrap (NOT ring allgather — only leaders participate here, and ring
-    // allgather requires all ranks).
-    for (int p = 0; p < nInterPeers; p++) {
-      int peer = interPeerRanks[p];
-      int pairTag = signalTagBase + std::min(myRank, peer) * nRanks +
-                    std::max(myRank, peer);
-
-      // Listen for incoming connection from this peer
-      flagcxNetHandle_t listenHandle = {};
-      void *listenComm = nullptr;
-      FLAGCXCHECKGOTO(net->listen(netDev, &listenHandle, &listenComm), res,
-                      relay_fail);
-
-      // Exchange listen handles via tagged bootstrap send/recv
-      flagcxNetHandle_t peerHandle = {};
-      FLAGCXCHECKGOTO(bootstrapSend(bootstrap, peer, pairTag, &listenHandle,
-                                    sizeof(flagcxNetHandle_t)),
-                      res, relay_fail);
-      FLAGCXCHECKGOTO(bootstrapRecv(bootstrap, peer, pairTag, &peerHandle,
-                                    sizeof(flagcxNetHandle_t)),
-                      res, relay_fail);
-
-      // Non-blocking connect/accept loop
-      void *sendComm = nullptr;
-      void *recvComm = nullptr;
-      while (sendComm == nullptr || recvComm == nullptr) {
-        if (sendComm == nullptr) {
-          flagcxResult_t r = net->connect(netDev, &peerHandle, &sendComm);
-          if (r != flagcxSuccess && r != flagcxInProgress) {
-            res = r;
-            goto relay_fail;
-          }
-        }
-        if (recvComm == nullptr) {
-          flagcxResult_t r = net->accept(listenComm, &recvComm);
-          if (r != flagcxSuccess && r != flagcxInProgress) {
-            res = r;
-            goto relay_fail;
-          }
-        }
-      }
-      net->closeListen(listenComm);
-
-      hetero->signalSendComms[p] = sendComm;
-      hetero->barrierRecvComms[p] = recvComm;
-    }
-  }
-
-  // ALL ranks: register barrier MR (collective AllGather inside).
-  // Leaders provide recvComm and buffer; non-leaders participate in AllGather.
-  {
-    struct flagcxOneSideHandleInfo *barrierInfo = nullptr;
-    res = flagcxOneSideBarrierRegister(
-        comm, hetero->isInterLeader ? hetero->barrierRecvComms[0] : nullptr,
-        hetero->isInterLeader ? hetero->interSignalFlagsHost : nullptr,
-        hetero->isInterLeader ? flagsSize : 0, &barrierInfo);
-    if (res != flagcxSuccess) {
-      WARN("setupInterNodeSignalRelay: barrier MR registration failed (%d)",
-           res);
-      goto relay_fail;
-    }
-    if (hetero->isInterLeader) {
-      hetero->barrierHandleInfo = barrierInfo;
-    } else {
-      // Non-leader participated in AllGather but doesn't need the result
-      flagcxOneSideBarrierDeregister(comm, barrierInfo);
-    }
-  }
-
-  // All ranks barrier to ensure connections are established
   FLAGCXCHECKGOTO(
       bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xAB01),
       res, relay_fail);
@@ -246,61 +120,21 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
   // Copy into devComm
   devComm->nInterPeers = hetero->nInterPeers;
-  devComm->isInterLeader = hetero->isInterLeader;
   devComm->interPeerRanks = hetero->interPeerRanks;
-  devComm->interSignalFlags = hetero->interSignalFlags;
-  devComm->interSignalFlagsHost = hetero->interSignalFlagsHost;
-  devComm->signalSendComms = hetero->signalSendComms;
-  devComm->barrierRecvComms = hetero->barrierRecvComms;
-  devComm->barrierHandleInfo = hetero->barrierHandleInfo;
-  devComm->netAdaptorPtr = hetero->netAdaptorPtr;
   devComm->teamRank = hetero->node;
   devComm->nTeamRanks = hetero->nNodes;
   devComm->barrierSignalBase = 0;
-  // Compute nodeLeaderRanks: maps nodeIndex → leader global rank
-  {
-    int *nlr = (int *)malloc(nNodes * sizeof(int));
-    if (nlr) {
-      for (int r = 0; r < nRanks; r++) {
-        if (hetero->rankToLocalRank[r] == 0)
-          nlr[hetero->rankToNode[r]] = r;
-      }
-    }
-    devComm->nodeLeaderRanks = nlr;
-  }
 
   INFO(FLAGCX_INIT,
-       "setupInterNodeSignalRelay: rank %d nInterPeers=%d isLeader=%d", myRank,
-       nInterPeers, hetero->isInterLeader);
+       "setupInterNodeSignalRelay: rank %d nInterPeers=%d teamRank=%d "
+       "nTeamRanks=%d",
+       myRank, nInterPeers, hetero->node, nNodes);
   return flagcxSuccess;
 
 relay_fail:
-  if (hetero->signalSendComms) {
-    for (int p = 0; p < nInterPeers; p++) {
-      if (hetero->signalSendComms[p])
-        hetero->netAdaptor->closeSend(hetero->signalSendComms[p]);
-    }
-    free(hetero->signalSendComms);
-    hetero->signalSendComms = nullptr;
-  }
-  if (hetero->barrierRecvComms) {
-    for (int p = 0; p < nInterPeers; p++) {
-      if (hetero->barrierRecvComms[p])
-        hetero->netAdaptor->closeRecv(hetero->barrierRecvComms[p]);
-    }
-    free(hetero->barrierRecvComms);
-    hetero->barrierRecvComms = nullptr;
-  }
-  if (hetero->interSignalFlagsHost) {
-    deviceAdaptor->deviceFree(hetero->interSignalFlagsHost, flagcxMemHost,
-                              NULL);
-    hetero->interSignalFlagsHost = nullptr;
-    hetero->interSignalFlags = nullptr;
-  }
   free(hetero->interPeerRanks);
   hetero->interPeerRanks = nullptr;
   hetero->nInterPeers = 0;
-  hetero->isInterLeader = false;
   return res;
 }
 
@@ -539,15 +373,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res = setupInterNodeSignalRelay(comm, devComm);
     if (res != flagcxSuccess) {
       devComm->nInterPeers = 0;
-      devComm->isInterLeader = false;
     }
-  }
-
-  // Reset inter-node barrier signal flags
-  if (comm->heteroComm != nullptr &&
-      comm->heteroComm->interSignalFlagsHost != nullptr) {
-    size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
-    memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
   }
 
   // Allocate epoch buffer
@@ -1168,35 +994,6 @@ static flagcxResult_t defaultCommCleanup(flagcxComm_t comm) {
     free(hetero->interPeerRanks);
     hetero->interPeerRanks = nullptr;
 
-    if (hetero->isInterLeader) {
-      struct flagcxNetAdaptor *net =
-          (struct flagcxNetAdaptor *)hetero->netAdaptorPtr;
-
-      if (hetero->barrierHandleInfo) {
-        flagcxOneSideBarrierDeregister(
-            comm, (struct flagcxOneSideHandleInfo *)hetero->barrierHandleInfo);
-        hetero->barrierHandleInfo = nullptr;
-      }
-      if (hetero->signalSendComms) {
-        for (int p = 0; p < hetero->nInterPeers; p++)
-          if (hetero->signalSendComms[p])
-            net->closeSend(hetero->signalSendComms[p]);
-        free(hetero->signalSendComms);
-        hetero->signalSendComms = nullptr;
-      }
-      if (hetero->barrierRecvComms) {
-        for (int p = 0; p < hetero->nInterPeers; p++)
-          if (hetero->barrierRecvComms[p])
-            net->closeRecv(hetero->barrierRecvComms[p]);
-        free(hetero->barrierRecvComms);
-        hetero->barrierRecvComms = nullptr;
-      }
-      if (hetero->interSignalFlagsHost) {
-        deviceAdaptor->deviceFree(hetero->interSignalFlagsHost, flagcxMemHost,
-                                  NULL);
-        hetero->interSignalFlagsHost = nullptr;
-      }
-    }
     hetero->relayInitialized = false;
   }
 

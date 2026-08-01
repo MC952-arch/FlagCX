@@ -64,24 +64,13 @@ struct flagcxDevCommInternal {
   flagcxShmHandle_t myShmHandle;     // own shm handle (flagcxShmClose)
   flagcxShmHandle_t *peerShmHandles; // peer shm handles [nLocalRanks]
 
-  // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
-  uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
-  uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
+  // ---- Inter-node signal relay (set if nInterPeers > 0) ----
   int nInterPeers;     // number of inter-node peers (set on ALL ranks)
-  bool isInterLeader;  // true only on localRank 0 (manages connections)
   int *interPeerRanks; // global ranks of inter-node peers
   // NCCL GIN-style barrier fields (all ranks)
   int teamRank;          // this rank's position in the inter-node team
   int nTeamRanks;        // total number of nodes (team size for barrier)
   int barrierSignalBase; // first signal slot index used for barriers
-  int *nodeLeaderRanks;  // device-accessible: nodeLeaderRanks[nodeIdx] = global
-                         // rank of that node's leader
-  // netAdaptor connections for signal relay (one-sided RDMA atomic)
-  void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
-  void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
-  void *barrierHandleInfo; // flagcxOneSideHandleInfo* with rkeys/baseVas
-  // netAdaptor pointer (cached for proxy)
-  void *netAdaptorPtr;
 
   // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
   // 0)
