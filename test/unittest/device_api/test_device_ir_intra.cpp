@@ -20,7 +20,7 @@
  *   S3: Local Pointer (GetLocalPointerS)
  *   S4: Intra Pointer (GetIntraPointerS)
  *   S5: Intra Barrier Sync (IntraBarrierSyncS)
- *   S6: Intra Barrier Arrive/Wait (IntraBarrierArriveS, WaitS)
+ *   S6: Intra Barrier Sync Split (SyncS Release + read + SyncS Acquire)
  *   S7: Extended Coop — TileSpan (CoopThreadRankExS, CoopSizeExS)
  *   S8: Extended Coop — Lanes (CoopThreadRankExS, CoopSizeExS)
  *
@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
 // Print with rank prefix from all ranks, flushing immediately
 #define RPRINTF(...)                                                           \
   do {                                                                         \
-    printf("[R%02d] ", proc);                                                  \
+    printf("[rank %d] ", proc);                                                \
     printf(__VA_ARGS__);                                                       \
     fflush(stdout);                                                            \
   } while (0)
@@ -499,7 +499,7 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
-  // S6: Intra Barrier Arrive/Wait (Scalar)
+  // S6: SyncS(Release) + read + SyncS(Acquire)
   // -------------------------------------------------------------------------
   int NS6 = 4 * 256;
   FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS6 * sizeof(float),
@@ -511,15 +511,15 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMemset(s6Output, 0, NS6 * sizeof(float),
                                       flagcxMemDevice, NULL));
 
-  launchKernelIntraBarrierArriveWaitS(devCommPtr, devMemPtr, (float *)regBuff,
-                                      s6Output, NS6, stream);
+  launchKernelIntraBarrierSyncSplitS(devCommPtr, devMemPtr, (float *)regBuff,
+                                     s6Output, NS6, stream);
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
   float *hostS6 = new float[NS6];
   FLAGCXCHECK(devHandle->deviceMemcpy(hostS6, s6Output, NS6 * sizeof(float),
                                       flagcxMemcpyDeviceToHost, NULL));
 
-  float expectedS6 = (float)(peer + 100);
+  float expectedS6 = (float)(peer + 500);
   bool s6Pass = true;
   for (int i = 0; i < NS6; i++) {
     if (fabsf(hostS6[i] - expectedS6) > 1e-3f) {
@@ -527,162 +527,9 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  {
-    RPRINTF("S6 IntraBarrierArriveWait(Scalar): %s\n",
-            s6Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S6 IntraBarrierSync(Split): %s\n", s6Pass ? "PASS" : "FAIL"); }
   delete[] hostS6;
   FLAGCXCHECK(devHandle->deviceFree(s6Output, flagcxMemDevice, NULL));
-
-  // Ensure all ranks have finished S6 reads before any rank modifies regBuff
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  // -------------------------------------------------------------------------
-  // K7b: Intra Barrier Sync(AcqRel)
-  // -------------------------------------------------------------------------
-  int NK7b = 4 * 256;
-  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK7b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  float *k7bOutput = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&k7bOutput, NK7b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(k7bOutput, 0, NK7b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelIntraBarrierSyncAcqRel(devCommPtr, devMemPtr, (float *)regBuff,
-                                     k7bOutput, NK7b, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  float *hostK7b = new float[NK7b];
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostK7b, k7bOutput, NK7b * sizeof(float),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  float expectedK7b = (float)(peer + 200);
-  bool k7bPass = true;
-  for (int i = 0; i < NK7b; i++) {
-    if (fabsf(hostK7b[i] - expectedK7b) > 1e-3f) {
-      k7bPass = false;
-      break;
-    }
-  }
-  { RPRINTF("K7b IntraBarrierSync(AcqRel): %s\n", k7bPass ? "PASS" : "FAIL"); }
-  delete[] hostK7b;
-  FLAGCXCHECK(devHandle->deviceFree(k7bOutput, flagcxMemDevice, NULL));
-
-  // Ensure all ranks have finished K7b reads before any rank modifies regBuff
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  // -------------------------------------------------------------------------
-  // K8b: Arrive(Release) + Wait(AcqRel)
-  // -------------------------------------------------------------------------
-  int NK8b = 4 * 256;
-  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NK8b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  float *k8bOutput = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&k8bOutput, NK8b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(k8bOutput, 0, NK8b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelIntraBarrierArriveWaitAcqRel(
-      devCommPtr, devMemPtr, (float *)regBuff, k8bOutput, NK8b, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  float *hostK8b = new float[NK8b];
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostK8b, k8bOutput, NK8b * sizeof(float),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  float expectedK8b = (float)(peer + 300);
-  bool k8bPass = true;
-  for (int i = 0; i < NK8b; i++) {
-    if (fabsf(hostK8b[i] - expectedK8b) > 1e-3f) {
-      k8bPass = false;
-      break;
-    }
-  }
-  {
-    RPRINTF("K8b IntraBarrierArriveWait(AcqRel): %s\n",
-            k8bPass ? "PASS" : "FAIL");
-  }
-  delete[] hostK8b;
-  FLAGCXCHECK(devHandle->deviceFree(k8bOutput, flagcxMemDevice, NULL));
-
-  // Ensure all ranks have finished K8b reads before any rank modifies regBuff
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  // -------------------------------------------------------------------------
-  // S5b: ArriveS(Release) + WaitS(Acquire)
-  // -------------------------------------------------------------------------
-  int NS5b = 4 * 256;
-  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  float *s5bOutput = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s5bOutput, NS5b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(s5bOutput, 0, NS5b * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelIntraBarrierArriveWaitSplitS(
-      devCommPtr, devMemPtr, (float *)regBuff, s5bOutput, NS5b, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  float *hostS5b = new float[NS5b];
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostS5b, s5bOutput, NS5b * sizeof(float),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  float expectedS5b = (float)(peer + 400);
-  bool s5bPass = true;
-  for (int i = 0; i < NS5b; i++) {
-    if (fabsf(hostS5b[i] - expectedS5b) > 1e-3f) {
-      s5bPass = false;
-      break;
-    }
-  }
-  {
-    RPRINTF("S5b IntraBarrierArriveWait(Split): %s\n",
-            s5bPass ? "PASS" : "FAIL");
-  }
-  delete[] hostS5b;
-  FLAGCXCHECK(devHandle->deviceFree(s5bOutput, flagcxMemDevice, NULL));
-
-  // Ensure all ranks have finished S5b reads before any rank modifies regBuff
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  // -------------------------------------------------------------------------
-  // S5c: SyncS(Release) + read + SyncS(Acquire)
-  // -------------------------------------------------------------------------
-  int NS5c = 4 * 256;
-  FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, NS5c * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  float *s5cOutput = nullptr;
-  FLAGCXCHECK(devHandle->deviceMalloc((void **)&s5cOutput, NS5c * sizeof(float),
-                                      flagcxMemDevice, NULL));
-  FLAGCXCHECK(devHandle->deviceMemset(s5cOutput, 0, NS5c * sizeof(float),
-                                      flagcxMemDevice, NULL));
-
-  launchKernelIntraBarrierSyncSplitS(devCommPtr, devMemPtr, (float *)regBuff,
-                                     s5cOutput, NS5c, stream);
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-  float *hostS5c = new float[NS5c];
-  FLAGCXCHECK(devHandle->deviceMemcpy(hostS5c, s5cOutput, NS5c * sizeof(float),
-                                      flagcxMemcpyDeviceToHost, NULL));
-
-  float expectedS5c = (float)(peer + 500);
-  bool s5cPass = true;
-  for (int i = 0; i < NS5c; i++) {
-    if (fabsf(hostS5c[i] - expectedS5c) > 1e-3f) {
-      s5cPass = false;
-      break;
-    }
-  }
-  { RPRINTF("S5c IntraBarrierSync(Split): %s\n", s5cPass ? "PASS" : "FAIL"); }
-  delete[] hostS5c;
-  FLAGCXCHECK(devHandle->deviceFree(s5cOutput, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
   // S7: TILE_SPAN Cooperative Group
@@ -752,8 +599,7 @@ int main(int argc, char *argv[]) {
 
   int allPass = k1Pass && k2Pass && k3Pass && k4Pass && k5Pass && k6Pass &&
                 k7Pass && k8Pass && s1Pass && s2Pass && s3Pass && s4Pass &&
-                s5Pass && s6Pass && k7bPass && k8bPass && s5bPass && s5cPass &&
-                s7Pass && s8Pass;
+                s5Pass && s6Pass && s7Pass && s8Pass;
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 

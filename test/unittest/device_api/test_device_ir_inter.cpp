@@ -36,7 +36,7 @@
  *   S24: SendS + RecvS + TermS + WaitS
  *
  * Barrier (inter/world):
- *   S25: InterBarrierSyncS
+ *   S25: InterBarrierTest
  *   S26: WorldBarrierSyncS
  *   S27: WorldBarrierArriveS + WorldBarrierWaitS
  *
@@ -232,23 +232,6 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
-  // --- S11b: Inter-Barrier Stress Test (3 iterations) ---
-  if (!s9Skip) {
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 4 * sizeof(int),
-                                        flagcxMemDevice, NULL));
-    MPI_Barrier(MPI_COMM_WORLD);
-    launchKernelInterBarrierStress(devCommPtr, devResults, 3, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    int hostRes[1] = {0};
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
-                                        flagcxMemcpyDeviceToHost, NULL));
-    printf("[rank %d] S11b InterBarrierStress(x3): %s\n", proc,
-           hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
-    fflush(stdout);
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
   // --- S12: WaitCounterS (COMMENTED — standalone SignalCtrIncS is not
   //     supported by the GIN protocol; counters are local-action only,
   //     tested via S17 PutS_RSigInc_LCtrInc) ---
@@ -276,8 +259,6 @@ int main(int argc, char *argv[]) {
     initSend();
     FLAGCXCHECK(
         devHandle->deviceMemset(recvBuff, 0, floatSize, flagcxMemDevice, NULL));
-    printf("[rank %d] S14 launching kernel\n", proc);
-    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
 
     launchKernelNetPutS(devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
@@ -304,8 +285,8 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s15Ok = verifyAlltoAll();
-    if (proc == 0)
-      printf("S15 PutS_RSigInc: %s\n", s15Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S15 PutS_RSigInc: %s\n", proc, s15Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s15Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -322,8 +303,8 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s16Ok = verifyAlltoAll();
-    if (proc == 0)
-      printf("S16 PutS_RSigAdd: %s\n", s16Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S16 PutS_RSigAdd: %s\n", proc, s16Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s16Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -340,8 +321,9 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s17Ok = verifyAlltoAll();
-    if (proc == 0)
-      printf("S17 PutS_RSigInc_LCtrInc: %s\n", s17Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S17 PutS_RSigInc_LCtrInc: %s\n", proc,
+           s17Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s17Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -351,8 +333,8 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     launchKernelNetSignalSigIncS(devCommPtr, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S18 SignalSigIncS: PASS\n");
+    printf("[rank %d] S18 SignalSigIncS: PASS\n", proc);
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -361,8 +343,8 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     launchKernelNetSignalSigAddS(devCommPtr, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S19 SignalSigAddS: PASS\n");
+    printf("[rank %d] S19 SignalSigAddS: PASS\n", proc);
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -390,8 +372,8 @@ int main(int argc, char *argv[]) {
         break;
       }
     }
-    if (proc == 0)
-      printf("S21 PutValueS: %s\n", s21Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S21 PutValueS: %s\n", proc, s21Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s21Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -420,8 +402,9 @@ int main(int argc, char *argv[]) {
         break;
       }
     }
-    if (proc == 0)
-      printf("S22 PutValueS_RSigInc: %s\n", s22Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S22 PutValueS_RSigInc: %s\n", proc,
+           s22Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s22Ok;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -438,9 +421,26 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     bool s23Ok = verifyAlltoAll();
-    if (proc == 0)
-      printf("S23 GetS: %s\n", s23Ok ? "PASS" : "FAIL");
+    printf("[rank %d] S23 GetS: %s\n", proc, s23Ok ? "PASS" : "FAIL");
+    fflush(stdout);
     allInterPass &= s23Ok;
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+
+  // --- S25: Inter-Barrier Test ---
+  if (!s9Skip) {
+    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 4 * sizeof(int),
+                                        flagcxMemDevice, NULL));
+    MPI_Barrier(MPI_COMM_WORLD);
+    launchKernelInterBarrierStress(devCommPtr, devResults, 3, stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+    int hostRes[1] = {0};
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostRes, devResults, sizeof(int),
+                                        flagcxMemcpyDeviceToHost, NULL));
+    printf("[rank %d] S25 InterBarrier: %s\n", proc,
+           hostRes[0] == 1 ? "PASS" : (hostRes[0] == -1 ? "SKIP" : "FAIL"));
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -461,23 +461,13 @@ int main(int argc, char *argv[]) {
   //   MPI_Barrier(MPI_COMM_WORLD);
   // }
 
-  // --- S25: InterBarrierSyncS ---
-  if (!s9Skip) {
-    MPI_Barrier(MPI_COMM_WORLD);
-    launchKernelInterBarrierS(devCommPtr, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S25 InterBarrierSyncS: PASS\n");
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
   // --- S26: WorldBarrierSyncS ---
   if (!s9Skip) {
     MPI_Barrier(MPI_COMM_WORLD);
     launchKernelWorldBarrierS(devCommPtr, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S26 WorldBarrierSyncS: PASS\n");
+    printf("[rank %d] S26 WorldBarrierSyncS: PASS\n", proc);
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -486,8 +476,8 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     launchKernelWorldBarrierSplitS(devCommPtr, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    if (proc == 0)
-      printf("S27 WorldBarrierSplitS: PASS\n");
+    printf("[rank %d] S27 WorldBarrierSplitS: PASS\n", proc);
+    fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
   }
 

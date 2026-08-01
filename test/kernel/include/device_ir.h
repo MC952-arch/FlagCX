@@ -75,35 +75,7 @@ void launchKernelIntraBarrierSyncS(const void *devCommPtr,
                                    const void *devMemPtr, float *buffer,
                                    float *output, int N, flagcxStream_t stream);
 
-// S6: Intra Barrier Arrive/Wait (Scalar) — write, arrive, wait, read peer
-void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
-                                         const void *devMemPtr, float *buffer,
-                                         float *output, int N,
-                                         flagcxStream_t stream);
-
-// =========================================================================
-// Barrier Ordering Variant Launchers
-// =========================================================================
-
-// K7b: Intra Barrier Sync(AcqRel) — single sync call
-void launchKernelIntraBarrierSyncAcqRel(const void *devCommPtr,
-                                        const void *devMemPtr, float *buffer,
-                                        float *output, int N,
-                                        flagcxStream_t stream);
-
-// K8b: Arrive(Release) + Wait(AcqRel)
-void launchKernelIntraBarrierArriveWaitAcqRel(const void *devCommPtr,
-                                              const void *devMemPtr,
-                                              float *buffer, float *output,
-                                              int N, flagcxStream_t stream);
-
-// S5b: ArriveS(Release) + WaitS(Acquire)
-void launchKernelIntraBarrierArriveWaitSplitS(const void *devCommPtr,
-                                              const void *devMemPtr,
-                                              float *buffer, float *output,
-                                              int N, flagcxStream_t stream);
-
-// S5c: SyncS(Release) + read + SyncS(Acquire) — matches K7 pattern
+// S6: SyncS(Release) + read + SyncS(Acquire)
 void launchKernelIntraBarrierSyncSplitS(const void *devCommPtr,
                                         const void *devMemPtr, float *buffer,
                                         float *output, int N,
@@ -196,12 +168,9 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 //                               const void *recvMemPtr, size_t countPerPeer,
 //                               flagcxStream_t stream);
 
-// S11b: Inter-Barrier Stress — repeated inter-barrier sync
+// S25: Inter-Barrier Test
 void launchKernelInterBarrierStress(const void *devCommPtr, int *devResults,
                                     int nIters, flagcxStream_t stream);
-
-// S25: InterBarrierSyncS — inter-node barrier (hang-free = PASS)
-void launchKernelInterBarrierS(const void *devCommPtr, flagcxStream_t stream);
 
 // S26: WorldBarrierSyncS — world barrier (hang-free = PASS)
 void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream);
