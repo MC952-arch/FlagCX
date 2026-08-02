@@ -109,6 +109,9 @@ struct flagcxDevComm {
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const {
     return _commBase.getSize();
   }
+  FLAGCX_DEVICE_INLINE_DECORATOR int getContextCount() const {
+    return _contextCount;
+  }
   FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
     return _commBase.getFifoBuffer(contextId);
   }
