@@ -362,29 +362,84 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
+  // DEBUG: print key state from thread 0
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K3 DEBUG rank=%d] nRanks=%d intraSize=%d intraBase=%d "
+           "nInterPeers=%d contextCount=%d nInterRanks=%d count=%zu size=%zu\n",
+           myRank, nRanks, intraSize, intraBase,
+           devComm._nInterPeers, devComm._contextCount,
+           nInterRanks, count, size);
+    printf("[K3 DEBUG rank=%d] sendMem.rawPtr=%p recvMem.rawPtr=%p\n",
+           myRank, sendMem.getRawPtr(), recvMem.getRawPtr());
+  }
+
   if (devComm._nInterPeers > 0) {
     // Hybrid: DevNet for inter + IPC for intra
     flagcxDevNet net(devComm, 0);
+
+    // DEBUG: print net state from thread 0
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] entered _nInterPeers>0 branch, net constructed\n",
+             myRank);
+    }
+
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
     uint64_t s0 = net.readSignal(0);
+
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] s0=%llu, about to bar.sync pre\n",
+             myRank, (unsigned long long)s0);
+    }
+
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
+
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] bar.sync pre done, starting ipcAlltoAll\n",
+             myRank);
+    }
+
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
     int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
     int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] ipcAlltoAll done, starting net.put loop\n",
+             myRank);
+    }
+
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       if (peer >= intraBase && peer < intraBase + intraSize) continue;
+      if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        printf("[K3 DEBUG rank=%d] net.put to peer=%d dstOff=%zu srcOff=%zu size=%zu\n",
+               myRank, peer, (size_t)myRank * size, (size_t)peer * size, size);
+      }
       net.put(flagcxTeamWorld(devComm), peer,
               recvMem, (size_t)myRank * size,
               sendMem, (size_t)peer * size, size,
               flagcxDevNet_SignalInc{0}, flagcxDevNet_None{},
               flagcxCoopThread{});
     }
+
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] net.put loop done, waitSignal target=%llu\n",
+             myRank, (unsigned long long)(s0 + (uint64_t)nInterRanks));
+    }
+
     net.waitSignal(flagcxCoopBlock{}, 0, s0 + (uint64_t)nInterRanks);
     net.flush(flagcxCoopBlock{});
+
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] waitSignal+flush done\n", myRank);
+    }
+
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
     // Single-node: IPC only, no DevNet
+    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K3 DEBUG rank=%d] entered IPC-only branch (nInterPeers==0)\n",
+             myRank);
+    }
     flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagIntra{}, net, FLAGCX_BLOCK_IDX_X);
@@ -459,7 +514,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
-  float *sendRaw = (float *)sendMem.getRawPtr();
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
@@ -482,8 +536,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     net.waitCounter(flagcxCoopBlock{}, 0, c0 + (uint64_t)nInterRanks);
 
     // Stamp sentinel
-    for (int peer = tid; peer < nRanks; peer += nthreads)
-      sendRaw[(ptrdiff_t)peer * (ptrdiff_t)count] = 999.0f;
+    for (int peer = tid; peer < nRanks; peer += nthreads) {
+      float *slot = (float *)flagcxGetLocalPointer(sendMem, (size_t)peer * size);
+      *slot = 999.0f;
+    }
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // Round 2: same
@@ -515,8 +571,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
 
     // Stamp sentinel
-    for (int peer = tid; peer < nRanks; peer += nthreads)
-      sendRaw[(ptrdiff_t)peer * (ptrdiff_t)count] = 999.0f;
+    for (int peer = tid; peer < nRanks; peer += nthreads) {
+      float *slot = (float *)flagcxGetLocalPointer(sendMem, (size_t)peer * size);
+      *slot = 999.0f;
+    }
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // Round 2

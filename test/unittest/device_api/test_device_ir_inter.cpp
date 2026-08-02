@@ -229,13 +229,21 @@ int main(int argc, char *argv[]) {
 
       launchKernelNetPutSignalIncS(devCommPtr, sendMemPtr, recvMemPtr,
                                    countPerPeer, stream);
+      printf("[rank %d] S3: after launch, before sync\n", proc);
+      fflush(stdout);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
+      printf("[rank %d] S3: after sync, before verify\n", proc);
+      fflush(stdout);
       bool s3Ok = verifyAlltoAll(countPerPeer);
       printf("[rank %d] S3  PutSignalIncS: %s\n", proc, s3Ok ? "PASS" : "FAIL");
       fflush(stdout);
+      printf("[rank %d] S3: before barrier\n", proc);
+      fflush(stdout);
       allInterPass &= s3Ok;
       MPI_Barrier(MPI_COMM_WORLD);
+      printf("[rank %d] S3: after barrier\n", proc);
+      fflush(stdout);
     }
 
     // --- S4: PutSignalAdd (PutS_RSigAdd + WaitSignalS + FlushS) ---
