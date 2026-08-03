@@ -83,9 +83,6 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
 
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
-  sc->intraBarrierCount = reqs->intraBarrierCount;
-  sc->interBarrierCount = reqs->interBarrierCount;
-  sc->worldBarrierCount = reqs->barrierCount;
 
   // Signal buffer (symmetric heap, remote-writable)
   if (sc->signalCount > 0) {
@@ -116,18 +113,7 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
     cudaMemset(sc->shadowBuffer, 0, sc->signalCount * sizeof(uint64_t));
   }
 
-  // Intra-node barrier signals (symmetric)
-  if (sc->intraBarrierCount > 0 && sc->intraSize > 0) {
-    size_t sz =
-        (size_t)sc->intraBarrierCount * sc->intraSize * sizeof(uint64_t);
-    sc->intraBarrierSignals = (uint64_t *)nvshmem_malloc(sz);
-    if (!sc->intraBarrierSignals) {
-      goto fail;
-    }
-    cudaMemset(sc->intraBarrierSignals, 0, sz);
-  }
-
-  // Inter-node barrier signals (symmetric)
+  // Validate topology
   {
     if (sc->intraSize > 0 && sc->nRanks % sc->intraSize != 0) {
       WARN(
@@ -137,35 +123,6 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
       goto fail;
     }
     int interSize = (sc->intraSize > 0) ? sc->nRanks / sc->intraSize : 1;
-    if (sc->interBarrierCount > 0 && interSize > 1) {
-      size_t sz = (size_t)sc->interBarrierCount * interSize * sizeof(uint64_t);
-      sc->interBarrierSignals = (uint64_t *)nvshmem_malloc(sz);
-      if (!sc->interBarrierSignals) {
-        goto fail;
-      }
-      cudaMemset(sc->interBarrierSignals, 0, sz);
-    }
-
-    // World barrier signals (symmetric)
-    if (sc->worldBarrierCount > 0) {
-      size_t sz = (size_t)sc->worldBarrierCount * sc->nRanks * sizeof(uint64_t);
-      sc->worldBarrierSignals = (uint64_t *)nvshmem_malloc(sz);
-      if (!sc->worldBarrierSignals) {
-        goto fail;
-      }
-      cudaMemset(sc->worldBarrierSignals, 0, sz);
-    }
-
-    // Barrier usage counters (local)
-    int totalBarriers =
-        sc->intraBarrierCount + sc->interBarrierCount + sc->worldBarrierCount;
-    if (totalBarriers > 0) {
-      if (cudaMalloc(&sc->barrierUsage, totalBarriers * sizeof(uint64_t)) !=
-          cudaSuccess) {
-        goto fail;
-      }
-      cudaMemset(sc->barrierUsage, 0, totalBarriers * sizeof(uint64_t));
-    }
 
     // Grid sync state for multi-block barrier coordination
     // 3 barriers x (arrive[CTA_COUNT] + release[CTA_COUNT]) = 6*CTA_COUNT
@@ -218,20 +175,12 @@ nvshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
   // Free symmetric heap allocations
   if (shmemComm->signalBuffer)
     nvshmem_free(shmemComm->signalBuffer);
-  if (shmemComm->intraBarrierSignals)
-    nvshmem_free(shmemComm->intraBarrierSignals);
-  if (shmemComm->interBarrierSignals)
-    nvshmem_free(shmemComm->interBarrierSignals);
-  if (shmemComm->worldBarrierSignals)
-    nvshmem_free(shmemComm->worldBarrierSignals);
 
   // Free local device allocations
   if (shmemComm->counterBuffer)
     cudaFree(shmemComm->counterBuffer);
   if (shmemComm->shadowBuffer)
     cudaFree(shmemComm->shadowBuffer);
-  if (shmemComm->barrierUsage)
-    cudaFree(shmemComm->barrierUsage);
   if (shmemComm->gridSyncState)
     cudaFree(shmemComm->gridSyncState);
 

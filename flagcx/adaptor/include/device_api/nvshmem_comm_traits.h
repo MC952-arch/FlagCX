@@ -103,16 +103,8 @@ struct CommTraits<NvshmemBackend> {
     int counterCount;
     uint64_t *shadowBuffer;
 
-    uint64_t *intraBarrierSignals;
-    uint64_t *interBarrierSignals;
-    uint64_t *worldBarrierSignals;
-    uint64_t *barrierUsage;
     uint64_t *gridSyncState; // per-block flags: arrive[CTA_COUNT] +
                              // release[CTA_COUNT], x3 barriers
-
-    int intraBarrierCount;
-    int interBarrierCount;
-    int worldBarrierCount;
 
     FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
       return intraRank;
@@ -149,14 +141,7 @@ struct CommTraits<NvshmemBackend> {
       dc.counterBuffer = di.counterBuffer;
       dc.counterCount = di.counterCount;
       dc.shadowBuffer = di.shadowBuffer;
-      dc.intraBarrierSignals = nullptr;
-      dc.interBarrierSignals = nullptr;
-      dc.worldBarrierSignals = nullptr;
-      dc.barrierUsage = nullptr;
       dc.gridSyncState = nullptr;
-      dc.intraBarrierCount = 0;
-      dc.interBarrierCount = 0;
-      dc.worldBarrierCount = 0;
     }
   };
 
@@ -534,44 +519,20 @@ struct Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> {
                                                   volatile uint64_t *release) {
 #ifdef __CUDACC__
     int numBlocks = FLAGCX_GRID_DIM_X;
-    if (FLAGCX_BLOCK_IDX_X == 0 && _coop.threadRank() == 0) {
-      printf("[GridArrive] block0 enter, numBlocks=%d, arrive=%p, release=%p\n",
-             numBlocks, (void *)arrive, (void *)release);
-    }
     _coop.sync();
     if (_coop.threadRank() == 0) {
       arrive[FLAGCX_BLOCK_IDX_X]++;
-      if (FLAGCX_BLOCK_IDX_X == 0) {
-        printf("[GridArrive] block0 wrote arrive[0]=%llu\n",
-               (unsigned long long)arrive[0]);
-      }
     }
     if (FLAGCX_BLOCK_IDX_X == 0) {
       _coop.sync();
       uint64_t expected = arrive[0];
-      if (_coop.threadRank() == 0) {
-        printf("[GridArrive] block0 expected=%llu, checking %d blocks\n",
-               (unsigned long long)expected, numBlocks);
-      }
       for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
         if (i == 0)
           continue;
-        int spins = 0;
         while (arrive[i] < expected) {
-          spins++;
-          if (spins == 100000000 && _coop.threadRank() < 4) {
-            printf("[GridArrive] block0 thread%d STUCK waiting arrive[%d]=%llu "
-                   "< %llu\n",
-                   _coop.threadRank(), i, (unsigned long long)arrive[i],
-                   (unsigned long long)expected);
-            spins = 0;
-          }
         }
       }
       _coop.sync();
-      if (_coop.threadRank() == 0) {
-        printf("[GridArrive] block0 all arrived\n");
-      }
     }
 #endif
   }
@@ -584,36 +545,15 @@ struct Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> {
     int numBlocks = FLAGCX_GRID_DIM_X;
     if (FLAGCX_BLOCK_IDX_X == 0) {
       _coop.sync();
-      if (_coop.threadRank() == 0) {
-        printf("[GridWait] block0 entering nvshmemx_barrier_block(team=%d)\n",
-               (int)team);
-      }
       nvshmemx_barrier_block(team);
-      if (_coop.threadRank() == 0) {
-        printf("[GridWait] block0 PE barrier done, releasing %d blocks\n",
-               numBlocks);
-      }
       _coop.sync();
       for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
         release[i]++;
       }
-      if (_coop.threadRank() == 0) {
-        printf("[GridWait] block0 released all\n");
-      }
     } else {
       if (_coop.threadRank() == 0) {
         uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
-        int spins = 0;
         while (release[FLAGCX_BLOCK_IDX_X] == cur) {
-          spins++;
-          if (spins == 100000000) {
-            printf("[GridWait] block%d STUCK waiting release[%d]=%llu "
-                   "(cur=%llu)\n",
-                   FLAGCX_BLOCK_IDX_X, FLAGCX_BLOCK_IDX_X,
-                   (unsigned long long)release[FLAGCX_BLOCK_IDX_X],
-                   (unsigned long long)cur);
-            spins = 0;
-          }
         }
       }
     }

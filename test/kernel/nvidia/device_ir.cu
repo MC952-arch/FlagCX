@@ -387,70 +387,37 @@ void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
 
 __global__ void kernelNetResetS(const void *devCommPtr, int *results) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S2 DEBUG] devCommPtr=%p\n", devCommPtr);
-
-    const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
-    printf("[S2 DEBUG] comm->_contextCount=%d, comm->_netContexts=%p\n",
-           comm->_contextCount, comm->_netContexts);
-    printf("[S2 DEBUG] comm->_commBase.signalBuffer=%p, signalCount=%d\n",
-           comm->_commBase.signalBuffer, comm->_commBase.signalCount);
-    printf("[S2 DEBUG] comm->_commBase.counterBuffer=%p, counterCount=%d\n",
-           comm->_commBase.counterBuffer, comm->_commBase.counterCount);
-    printf("[S2 DEBUG] comm->_commBase.shadowBuffer=%p\n",
-           comm->_commBase.shadowBuffer);
-    printf("[S2 DEBUG] comm->_commBase.rank=%d, nRanks=%d\n",
-           comm->_commBase.rank, comm->_commBase.nRanks);
-
     const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
-    printf("[S2 DEBUG] net=%p\n", net);
     if (net == nullptr) {
       results[0] = 0;
       return;
     }
 
     const flagcxDevNet *netObj = (const flagcxDevNet *)net;
-    printf("[S2 DEBUG] netObj->_dc.signalBuffer=%p, signalCount=%d\n",
-           netObj->_dc.signalBuffer, netObj->_dc.signalCount);
-    printf("[S2 DEBUG] netObj->_dc.counterBuffer=%p, counterCount=%d\n",
-           netObj->_dc.counterBuffer, netObj->_dc.counterCount);
-    printf("[S2 DEBUG] netObj->_dc.shadowBuffer=%p\n",
-           netObj->_dc.shadowBuffer);
-    printf("[S2 DEBUG] netObj->_dc.rank=%d, nRanks=%d\n",
-           netObj->_dc.rank, netObj->_dc.nRanks);
-    printf("[S2 DEBUG] isValid=%d\n", (int)netObj->isValid());
-
     if (!netObj->isValid()) {
       results[0] = 0;
       return;
     }
 
-    printf("[S2 DEBUG] about to resetSignal(0)...\n");
     // Reset signal slot 0
     flagcxDevNetResetSignal(net, (flagcxDevNetSignal_t)0);
-    printf("[S2 DEBUG] resetSignal(0) done\n");
     // Read it — should be 0
     uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
-    printf("[S2 DEBUG] sig0=%llu\n", (unsigned long long)sig0);
     results[0] = (sig0 == 0) ? 1 : 0;
 
     // Increase shadow by 5, read signal (still 0, shadow is separate)
-    printf("[S2 DEBUG] about to IncreaseSignalShadow...\n");
     flagcxDevNetIncreaseSignalShadow(net, (flagcxDevNetSignal_t)0, 5);
-    printf("[S2 DEBUG] shadow done, reading signal...\n");
     uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[1] = (sig1 == 0) ? 1 : 0;
 
     // Reset counter slot 0
-    printf("[S2 DEBUG] about to resetCounter(0)...\n");
     flagcxDevNetResetCounter(net, (flagcxDevNetCounter_t)0);
-    printf("[S2 DEBUG] resetCounter done\n");
     // Read counter — should be 0
     uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
                                              flagcxDeviceMemoryOrderRelaxed);
     results[2] = (ctr0 == 0) ? 1 : 0;
-    printf("[S2 DEBUG] all done, results=[%d,%d,%d]\n", results[0], results[1], results[2]);
   }
 }
 
@@ -480,21 +447,12 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S11 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] got net\n", myRank);
-  }
 
   int nInterRanks = nRanks - intraSize;
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -503,26 +461,17 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
   // Reset signal slot 0 (aligned with K11:1410) — no guard, matches K11
   flagcxDevNetResetSignal(net, (flagcxDevNetSignal_t)0);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after reset\n", myRank);
-  }
 
   // Read baseline signal (aligned with K11:1411)
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after ReadSignal, s0=%lu\n", myRank, s0);
-  }
 
   // World barrier sync (aligned with K11:1412)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after barrier, before Signal loop\n", myRank);
-  }
 
   // Signal all inter peers (aligned with K11:1417-1420)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -532,9 +481,6 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
     }
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after Signal loop\n", myRank);
-  }
 
   // Wait for signals from all inter peers (aligned with K11:1423-1424)
   if (nInterRanks > 0) {
@@ -543,24 +489,15 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
                             flagcxDeviceMemoryOrderAcquire);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after WaitSignal\n", myRank);
-  }
 
   // Flush (aligned with K11:1427)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after Flush\n", myRank);
-  }
 
   // Final world barrier (aligned with K11:1429)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S11 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
@@ -665,22 +602,15 @@ __global__ void kernelInterBarrierStress(const void *devCommPtr,
                                          int *devResults, int nIters) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S12 rank %d] kernel start, nIters=%d\n", myRank, nIters);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S12 rank %d] net is NULL, skipping\n", myRank);
       devResults[0] = -1; // no net context
     }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S12 rank %d] got net, starting iterations\n", myRank);
-  }
 
   // Inter barrier loop (aligned with K12:1461-1463)
   for (int i = 0; i < nIters; i++) {
@@ -690,7 +620,6 @@ __global__ void kernelInterBarrierStress(const void *devCommPtr,
   }
 
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S12 rank %d] after iterations, marking success\n", myRank);
     devResults[0] = 1; // success (aligned with K12:1466)
   }
 }
@@ -716,21 +645,12 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S6 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] got net\n", myRank);
-  }
 
   size_t chunkBytes = countPerPeer * sizeof(float);
   int nInterRanks = nRanks - intraSize;
@@ -739,18 +659,12 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] readSignal s0=%lu\n", myRank, s0);
-  }
 
   // Pre-barrier (aligned with K6:693)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after pre-barrier\n", myRank);
-  }
 
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int nthreads = blockDim.x * gridDim.x;
@@ -764,16 +678,10 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
                      chunkBytes, FLAGCX_COOP_THREAD);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after put loop\n", myRank);
-  }
 
   // Flush BEFORE signaling (aligned with K6:709)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after flush 1\n", myRank);
-  }
 
   // Thread-parallelized signal loop (aligned with K6:712-716)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -782,33 +690,21 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
                               FLAGCX_COOP_THREAD, (flagcxDevNetSignal_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after signal loop\n", myRank);
-  }
 
   // WaitSignal (aligned with K6:717)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
                           s0 + (uint64_t)nInterRanks, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after waitSignal\n", myRank);
-  }
 
   // Flush after wait (aligned with K6:718)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after flush 2\n", myRank);
-  }
 
   // Final barrier (aligned with K6:719)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S6 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetFlushDecoupleS(const void *devCommPtr,
@@ -834,49 +730,44 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
+    if (threadIdx.x == 0 && blockIdx.x == 0)
       printf("[S3 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] got net\n", myRank);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] got net=%p, entering barrier 0\n", myRank, net);
 
   size_t chunkBytes = countPerPeer * sizeof(float);
+
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] about to call flagcxWorldBarrierSyncS(net=%p, idx=%d)\n", myRank, net, (int)blockIdx.x);
 
   // World barrier before reading baseline signal (aligned with K3:386-387)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] after barrier 0\n", myRank);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] returned from barrier 0\n", myRank);
 
   // Read baseline signal (aligned with K3:388)
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] after ReadSignal, s0=%lu\n", myRank, s0);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] after ReadSignal s0=%lu\n", myRank, (unsigned long)s0);
 
   // World barrier sync (aligned with K3:395)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] after barrier 1, before Put loop\n", myRank);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] after barrier 1\n", myRank);
 
   // Thread-parallelized put loop (aligned with K3:411-422)
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -891,9 +782,8 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
                              (flagcxDevNetSignal_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] after Put loop\n", myRank);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] after put loop\n", myRank);
 
   // WaitSignal + Flush (aligned with K3:429-430)
   int nInterRanks = nRanks - intraSize;
@@ -901,23 +791,20 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
                           s0 + (uint64_t)nInterRanks, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
+  if (threadIdx.x == 0 && blockIdx.x == 0)
     printf("[S3 rank %d] after WaitSignal\n", myRank);
-  }
 
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
+  if (threadIdx.x == 0 && blockIdx.x == 0)
     printf("[S3 rank %d] after Flush\n", myRank);
-  }
 
   // Final world barrier (aligned with K3:436)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S3 rank %d] after final barrier, kernel done\n", myRank);
-  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[S3 rank %d] kernel done\n", myRank);
 }
 
 void launchKernelNetPutSignalIncS(const void *devCommPtr,
@@ -943,21 +830,12 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S4 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] got net\n", myRank);
-  }
 
   size_t chunkBytes = countPerPeer * sizeof(float);
 
@@ -966,26 +844,17 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after barrier 0\n", myRank);
-  }
 
   // Read baseline signal (aligned with K4:472)
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after ReadSignal, s0=%lu\n", myRank, s0);
-  }
 
   // World barrier sync (aligned with K4:473)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after barrier 1, before Put+Signal loop\n", myRank);
-  }
 
   int nInterRanks = nRanks - intraSize;
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1004,33 +873,21 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
                               FLAGCX_COOP_THREAD, (flagcxDevNetSignal_t)0, 2);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after Put+Signal loop\n", myRank);
-  }
 
   // WaitSignal for s0 + nInterRanks * 2 (aligned with K4:487)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
                           s0 + (uint64_t)nInterRanks * 2, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after WaitSignal\n", myRank);
-  }
 
   // Flush (aligned with K4:488)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after Flush\n", myRank);
-  }
 
   // Final world barrier (aligned with K4:489)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S4 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetPutSignalAddS(const void *devCommPtr,
@@ -1056,21 +913,12 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S5 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] got net\n", myRank);
-  }
 
   size_t chunkBytes = countPerPeer * sizeof(float);
   int nInterRanks = nRanks - intraSize;
@@ -1082,9 +930,6 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after barrier 0\n", myRank);
-  }
 
   // Read baseline signal and counter (aligned with K5:523-524)
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
@@ -1092,18 +937,12 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
   uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
                                           flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after read baselines, s0=%lu, c0=%lu\n", myRank, s0, c0);
-  }
 
   // World barrier sync (aligned with K5:525)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after barrier 1, Round 1 start\n", myRank);
-  }
 
   // Round 1: Put with SignalInc + CounterInc (aligned with K5:529-536)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1116,18 +955,12 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
                                      (flagcxDevNetCounter_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after Round 1 put loop\n", myRank);
-  }
 
   // WaitCounter (aligned with K5:537)
   flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetCounter_t)0,
                            c0 + (uint64_t)nInterRanks, 64,
                            flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after WaitCounter\n", myRank);
-  }
 
   // Stamp sentinel (aligned with K5:540-541)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1140,9 +973,6 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after barrier 2, Round 2 start\n", myRank);
-  }
 
   // Round 2: Put with SignalInc + CounterInc again (aligned with K5:546-553)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1155,42 +985,27 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
                                      (flagcxDevNetCounter_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after Round 2 put loop\n", myRank);
-  }
 
   // WaitCounter for c0 + 2*nInterRanks (aligned with K5:554)
   flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetCounter_t)0,
                            c0 + 2 * (uint64_t)nInterRanks, 64,
                            flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after WaitCounter round 2\n", myRank);
-  }
 
   // WaitSignal for s0 + 2*nInterRanks (aligned with K5:555)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
                           s0 + 2 * (uint64_t)nInterRanks, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after WaitSignal\n", myRank);
-  }
 
   // Flush (aligned with K5:556)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after Flush\n", myRank);
-  }
 
   // Final world barrier (aligned with K5:562)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S5 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetCounterPipelineS(const void *devCommPtr,
@@ -1214,21 +1029,12 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S9 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] got net\n", myRank);
-  }
 
   int nInterRanks = nRanks - intraSize;
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1239,26 +1045,17 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after barrier 0\n", myRank);
-  }
 
   // Read baseline signal on slot 1 (aligned with K9:655)
   uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after ReadSignal, s1=%lu\n", myRank, s1);
-  }
 
   // World barrier sync (aligned with K9:656)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after barrier 1, before Signal loop\n", myRank);
-  }
 
   // Signal loop (aligned with K9:659-662)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1268,9 +1065,6 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
     }
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after Signal loop\n", myRank);
-  }
 
   // WaitSignal (aligned with K9:663-664)
   if (nInterRanks > 0) {
@@ -1279,17 +1073,11 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
                             flagcxDeviceMemoryOrderAcquire);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after WaitSignal\n", myRank);
-  }
 
   // Final world barrier (aligned with K9:665)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S9 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetSignalS(const void *devCommPtr, flagcxStream_t stream) {
@@ -1312,21 +1100,12 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S7 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] got net\n", myRank);
-  }
 
   int nInterRanks = nRanks - intraSize;
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1337,26 +1116,17 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after barrier 0\n", myRank);
-  }
 
   // Read baseline signal on slot 1 (aligned with K7:606)
   uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)1, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after ReadSignal, s1=%lu\n", myRank, s1);
-  }
 
   // World barrier sync (aligned with K7:607)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after barrier 1, before PutValue loop\n", myRank);
-  }
 
   // PutValue loop (aligned with K7:608-620)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1367,9 +1137,6 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
                                   val, FLAGCX_COOP_THREAD, (flagcxDevNetSignal_t)1);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after PutValue loop\n", myRank);
-  }
 
   // WaitSignal (aligned with K7:622-623)
   if (nInterRanks > 0) {
@@ -1378,17 +1145,11 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
                             flagcxDeviceMemoryOrderAcquire);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after WaitSignal\n", myRank);
-  }
 
   // Final world barrier (aligned with K7:624)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S7 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetPutValueS(const void *devCommPtr, const void *recvMemPtr,
@@ -1410,21 +1171,12 @@ __global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S8 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] got net\n", myRank);
-  }
 
   size_t chunkBytes = countPerPeer * sizeof(float);
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1435,9 +1187,6 @@ __global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] after barrier 0, before Get loop\n", myRank);
-  }
 
   // Get loop (aligned with K8:981-989)
   for (int peer = tid; peer < nRanks; peer += nthreads) {
@@ -1448,24 +1197,15 @@ __global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
                      chunkBytes, FLAGCX_COOP_THREAD);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] after Get loop, before Flush\n", myRank);
-  }
 
   // Flush (aligned with K8:990)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] after Flush\n", myRank);
-  }
 
   // Final world barrier (aligned with K8:991)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S8 rank %d] after final barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
@@ -1524,47 +1264,29 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 __global__ void kernelWorldBarrierS(const void *devCommPtr) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S13 rank %d] kernel start\n", myRank);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S13 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S13 rank %d] got net\n", myRank);
-  }
 
   // Test sync (aligned with K13:1496)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcqRel,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S13 rank %d] after sync\n", myRank);
-  }
 
   // Test arrive + wait (split) (aligned with K13:1499-1500)
   flagcxWorldBarrierArriveS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                             flagcxDeviceMemoryOrderRelease,
                             flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S13 rank %d] after arrive\n", myRank);
-  }
 
   flagcxWorldBarrierWaitS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderAcquire,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S13 rank %d] after wait, kernel done\n", myRank);
-  }
 }
 
 void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream) {
@@ -1589,21 +1311,12 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] kernel start, nRanks=%d\n", myRank, nRanks);
-  }
 
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[S14 rank %d] net is NULL\n", myRank);
-    }
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] got net\n", myRank);
-  }
 
   size_t chunkBytes = countPerPeer * sizeof(float);
 
@@ -1611,18 +1324,12 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] readSignal s0=%lu\n", myRank, s0);
-  }
 
   // Pre-communication barrier (aligned with K14:213)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] after pre-barrier\n", myRank);
-  }
 
   // Thread-parallelized put loop (aligned with K14:217-221)
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1636,34 +1343,22 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
                              (flagcxDevNetSignal_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] after put loop\n", myRank);
-  }
 
   // Wait for all incoming signals (aligned with K14:223)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
                           s0 + (uint64_t)nRanks, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] after waitSignal\n", myRank);
-  }
 
   // Flush to ensure data visibility (aligned with K14:224)
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] after flush\n", myRank);
-  }
 
   // Post-communication barrier (aligned with K14:227)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    printf("[S14 rank %d] after post-barrier, kernel done\n", myRank);
-  }
 }
 
 void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,

@@ -313,10 +313,19 @@ flagcxWorldBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
                         flagcxDeviceMemoryOrder_t order,
                         flagcxDevNetFenceLevel fence) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[flagcxWorldBarrierSyncS] net=%p, coopKind=%d, index=%u\n", net,
+           (int)coopKind, index);
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[flagcxWorldBarrierSyncS] about to construct bar\n");
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[flagcxWorldBarrierSyncS] constructed bar, calling sync\n");
   bar.sync(order, fence);
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("[flagcxWorldBarrierSyncS] sync returned\n");
 }
 
 /* ================================================================

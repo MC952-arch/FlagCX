@@ -30,8 +30,8 @@ static_assert(
     sizeof(flagcxShmemCommInternal) == sizeof(CommTraits<NvshmemBackend>::Comm),
     "ShmemCommInternal and CommTraits<NvshmemBackend>::Comm size mismatch");
 static_assert(
-    offsetof(flagcxShmemCommInternal, worldBarrierCount) ==
-        offsetof(CommTraits<NvshmemBackend>::Comm, worldBarrierCount),
+    offsetof(flagcxShmemCommInternal, gridSyncState) ==
+        offsetof(CommTraits<NvshmemBackend>::Comm, gridSyncState),
     "ShmemCommInternal and CommTraits::Comm last-field offset mismatch");
 
 static flagcxResult_t
