@@ -387,37 +387,70 @@ void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
 
 __global__ void kernelNetResetS(const void *devCommPtr, int *results) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
+    printf("[S2 DEBUG] devCommPtr=%p\n", devCommPtr);
+
+    const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+    printf("[S2 DEBUG] comm->_contextCount=%d, comm->_netContexts=%p\n",
+           comm->_contextCount, comm->_netContexts);
+    printf("[S2 DEBUG] comm->_commBase.signalBuffer=%p, signalCount=%d\n",
+           comm->_commBase.signalBuffer, comm->_commBase.signalCount);
+    printf("[S2 DEBUG] comm->_commBase.counterBuffer=%p, counterCount=%d\n",
+           comm->_commBase.counterBuffer, comm->_commBase.counterCount);
+    printf("[S2 DEBUG] comm->_commBase.shadowBuffer=%p\n",
+           comm->_commBase.shadowBuffer);
+    printf("[S2 DEBUG] comm->_commBase.rank=%d, nRanks=%d\n",
+           comm->_commBase.rank, comm->_commBase.nRanks);
+
     const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    printf("[S2 DEBUG] net=%p\n", net);
     if (net == nullptr) {
-      results[0] = 0; // cannot test without transport
+      results[0] = 0;
       return;
     }
 
     const flagcxDevNet *netObj = (const flagcxDevNet *)net;
+    printf("[S2 DEBUG] netObj->_dc.signalBuffer=%p, signalCount=%d\n",
+           netObj->_dc.signalBuffer, netObj->_dc.signalCount);
+    printf("[S2 DEBUG] netObj->_dc.counterBuffer=%p, counterCount=%d\n",
+           netObj->_dc.counterBuffer, netObj->_dc.counterCount);
+    printf("[S2 DEBUG] netObj->_dc.shadowBuffer=%p\n",
+           netObj->_dc.shadowBuffer);
+    printf("[S2 DEBUG] netObj->_dc.rank=%d, nRanks=%d\n",
+           netObj->_dc.rank, netObj->_dc.nRanks);
+    printf("[S2 DEBUG] isValid=%d\n", (int)netObj->isValid());
+
     if (!netObj->isValid()) {
       results[0] = 0;
       return;
     }
 
+    printf("[S2 DEBUG] about to resetSignal(0)...\n");
     // Reset signal slot 0
     flagcxDevNetResetSignal(net, (flagcxDevNetSignal_t)0);
+    printf("[S2 DEBUG] resetSignal(0) done\n");
     // Read it — should be 0
     uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
+    printf("[S2 DEBUG] sig0=%llu\n", (unsigned long long)sig0);
     results[0] = (sig0 == 0) ? 1 : 0;
 
     // Increase shadow by 5, read signal (still 0, shadow is separate)
+    printf("[S2 DEBUG] about to IncreaseSignalShadow...\n");
     flagcxDevNetIncreaseSignalShadow(net, (flagcxDevNetSignal_t)0, 5);
+    printf("[S2 DEBUG] shadow done, reading signal...\n");
     uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[1] = (sig1 == 0) ? 1 : 0;
 
     // Reset counter slot 0
+    printf("[S2 DEBUG] about to resetCounter(0)...\n");
     flagcxDevNetResetCounter(net, (flagcxDevNetCounter_t)0);
+    printf("[S2 DEBUG] resetCounter done\n");
     // Read counter — should be 0
     uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
                                              flagcxDeviceMemoryOrderRelaxed);
     results[2] = (ctr0 == 0) ? 1 : 0;
+    printf("[S2 DEBUG] all done, results=[%d,%d,%d]\n", results[0], results[1], results[2]);
   }
 }
 

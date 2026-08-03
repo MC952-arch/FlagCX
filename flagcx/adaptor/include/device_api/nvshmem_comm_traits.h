@@ -58,8 +58,11 @@ struct CommTraits<NvshmemBackend> {
     void *rawPtr;
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getPeerPointer(size_t offset, const Team &, int peer) const {
-      return nvshmem_ptr((char *)symBase + offset, peer);
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
+      int myPE = nvshmem_my_pe();
+      int base = myPE - team.rank * team.stride;
+      int worldPeer = base + peer * team.stride;
+      return nvshmem_ptr((char *)symBase + offset, worldPeer);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
@@ -200,9 +203,9 @@ struct CommTraits<NvshmemBackend> {
 
     // ---- Helper: resolve PE from team + peer index ----
     FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(Team team, int peer) const {
-      // team.rank is my rank within team; peer is absolute rank
-      // For NVSHMEM, peer IS the PE number (world-scope)
-      return peer;
+      // peer is team-local rank; derive base from own world rank
+      int base = _dc.rank - team.rank * team.stride;
+      return base + peer * team.stride;
     }
 
     // ---- One-sided: put ----
@@ -211,7 +214,6 @@ struct CommTraits<NvshmemBackend> {
     put(Team team, int peer, Window dst, size_t dstOff, Window src,
         size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
         flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
@@ -219,7 +221,7 @@ struct CommTraits<NvshmemBackend> {
       if (coop.threadRank() == 0) {
         void *dstPtr = (char *)dst.symBase + dstOff;
         void *srcPtr = (char *)src.rawPtr + srcOff;
-        int pe = peer;
+        int pe = resolvePE(team, peer);
         putImpl(dstPtr, srcPtr, bytes, pe, ra, la);
       }
       coop.sync();
@@ -231,15 +233,15 @@ struct CommTraits<NvshmemBackend> {
     putValue(Team team, int peer, Window dst, size_t dstOff, T value, RA ra,
              Coop coop, Desc desc, flagcxDeviceScope_t ar,
              flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
       coop.sync();
       if (coop.threadRank() == 0) {
+        int pe = resolvePE(team, peer);
         void *dstPtr = (char *)dst.symBase + dstOff;
-        nvshmem_putmem(dstPtr, (const void *)&value, sizeof(T), peer);
-        signalImpl(peer, ra);
+        nvshmem_putmem(dstPtr, (const void *)&value, sizeof(T), pe);
+        signalImpl(pe, ra);
       }
       coop.sync();
     }
@@ -249,13 +251,13 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signal(Team team, int peer, RA ra, Coop coop, Desc desc,
            flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
       coop.sync();
       if (coop.threadRank() == 0) {
-        signalImpl(peer, ra);
+        int pe = resolvePE(team, peer);
+        signalImpl(pe, ra);
       }
       coop.sync();
     }
@@ -415,12 +417,12 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     get(Team team, int peer, Window src, size_t srcOff, Window dst,
         size_t dstOff, size_t bytes, Coop coop) const {
-      (void)team;
       coop.sync();
       if (coop.threadRank() == 0) {
+        int pe = resolvePE(team, peer);
         void *dstPtr = (char *)dst.rawPtr + dstOff;
         void *srcPtr = (char *)src.symBase + srcOff;
-        nvshmem_getmem(dstPtr, srcPtr, bytes, peer);
+        nvshmem_getmem(dstPtr, srcPtr, bytes, pe);
       }
       coop.sync();
     }

@@ -226,6 +226,7 @@ int main(int argc, char *argv[]) {
   }
 
   // --- K1: DevNetGetFromComm ---
+  bool allPass = true;
   FLAGCXCHECK(devHandle->deviceMemset(dResultBuf, 0, 4 * sizeof(uint64_t),
                                       flagcxMemDevice, stream));
   FLAGCXCHECK(launchKernelNetGetFromComm(devComm, (int *)dResultBuf, stream));
@@ -235,6 +236,7 @@ int main(int argc, char *argv[]) {
   {
     int *k1Res = (int *)hResultBuf;
     bool k1Ok = (k1Res[0] == 1);
+    allPass &= k1Ok;
     if (proc == 0 && color == 0)
       printf("  %-30s %s (intraSize=%d)\n", "K1 DevNetGetFromComm",
              k1Ok ? "PASS" : "FAIL", k1Res[1]);
@@ -274,6 +276,7 @@ int main(int argc, char *argv[]) {
                                         flagcxMemcpyDeviceToHost, stream));
     bool k2Ok = verifyReset(hResultBuf);
     printResult("K2 Reset", k2Ok, proc);
+    allPass &= k2Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K3: Put + SigInc ---
@@ -289,6 +292,7 @@ int main(int argc, char *argv[]) {
     bool k3Ok =
         verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
     printResult("K3 PutSigInc", k3Ok, proc);
+    allPass &= k3Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K4: Put + SigAdd ---
@@ -304,6 +308,7 @@ int main(int argc, char *argv[]) {
     bool k4Ok =
         verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
     printResult("K4 PutSigAdd", k4Ok, proc);
+    allPass &= k4Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K5: Put + SigInc + CtrInc (CounterPipeline) ---
@@ -322,6 +327,7 @@ int main(int argc, char *argv[]) {
     bool k5Ok = verifyCounterPipeline(hResultBuf, (const float *)hostBuff,
                                       countPerPeer, totalProcs);
     printResult("K5 CounterPipeline", k5Ok, proc);
+    allPass &= k5Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K6: Put(None) + Flush + Signal (FlushDecouple) ---
@@ -337,6 +343,7 @@ int main(int argc, char *argv[]) {
     bool k6Ok =
         verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
     printResult("K6 FlushDecouple", k6Ok, proc);
+    allPass &= k6Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K7: PutValue ---
@@ -351,6 +358,7 @@ int main(int argc, char *argv[]) {
                                         flagcxMemcpyDeviceToHost, stream));
     bool k7Ok = verifyPutValue(hostBuff, putValBase, totalProcs, proc);
     printResult("K7 PutValue", k7Ok, proc);
+    allPass &= k7Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K8: Get --- SKIPPED (get unsupported on vendor path)
@@ -406,8 +414,8 @@ int main(int argc, char *argv[]) {
     {
       int barResult = (int)hResultBuf[0];
       bool k12Ok = (barResult == 1);
-      printResult("K12 InterBarrier", k12Ok || barResult == -1,
-                  proc); // -1 = skip (no inter)
+      printResult("K12 InterBarrier", k12Ok, proc);
+      allPass &= k12Ok;
     }
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -422,6 +430,7 @@ int main(int argc, char *argv[]) {
     {
       bool k13Ok = ((int)hResultBuf[0] == 1);
       printResult("K13 WorldBarrier", k13Ok, proc);
+      allPass &= k13Ok;
     }
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -438,6 +447,7 @@ int main(int argc, char *argv[]) {
     bool k14Ok =
         verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs, proc);
     printResult("K14 OneSidedAlltoAll", k14Ok, proc);
+    allPass &= k14Ok;
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K15: AlltoAll (two-sided, commented) ---
@@ -466,9 +476,9 @@ int main(int argc, char *argv[]) {
 
   // Summary
   MPI_Barrier(MPI_COMM_WORLD);
-  int allPass = 1;
+  int pass = allPass ? 1 : 0;
   int globalPass = 0;
-  MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  MPI_Allreduce(&pass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   printf("[rank %d] === Overall: %s ===\n", proc, globalPass ? "PASS" : "FAIL");
 
   // Cleanup
