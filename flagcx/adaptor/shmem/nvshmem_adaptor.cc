@@ -167,6 +167,14 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
       cudaMemset(sc->barrierUsage, 0, totalBarriers * sizeof(uint64_t));
     }
 
+    // Grid sync state for multi-block barrier coordination
+    // 3 barriers x (arrive[CTA_COUNT] + release[CTA_COUNT]) = 6*CTA_COUNT
+    size_t gridSyncSize = 6 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+    if (cudaMalloc(&sc->gridSyncState, gridSyncSize) != cudaSuccess) {
+      goto fail;
+    }
+    cudaMemset(sc->gridSyncState, 0, gridSyncSize);
+
     // Team creation: intra-node
     // NOTE: assumes uniform intra-node GPU count across all nodes.
     // Heterogeneous topologies are not supported by this strided team-split.
@@ -224,6 +232,8 @@ nvshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
     cudaFree(shmemComm->shadowBuffer);
   if (shmemComm->barrierUsage)
     cudaFree(shmemComm->barrierUsage);
+  if (shmemComm->gridSyncState)
+    cudaFree(shmemComm->gridSyncState);
 
   // Destroy teams
   if (shmemComm->intraTeam != NVSHMEM_TEAM_INVALID)

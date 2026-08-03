@@ -28,6 +28,8 @@ struct flagcxShmemCommInternal {
   uint64_t *interBarrierSignals;
   uint64_t *worldBarrierSignals;
   uint64_t *barrierUsage;
+  uint64_t
+      *gridSyncState; // 3 barriers x (arrive[CTA_COUNT] + release[CTA_COUNT])
 
   int intraBarrierCount;
   int interBarrierCount;

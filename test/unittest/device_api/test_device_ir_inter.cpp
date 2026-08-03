@@ -82,21 +82,7 @@ int main(int argc, char *argv[]) {
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
-  // Allocate test buffer sized to maxBytes + putValue space
-  size_t bufSize = maxBytes + (size_t)totalProcs * sizeof(uint64_t);
-  size_t putValBase = maxBytes;
-  void *sendBuff = nullptr, *recvBuff = nullptr;
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize));
-
-  // Register symmetric windows
-  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC));
-  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC));
-
-  // Create DevComm with enough signal/counter slots
+  // Create DevComm with enough signal/counter slots (initializes NVSHMEM)
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
@@ -105,6 +91,27 @@ int main(int argc, char *argv[]) {
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
+  // Allocate test buffer sized to maxBytes + putValue space
+  size_t bufSize = maxBytes + (size_t)totalProcs * sizeof(uint64_t);
+  size_t putValBase = maxBytes;
+  void *sendBuff = nullptr, *recvBuff = nullptr;
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
+
+  // Register symmetric windows
+  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                       FLAGCX_WIN_COLL_SYMMETRIC,
+                                       memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
+                                       FLAGCX_WIN_COLL_SYMMETRIC,
+                                       memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -348,6 +355,19 @@ int main(int argc, char *argv[]) {
 
     // --- S8: Get (GetS + FlushS) --- SKIPPED (get unsupported on vendor path)
     if (!s1Skip) {
+      // initSend(countPerPeer);
+      // FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, floatSize,
+      //                                     flagcxMemDevice, stream));
+      // MPI_Barrier(MPI_COMM_WORLD);
+      //
+      // launchKernelNetGetS(devCommPtr, sendMemPtr, recvMemPtr, countPerPeer,
+      //                     stream);
+      // FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      //
+      // bool s8Ok = verifyAlltoAll(countPerPeer);
+      // printf("[rank %d] S8  Get: %s\n", proc, s8Ok ? "PASS" : "FAIL");
+      // fflush(stdout);
+      // allInterPass &= s8Ok;
       printf("[rank %d] S8  Get: SKIP (get unsupported on vendor path)\n",
              proc);
       fflush(stdout);
@@ -451,11 +471,11 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevCommFreeDevicePtr(devComm));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
+  FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-  FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
-  FLAGCXCHECK(flagcxMemFree(sendBuff));
-  FLAGCXCHECK(flagcxMemFree(recvBuff));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));

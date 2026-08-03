@@ -1062,13 +1062,42 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int peer = (myRank + 1) % nRanks;
   flagcxTeam intra = flagcxTeamIntra(devComm);
 
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5-IntraPtr] rank=%d nRanks=%d peer=%d count=%zu\n",
+           myRank, nRanks, peer, count);
+    printf("[K5-IntraPtr] symBase=%p output=%p\n",
+           (void *)devMem._winBase.symBase, (void *)output);
+  }
+
   // Barrier before reading — ensures peer's host memcpy is visible via P2P
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
       flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X};
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5-IntraPtr] rank=%d barrier done, about to read peer data\n", myRank);
+    float *ptr0 = (float *)flagcxGetIntraPointer(devMem, 0, peer);
+    printf("[K5-IntraPtr] rank=%d getIntraPointer(offset=0, peer=%d) = %p\n",
+           myRank, peer, (void *)ptr0);
+  }
+
+  // Read peer's data
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+
+  // Check first pointer before any thread dereferences
+  float *firstPtr = (float *)flagcxGetIntraPointer(devMem, tid * sizeof(float), peer);
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5-IntraPtr] rank=%d firstPtr=%p (tid=%d), about to deref\n",
+           myRank, (void *)firstPtr, tid);
+  }
+  if (firstPtr == nullptr) {
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[K5-IntraPtr] ERROR rank=%d block=%d got NULL from getIntraPointer!\n",
+             myRank, FLAGCX_BLOCK_IDX_X);
+    }
+    return;
+  }
 
   for (size_t i = tid; i < count; i += nthreads) {
     float *peerPtr = (float *)flagcxGetIntraPointer(devMem, i * sizeof(float), peer);
@@ -1132,22 +1161,50 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int peer = (myRank + 1) % nRanks;
   flagcxTeam intra = flagcxTeamIntra(devComm);
 
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5] rank=%d nRanks=%d peer=%d count=%zu output=%p\n",
+           myRank, nRanks, peer, count, (void *)output);
+  }
+
   // Pre-barrier (acquire — ensure peer's host-written data is visible)
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
       flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X};
+
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5] rank=%d pre-barrier sync start\n", myRank);
+  }
   bar.sync(flagcxDeviceMemoryOrderAcquire);
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5] rank=%d pre-barrier sync done\n", myRank);
+  }
 
   // Read peer's data
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    float *ptr0 =
+        (float *)flagcxGetIntraPointer(devMem, 0, peer);
+    printf("[K5] rank=%d flagcxGetIntraPointer(peer=%d, offset=0) = %p\n",
+           myRank, peer, (void *)ptr0);
+  }
+
   for (size_t i = tid; i < count; i += nthreads) {
     float *peerPtr =
         (float *)flagcxGetIntraPointer(devMem, i * sizeof(float), peer);
     output[i] = *peerPtr;
   }
 
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5] rank=%d data read done, post-barrier sync start\n", myRank);
+  }
+
   // Post-barrier
   bar.sync(flagcxDeviceMemoryOrderRelease);
+
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[K5] rank=%d post-barrier sync done\n", myRank);
+  }
 }
 
 flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,

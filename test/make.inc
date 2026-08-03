@@ -96,6 +96,7 @@ endif
 # SHMEM include path (used when USE_SHMEM=1)
 ifeq ($(USE_SHMEM), 1)
 SHMEM_INCLUDE := -I$(SHMEM_HOME)/include
+CXXFLAGS += -DFLAGCX_COMM_TRAITS_SHMEM
 else
 SHMEM_INCLUDE :=
 endif

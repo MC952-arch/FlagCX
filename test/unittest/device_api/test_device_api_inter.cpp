@@ -168,19 +168,6 @@ int main(int argc, char *argv[]) {
   void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, recvBuffSize));
-
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
-  } else {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, recvBuffSize, &recvHandle));
-  }
-
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
@@ -199,6 +186,28 @@ int main(int argc, char *argv[]) {
   reqs.interCounterCount = 1;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, recvBuffSize, memAllocator));
+
+  if (localRegister == 2) {
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
+    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
+  } else {
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
+                                   memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, recvBuffSize, &recvHandle,
+                                   memAllocator));
+  }
 
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
   FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &sendMem));
@@ -345,6 +354,20 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // --- K8: Get --- SKIPPED (get unsupported on vendor path)
+    // initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
+    //              hostBuff);
+    // FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, floatSize,
+    // flagcxMemDevice,
+    //                                     stream));
+    // FLAGCXCHECK(launchKernelNetGet(sendMem, recvMem, countPerPeer, DATATYPE,
+    //                                devComm, stream));
+    // FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    // FLAGCXCHECK(devHandle->deviceMemcpy(hostBuff, recvBuff, floatSize,
+    //                                     flagcxMemcpyDeviceToHost, stream));
+    // bool k8Ok =
+    //     verifyAlltoAll((const float *)hostBuff, countPerPeer, totalProcs,
+    //     proc);
+    // printResult("K8 Get", k8Ok, proc);
     printResult("K8 Get (SKIP)", true, proc);
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -453,19 +476,19 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceFree(dResultBuf, flagcxMemDevice, NULL));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   } else {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
   }
 
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
-  FLAGCXCHECK(flagcxMemFree(sendBuff));
-  FLAGCXCHECK(flagcxMemFree(recvBuff));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

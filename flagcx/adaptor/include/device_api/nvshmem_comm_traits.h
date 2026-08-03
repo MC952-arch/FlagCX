@@ -104,6 +104,8 @@ struct CommTraits<NvshmemBackend> {
     uint64_t *interBarrierSignals;
     uint64_t *worldBarrierSignals;
     uint64_t *barrierUsage;
+    uint64_t *gridSyncState; // per-block flags: arrive[CTA_COUNT] +
+                             // release[CTA_COUNT], x3 barriers
 
     int intraBarrierCount;
     int interBarrierCount;
@@ -148,6 +150,7 @@ struct CommTraits<NvshmemBackend> {
       dc.interBarrierSignals = nullptr;
       dc.worldBarrierSignals = nullptr;
       dc.barrierUsage = nullptr;
+      dc.gridSyncState = nullptr;
       dc.intraBarrierCount = 0;
       dc.interBarrierCount = 0;
       dc.worldBarrierCount = 0;
@@ -510,56 +513,128 @@ struct Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> {
   Coop _coop;
   nvshmem_team_t _team;
   int _teamSize, _teamRank;
-  uint64_t *_barrierSignals;
-  uint64_t *_usageCount;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
       : _coop(), _team(NVSHMEM_TEAM_INVALID), _teamSize(0), _teamRank(0),
-        _barrierSignals(nullptr), _usageCount(nullptr) {}
+        _gridSyncState(nullptr) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
           const Multimem & = {})
       : _coop(coop), _team(dc.intraTeam), _teamSize(dc.intraSize),
         _teamRank(dc.intraRank),
-        _barrierSignals(dc.intraBarrierSignals + index * dc.intraSize),
-        _usageCount(&dc.barrierUsage[index]) {}
+        _gridSyncState((volatile uint64_t *)dc.gridSyncState) {}
+
+  // Grid arrive: each block writes own flag, block 0 checks all in parallel
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridArrive(nvshmem_team_t team,
+                                                  volatile uint64_t *arrive,
+                                                  volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    if (FLAGCX_BLOCK_IDX_X == 0 && _coop.threadRank() == 0) {
+      printf("[GridArrive] block0 enter, numBlocks=%d, arrive=%p, release=%p\n",
+             numBlocks, (void *)arrive, (void *)release);
+    }
+    _coop.sync();
+    if (_coop.threadRank() == 0) {
+      arrive[FLAGCX_BLOCK_IDX_X]++;
+      if (FLAGCX_BLOCK_IDX_X == 0) {
+        printf("[GridArrive] block0 wrote arrive[0]=%llu\n",
+               (unsigned long long)arrive[0]);
+      }
+    }
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      uint64_t expected = arrive[0];
+      if (_coop.threadRank() == 0) {
+        printf("[GridArrive] block0 expected=%llu, checking %d blocks\n",
+               (unsigned long long)expected, numBlocks);
+      }
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        if (i == 0)
+          continue;
+        int spins = 0;
+        while (arrive[i] < expected) {
+          spins++;
+          if (spins == 100000000 && _coop.threadRank() < 4) {
+            printf("[GridArrive] block0 thread%d STUCK waiting arrive[%d]=%llu "
+                   "< %llu\n",
+                   _coop.threadRank(), i, (unsigned long long)arrive[i],
+                   (unsigned long long)expected);
+            spins = 0;
+          }
+        }
+      }
+      _coop.sync();
+      if (_coop.threadRank() == 0) {
+        printf("[GridArrive] block0 all arrived\n");
+      }
+    }
+#endif
+  }
+
+  // Grid wait: block 0 does PE barrier then releases per-block flags
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridWait(nvshmem_team_t team,
+                                                volatile uint64_t *arrive,
+                                                volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      if (_coop.threadRank() == 0) {
+        printf("[GridWait] block0 entering nvshmemx_barrier_block(team=%d)\n",
+               (int)team);
+      }
+      nvshmemx_barrier_block(team);
+      if (_coop.threadRank() == 0) {
+        printf("[GridWait] block0 PE barrier done, releasing %d blocks\n",
+               numBlocks);
+      }
+      _coop.sync();
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        release[i]++;
+      }
+      if (_coop.threadRank() == 0) {
+        printf("[GridWait] block0 released all\n");
+      }
+    } else {
+      if (_coop.threadRank() == 0) {
+        uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
+        int spins = 0;
+        while (release[FLAGCX_BLOCK_IDX_X] == cur) {
+          spins++;
+          if (spins == 100000000) {
+            printf("[GridWait] block%d STUCK waiting release[%d]=%llu "
+                   "(cur=%llu)\n",
+                   FLAGCX_BLOCK_IDX_X, FLAGCX_BLOCK_IDX_X,
+                   (unsigned long long)release[FLAGCX_BLOCK_IDX_X],
+                   (unsigned long long)cur);
+            spins = 0;
+          }
+        }
+      }
+    }
+    _coop.sync();
+#endif
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      nvshmem_fence();
-    _coop.sync();
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      int peerPE = nvshmem_team_translate_pe(_team, peer, NVSHMEM_TEAM_WORLD);
-      nvshmemx_signal_op(_barrierSignals + _teamRank, 1, NVSHMEM_SIGNAL_ADD,
-                         peerPE);
-    }
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    uint64_t target = *_usageCount + 1;
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      nvshmem_uint64_wait_until(_barrierSignals + peer, NVSHMEM_CMP_GE, target);
-    }
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      *_usageCount = target;
-    _coop.sync();
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(order);
-    wait(order);
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 
@@ -576,61 +651,85 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   Coop _coop;
   nvshmem_team_t _team;
   int _teamSize, _teamRank;
-  uint64_t *_barrierSignals;
-  uint64_t *_usageCount;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
       : _coop(), _team(NVSHMEM_TEAM_INVALID), _teamSize(0), _teamRank(0),
-        _barrierSignals(nullptr), _usageCount(nullptr) {}
+        _gridSyncState(nullptr) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Net &, const Comm &dc, Team, uint32_t index, int = 0)
       : _coop(coop), _team(dc.interTeam),
         _teamSize((dc.intraSize > 0) ? dc.nRanks / dc.intraSize : 1),
         _teamRank((dc.intraSize > 0) ? dc.rank / dc.intraSize : 0),
-        _barrierSignals(
-            dc.interBarrierSignals +
-            index * ((dc.intraSize > 0) ? dc.nRanks / dc.intraSize : 1)),
-        _usageCount(&dc.barrierUsage[dc.intraBarrierCount + index]) {}
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             2 * FLAGCX_DEVICE_CTA_COUNT)) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridArrive(nvshmem_team_t team,
+                                                  volatile uint64_t *arrive,
+                                                  volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    _coop.sync();
+    if (_coop.threadRank() == 0) {
+      arrive[FLAGCX_BLOCK_IDX_X]++;
+    }
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      uint64_t expected = arrive[0];
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        if (i == 0)
+          continue;
+        while (arrive[i] < expected) {
+        }
+      }
+      _coop.sync();
+    }
+#endif
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridWait(nvshmem_team_t team,
+                                                volatile uint64_t *arrive,
+                                                volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      nvshmemx_barrier_block(team);
+      _coop.sync();
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        release[i]++;
+      }
+    } else {
+      if (_coop.threadRank() == 0) {
+        uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
+        while (release[FLAGCX_BLOCK_IDX_X] == cur) {
+        }
+      }
+    }
+    _coop.sync();
+#endif
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      nvshmem_fence();
-    _coop.sync();
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      int peerPE = nvshmem_team_translate_pe(_team, peer, NVSHMEM_TEAM_WORLD);
-      nvshmemx_signal_op(_barrierSignals + _teamRank, 1, NVSHMEM_SIGNAL_ADD,
-                         peerPE);
-    }
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
-    uint64_t target = *_usageCount + 1;
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      nvshmem_uint64_wait_until(_barrierSignals + peer, NVSHMEM_CMP_GE, target);
-    }
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      *_usageCount = target;
-    _coop.sync();
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    arrive(order, fence);
-    wait(order, fence);
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 
@@ -645,74 +744,100 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   using Multimem = CommTraits<NvshmemBackend>::Multimem;
 
   Coop _coop;
-  Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> _intra;
-  Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> _inter;
-  int _nInterPeers;
+  nvshmem_team_t _team;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
-      : _coop(), _intra(), _inter(), _nInterPeers(0) {}
+      : _coop(), _team(NVSHMEM_TEAM_INVALID), _gridSyncState(nullptr) {}
 
   // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int nInterPeers)
-      : _coop(coop), _intra(coop, dc, Team{}, index),
-        _inter(coop, net, dc, Team{}, index, nInterPeers),
-        _nInterPeers(nInterPeers) {}
+      : _coop(coop), _team(dc.worldTeam),
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             4 * FLAGCX_DEVICE_CTA_COUNT)) {}
 
   // Intra-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _intra(coop, dc, Team{}, index), _inter(),
-        _nInterPeers(0) {}
+      : _coop(coop), _team(dc.intraTeam),
+        _gridSyncState((volatile uint64_t *)dc.gridSyncState) {}
 
   // Inter-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &dc,
           uint32_t index, bool, int nInterPeers)
-      : _coop(coop), _intra(),
-        _inter(coop, net, dc, Team{}, index, nInterPeers),
-        _nInterPeers(nInterPeers) {}
+      : _coop(coop), _team(dc.interTeam),
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             2 * FLAGCX_DEVICE_CTA_COUNT)) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridArrive(nvshmem_team_t team,
+                                                  volatile uint64_t *arrive,
+                                                  volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    _coop.sync();
+    if (_coop.threadRank() == 0) {
+      arrive[FLAGCX_BLOCK_IDX_X]++;
+    }
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      uint64_t expected = arrive[0];
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        if (i == 0)
+          continue;
+        while (arrive[i] < expected) {
+        }
+      }
+      _coop.sync();
+    }
+#endif
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void _gridWait(nvshmem_team_t team,
+                                                volatile uint64_t *arrive,
+                                                volatile uint64_t *release) {
+#ifdef __CUDACC__
+    int numBlocks = FLAGCX_GRID_DIM_X;
+    if (FLAGCX_BLOCK_IDX_X == 0) {
+      _coop.sync();
+      nvshmemx_barrier_block(team);
+      _coop.sync();
+      for (int i = _coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+        release[i]++;
+      }
+    } else {
+      if (_coop.threadRank() == 0) {
+        uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
+        while (release[FLAGCX_BLOCK_IDX_X] == cur) {
+        }
+      }
+    }
+    _coop.sync();
+#endif
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      _inter.arrive(order);
-    } else {
-      _intra.arrive(order);
-    }
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _inter.wait(order);
-      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
-      _intra.wait(flagcxDeviceMemoryOrderAcquire);
-    } else {
-      _intra.wait(order);
-    }
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      _inter.arrive(order);
-      _inter.wait(order);
-      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
-      _intra.wait(flagcxDeviceMemoryOrderAcquire);
-    } else {
-      _intra.arrive(order);
-      _intra.wait(order);
-    }
+    _gridArrive(_team, _gridSyncState,
+                _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    _gridWait(_team, _gridSyncState, _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 
