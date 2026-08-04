@@ -730,44 +730,26 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-
   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-      printf("[S3 rank %d] net is NULL\n", myRank);
     return;
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] got net=%p, entering barrier 0\n", myRank, net);
-
   size_t chunkBytes = countPerPeer * sizeof(float);
-
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] about to call flagcxWorldBarrierSyncS(net=%p, idx=%d)\n", myRank, net, (int)blockIdx.x);
 
   // World barrier before reading baseline signal (aligned with K3:386-387)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] returned from barrier 0\n", myRank);
-
   // Read baseline signal (aligned with K3:388)
   uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
                                         flagcxDeviceMemoryOrderRelaxed);
-
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] after ReadSignal s0=%lu\n", myRank, (unsigned long)s0);
 
   // World barrier sync (aligned with K3:395)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed,
                           flagcxDevNetFenceLevel::Relaxed);
-
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] after barrier 1\n", myRank);
 
   // Thread-parallelized put loop (aligned with K3:411-422)
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -782,29 +764,17 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
                              (flagcxDevNetSignal_t)0);
   }
 
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] after put loop\n", myRank);
-
   // WaitSignal + Flush (aligned with K3:429-430)
   int nInterRanks = nRanks - intraSize;
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevNetSignal_t)0,
                           s0 + (uint64_t)nInterRanks, 64,
                           flagcxDeviceMemoryOrderAcquire);
 
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] after WaitSignal\n", myRank);
-
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
-
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] after Flush\n", myRank);
 
   // Final world barrier (aligned with K3:436)
   flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, blockIdx.x, false,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
-
-  if (threadIdx.x == 0 && blockIdx.x == 0)
-    printf("[S3 rank %d] kernel done\n", myRank);
 }
 
 void launchKernelNetPutSignalIncS(const void *devCommPtr,
