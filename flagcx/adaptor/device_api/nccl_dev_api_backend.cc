@@ -128,10 +128,23 @@ static flagcxResult_t ncclDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   flagcxDevComm hostCopy(*devComm);
   hostCopy._netContexts = nullptr;
 
-  // Step 1: Copy flagcxDevComm to device
+  // Step 1: Allocate grid sync state (2 x unsigned int, zero-initialized)
   void *dPtr = nullptr;
   void *netDevPtr = nullptr;
+  void *gridSyncPtr = nullptr;
   flagcxResult_t res = flagcxSuccess;
+  {
+    size_t gsSize = 2 * sizeof(unsigned int);
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&gridSyncPtr, gsSize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMemset(gridSyncPtr, 0, gsSize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
+  }
+  hostCopy._gridBarrierState = (unsigned int *)gridSyncPtr;
+
+  // Step 2: Copy flagcxDevComm to device
   FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
                                               flagcxMemDevice, NULL),
                   res, fail);
@@ -140,7 +153,7 @@ static flagcxResult_t ncclDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
 
-  // Step 2: Allocate + construct net array on device
+  // Step 3: Allocate + construct net array on device
   if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
     size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
     FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
@@ -158,12 +171,16 @@ static flagcxResult_t ncclDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
 
   devComm->cachedDevicePtr = dPtr;
   devComm->cachedNetContextsPtr = netDevPtr;
+  devComm->cachedGridSyncPtr = gridSyncPtr;
   *devPtr = dPtr;
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
   return flagcxSuccess;
 
 fail:
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
+  if (gridSyncPtr) {
+    deviceAdaptor->deviceFree(gridSyncPtr, flagcxMemDevice, NULL);
+  }
   if (netDevPtr) {
     deviceAdaptor->deviceFree(netDevPtr, flagcxMemDevice, NULL);
   }
@@ -178,6 +195,11 @@ static flagcxResult_t ncclDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
     return flagcxSuccess;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
+  if (devComm->cachedGridSyncPtr) {
+    deviceAdaptor->deviceFree(devComm->cachedGridSyncPtr, flagcxMemDevice,
+                              NULL);
+    devComm->cachedGridSyncPtr = nullptr;
+  }
   if (devComm->cachedNetContextsPtr) {
     deviceAdaptor->deviceFree(devComm->cachedNetContextsPtr, flagcxMemDevice,
                               NULL);

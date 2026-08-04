@@ -76,15 +76,19 @@ struct flagcxDevComm {
   // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
   void *_netContexts;
 
+  // Grid-wide barrier state for NCCL destructor ordering.
+  // [0] = arrive counter, [1] = sense. Allocated by NCCL backend only.
+  unsigned int *_gridBarrierState;
+
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
-        _nInterPeers(0), _netContexts(nullptr) {}
+        _nInterPeers(0), _netContexts(nullptr), _gridBarrierState(nullptr) {}
 
 #ifndef __clang_llvm_bitcode_lib__
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers),
-        _netContexts(nullptr) {
+        _netContexts(nullptr), _gridBarrierState(nullptr) {
     if (di.devComm) {
       _commBase = *(typename DeviceAPI::Comm *)di.devComm;
     } else {
@@ -744,13 +748,15 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 // ============================================================
 struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
+  unsigned int *_gridBarrierState;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
       : DeviceAPI::Net(devComm._commBase, devComm._contextCount > 0
                                               ? idx % devComm._contextCount
                                               : 0),
-        _nInterPeers(devComm._nInterPeers) {}
+        _nInterPeers(devComm._nInterPeers),
+        _gridBarrierState(devComm._gridBarrierState) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
     return DeviceAPI::Net::isValid();
