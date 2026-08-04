@@ -765,11 +765,15 @@ flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
+
   flagcxInterTestPutSignalIncKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+  if (err != cudaSuccess) {
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
