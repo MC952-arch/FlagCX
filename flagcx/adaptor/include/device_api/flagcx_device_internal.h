@@ -96,7 +96,7 @@ struct flagcxDevCommInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr;      // Lazily allocated by flagcxDevCommGetDevicePtr
   void *cachedNetContextsPtr; // Device memory for pre-allocated flagcxDevNet[]
-  void *cachedGridSyncPtr;    // Device memory for grid sync state (2 x uint32)
+  void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
 };

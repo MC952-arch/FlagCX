@@ -79,7 +79,9 @@ else ifeq ($(USE_ASCEND), 1)
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
 else
-  $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, etc.)
+  ifneq ($(MAKECMDGOALS),clean)
+    $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, etc.)
+  endif
 endif
 
 # Test-specific overrides (format for compiler flags)

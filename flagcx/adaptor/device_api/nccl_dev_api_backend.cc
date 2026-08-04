@@ -171,7 +171,7 @@ static flagcxResult_t ncclDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
 
   devComm->cachedDevicePtr = dPtr;
   devComm->cachedNetContextsPtr = netDevPtr;
-  devComm->cachedGridSyncPtr = gridSyncPtr;
+  devComm->cachedGridBarrierPtr = gridSyncPtr;
   *devPtr = dPtr;
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
   return flagcxSuccess;
@@ -195,10 +195,10 @@ static flagcxResult_t ncclDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
     return flagcxSuccess;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
-  if (devComm->cachedGridSyncPtr) {
-    deviceAdaptor->deviceFree(devComm->cachedGridSyncPtr, flagcxMemDevice,
+  if (devComm->cachedGridBarrierPtr) {
+    deviceAdaptor->deviceFree(devComm->cachedGridBarrierPtr, flagcxMemDevice,
                               NULL);
-    devComm->cachedGridSyncPtr = nullptr;
+    devComm->cachedGridBarrierPtr = nullptr;
   }
   if (devComm->cachedNetContextsPtr) {
     deviceAdaptor->deviceFree(devComm->cachedNetContextsPtr, flagcxMemDevice,
