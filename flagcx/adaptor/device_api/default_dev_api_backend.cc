@@ -421,6 +421,12 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // barrier needs nTeamRanks slots per barrier instance (one per CTA)
       int userSignals = reqs->interSignalCount;
       int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
+      if (reqs->interBarrierCount > 0 &&
+          barrierSlots / reqs->interBarrierCount != devComm->nTeamRanks) {
+        WARN("barrierSignalBase overflow: nTeamRanks=%d interBarrierCount=%d",
+             devComm->nTeamRanks, reqs->interBarrierCount);
+        return flagcxInternalError;
+      }
       devComm->signalCount = userSignals + barrierSlots;
       devComm->barrierSignalBase = userSignals;
       size_t sigSize =

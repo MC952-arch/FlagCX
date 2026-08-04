@@ -71,12 +71,12 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
 // flagcxGetIntraPointer, reduces (sum), and writes result back to all peers.
 template <typename T>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxIntraAllReduceKernel(flagcxDevComm devComm, flagcxDevMem mem,
+    launchKernelIntraAllReduceKernel(flagcxDevComm devComm, flagcxDevMem mem,
                                size_t offset, size_t count) {
   // AllReduce requires peer pointer access (window or IPC)
   if (!mem.hasWindow()) {
     if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-      printf("flagcxIntraAllReduceKernel: no peer access (no window, no IPC), "
+      printf("launchKernelIntraAllReduceKernel: no peer access (no window, no IPC), "
              "skipping\n");
     }
     return;
@@ -130,7 +130,7 @@ static cudaError_t launchFlagcxIntraAllReduce(flagcxDevComm devComm,
                                               flagcxDevMem mem,
                                               size_t offset, size_t count,
                                               cudaStream_t stream) {
-  flagcxIntraAllReduceKernel<T>
+  launchKernelIntraAllReduceKernel<T>
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          stream>>>(devComm, mem, offset, count);
   return cudaGetLastError();
@@ -146,7 +146,7 @@ template cudaError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
 
 // Host-side function — launches the kernel using caller-provided
 // registered buffer and device communicator.
-flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
+flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                         flagcxDataType_t datatype,
                                         flagcxDevComm_t devComm,
                                         flagcxStream_t stream) {
@@ -190,7 +190,7 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 // ==========================================================================
 
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterOneSidedAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+    launchKernelNetOneSidedAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
                                       size_t count, flagcxDataType_t datatype,
                                       flagcxDevComm devComm) {
 
@@ -237,7 +237,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // ==========================================================================
 
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTwoSidedAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
+    launchKernelNetTwoSidedAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
                                       size_t count, flagcxDataType_t datatype,
                                       flagcxDevComm devComm) {
 
@@ -270,7 +270,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 // Host-side one-sided AlltoAll function.
-flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
+flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
                                            flagcxDevMem_t recvMem, size_t count,
                                            flagcxDataType_t datatype,
                                            flagcxDevComm_t devComm,
@@ -282,13 +282,13 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterOneSidedAlltoAllKernel
+  launchKernelNetOneSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
-    printf("[flagcxInterOneSidedAlltoAll] kernel launch FAILED: %s (%d)\n",
+    printf("[launchKernelNetOneSidedAlltoAll] kernel launch FAILED: %s (%d)\n",
            cudaGetErrorString(err), (int)err);
   }
 
@@ -296,7 +296,7 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
 }
 
 // Host-side two-sided AlltoAll function.
-flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
+flagcxResult_t launchKernelNetTwoSidedAlltoAll(flagcxDevMem_t sendMem,
                                             flagcxDevMem_t recvMem, size_t count,
                                             flagcxDataType_t datatype,
                                             flagcxDevComm_t devComm,
@@ -308,7 +308,7 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterTwoSidedAlltoAllKernel
+  launchKernelNetTwoSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 

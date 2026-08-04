@@ -1502,11 +1502,9 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
       // Advance FIFO completed counter so GPU's fifoFlush can progress.
       // Each inflight IB op corresponds to exactly one FIFO entry.
       uint64_t nextCompleted =
-          __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
-                          __ATOMIC_RELAXED) +
+          __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
+                             __ATOMIC_RELEASE) +
           1;
-      __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
-                       __ATOMIC_RELEASE);
       INFO(FLAGCX_P2P,
            "rank=%d Poll: retired peer=%d completed=%lu inflight=%u",
            comm->rank, p, (unsigned long)nextCompleted, state->totalInflight);
@@ -1771,12 +1769,8 @@ static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
       ps->head++;
       // Advance FIFO completed counter for each drained entry
       if (fifo != NULL) {
-        uint64_t nextCompleted =
-            __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
-                            __ATOMIC_RELAXED) +
-            1;
-        __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
-                         __ATOMIC_RELEASE);
+        __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
+                           __ATOMIC_RELEASE);
       }
     }
   }
@@ -2104,12 +2098,8 @@ init_done:
     // immediately. IB-posted entries get their completed counter advanced in
     // flagcxKernelProxyPoll when test() succeeds.
     if (!postedIB) {
-      uint64_t nextCompleted =
-          __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
-                          __ATOMIC_RELAXED) +
-          1;
-      __atomic_store_n(&fifo->buffer[flagcxFifoIdxCompleted], nextCompleted,
-                       __ATOMIC_RELEASE);
+      __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
+                         __ATOMIC_RELEASE);
     }
     if (res != flagcxSuccess)
       break;

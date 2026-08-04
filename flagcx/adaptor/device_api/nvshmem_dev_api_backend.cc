@@ -126,7 +126,11 @@ static flagcxResult_t nvshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
     return flagcxSuccess;
   }
 
-  // Construct value struct on host stack, then copy to device
+  // Construct value struct on host stack, then copy to device.
+  // Note: _gridBarrierState is intentionally left nullptr for NVSHMEM.
+  // NVSHMEM barriers use nvshmemx_barrier_block() + per-block arrive/release
+  // flags internally, so the IR-level flagcxGridSync (sense-reversing) is not
+  // needed and the null check in the IR functions will skip it.
   flagcxDevComm hostCopy(*devComm);
   hostCopy._netContexts = nullptr;
 

@@ -322,7 +322,7 @@ int main(int argc, char *argv[]) {
       launchKernelNetPutValueS(devCommPtr, recvMemPtr, putValBase, stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
-      uint64_t hostVals[64] = {};
+      uint64_t *hostVals = new uint64_t[totalProcs]();
       FLAGCXCHECK(devHandle->deviceMemcpy(hostVals,
                                           (char *)recvBuff + putValBase,
                                           (size_t)totalProcs * sizeof(uint64_t),
@@ -337,6 +337,7 @@ int main(int argc, char *argv[]) {
           break;
         }
       }
+      delete[] hostVals;
 
       printf("[rank %d] S7  PutValue: %s\n", proc, s7Ok ? "PASS" : "FAIL");
       fflush(stdout);

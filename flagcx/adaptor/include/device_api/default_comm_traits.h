@@ -18,6 +18,7 @@
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
 #include "flagcx_kernel_core.h"
+#include <cassert>
 #ifndef __CUDACC__
 #include "sym_heap.h"
 #endif
@@ -831,7 +832,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderAcquire)) {}
+                            flagcxDeviceMemoryOrderAcquire)) {
+    assert(index < FLAGCX_DEVICE_CTA_COUNT);
+  }
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -916,7 +919,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
         _signalCount(net.signalCount), _contextId(net.contextId),
         _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
-        _stride(dc.intraSize), _localRank(dc.intraRank) {}
+        _stride(dc.intraSize), _localRank(dc.intraRank) {
+    assert(index < FLAGCX_DEVICE_CTA_COUNT);
+  }
 
   // arrive: signal all remote peers "I have arrived"
   FLAGCX_DEVICE_INLINE_DECORATOR void

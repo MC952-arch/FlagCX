@@ -94,7 +94,14 @@ flagcxGridSync(unsigned int *gridSyncState) {
       atomicExch(&gridSyncState[1], 1u - curSense);
     } else {
       // Spin until sense flips (all blocks arrived)
+#ifndef NDEBUG
+      unsigned int __spins = 0;
+#endif
       while (*(volatile unsigned int *)&gridSyncState[1] == curSense) {
+#ifndef NDEBUG
+        if (++__spins >= 100000000u)
+          __trap(); // grid barrier timeout — likely a hang
+#endif
       }
     }
   }
