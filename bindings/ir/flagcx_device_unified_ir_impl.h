@@ -395,21 +395,9 @@ flagcxDevPut_RCtrInc(const void *commOpaque, const void *dstOpaque,
     coop.sync();
     if (coop.threadRank() == 0) {
       flagcxScopedFence(flagcxDeviceScopeSystem);
-      if (comm->_commBase.p2pCounterSupport(peer)) {
-        // P2P fast path: direct atomic on peer's counter buffer
-        const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
-        const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-        uint64_t *peerCtrBuf = comm->_commBase.getCounterPeerPtr(peer);
-        int slot =
-            net->contextId * comm->_commBase.counterCount + (int)remoteCounter;
-        DeviceAPI::Atomic::fetchAdd(&peerCtrBuf[slot], (uint64_t)1,
-                                    flagcxDeviceMemoryOrderRelease);
-      } else {
-        // Net FIFO fallback
-        const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
-        flagcxDevNetSignalCtrIncS(net, commOpaque, teamKind, peer,
-                                  FLAGCX_COOP_THREAD, remoteCounter);
-      }
+      const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
+      flagcxDevNetSignalCtrIncS(net, commOpaque, teamKind, peer,
+                                FLAGCX_COOP_THREAD, remoteCounter);
     }
     coop.sync();
   } else {

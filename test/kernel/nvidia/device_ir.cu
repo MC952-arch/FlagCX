@@ -1350,13 +1350,13 @@ void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
 __global__ void kernelDevPutS(const void *devCommPtr,
                               const void *dstMemPtr,
                               const void *srcMemPtr,
-                              int *result) {
+                              int *result, size_t bytes) {
   int rank = flagcxDevCommGetIntraRank(devCommPtr);
   int size = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (rank + 1) % size;
 
   flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/0,
-               srcMemPtr, /*srcOff=*/0, /*bytes=*/1024,
+               srcMemPtr, /*srcOff=*/0, bytes,
                FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
@@ -1364,10 +1364,10 @@ __global__ void kernelDevPutS(const void *devCommPtr,
 }
 
 void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
-                         const void *srcMemPtr, int *devResult,
+                         const void *srcMemPtr, int *devResult, size_t bytes,
                          flagcxStream_t stream) {
   kernelDevPutS<<<1, 128, 0, stream->base>>>(devCommPtr, dstMemPtr,
-                                              srcMemPtr, devResult);
+                                              srcMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1377,13 +1377,14 @@ void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
 __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                                         const void *dstMemPtr,
                                         const void *srcMemPtr,
-                                        int *result, int contextId) {
+                                        int *result, size_t bytes,
+                                        int contextId) {
   int rank = flagcxDevCommGetIntraRank(devCommPtr);
   int size = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (rank + 1) % size;
 
   // Put data to next peer + remote signal
-  flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, 1024,
+  flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, bytes,
                        FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
                        flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                        (flagcxDevNetSignal_t)0, contextId);
@@ -1399,9 +1400,10 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
 void launchKernelDevPutSignalWaitS(const void *devCommPtr,
                                    const void *dstMemPtr,
                                    const void *srcMemPtr, int *devResult,
-                                   int contextId, flagcxStream_t stream) {
+                                   size_t bytes, int contextId,
+                                   flagcxStream_t stream) {
   kernelDevPutSignalWaitS<<<1, 128, 0, stream->base>>>(
-      devCommPtr, dstMemPtr, srcMemPtr, devResult, contextId);
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes, contextId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1410,12 +1412,12 @@ void launchKernelDevPutSignalWaitS(const void *devCommPtr,
 __global__ void kernelDevGetS(const void *devCommPtr,
                               const void *remoteMemPtr,
                               const void *localMemPtr,
-                              int *result) {
+                              int *result, size_t bytes) {
   int rank = flagcxDevCommGetIntraRank(devCommPtr);
   int size = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (rank + 1) % size;
 
-  flagcxDevGet(devCommPtr, remoteMemPtr, 0, localMemPtr, 0, 1024,
+  flagcxDevGet(devCommPtr, remoteMemPtr, 0, localMemPtr, 0, bytes,
                FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
 
@@ -1423,10 +1425,10 @@ __global__ void kernelDevGetS(const void *devCommPtr,
 }
 
 void launchKernelDevGetS(const void *devCommPtr, const void *remoteMemPtr,
-                         const void *localMemPtr, int *devResult,
+                         const void *localMemPtr, int *devResult, size_t bytes,
                          flagcxStream_t stream) {
   kernelDevGetS<<<1, 128, 0, stream->base>>>(devCommPtr, remoteMemPtr,
-                                              localMemPtr, devResult);
+                                              localMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,13 +1467,13 @@ void launchKernelDevBarrierWorldS(const void *devCommPtr, int *devResult,
 __global__ void kernelDevPutWarpS(const void *devCommPtr,
                                   const void *dstMemPtr,
                                   const void *srcMemPtr,
-                                  int *result) {
+                                  int *result, size_t bytes) {
   int rank = flagcxDevCommGetIntraRank(devCommPtr);
   int size = flagcxDevCommGetIntraSize(devCommPtr);
   int peer = (rank + 1) % size;
 
   if (threadIdx.x < 32) {
-    flagcxDevPut(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, 512,
+    flagcxDevPut(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, bytes,
                  FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_WARP,
                  flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
   }
@@ -1480,10 +1482,10 @@ __global__ void kernelDevPutWarpS(const void *devCommPtr,
 }
 
 void launchKernelDevPutWarpS(const void *devCommPtr, const void *dstMemPtr,
-                             const void *srcMemPtr, int *devResult,
+                             const void *srcMemPtr, int *devResult, size_t bytes,
                              flagcxStream_t stream) {
   kernelDevPutWarpS<<<1, 128, 0, stream->base>>>(devCommPtr, dstMemPtr,
-                                                   srcMemPtr, devResult);
+                                                   srcMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------

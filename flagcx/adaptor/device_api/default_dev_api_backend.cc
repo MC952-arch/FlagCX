@@ -398,14 +398,15 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   }
 
   // One-sided buffers: signals, counters, staging
+  // Allocated when signal/counter slots are requested — needed for both
+  // inter-node (Net FIFO) and intra-node (P2P atomic) paths.
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
        devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (devComm->nInterPeers > 0 &&
-      (reqs->interSignalCount > 0 || reqs->interCounterCount > 0)) {
+  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
     int bufCtxCount =
-        (comm->heteroComm != nullptr)
+        (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
             : devComm->contextCount;
     if (bufCtxCount < devComm->contextCount)
@@ -493,56 +494,80 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
     }
 
-    // PutValue staging buffer
-    size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
-    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
-         stagingSize);
-    res = deviceAdaptor->deviceMalloc((void **)&devComm->putValueStagingBuffer,
+    // PutValue staging buffer (only needed for inter-node RDMA path)
+    if (devComm->nInterPeers > 0 && comm->heteroComm != nullptr) {
+      size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
+           stagingSize);
+      res =
+          deviceAdaptor->deviceMalloc((void **)&devComm->putValueStagingBuffer,
                                       stagingSize, flagcxMemHost, NULL);
-    if (res != flagcxSuccess) {
-      WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
-      return res;
-    }
-    memset(devComm->putValueStagingBuffer, 0, stagingSize);
-    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
-
-    // Register signal buffer for RDMA one-sided access
-    if (devComm->signalBuffer) {
-      int sigPtrType =
-          flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
-      INFO(FLAGCX_INIT,
-           "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
-           sigPtrType);
-      res = flagcxOneSideSignalRegister(comm, devComm->signalBuffer,
-                                        (size_t)devComm->signalCount *
-                                            bufCtxCount * sizeof(uint64_t),
-                                        sigPtrType);
       if (res != flagcxSuccess) {
-        WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed (%d)",
-             res);
+        WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
         return res;
       }
-      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
-    }
+      memset(devComm->putValueStagingBuffer, 0, stagingSize);
+      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
 
-    // Register staging buffer for PutValue RDMA source
-    if (devComm->putValueStagingBuffer) {
-      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
-      res = flagcxOneSideStagingRegister(comm, devComm->putValueStagingBuffer,
-                                         stagingSize);
-      if (res != flagcxSuccess) {
-        WARN(
-            "defaultDevApiCommCreate: flagcxOneSideStagingRegister failed (%d)",
-            res);
-        return res;
+      // Register signal buffer for RDMA one-sided access
+      if (devComm->signalBuffer) {
+        int sigPtrType =
+            flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
+        INFO(FLAGCX_INIT,
+             "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
+             sigPtrType);
+        res = flagcxOneSideSignalRegister(comm, devComm->signalBuffer,
+                                          (size_t)devComm->signalCount *
+                                              bufCtxCount * sizeof(uint64_t),
+                                          sigPtrType);
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed "
+               "(%d)",
+               res);
+          return res;
+        }
+        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
       }
-      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
+
+      // Register staging buffer for PutValue RDMA source
+      if (devComm->putValueStagingBuffer) {
+        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
+        res = flagcxOneSideStagingRegister(comm, devComm->putValueStagingBuffer,
+                                           stagingSize);
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: flagcxOneSideStagingRegister failed "
+               "(%d)",
+               res);
+          return res;
+        }
+        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
+      }
     }
 
     INFO(FLAGCX_INIT,
          "defaultDevApiCommCreate: one-sided buffers allocated "
          "(signals=%d, counters=%d, contexts=%d)",
          devComm->signalCount, devComm->counterCount, devComm->contextCount);
+  }
+
+  // ==========================================================================
+  // P2P signal/counter IPC setup (intra-node direct atomic fast path)
+  // Only for GDR device memory path (IPC requires device memory).
+  // ==========================================================================
+  if (devComm->signalBuffer && !flagcxParamSignalHostEnable()) {
+    size_t sigSize =
+        (size_t)devComm->signalCount * devComm->contextCount * sizeof(uint64_t);
+    int slot = buildIpcPeerPointers(comm, devComm->signalBuffer, sigSize);
+    if (slot >= 0) {
+      devComm->signalPeerPtrs = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
+      devComm->signalIpcSlot = slot;
+      INFO(FLAGCX_INIT,
+           "defaultDevApiCommCreate: signalPeerPtrs IPC slot=%d ptr=%p", slot,
+           (void *)devComm->signalPeerPtrs);
+    } else {
+      WARN("defaultDevApiCommCreate: signalPeerPtrs IPC exchange failed");
+      // Non-fatal: falls back to Net FIFO path
+    }
   }
 
   // Pre-establish full-mesh connections from main thread
@@ -583,6 +608,27 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     }
     e->inUse = false;
   }
+
+  // ── P2P signal/counter IPC slot cleanup ─────────────────────────────────
+  auto cleanupIpcSlot = [&](int slot) {
+    if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES)
+      return;
+    struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
+    if (e->hostPeerPtrs) {
+      for (int i = 0; i < e->nPeers; i++) {
+        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr)
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
+      }
+      free(e->hostPeerPtrs);
+      e->hostPeerPtrs = nullptr;
+    }
+    if (e->devPeerPtrs) {
+      deviceAdaptor->deviceFree(e->devPeerPtrs, flagcxMemDevice, NULL);
+      e->devPeerPtrs = nullptr;
+    }
+    e->inUse = false;
+  };
+  cleanupIpcSlot(devComm->signalIpcSlot);
 
   // ── Shm path cleanup (FLAGCX_SIGNAL_HOST_ENABLE=1 only) ──────────────
   if (devComm->peerBarrierShmPtrs) {

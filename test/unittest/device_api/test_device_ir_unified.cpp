@@ -142,133 +142,10 @@ int main(int argc, char *argv[]) {
   int prevPeer = (proc + totalProcs - 1) % totalProcs;
 
   // =========================================================================
-  // S16: Unified Put — P2P intra-node
-  // Each rank puts 1024 bytes to next peer's recvBuff.
+  // S19: Unified Barrier — Intra-node sync (size-independent, run once)
   // =========================================================================
   {
-    // Init send buffer with known pattern
-    for (int i = 0; i < 256; i++)
-      hostSend[i] = (float)(proc * 1000 + i);
-    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 1024,
-                                        flagcxMemcpyHostToDevice, stream));
-    FLAGCXCHECK(
-        devHandle->deviceMemset(recvBuff, 0, 1024, flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
     MPI_Barrier(MPI_COMM_WORLD);
-
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                        flagcxMemDevice, stream));
-    launchKernelDevPutS(devCommPtr, recvMemPtr, sendMemPtr, devResults, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    // Need barrier to ensure peer's put is complete before reading
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // Verify: recvBuff should contain prevPeer's data
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 1024,
-                                        flagcxMemcpyDeviceToHost, stream));
-
-    bool s16Pass = true;
-    for (int i = 0; i < 256; i++) {
-      float expected = (float)(prevPeer * 1000 + i);
-      if (hostRecv[i] != expected) {
-        s16Pass = false;
-        break;
-      }
-    }
-    RPRINTF("S16 DevPut(P2P): %s\n", s16Pass ? "PASS" : "FAIL");
-    allPass &= s16Pass;
-  }
-
-  // =========================================================================
-  // S17: Unified Put + Signal + Wait pipeline
-  // Ring: each rank puts data to next peer + signals, waits for prev peer.
-  // Uses P2P fast path for both data and signal delivery.
-  // =========================================================================
-  {
-    for (int i = 0; i < 256; i++)
-      hostSend[i] = (float)(proc * 2000 + i);
-    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 1024,
-                                        flagcxMemcpyHostToDevice, stream));
-    FLAGCXCHECK(
-        devHandle->deviceMemset(recvBuff, 0, 1024, flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                        flagcxMemDevice, stream));
-    launchKernelDevPutSignalWaitS(devCommPtr, recvMemPtr, sendMemPtr,
-                                  devResults,
-                                  /*contextId=*/0, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    // Verify kernel completed (result[0] == 1 means wait succeeded)
-    int hostRes = 0;
-    FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
-                                        flagcxMemcpyDeviceToHost, stream));
-
-    // Also verify data correctness
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 1024,
-                                        flagcxMemcpyDeviceToHost, stream));
-    bool dataOk = true;
-    for (int i = 0; i < 256; i++) {
-      float expected = (float)(prevPeer * 2000 + i);
-      if (hostRecv[i] != expected) {
-        dataOk = false;
-        break;
-      }
-    }
-
-    bool s17Pass = (hostRes == 1) && dataOk;
-    RPRINTF("S17 DevPut+Signal+Wait(P2P): %s%s\n", s17Pass ? "PASS" : "FAIL",
-            (!s17Pass && hostRes != 1) ? " (kernel hung/timeout)" : "");
-    allPass &= s17Pass;
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
-  // =========================================================================
-  // S18: Unified Get — P2P intra-node
-  // Each rank gets 1024 bytes from next peer's sendBuff into local recvBuff.
-  // =========================================================================
-  {
-    // Re-init send with distinct pattern
-    for (int i = 0; i < 256; i++)
-      hostSend[i] = (float)(proc * 3000 + i);
-    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 1024,
-                                        flagcxMemcpyHostToDevice, stream));
-    FLAGCXCHECK(
-        devHandle->deviceMemset(recvBuff, 0, 1024, flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                        flagcxMemDevice, stream));
-    // Get reads from peer's sendMem into local recvMem
-    launchKernelDevGetS(devCommPtr, sendMemPtr, recvMemPtr, devResults, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    // Verify: recvBuff should have peer's send data
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 1024,
-                                        flagcxMemcpyDeviceToHost, stream));
-
-    bool s18Pass = true;
-    for (int i = 0; i < 256; i++) {
-      float expected = (float)(peer * 3000 + i);
-      if (hostRecv[i] != expected) {
-        s18Pass = false;
-        break;
-      }
-    }
-    RPRINTF("S18 DevGet(P2P): %s\n", s18Pass ? "PASS" : "FAIL");
-    allPass &= s18Pass;
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
-  // =========================================================================
-  // S19: Unified Barrier — Intra-node sync
-  // All ranks arrive at intra barrier and complete without deadlock.
-  // =========================================================================
-  {
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                         flagcxMemDevice, stream));
     launchKernelDevBarrierIntraS(devCommPtr, devResults, stream);
@@ -285,8 +162,7 @@ int main(int argc, char *argv[]) {
   }
 
   // =========================================================================
-  // S20: Unified Barrier — World sync (intra + inter)
-  // On single-node (no inter peers), WORLD barrier degrades to intra-only.
+  // S20: Unified Barrier — World sync (size-independent, run once)
   // =========================================================================
   {
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
@@ -305,48 +181,7 @@ int main(int argc, char *argv[]) {
   }
 
   // =========================================================================
-  // S21: Unified Put — Warp-level (fine-grained)
-  // Same as S16 but uses FLAGCX_COOP_WARP with only first warp active.
-  // =========================================================================
-  {
-    for (int i = 0; i < 128; i++)
-      hostSend[i] = (float)(proc * 4000 + i);
-    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 512,
-                                        flagcxMemcpyHostToDevice, stream));
-    FLAGCXCHECK(
-        devHandle->deviceMemset(recvBuff, 0, 512, flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                        flagcxMemDevice, stream));
-    launchKernelDevPutWarpS(devCommPtr, recvMemPtr, sendMemPtr, devResults,
-                            stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // Verify: recvBuff should contain prevPeer's data (512 bytes = 128 floats)
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 512,
-                                        flagcxMemcpyDeviceToHost, stream));
-
-    bool s21Pass = true;
-    for (int i = 0; i < 128; i++) {
-      float expected = (float)(prevPeer * 4000 + i);
-      if (hostRecv[i] != expected) {
-        s21Pass = false;
-        break;
-      }
-    }
-    RPRINTF("S21 DevPut(Warp): %s\n", s21Pass ? "PASS" : "FAIL");
-    allPass &= s21Pass;
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
-  // =========================================================================
-  // S22: Unified Signal — standalone signal + wait
-  // Ring: each rank signals next peer, waits for signal from prev peer.
-  // Tests P2P fast path for signal delivery (Atomic::fetchAdd on IPC buffer).
+  // S22: Unified Signal — standalone signal + wait (size-independent, run once)
   // =========================================================================
   {
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
@@ -364,6 +199,165 @@ int main(int argc, char *argv[]) {
             (!s22Pass) ? " (signal/wait hung)" : "");
     allPass &= s22Pass;
     MPI_Barrier(MPI_COMM_WORLD);
+  }
+
+  // =========================================================================
+  // Main size loop: S16, S17, S18, S21 (data transfer tests)
+  // =========================================================================
+  for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
+    size_t count = size / sizeof(float);
+    if (count == 0)
+      count = 1;
+    size_t bytes = count * sizeof(float);
+
+    if (proc == 0)
+      printf("# Size = %zu bytes, count = %zu\n", bytes, count);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // --- S16: Unified Put — P2P intra-node ---
+    {
+      for (size_t i = 0; i < count; i++)
+        hostSend[i] = (float)(proc * 1000 + (int)i);
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+                                          flagcxMemcpyHostToDevice, stream));
+      FLAGCXCHECK(
+          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                          flagcxMemDevice, stream));
+      launchKernelDevPutS(devCommPtr, recvMemPtr, sendMemPtr, devResults, bytes,
+                          stream);
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+                                          flagcxMemcpyDeviceToHost, stream));
+
+      bool s16Pass = true;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 1000 + (int)i);
+        if (hostRecv[i] != expected) {
+          s16Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S16 DevPut(P2P): %s\n", s16Pass ? "PASS" : "FAIL");
+      allPass &= s16Pass;
+    }
+
+    // --- S17: Unified Put + Signal + Wait pipeline ---
+    {
+      for (size_t i = 0; i < count; i++)
+        hostSend[i] = (float)(proc * 2000 + (int)i);
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+                                          flagcxMemcpyHostToDevice, stream));
+      FLAGCXCHECK(
+          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                          flagcxMemDevice, stream));
+      launchKernelDevPutSignalWaitS(devCommPtr, recvMemPtr, sendMemPtr,
+                                    devResults, bytes, /*contextId=*/0, stream);
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+      int hostRes = 0;
+      FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
+                                          flagcxMemcpyDeviceToHost, stream));
+
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+                                          flagcxMemcpyDeviceToHost, stream));
+      bool dataOk = true;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 2000 + (int)i);
+        if (hostRecv[i] != expected) {
+          dataOk = false;
+          break;
+        }
+      }
+
+      bool s17Pass = (hostRes == 1) && dataOk;
+      RPRINTF("S17 DevPut+Signal+Wait(P2P): %s%s\n", s17Pass ? "PASS" : "FAIL",
+              (!s17Pass && hostRes != 1) ? " (kernel hung/timeout)" : "");
+      allPass &= s17Pass;
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    // --- S18: Unified Get — P2P intra-node ---
+    {
+      for (size_t i = 0; i < count; i++)
+        hostSend[i] = (float)(proc * 3000 + (int)i);
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+                                          flagcxMemcpyHostToDevice, stream));
+      FLAGCXCHECK(
+          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                          flagcxMemDevice, stream));
+      launchKernelDevGetS(devCommPtr, sendMemPtr, recvMemPtr, devResults, bytes,
+                          stream);
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+                                          flagcxMemcpyDeviceToHost, stream));
+
+      bool s18Pass = true;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(peer * 3000 + (int)i);
+        if (hostRecv[i] != expected) {
+          s18Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S18 DevGet(P2P): %s\n", s18Pass ? "PASS" : "FAIL");
+      allPass &= s18Pass;
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    // --- S21: Unified Put — Warp-level (fine-grained) ---
+    {
+      for (size_t i = 0; i < count; i++)
+        hostSend[i] = (float)(proc * 4000 + (int)i);
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+                                          flagcxMemcpyHostToDevice, stream));
+      FLAGCXCHECK(
+          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                          flagcxMemDevice, stream));
+      launchKernelDevPutWarpS(devCommPtr, recvMemPtr, sendMemPtr, devResults,
+                              bytes, stream);
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+                                          flagcxMemcpyDeviceToHost, stream));
+
+      bool s21Pass = true;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 4000 + (int)i);
+        if (hostRecv[i] != expected) {
+          s21Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S21 DevPut(Warp): %s\n", s21Pass ? "PASS" : "FAIL");
+      allPass &= s21Pass;
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    if (proc == 0)
+      printf("#\n");
   }
 
   // =========================================================================
