@@ -147,4 +147,41 @@ void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
 //                               const void *recvMemPtr, size_t countPerPeer,
 //                               flagcxStream_t stream);
 
+// =========================================================================
+// Unified One-Sided IR Tests (S16–S22)
+// =========================================================================
+
+// S16: Unified Put — P2P intra-node
+void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
+                         const void *srcMemPtr, int *devResult,
+                         flagcxStream_t stream);
+
+// S17: Unified Put + Signal + Wait pipeline
+void launchKernelDevPutSignalWaitS(const void *devCommPtr,
+                                   const void *dstMemPtr, const void *srcMemPtr,
+                                   int *devResult, int contextId,
+                                   flagcxStream_t stream);
+
+// S18: Unified Get — P2P intra-node
+void launchKernelDevGetS(const void *devCommPtr, const void *remoteMemPtr,
+                         const void *localMemPtr, int *devResult,
+                         flagcxStream_t stream);
+
+// S19: Unified Barrier — Intra-node sync
+void launchKernelDevBarrierIntraS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream);
+
+// S20: Unified Barrier — World sync (intra + inter)
+void launchKernelDevBarrierWorldS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream);
+
+// S21: Unified Put — Warp-level (fine-grained)
+void launchKernelDevPutWarpS(const void *devCommPtr, const void *dstMemPtr,
+                             const void *srcMemPtr, int *devResult,
+                             flagcxStream_t stream);
+
+// S22: Unified Signal — standalone signal + wait
+void launchKernelDevSignalStandaloneS(const void *devCommPtr, int *devResult,
+                                      int contextId, flagcxStream_t stream);
+
 #endif // TEST_KERNEL_DEVICE_IR_H_

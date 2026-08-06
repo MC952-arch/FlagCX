@@ -150,6 +150,25 @@ struct CommTraits<NcclBackend> {
       return mm;
     }
 
+    // P2P signal/counter support — NCCL GIN does not expose P2P signal path
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pSignalSupport(int /*peer*/) const {
+      return false;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pCounterSupport(int /*peer*/) const {
+      return false;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPeerPtr(int /*peer*/) const {
+      return nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getCounterPeerPtr(int /*peer*/) const {
+      return nullptr;
+    }
+
     // No-op: vendor Comm is populated via devComm pointer cast
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &,

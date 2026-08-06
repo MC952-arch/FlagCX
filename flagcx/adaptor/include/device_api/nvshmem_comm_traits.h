@@ -123,6 +123,23 @@ struct CommTraits<NvshmemBackend> {
       return mm;
     }
 
+    // P2P signal/counter support — NVSHMEM always has P2P capability
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pSignalSupport(int /*peer*/) const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pCounterSupport(int /*peer*/) const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getSignalPeerPtr(int peer) const {
+      return (uint64_t *)nvshmem_ptr((void *)signalBuffer, peer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getCounterPeerPtr(int peer) const {
+      return (uint64_t *)nvshmem_ptr((void *)counterBuffer, peer);
+    }
+
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {

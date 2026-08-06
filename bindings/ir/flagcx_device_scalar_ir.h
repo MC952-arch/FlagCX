@@ -25,6 +25,17 @@
 #include "flagcx.h" /* flagcxDataType_t, flagcxResult_t */
 #include "flagcx_device_enums.h"
 
+/* Deprecation macro for APIs superseded by unified flagcxDev* */
+#ifndef FLAGCX_DEPRECATED
+#if defined(__GNUC__) || defined(__clang__)
+#define FLAGCX_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(_MSC_VER)
+#define FLAGCX_DEPRECATED(msg) __declspec(deprecated(msg))
+#else
+#define FLAGCX_DEPRECATED(msg)
+#endif
+#endif
+
 /* ================================================================
  * Category 1: Comm Queries (4)
  *
@@ -160,18 +171,21 @@ flagcxDataTypeSizeDevice(flagcxDataType_t dt);
  * ================================================================ */
 
 /** @brief Signal arrival at intra-node barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierArrive with FLAGCX_TEAM_INTRA")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxIntraBarrierArriveS(const void *comm, flagcxCoopKind_t coopKind,
                           uint32_t index, bool multimem,
                           flagcxDeviceMemoryOrder_t order);
 
 /** @brief Wait for all peers at intra-node barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierWait with FLAGCX_TEAM_INTRA")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxIntraBarrierWaitS(const void *comm, flagcxCoopKind_t coopKind,
                         uint32_t index, bool multimem,
                         flagcxDeviceMemoryOrder_t order);
 
 /** @brief Arrive + wait (full sync) at intra-node barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_INTRA")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxIntraBarrierSyncS(const void *comm, flagcxCoopKind_t coopKind,
                         uint32_t index, bool multimem,
@@ -188,18 +202,21 @@ flagcxIntraBarrierSyncS(const void *comm, flagcxCoopKind_t coopKind,
  * ================================================================ */
 
 /** @brief Signal arrival at inter-node barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierArrive with FLAGCX_TEAM_INTER")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxInterBarrierArriveS(const void *net, flagcxCoopKind_t coopKind,
                           uint32_t index, flagcxDeviceMemoryOrder_t order,
                           flagcxDevNetFenceLevel fence);
 
 /** @brief Wait for all inter-node peers at barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierWait with FLAGCX_TEAM_INTER")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxInterBarrierWaitS(const void *net, flagcxCoopKind_t coopKind,
                         uint32_t index, flagcxDeviceMemoryOrder_t order,
                         flagcxDevNetFenceLevel fence);
 
 /** @brief Arrive + wait (full sync) at inter-node barrier. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_INTER")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxInterBarrierSyncS(const void *net, flagcxCoopKind_t coopKind,
                         uint32_t index, flagcxDeviceMemoryOrder_t order,
@@ -220,16 +237,19 @@ flagcxInterBarrierSyncS(const void *net, flagcxCoopKind_t coopKind,
  * ================================================================ */
 
 /** @brief Signal arrival at world barrier (intra + inter). */
+FLAGCX_DEPRECATED("use flagcxDevBarrierArrive with FLAGCX_TEAM_WORLD")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierArriveS(
     const void *net, flagcxCoopKind_t coopKind, uint32_t index, bool multimem,
     flagcxDeviceMemoryOrder_t order, flagcxDevNetFenceLevel fence);
 
 /** @brief Wait for all peers at world barrier (intra + inter). */
+FLAGCX_DEPRECATED("use flagcxDevBarrierWait with FLAGCX_TEAM_WORLD")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierWaitS(
     const void *net, flagcxCoopKind_t coopKind, uint32_t index, bool multimem,
     flagcxDeviceMemoryOrder_t order, flagcxDevNetFenceLevel fence);
 
 /** @brief Arrive + wait (full sync) at world barrier (intra + inter). */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_WORLD")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierSyncS(
     const void *net, flagcxCoopKind_t coopKind, uint32_t index, bool multimem,
     flagcxDeviceMemoryOrder_t order, flagcxDevNetFenceLevel fence);
@@ -266,11 +286,13 @@ flagcxDevNetGetFromCommS(const void *comm, int idx);
  * ================================================================ */
 
 /** @brief Read a signal value (non-blocking). */
+FLAGCX_DEPRECATED("use flagcxDevReadSignal")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t
 flagcxDevNetReadSignalS(const void *net, flagcxDevNetSignal_t signalId,
                         int bits, flagcxDeviceMemoryOrder_t order);
 
 /** @brief Spin-wait until signal >= least. */
+FLAGCX_DEPRECATED("use flagcxDevWaitSignal")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetWaitSignalS(const void *net, flagcxCoopKind_t coopKind,
                         flagcxDevNetSignal_t signalId, uint64_t least, int bits,
@@ -283,17 +305,20 @@ flagcxDevNetWaitSignalMeetShadowS(const void *net, flagcxCoopKind_t coopKind,
                                   flagcxDeviceMemoryOrder_t order);
 
 /** @brief Read a counter value (non-blocking). */
+FLAGCX_DEPRECATED("use flagcxDevReadCounter")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t
 flagcxDevNetReadCounterS(const void *net, flagcxDevNetCounter_t counterId,
                          int bits, flagcxDeviceMemoryOrder_t order);
 
 /** @brief Spin-wait until counter >= least. */
+FLAGCX_DEPRECATED("use flagcxDevWaitCounter")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetWaitCounterS(const void *net, flagcxCoopKind_t coopKind,
                          flagcxDevNetCounter_t counterId, uint64_t least,
                          int bits, flagcxDeviceMemoryOrder_t order);
 
 /** @brief Flush pending RDMA/network writes. */
+FLAGCX_DEPRECATED("use flagcxDevFlush")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetFlushS(const void *net, flagcxCoopKind_t coopKind,
                    flagcxDeviceMemoryOrder_t order);
@@ -369,18 +394,21 @@ flagcxDevNetTermS(const void *net, flagcxCoopKind_t coopKind);
  * ================================================================ */
 
 /* (None, None) */
+FLAGCX_DEPRECATED("use flagcxDevPut")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS(const void *net, const void *comm, flagcxTeamKind_t teamKind,
                  int peer, const void *dst, size_t dstOffset, const void *src,
                  size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind);
 
 /* (SigInc, None) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_RSigInc(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
     const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
     size_t bytes, flagcxCoopKind_t coopKind, flagcxDevNetSignal_t remoteSignal);
 
 /* (SigAdd, None) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigAdd")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_RSigAdd(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
     const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
@@ -388,6 +416,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_RSigAdd(
     uint64_t remoteValue);
 
 /* (CtrInc, None) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RCtrInc(const void *net, const void *comm,
                          flagcxTeamKind_t teamKind, int peer, const void *dst,
@@ -396,12 +425,14 @@ flagcxDevNetPutS_RCtrInc(const void *net, const void *comm,
                          flagcxDevNetCounter_t remoteCounter);
 
 /* (None, SigInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_LSigInc(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
     const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
     size_t bytes, flagcxCoopKind_t coopKind, flagcxDevNetSignal_t localSignal);
 
 /* (SigInc, SigInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigInc_LSigInc(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,
@@ -412,6 +443,7 @@ flagcxDevNetPutS_RSigInc_LSigInc(const void *net, const void *comm,
                                  flagcxDevNetSignal_t localSignal);
 
 /* (SigAdd, SigInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigAdd")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigAdd_LSigInc(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
@@ -420,6 +452,7 @@ flagcxDevNetPutS_RSigAdd_LSigInc(
     uint64_t remoteValue, flagcxDevNetSignal_t localSignal);
 
 /* (CtrInc, SigInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RCtrInc_LSigInc(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,
@@ -430,6 +463,7 @@ flagcxDevNetPutS_RCtrInc_LSigInc(const void *net, const void *comm,
                                  flagcxDevNetSignal_t localSignal);
 
 /* (None, SigAdd) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigAdd")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_LSigAdd(const void *net, const void *comm,
                          flagcxTeamKind_t teamKind, int peer, const void *dst,
@@ -438,6 +472,7 @@ flagcxDevNetPutS_LSigAdd(const void *net, const void *comm,
                          flagcxDevNetSignal_t localSignal, uint64_t localValue);
 
 /* (SigInc, SigAdd) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigInc_LSigAdd(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
@@ -446,6 +481,7 @@ flagcxDevNetPutS_RSigInc_LSigAdd(
     flagcxDevNetSignal_t localSignal, uint64_t localValue);
 
 /* (SigAdd, SigAdd) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigAdd")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigAdd_LSigAdd(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
@@ -455,6 +491,7 @@ flagcxDevNetPutS_RSigAdd_LSigAdd(
     uint64_t localValue);
 
 /* (CtrInc, SigAdd) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RCtrInc_LSigAdd(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,
@@ -466,6 +503,7 @@ flagcxDevNetPutS_RCtrInc_LSigAdd(const void *net, const void *comm,
                                  uint64_t localValue);
 
 /* (None, CtrInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_LCtrInc(const void *net, const void *comm,
                          flagcxTeamKind_t teamKind, int peer, const void *dst,
@@ -474,6 +512,7 @@ flagcxDevNetPutS_LCtrInc(const void *net, const void *comm,
                          flagcxDevNetCounter_t localCounter);
 
 /* (SigInc, CtrInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigInc_LCtrInc(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,
@@ -484,6 +523,7 @@ flagcxDevNetPutS_RSigInc_LCtrInc(const void *net, const void *comm,
                                  flagcxDevNetCounter_t localCounter);
 
 /* (SigAdd, CtrInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RSigAdd")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RSigAdd_LCtrInc(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
@@ -492,6 +532,7 @@ flagcxDevNetPutS_RSigAdd_LCtrInc(
     uint64_t remoteValue, flagcxDevNetCounter_t localCounter);
 
 /* (CtrInc, CtrInc) */
+FLAGCX_DEPRECATED("use flagcxDevPut_RCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutS_RCtrInc_LCtrInc(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,

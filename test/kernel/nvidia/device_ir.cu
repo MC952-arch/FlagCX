@@ -1339,3 +1339,180 @@ void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
   kernelNetOneSidedAlltoAllS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
       devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
 }
+
+// ===========================================================================
+// Unified One-Sided IR Tests (S16–S22)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevPut — P2P intra-node
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutS(const void *devCommPtr,
+                              const void *dstMemPtr,
+                              const void *srcMemPtr,
+                              int *result) {
+  int rank = flagcxDevCommGetIntraRank(devCommPtr);
+  int size = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (rank + 1) % size;
+
+  flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/0,
+               srcMemPtr, /*srcOff=*/0, /*bytes=*/1024,
+               FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
+               flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+
+  if (threadIdx.x == 0) result[0] = 1;
+}
+
+void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
+                         const void *srcMemPtr, int *devResult,
+                         flagcxStream_t stream) {
+  kernelDevPutS<<<1, 128, 0, stream->base>>>(devCommPtr, dstMemPtr,
+                                              srcMemPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// S17: flagcxDevPut_RSigInc + flagcxDevWaitSignal — pipeline
+// NOTE: Requires concurrent multi-rank launch (ring dependency).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
+                                        const void *dstMemPtr,
+                                        const void *srcMemPtr,
+                                        int *result, int contextId) {
+  int rank = flagcxDevCommGetIntraRank(devCommPtr);
+  int size = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (rank + 1) % size;
+
+  // Put data to next peer + remote signal
+  flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, 1024,
+                       FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
+                       (flagcxDevNetSignal_t)0, contextId);
+
+  // Wait for data from previous peer
+  flagcxDevWaitSignal(devCommPtr, (flagcxDevNetSignal_t)0, /*least=*/1,
+                      /*bits=*/64, FLAGCX_COOP_BLOCK,
+                      flagcxDeviceMemoryOrderAcquire);
+
+  if (threadIdx.x == 0) result[0] = 1;
+}
+
+void launchKernelDevPutSignalWaitS(const void *devCommPtr,
+                                   const void *dstMemPtr,
+                                   const void *srcMemPtr, int *devResult,
+                                   int contextId, flagcxStream_t stream) {
+  kernelDevPutSignalWaitS<<<1, 128, 0, stream->base>>>(
+      devCommPtr, dstMemPtr, srcMemPtr, devResult, contextId);
+}
+
+// ---------------------------------------------------------------------------
+// S18: flagcxDevGet — P2P intra-node
+// ---------------------------------------------------------------------------
+__global__ void kernelDevGetS(const void *devCommPtr,
+                              const void *remoteMemPtr,
+                              const void *localMemPtr,
+                              int *result) {
+  int rank = flagcxDevCommGetIntraRank(devCommPtr);
+  int size = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (rank + 1) % size;
+
+  flagcxDevGet(devCommPtr, remoteMemPtr, 0, localMemPtr, 0, 1024,
+               FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_BLOCK,
+               flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
+
+  if (threadIdx.x == 0) result[0] = 1;
+}
+
+void launchKernelDevGetS(const void *devCommPtr, const void *remoteMemPtr,
+                         const void *localMemPtr, int *devResult,
+                         flagcxStream_t stream) {
+  kernelDevGetS<<<1, 128, 0, stream->base>>>(devCommPtr, remoteMemPtr,
+                                              localMemPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// S19: flagcxDevBarrierSync — Intra-node
+// ---------------------------------------------------------------------------
+__global__ void kernelDevBarrierIntraS(const void *devCommPtr, int *result) {
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, /*index=*/blockIdx.x,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  if (threadIdx.x == 0) result[blockIdx.x] = 1;
+}
+
+void launchKernelDevBarrierIntraS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream) {
+  kernelDevBarrierIntraS<<<1, 128, 0, stream->base>>>(devCommPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// S20: flagcxDevBarrierSync — World (intra + inter)
+// ---------------------------------------------------------------------------
+__global__ void kernelDevBarrierWorldS(const void *devCommPtr, int *result) {
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_WORLD, /*index=*/blockIdx.x,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  if (threadIdx.x == 0) result[blockIdx.x] = 1;
+}
+
+void launchKernelDevBarrierWorldS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream) {
+  kernelDevBarrierWorldS<<<1, 128, 0, stream->base>>>(devCommPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// S21: flagcxDevPut — Warp-level (fine-grained)
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutWarpS(const void *devCommPtr,
+                                  const void *dstMemPtr,
+                                  const void *srcMemPtr,
+                                  int *result) {
+  int rank = flagcxDevCommGetIntraRank(devCommPtr);
+  int size = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (rank + 1) % size;
+
+  if (threadIdx.x < 32) {
+    flagcxDevPut(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, 512,
+                 FLAGCX_TEAM_INTRA, peer, FLAGCX_COOP_WARP,
+                 flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) result[0] = 1;
+}
+
+void launchKernelDevPutWarpS(const void *devCommPtr, const void *dstMemPtr,
+                             const void *srcMemPtr, int *devResult,
+                             flagcxStream_t stream) {
+  kernelDevPutWarpS<<<1, 128, 0, stream->base>>>(devCommPtr, dstMemPtr,
+                                                   srcMemPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// S22: flagcxDevSignalInc + flagcxDevWaitSignal — standalone signal
+// NOTE: Requires concurrent multi-rank launch (ring dependency).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevSignalStandaloneS(const void *devCommPtr,
+                                           int *result, int contextId) {
+  int rank = flagcxDevCommGetIntraRank(devCommPtr);
+  int size = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (rank + 1) % size;
+
+  // Send signal to next peer
+  if (threadIdx.x == 0) {
+    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
+                       (flagcxDevNetSignal_t)0, FLAGCX_COOP_THREAD,
+                       flagcxDeviceScopeSystem, contextId);
+  }
+
+  // Wait for signal from previous peer
+  flagcxDevWaitSignal(devCommPtr, (flagcxDevNetSignal_t)0, /*least=*/1,
+                      /*bits=*/64, FLAGCX_COOP_BLOCK,
+                      flagcxDeviceMemoryOrderAcquire);
+
+  if (threadIdx.x == 0) result[0] = 1;
+}
+
+void launchKernelDevSignalStandaloneS(const void *devCommPtr, int *devResult,
+                                      int contextId, flagcxStream_t stream) {
+  kernelDevSignalStandaloneS<<<1, 128, 0, stream->base>>>(devCommPtr,
+                                                           devResult, contextId);
+}

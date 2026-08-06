@@ -908,4 +908,13 @@ flagcxDevNetGetS(const void *netOpaque, const void *commOpaque,
   net->get(team, peer, *src, srcOffset, *dst, dstOffset, bytes, coop);
 }
 
+/* ================================================================
+ * Include Unified One-Sided IR implementations
+ *
+ * The unified API builds on top of the scalar IR helpers defined above
+ * (flagcxMakeTeamFromKind, flagcxMakeCoopFromKind, flagcxDevNetGetFromCommS,
+ * barrier functions, etc.).
+ * ================================================================ */
+#include "flagcx_device_unified_ir_impl.h"
+
 #endif /* FLAGCX_DEVICE_SCALAR_IR_IMPL_H_ */

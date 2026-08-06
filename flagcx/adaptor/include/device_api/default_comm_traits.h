@@ -167,6 +167,13 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int counterCount;
     int contextCount;
 
+    // P2P signal/counter delivery (IPC-mapped pointers to each peer's buffers).
+    // signalPeerPtrs[peer] → peer's signalBuffer (nullptr if not P2P-reachable)
+    // counterPeerPtrs[peer] → peer's counterBuffer (nullptr if not
+    // P2P-reachable)
+    uint64_t **signalPeerPtrs;
+    uint64_t **counterPeerPtrs;
+
     FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
       return intraRank;
     }
@@ -182,6 +189,23 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       Multimem mm;
       mm.mcBasePtr = nullptr;
       return mm;
+    }
+
+    // P2P signal/counter support getters
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pSignalSupport(int peer) const {
+      return signalPeerPtrs && signalPeerPtrs[peer] != nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pCounterSupport(int peer) const {
+      return counterPeerPtrs && counterPeerPtrs[peer] != nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getSignalPeerPtr(int peer) const {
+      return signalPeerPtrs ? signalPeerPtrs[peer] : nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getCounterPeerPtr(int peer) const {
+      return counterPeerPtrs ? counterPeerPtrs[peer] : nullptr;
     }
 
     // Populate from host-side handle (deferred template avoids forward-decl)
@@ -207,6 +231,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.signalCount = di.signalCount;
       dc.counterCount = di.counterCount;
       dc.contextCount = di.contextCount;
+      dc.signalPeerPtrs = nullptr; // Populated by host-side IPC setup
+      dc.counterPeerPtrs = nullptr;
     }
   };
 
