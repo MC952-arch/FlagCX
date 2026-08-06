@@ -2,7 +2,7 @@
 hardware_name: cuda
 display_name: CUDA Tests
 
-ci_image: harbor.baai.ac.cn/flagscale/flagscale-train:dev-cu128-py3.12-20260228210721
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
 
 runner_labels:
   - nv-8g-cicd-flagcx
