@@ -391,7 +391,7 @@ flagcxDevNetGetFromCommS(const void *commOpaque, int idx) {
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-flagcxDevNetReadSignalS(const void *netOpaque, flagcxDevNetSignal_t signalId,
+flagcxDevNetReadSignalS(const void *netOpaque, flagcxDevSignal_t signalId,
                         int bits, flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   return net->readSignal(signalId, bits, order);
@@ -399,7 +399,7 @@ flagcxDevNetReadSignalS(const void *netOpaque, flagcxDevNetSignal_t signalId,
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetWaitSignalS(const void *netOpaque, flagcxCoopKind_t coopKind,
-                        flagcxDevNetSignal_t signalId, uint64_t least, int bits,
+                        flagcxDevSignal_t signalId, uint64_t least, int bits,
                         flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
@@ -409,7 +409,7 @@ flagcxDevNetWaitSignalS(const void *netOpaque, flagcxCoopKind_t coopKind,
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetWaitSignalMeetShadowS(const void *netOpaque,
                                   flagcxCoopKind_t coopKind,
-                                  flagcxDevNetSignal_t signalId, int bits,
+                                  flagcxDevSignal_t signalId, int bits,
                                   flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
@@ -417,7 +417,7 @@ flagcxDevNetWaitSignalMeetShadowS(const void *netOpaque,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-flagcxDevNetReadCounterS(const void *netOpaque, flagcxDevNetCounter_t counterId,
+flagcxDevNetReadCounterS(const void *netOpaque, flagcxDevCounter_t counterId,
                          int bits, flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   return net->readCounter(counterId, bits, order);
@@ -425,8 +425,8 @@ flagcxDevNetReadCounterS(const void *netOpaque, flagcxDevNetCounter_t counterId,
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetWaitCounterS(const void *netOpaque, flagcxCoopKind_t coopKind,
-                         flagcxDevNetCounter_t counterId, uint64_t least,
-                         int bits, flagcxDeviceMemoryOrder_t order) {
+                         flagcxDevCounter_t counterId, uint64_t least, int bits,
+                         flagcxDeviceMemoryOrder_t order) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   net->waitCounter(coop, counterId, least, bits, order);
@@ -507,7 +507,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_RSigInc(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetSignal_t remoteSignal) {
+    flagcxDevSignal_t remoteSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -523,7 +523,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_RSigAdd(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue) {
+    flagcxDevSignal_t remoteSignal, uint64_t remoteValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -540,7 +540,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_RCtrInc(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetCounter_t remoteCounter) {
+    flagcxDevCounter_t remoteCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -556,7 +556,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_LSigInc(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetSignal_t localSignal) {
+    flagcxDevSignal_t localSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -574,8 +574,8 @@ flagcxDevNetPutS_RSigInc_LSigInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetSignal_t remoteSignal,
-                                 flagcxDevNetSignal_t localSignal) {
+                                 flagcxDevSignal_t remoteSignal,
+                                 flagcxDevSignal_t localSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -594,9 +594,9 @@ flagcxDevNetPutS_RSigAdd_LSigInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetSignal_t remoteSignal,
+                                 flagcxDevSignal_t remoteSignal,
                                  uint64_t remoteValue,
-                                 flagcxDevNetSignal_t localSignal) {
+                                 flagcxDevSignal_t localSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -615,8 +615,8 @@ flagcxDevNetPutS_RCtrInc_LSigInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetCounter_t remoteCounter,
-                                 flagcxDevNetSignal_t localSignal) {
+                                 flagcxDevCounter_t remoteCounter,
+                                 flagcxDevSignal_t localSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -633,7 +633,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_LSigAdd(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetSignal_t localSignal, uint64_t localValue) {
+    flagcxDevSignal_t localSignal, uint64_t localValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -652,8 +652,8 @@ flagcxDevNetPutS_RSigInc_LSigAdd(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetSignal_t remoteSignal,
-                                 flagcxDevNetSignal_t localSignal,
+                                 flagcxDevSignal_t remoteSignal,
+                                 flagcxDevSignal_t localSignal,
                                  uint64_t localValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -672,8 +672,8 @@ flagcxDevNetPutS_RSigAdd_LSigAdd(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue,
-    flagcxDevNetSignal_t localSignal, uint64_t localValue) {
+    flagcxDevSignal_t remoteSignal, uint64_t remoteValue,
+    flagcxDevSignal_t localSignal, uint64_t localValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -692,8 +692,8 @@ flagcxDevNetPutS_RCtrInc_LSigAdd(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetCounter_t remoteCounter,
-                                 flagcxDevNetSignal_t localSignal,
+                                 flagcxDevCounter_t remoteCounter,
+                                 flagcxDevSignal_t localSignal,
                                  uint64_t localValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -711,7 +711,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_LCtrInc(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,
     size_t srcOffset, size_t bytes, flagcxCoopKind_t coopKind,
-    flagcxDevNetCounter_t localCounter) {
+    flagcxDevCounter_t localCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -729,8 +729,8 @@ flagcxDevNetPutS_RSigInc_LCtrInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetSignal_t remoteSignal,
-                                 flagcxDevNetCounter_t localCounter) {
+                                 flagcxDevSignal_t remoteSignal,
+                                 flagcxDevCounter_t localCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -749,9 +749,9 @@ flagcxDevNetPutS_RSigAdd_LCtrInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetSignal_t remoteSignal,
+                                 flagcxDevSignal_t remoteSignal,
                                  uint64_t remoteValue,
-                                 flagcxDevNetCounter_t localCounter) {
+                                 flagcxDevCounter_t localCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -770,8 +770,8 @@ flagcxDevNetPutS_RCtrInc_LCtrInc(const void *netOpaque, const void *commOpaque,
                                  const void *dstOpaque, size_t dstOffset,
                                  const void *srcOpaque, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevNetCounter_t remoteCounter,
-                                 flagcxDevNetCounter_t localCounter) {
+                                 flagcxDevCounter_t remoteCounter,
+                                 flagcxDevCounter_t localCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -790,8 +790,7 @@ flagcxDevNetPutS_RCtrInc_LCtrInc(const void *netOpaque, const void *commOpaque,
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetSignalSigIncS(const void *netOpaque, const void *commOpaque,
                           flagcxTeamKind_t teamKind, int peer,
-                          flagcxCoopKind_t coopKind,
-                          flagcxDevNetSignal_t signal) {
+                          flagcxCoopKind_t coopKind, flagcxDevSignal_t signal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
@@ -802,8 +801,8 @@ flagcxDevNetSignalSigIncS(const void *netOpaque, const void *commOpaque,
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetSignalSigAddS(const void *netOpaque, const void *commOpaque,
                           flagcxTeamKind_t teamKind, int peer,
-                          flagcxCoopKind_t coopKind,
-                          flagcxDevNetSignal_t signal, uint64_t value) {
+                          flagcxCoopKind_t coopKind, flagcxDevSignal_t signal,
+                          uint64_t value) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
@@ -815,7 +814,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevNetSignalCtrIncS(const void *netOpaque, const void *commOpaque,
                           flagcxTeamKind_t teamKind, int peer,
                           flagcxCoopKind_t coopKind,
-                          flagcxDevNetCounter_t counter) {
+                          flagcxDevCounter_t counter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
@@ -847,7 +846,7 @@ flagcxDevNetPutValueS_RSigInc(const void *netOpaque, const void *commOpaque,
                               flagcxTeamKind_t teamKind, int peer,
                               const void *dstOpaque, size_t dstOffset,
                               uint64_t value, flagcxCoopKind_t coopKind,
-                              flagcxDevNetSignal_t remoteSignal) {
+                              flagcxDevSignal_t remoteSignal) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
@@ -863,7 +862,7 @@ flagcxDevNetPutValueS_RSigAdd(const void *netOpaque, const void *commOpaque,
                               flagcxTeamKind_t teamKind, int peer,
                               const void *dstOpaque, size_t dstOffset,
                               uint64_t value, flagcxCoopKind_t coopKind,
-                              flagcxDevNetSignal_t remoteSignal,
+                              flagcxDevSignal_t remoteSignal,
                               uint64_t remoteAddValue) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -880,7 +879,7 @@ flagcxDevNetPutValueS_RCtrInc(const void *netOpaque, const void *commOpaque,
                               flagcxTeamKind_t teamKind, int peer,
                               const void *dstOpaque, size_t dstOffset,
                               uint64_t value, flagcxCoopKind_t coopKind,
-                              flagcxDevNetCounter_t remoteCounter) {
+                              flagcxDevCounter_t remoteCounter) {
   const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;

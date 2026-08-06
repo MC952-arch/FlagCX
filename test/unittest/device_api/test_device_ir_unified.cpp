@@ -91,8 +91,8 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate send/recv buffers
-  size_t bufSize = maxBytes;
+  // Allocate send/recv buffers (3x for multi-team regions in S16/S17/S18/S21)
+  size_t bufSize = maxBytes * 3;
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_COMM_TRAITS_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
@@ -140,6 +140,12 @@ int main(int argc, char *argv[]) {
   bool allPass = true;
   int peer = (proc + 1) % totalProcs;
   int prevPeer = (proc + totalProcs - 1) % totalProcs;
+  // Team geometry (single-node assumption: intraSize == totalProcs)
+  int intraSize = totalProcs; // adjusted if multi-node
+  int intraRank = proc;       // worldRank == intraRank on single node
+  int intraBase = proc - intraRank;
+  int nNodes = totalProcs / intraSize;
+  int nodeIdx = proc / intraSize;
 
   // =========================================================================
   // S19: Unified Barrier — Intra-node sync (size-independent, run once)
@@ -186,8 +192,7 @@ int main(int argc, char *argv[]) {
   {
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                         flagcxMemDevice, stream));
-    launchKernelDevSignalStandaloneS(devCommPtr, devResults, /*contextId=*/0,
-                                     stream);
+    launchKernelDevSignalStandaloneS(devCommPtr, devResults, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     int hostRes = 0;
@@ -195,8 +200,8 @@ int main(int argc, char *argv[]) {
                                         flagcxMemcpyDeviceToHost, stream));
 
     bool s22Pass = (hostRes == 1);
-    RPRINTF("S22 DevSignal(standalone): %s%s\n", s22Pass ? "PASS" : "FAIL",
-            (!s22Pass) ? " (signal/wait hung)" : "");
+    RPRINTF("S22 DevSignal(INTRA+WORLD+INTER): %s%s\n",
+            s22Pass ? "PASS" : "FAIL", (!s22Pass) ? " (signal/wait hung)" : "");
     allPass &= s22Pass;
     MPI_Barrier(MPI_COMM_WORLD);
   }
@@ -215,14 +220,15 @@ int main(int argc, char *argv[]) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // --- S16: Unified Put — P2P intra-node ---
+    // --- S16: Unified Put — 3 teams (INTRA / WORLD / INTER) ---
     {
-      for (size_t i = 0; i < count; i++)
+      // Fill 3 regions: [0..count), [count..2*count), [2*count..3*count)
+      for (size_t i = 0; i < count * 3; i++)
         hostSend[i] = (float)(proc * 1000 + (int)i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes * 3,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(
-          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, bytes * 3,
+                                          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -234,68 +240,114 @@ int main(int argc, char *argv[]) {
 
       MPI_Barrier(MPI_COMM_WORLD);
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes * 3,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s16Pass = true;
+      // Region 0 (INTRA): data from prevPeer (== prevIntraRank on single-node)
+      int prevIntra = (intraRank + intraSize - 1) % intraSize;
+      int prevIntraWorld = intraBase + prevIntra;
       for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevPeer * 1000 + (int)i);
+        float expected = (float)(prevIntraWorld * 1000 + (int)i);
         if (hostRecv[i] != expected) {
           s16Pass = false;
           break;
         }
       }
-      RPRINTF("S16 DevPut(P2P): %s\n", s16Pass ? "PASS" : "FAIL");
+      // Region 1 (WORLD): data from prevPeer (previous world rank)
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 1000 + (int)(count + i));
+        if (hostRecv[count + i] != expected) {
+          s16Pass = false;
+          break;
+        }
+      }
+      // Region 2 (INTER): data from previous node (self-op if nNodes==1)
+      int prevNode = (nodeIdx + nNodes - 1) % nNodes;
+      int prevNodeWorld =
+          (nNodes > 1) ? (prevNode * intraSize + intraRank) : proc; // self
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevNodeWorld * 1000 + (int)(2 * count + i));
+        if (hostRecv[2 * count + i] != expected) {
+          s16Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S16 DevPut(INTRA+WORLD+INTER): %s\n", s16Pass ? "PASS" : "FAIL");
       allPass &= s16Pass;
     }
 
-    // --- S17: Unified Put + Signal + Wait pipeline ---
+    // --- S17: Unified Put + Signal + Wait pipeline (3 teams) ---
     {
-      for (size_t i = 0; i < count; i++)
+      for (size_t i = 0; i < count * 3; i++)
         hostSend[i] = (float)(proc * 2000 + (int)i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes * 3,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(
-          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, bytes * 3,
+                                          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       launchKernelDevPutSignalWaitS(devCommPtr, recvMemPtr, sendMemPtr,
-                                    devResults, bytes, /*contextId=*/0, stream);
+                                    devResults, bytes, stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
       int hostRes = 0;
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes * 3,
                                           flagcxMemcpyDeviceToHost, stream));
       bool dataOk = true;
+      // Region 0 (INTRA): from previous intra-rank
+      int prevIntra17 = (intraRank + intraSize - 1) % intraSize;
+      int prevIntraWorld17 = intraBase + prevIntra17;
       for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevPeer * 2000 + (int)i);
+        float expected = (float)(prevIntraWorld17 * 2000 + (int)i);
         if (hostRecv[i] != expected) {
+          dataOk = false;
+          break;
+        }
+      }
+      // Region 1 (WORLD): from previous world-rank
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 2000 + (int)(count + i));
+        if (hostRecv[count + i] != expected) {
+          dataOk = false;
+          break;
+        }
+      }
+      // Region 2 (INTER): from previous node (self if nNodes==1)
+      int prevNode17 = (nodeIdx + nNodes - 1) % nNodes;
+      int prevNodeWorld17 =
+          (nNodes > 1) ? (prevNode17 * intraSize + intraRank) : proc;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevNodeWorld17 * 2000 + (int)(2 * count + i));
+        if (hostRecv[2 * count + i] != expected) {
           dataOk = false;
           break;
         }
       }
 
       bool s17Pass = (hostRes == 1) && dataOk;
-      RPRINTF("S17 DevPut+Signal+Wait(P2P): %s%s\n", s17Pass ? "PASS" : "FAIL",
+      RPRINTF("S17 DevPut+Signal+Wait(INTRA+WORLD+INTER): %s%s\n",
+              s17Pass ? "PASS" : "FAIL",
               (!s17Pass && hostRes != 1) ? " (kernel hung/timeout)" : "");
       allPass &= s17Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    // --- S18: Unified Get — P2P intra-node ---
+    // --- S18: Unified Get — 3 teams (INTRA / WORLD / INTER) ---
     {
-      for (size_t i = 0; i < count; i++)
+      // Fill send buffer (source for Get) with 3 regions
+      for (size_t i = 0; i < count * 3; i++)
         hostSend[i] = (float)(proc * 3000 + (int)i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes * 3,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(
-          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, bytes * 3,
+                                          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -305,30 +357,52 @@ int main(int argc, char *argv[]) {
                           stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes * 3,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s18Pass = true;
+      // Region 0 (INTRA): got from next intra-rank
+      int nextIntra = (intraRank + 1) % intraSize;
+      int nextIntraWorld = intraBase + nextIntra;
       for (size_t i = 0; i < count; i++) {
-        float expected = (float)(peer * 3000 + (int)i);
+        float expected = (float)(nextIntraWorld * 3000 + (int)i);
         if (hostRecv[i] != expected) {
           s18Pass = false;
           break;
         }
       }
-      RPRINTF("S18 DevGet(P2P): %s\n", s18Pass ? "PASS" : "FAIL");
+      // Region 1 (WORLD): got from next world-rank
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(peer * 3000 + (int)(count + i));
+        if (hostRecv[count + i] != expected) {
+          s18Pass = false;
+          break;
+        }
+      }
+      // Region 2 (INTER): got from next node (self if nNodes==1)
+      int nextNode = (nodeIdx + 1) % nNodes;
+      int nextNodeWorld =
+          (nNodes > 1) ? (nextNode * intraSize + intraRank) : proc;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(nextNodeWorld * 3000 + (int)(2 * count + i));
+        if (hostRecv[2 * count + i] != expected) {
+          s18Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S18 DevGet(INTRA+WORLD+INTER): %s\n", s18Pass ? "PASS" : "FAIL");
       allPass &= s18Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    // --- S21: Unified Put — Warp-level (fine-grained) ---
+    // --- S21: Unified Put — Warp-level (3 teams, fine-grained) ---
     {
-      for (size_t i = 0; i < count; i++)
+      for (size_t i = 0; i < count * 3; i++)
         hostSend[i] = (float)(proc * 4000 + (int)i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, bytes * 3,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(
-          devHandle->deviceMemset(recvBuff, 0, bytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, bytes * 3,
+                                          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -340,24 +414,113 @@ int main(int argc, char *argv[]) {
 
       MPI_Barrier(MPI_COMM_WORLD);
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, bytes * 3,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s21Pass = true;
+      // Region 0 (INTRA warp): from previous intra-rank
+      int prevIntra21 = (intraRank + intraSize - 1) % intraSize;
+      int prevIntraWorld21 = intraBase + prevIntra21;
       for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevPeer * 4000 + (int)i);
+        float expected = (float)(prevIntraWorld21 * 4000 + (int)i);
         if (hostRecv[i] != expected) {
           s21Pass = false;
           break;
         }
       }
-      RPRINTF("S21 DevPut(Warp): %s\n", s21Pass ? "PASS" : "FAIL");
+      // Region 1 (WORLD warp): from previous world-rank
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevPeer * 4000 + (int)(count + i));
+        if (hostRecv[count + i] != expected) {
+          s21Pass = false;
+          break;
+        }
+      }
+      // Region 2 (INTER warp): from previous node (self if nNodes==1)
+      int prevNode21 = (nodeIdx + nNodes - 1) % nNodes;
+      int prevNodeWorld21 =
+          (nNodes > 1) ? (prevNode21 * intraSize + intraRank) : proc;
+      for (size_t i = 0; i < count; i++) {
+        float expected = (float)(prevNodeWorld21 * 4000 + (int)(2 * count + i));
+        if (hostRecv[2 * count + i] != expected) {
+          s21Pass = false;
+          break;
+        }
+      }
+      RPRINTF("S21 DevPut(Warp,INTRA+WORLD+INTER): %s\n",
+              s21Pass ? "PASS" : "FAIL");
       allPass &= s21Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
     if (proc == 0)
       printf("#\n");
+  }
+
+  // =========================================================================
+  // S23: Team-resolution correctness test (size-independent, run once)
+  // =========================================================================
+  {
+    MPI_Barrier(MPI_COMM_WORLD);
+    // S23 needs space for (intraSize + totalProcs + nNodes) floats in recvBuff
+    size_t s23Size = ((size_t)intraSize + (size_t)totalProcs + (size_t)nNodes) *
+                     sizeof(float);
+
+    // Pre-fill sendBuff[0] = my world rank as tag
+    float myTag = (float)proc;
+    FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
+                                        flagcxMemcpyHostToDevice, stream));
+    FLAGCXCHECK(
+        devHandle->deviceMemset(recvBuff, 0, s23Size, flagcxMemDevice, stream));
+    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
+                                        flagcxMemDevice, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    launchKernelDevTeamResolutionS(devCommPtr, recvMemPtr, sendMemPtr,
+                                   devResults, stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    int hostRes = 0;
+    FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
+                                        flagcxMemcpyDeviceToHost, stream));
+
+    // Host-side verification: read recvBuff and check tags
+    float *s23Recv = new float[intraSize + totalProcs + nNodes];
+    FLAGCXCHECK(devHandle->deviceMemcpy(s23Recv, recvBuff, s23Size,
+                                        flagcxMemcpyDeviceToHost, stream));
+
+    bool s23Pass = (hostRes == 1);
+    // INTRA region: slot[prevIntraRank] should contain prevIntraRank's world
+    // rank
+    int prevIntra23 = (intraRank + intraSize - 1) % intraSize;
+    float expectedIntra23 = (float)(intraBase + prevIntra23);
+    if (s23Recv[prevIntra23] != expectedIntra23)
+      s23Pass = false;
+
+    // WORLD region: slot[prevWorldRank] should contain prevWorldRank
+    int prevWorld23 = (proc + totalProcs - 1) % totalProcs;
+    float expectedWorld23 = (float)prevWorld23;
+    if (s23Recv[intraSize + prevWorld23] != expectedWorld23)
+      s23Pass = false;
+
+    // INTER region: slot[prevNodeIdx] should contain prevNode's world rank
+    int prevNode23 = (nodeIdx + nNodes - 1) % nNodes;
+    float expectedInter23;
+    if (nNodes > 1)
+      expectedInter23 = (float)(prevNode23 * intraSize + intraRank);
+    else
+      expectedInter23 = (float)proc; // self-op
+    if (s23Recv[intraSize + totalProcs + prevNode23] != expectedInter23)
+      s23Pass = false;
+
+    RPRINTF("S23 TeamResolution(INTRA+WORLD+INTER): %s\n",
+            s23Pass ? "PASS" : "FAIL");
+    allPass &= s23Pass;
+    delete[] s23Recv;
+    MPI_Barrier(MPI_COMM_WORLD);
   }
 
   // =========================================================================

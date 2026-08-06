@@ -823,7 +823,8 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       return flagcxSystemError;
     }
     kWin->populateFromHost(win, devMem->rawPtr, devMem->intraRank,
-                           devMem->mrIndex, devMem->mrBase, devMem->ipcIndex,
+                           comm ? comm->localRanks : 1, devMem->mrIndex,
+                           devMem->mrBase, devMem->ipcIndex,
                            (devMem->ipcIndex >= 0 && comm)
                                ? comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                                : nullptr);

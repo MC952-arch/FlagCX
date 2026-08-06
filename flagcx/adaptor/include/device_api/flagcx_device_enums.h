@@ -41,4 +41,14 @@ typedef enum {
   FLAGCX_TEAM_WORLD = 2, /* All ranks */
 } flagcxTeamKind_t;
 
+/* ================================================================
+ * Device API Slot Identifiers
+ *
+ * Opaque slot types for signal, counter, and context IDs.
+ * These are simple uint32_t indices used across all device APIs.
+ * ================================================================ */
+typedef uint32_t flagcxDevSignal_t;
+typedef uint32_t flagcxDevCounter_t;
+typedef uint32_t flagcxDevContext_t;
+
 #endif /* FLAGCX_DEVICE_ENUMS_H_ */

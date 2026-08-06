@@ -343,7 +343,7 @@ struct CommTraits<NcclBackend> {
     // --- One-sided: waitSignal ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevNetSignal_t signal, uint64_t least, int bits,
+    waitSignal(Coop coop, flagcxDevSignal_t signal, uint64_t least, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignal(coop._impl, signal, least, bits,
                       Atomic::toNativeOrder(order));
@@ -351,7 +351,7 @@ struct CommTraits<NcclBackend> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signal, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signal, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalMeetShadow(coop._impl, signal, bits,
                                 Atomic::toNativeOrder(order));
@@ -359,8 +359,8 @@ struct CommTraits<NcclBackend> {
 
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signal,
-                           Uint leastDelta, Uint *before, Uint *delta, int bits,
+    waitSignalFollowShadow(Coop coop, flagcxDevSignal_t signal, Uint leastDelta,
+                           Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalFollowShadow(coop._impl, signal, leastDelta, before, delta,
                                   bits, Atomic::toNativeOrder(order));
@@ -368,43 +368,43 @@ struct CommTraits<NcclBackend> {
 
     // --- Shadow manipulation ---
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevNetSignal_t signal) const {
+    getSignalShadowPtr(flagcxDevSignal_t signal) const {
       return _gin.getSignalShadowPtr(signal);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevNetSignal_t signal, uint64_t delta) const {
+    increaseSignalShadow(flagcxDevSignal_t signal, uint64_t delta) const {
       _gin.increaseSignalShadow(signal, delta);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevNetSignal_t signal, int bits,
+    readSignal(flagcxDevSignal_t signal, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       return _gin.readSignal(signal, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevNetSignal_t signal) const {
+    resetSignal(flagcxDevSignal_t signal) const {
       _gin.resetSignal(signal);
     }
 
     // --- Counter ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevNetCounter_t counter, uint64_t least,
-                int bits, flagcxDeviceMemoryOrder_t order) const {
+    waitCounter(Coop coop, flagcxDevCounter_t counter, uint64_t least, int bits,
+                flagcxDeviceMemoryOrder_t order) const {
       _gin.waitCounter(coop._impl, counter, least, bits,
                        Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevNetCounter_t counter, int bits,
+    readCounter(flagcxDevCounter_t counter, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       return _gin.readCounter(counter, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevNetCounter_t counter) const {
+    resetCounter(flagcxDevCounter_t counter) const {
       _gin.resetCounter(counter);
     }
 

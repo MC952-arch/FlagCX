@@ -13,6 +13,7 @@
 #ifndef TEST_KERNEL_DEVICE_IR_H_
 #define TEST_KERNEL_DEVICE_IR_H_
 
+#include "device_api/flagcx_device_enums.h"
 #include "flagcx.h"
 
 // =========================================================================
@@ -159,7 +160,7 @@ void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
 // S17: Unified Put + Signal + Wait pipeline
 void launchKernelDevPutSignalWaitS(const void *devCommPtr,
                                    const void *dstMemPtr, const void *srcMemPtr,
-                                   int *devResult, size_t bytes, int contextId,
+                                   int *devResult, size_t bytes,
                                    flagcxStream_t stream);
 
 // S18: Unified Get — P2P intra-node
@@ -182,6 +183,12 @@ void launchKernelDevPutWarpS(const void *devCommPtr, const void *dstMemPtr,
 
 // S22: Unified Signal — standalone signal + wait
 void launchKernelDevSignalStandaloneS(const void *devCommPtr, int *devResult,
-                                      int contextId, flagcxStream_t stream);
+                                      flagcxStream_t stream);
+
+// S23: Team-resolution correctness test
+void launchKernelDevTeamResolutionS(const void *devCommPtr,
+                                    const void *dstMemPtr,
+                                    const void *srcMemPtr, int *devResult,
+                                    flagcxStream_t stream);
 
 #endif // TEST_KERNEL_DEVICE_IR_H_

@@ -48,6 +48,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     void *mcBasePtr;    // Multicast base (nullable, SYMMETRIC mode only)
     void **ipcBasePtrs; // IPC peer pointers (ASYMMETRIC mode, nullable)
     int intraRank;      // Local rank index
+    int intraSize;      // Number of local ranks (bounds for ipcBasePtrs)
     uintptr_t mrBase;   // MR base VA (inter-node, orthogonal to mode)
     int mrIndex;        // MR table index (-1 if none)
     void *rawPtr;       // Raw pointer fallback (for getLocalPointer)
@@ -59,6 +60,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         return (char *)flatBasePtr + (size_t)index * allocSize + offset;
       } else if (ipcBasePtrs) {
         int index = team.rank + (peer - team.rank) * team.stride;
+        if (index < 0 || index >= intraSize)
+          return nullptr; // Not a local peer — fall through to Net
         return (char *)ipcBasePtrs[index] + offset;
       }
       return nullptr;
@@ -111,10 +114,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 #ifndef __CUDACC__
     // Host-side population from flagcxWindow_t (sym heap or IPC).
     void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
-                          int mrIndex_, uintptr_t mrBase_, int ipcIndex_,
-                          void **ipcDevPeerPtrs_) {
+                          int intraSize_, int mrIndex_, uintptr_t mrBase_,
+                          int ipcIndex_, void **ipcDevPeerPtrs_) {
       rawPtr = rawPtr_;
       intraRank = intraRank_;
+      intraSize = intraSize_;
       mrBase = mrBase_;
       mrIndex = mrIndex_;
 
@@ -603,29 +607,36 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return a.counter;
     }
 
+    // ---- Team-scoped peer → world rank resolution ----
+    FLAGCX_DEVICE_INLINE_DECORATOR int teamRankToWorld(Team team,
+                                                       int peer) const {
+      return _dc.rank + (peer - team.rank) * team.stride;
+    }
+
     // ---- One-sided: put (raw Window) ----
     template <typename RA, typename LA, typename Coop, typename Desc>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     put(Team team, int peer, Window dst, size_t dstOff, Window src,
         size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
         flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
+      int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
         size_t srcDataOff = toDataOffset(src, srcOff);
         size_t dstDataOff = toDataOffset(dst, dstOff);
         if (canFuseSignal(ra)) {
           enqueueFifoPutSignal(srcDataOff, dstDataOff, bytes, getSignalIdx(ra),
-                               getSignalValue(ra), peer, src.getMrIndex(),
+                               getSignalValue(ra), worldPeer, src.getMrIndex(),
                                dst.getMrIndex());
         } else {
-          enqueueFifoPut(srcDataOff, dstDataOff, bytes, peer, src.getMrIndex(),
-                         dst.getMrIndex());
+          enqueueFifoPut(srcDataOff, dstDataOff, bytes, worldPeer,
+                         src.getMrIndex(), dst.getMrIndex());
           if (isSignal(ra))
-            enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), peer, 0);
+            enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer,
+                              0);
         }
         if (isCounter(la))
           enqueueFifoSignal(getCounterIdx(la), 1, 0, 1);
@@ -638,13 +649,13 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     get(Team team, int peer, Window src, size_t srcOff, Window dst,
         size_t dstOff, size_t bytes, Coop coop) const {
-      (void)team;
+      int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
         size_t srcDataOff = toDataOffset(src, srcOff);
         size_t dstDataOff = toDataOffset(dst, dstOff);
-        enqueueFifoGet(srcDataOff, dstDataOff, bytes, peer, src.getMrIndex(),
-                       dst.getMrIndex());
+        enqueueFifoGet(srcDataOff, dstDataOff, bytes, worldPeer,
+                       src.getMrIndex(), dst.getMrIndex());
       }
       coop.sync();
     }
@@ -655,17 +666,17 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     putValue(Team team, int peer, Window dst, size_t dstOff, T value, RA ra,
              Coop coop, Desc desc, flagcxDeviceScope_t ar,
              flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
+      int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
         size_t dstDataOff = toDataOffset(dst, dstOff);
-        enqueueFifoPutValue(dstDataOff, (uint64_t)value, peer,
+        enqueueFifoPutValue(dstDataOff, (uint64_t)value, worldPeer,
                             dst.getMrIndex());
         if (isSignal(ra))
-          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), peer, 0);
+          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer, 0);
       }
       coop.sync();
     }
@@ -675,14 +686,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signal(Team team, int peer, RA ra, Coop coop, Desc desc,
            flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
+      int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
         if (isSignal(ra))
-          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), peer, 0);
+          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer, 0);
       }
       coop.sync();
     }
@@ -702,8 +713,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     // ---- waitSignal: GPU spin on signalBuffer[ctx*N+id] ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevNetSignal_t signalId, uint64_t least,
-               int bits, flagcxDeviceMemoryOrder_t order) const {
+    waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
       coop.sync();
@@ -720,7 +731,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signalId, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signalId, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       int idx = contextId * signalCount + (int)signalId;
       uint64_t shadow = ((volatile uint64_t *)shadowBuffer)[idx];
@@ -729,7 +740,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signalId, Uint delta,
+    waitSignalFollowShadow(Coop coop, flagcxDevSignal_t signalId, Uint delta,
                            Uint *outSignalValue, Uint *outShadowValue, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       int idx = contextId * signalCount + (int)signalId;
@@ -745,17 +756,17 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     // ---- Shadow manipulation ----
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevNetSignal_t signalId) const {
+    getSignalShadowPtr(flagcxDevSignal_t signalId) const {
       return &shadowBuffer[contextId * signalCount + (int)signalId];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevNetSignal_t signalId, uint64_t delta) const {
+    increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
       shadowBuffer[contextId * signalCount + (int)signalId] += delta;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevNetSignal_t signalId, int bits,
+    readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -764,7 +775,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevNetSignal_t signalId) const {
+    resetSignal(flagcxDevSignal_t signalId) const {
       int idx = contextId * signalCount + (int)signalId;
       Atomic::store(&signalBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
@@ -773,7 +784,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     // ---- Counter: GPU spin on counterBuffer[ctx*N+id] ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevNetCounter_t counterId, uint64_t least,
+    waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -790,7 +801,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevNetCounter_t counterId, int bits,
+    readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -799,7 +810,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevNetCounter_t counterId) const {
+    resetCounter(flagcxDevCounter_t counterId) const {
       int idx = contextId * counterCount + (int)counterId;
       Atomic::store(&counterBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);

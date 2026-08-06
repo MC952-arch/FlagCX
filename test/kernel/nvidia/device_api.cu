@@ -676,7 +676,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
       net.signal(flagcxTeamWorld(devComm), peer,
                  flagcxDevNet_SignalInc{2}, flagcxCoopThread{});
     uint64_t before, delta;
-    net.waitSignalFollowShadow(flagcxCoopBlock{}, (flagcxDevNetSignal_t)2,
+    net.waitSignalFollowShadow(flagcxCoopBlock{}, (flagcxDevSignal_t)2,
                                 (uint64_t)nRanks, &before, &delta);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
@@ -700,13 +700,13 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      net.increaseSignalShadow((flagcxDevNetSignal_t)2, (uint64_t)nRanks);
+      net.increaseSignalShadow((flagcxDevSignal_t)2, (uint64_t)nRanks);
       __threadfence();
     }
     for (int peer = tid; peer < nRanks; peer += nthreads)
       net.signal(flagcxTeamWorld(devComm), peer,
                  flagcxDevNet_SignalInc{2}, flagcxCoopThread{});
-    net.waitSignalMeetShadow(flagcxCoopBlock{}, (flagcxDevNetSignal_t)2);
+    net.waitSignalMeetShadow(flagcxCoopBlock{}, (flagcxDevSignal_t)2);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
     flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
