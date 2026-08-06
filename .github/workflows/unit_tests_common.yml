@@ -63,6 +63,7 @@ jobs:
 
       - name: Checkout submodules
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
           git submodule sync --recursive
