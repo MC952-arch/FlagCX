@@ -102,16 +102,17 @@ run_device_api() {
 
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
   case "$SUITE" in
     adaptor|core|p2p|service)
-      make -C "$suite_dir" run-unit
+      make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     rma)
-      make -C "$suite_dir" run-mpi
+      make -C "$suite_dir" run-mpi "${args[@]}"
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
-      make -C "$suite_dir" run-unit
+      make -C "$suite_dir" run-unit "${args[@]}"
       cd "$suite_dir"
       mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         ./build/bin/runner_mpi_tests
