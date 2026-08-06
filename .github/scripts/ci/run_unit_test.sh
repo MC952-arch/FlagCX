@@ -104,8 +104,12 @@ run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
   case "$SUITE" in
-    adaptor|core|p2p|service)
+    adaptor|core|service)
       make -C "$suite_dir" run-unit "${args[@]}"
+      ;;
+    p2p)
+      FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+        make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     rma)
       make -C "$suite_dir" run-mpi "${args[@]}"
