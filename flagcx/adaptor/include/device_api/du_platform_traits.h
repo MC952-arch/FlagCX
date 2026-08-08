@@ -290,6 +290,19 @@ struct PlatformTraits<DuPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const { return lmask; }
   };
 
+  struct CoopGrid {
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X + FLAGCX_THREAD_IDX_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      return FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      // No-op: grid sync not needed for memcpy striping
+      // Avoids requirement for cooperative kernel launch
+    }
+  };
+
   using CoopAny = PlatformCoop;
 };
 

@@ -409,7 +409,20 @@ struct flagcxCoopLanes {
   }
 };
 
-// ---- 6g. flagcxCoopAny — type-erased cooperative group ----
+// ---- 6g. flagcxCoopGrid — grid-level cooperation (all blocks) ----
+struct flagcxCoopGrid {
+  typename DeviceAPI::CoopGrid _base;
+
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopGrid() : _base() {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+    return _base.threadRank();
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
+};
+
+// ---- 6h. flagcxCoopAny — type-erased cooperative group ----
 struct flagcxCoopAny {
   typename DeviceAPI::CoopAny _base;
 
@@ -425,6 +438,8 @@ struct flagcxCoopAny {
       : _base(s._base) {}
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopLanes l)
       : _base(l._base) {}
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopGrid g)
+      : _base(g._base) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
     return _base.threadRank();

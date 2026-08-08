@@ -126,6 +126,11 @@ struct PlatformTraits<DefaultPlatform> {
     int size() const { return 1; }
     void sync() {}
   };
+  struct CoopGrid {
+    int threadRank() const { return 0; }
+    int size() const { return 1; }
+    void sync() {}
+  };
   using CoopAny = PlatformCoop;
 };
 

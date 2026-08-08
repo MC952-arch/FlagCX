@@ -244,6 +244,9 @@ int main(int argc, char *argv[]) {
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s16Pass = true;
+      int s16FailRegion = -1;
+      size_t s16FailIdx = 0;
+      float s16FailExpected = 0, s16FailActual = 0;
       // Region 0 (INTRA): data from prevPeer (== prevIntraRank on single-node)
       int prevIntra = (intraRank + intraSize - 1) % intraSize;
       int prevIntraWorld = intraBase + prevIntra;
@@ -251,29 +254,64 @@ int main(int argc, char *argv[]) {
         float expected = (float)(prevIntraWorld * 1000 + (int)i);
         if (hostRecv[i] != expected) {
           s16Pass = false;
+          s16FailRegion = 0;
+          s16FailIdx = i;
+          s16FailExpected = expected;
+          s16FailActual = hostRecv[i];
           break;
         }
       }
       // Region 1 (WORLD): data from prevPeer (previous world rank)
-      for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevPeer * 1000 + (int)(count + i));
-        if (hostRecv[count + i] != expected) {
-          s16Pass = false;
-          break;
+      if (s16Pass) {
+        for (size_t i = 0; i < count; i++) {
+          float expected = (float)(prevPeer * 1000 + (int)(count + i));
+          if (hostRecv[count + i] != expected) {
+            s16Pass = false;
+            s16FailRegion = 1;
+            s16FailIdx = i;
+            s16FailExpected = expected;
+            s16FailActual = hostRecv[count + i];
+            break;
+          }
         }
       }
       // Region 2 (INTER): data from previous node (self-op if nNodes==1)
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevNodeWorld =
           (nNodes > 1) ? (prevNode * intraSize + intraRank) : proc; // self
-      for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevNodeWorld * 1000 + (int)(2 * count + i));
-        if (hostRecv[2 * count + i] != expected) {
-          s16Pass = false;
-          break;
+      if (s16Pass) {
+        for (size_t i = 0; i < count; i++) {
+          float expected = (float)(prevNodeWorld * 1000 + (int)(2 * count + i));
+          if (hostRecv[2 * count + i] != expected) {
+            s16Pass = false;
+            s16FailRegion = 2;
+            s16FailIdx = i;
+            s16FailExpected = expected;
+            s16FailActual = hostRecv[2 * count + i];
+            break;
+          }
         }
       }
-      RPRINTF("S16 DevPut(INTRA+WORLD+INTER): %s\n", s16Pass ? "PASS" : "FAIL");
+      if (!s16Pass) {
+        RPRINTF("S16 DevPut(INTRA+WORLD+INTER): FAIL region=%d idx=%zu "
+                "expected=%f actual=%f (prevIntraWorld=%d prevPeer=%d "
+                "prevNodeWorld=%d count=%zu)\n",
+                s16FailRegion, s16FailIdx, s16FailExpected, s16FailActual,
+                prevIntraWorld, prevPeer, prevNodeWorld, count);
+        // Dump first 8 values of each region
+        RPRINTF("  INTRA recv[0..7]: ");
+        for (int d = 0; d < 8 && d < (int)count; d++)
+          RPRINTF("%f ", hostRecv[d]);
+        RPRINTF("\n  WORLD recv[0..7]: ");
+        for (int d = 0; d < 8 && d < (int)count; d++)
+          RPRINTF("%f ", hostRecv[count + d]);
+        RPRINTF("\n  INTER recv[0..7]: ");
+        for (int d = 0; d < 8 && d < (int)count; d++)
+          RPRINTF("%f ", hostRecv[2 * count + d]);
+        RPRINTF("\n");
+      } else {
+        RPRINTF("S16 DevPut(INTRA+WORLD+INTER): PASS\n");
+      }
       allPass &= s16Pass;
     }
 

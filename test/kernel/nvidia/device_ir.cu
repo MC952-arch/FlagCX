@@ -1385,23 +1385,68 @@ __global__ void kernelDevPutS(const void *devCommPtr,
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
+  // DEBUG: print CoopGrid info from each block
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    flagcxCoopAny gridCoop = flagcxMakeCoopFromKind(FLAGCX_COOP_GRID);
+    printf("[rank %d blk %d] S16 GRID: threadRank=%d size=%d gridDim=%d blockDim=%d nContexts=%d bytes=%zu n4=%zu\n",
+           worldRank, (int)FLAGCX_BLOCK_IDX_X,
+           gridCoop.threadRank(), gridCoop.size(),
+           (int)FLAGCX_GRID_DIM_X, (int)FLAGCX_BLOCK_DIM_X,
+           nContexts, bytes, bytes / 4);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+
+  // DEBUG: verify peerPtr from each block (not just block 0)
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    const flagcxDevMem *dst = (const flagcxDevMem *)dstMemPtr;
+    flagcxTeam team = flagcxMakeTeamFromKind(*comm, FLAGCX_TEAM_INTRA);
+    void *peerPtr = flagcxGetPeerPointer(*dst, 0, team, intraPeer);
+    printf("[rank %d blk %d] S16 peerPtr(INTRA,peer=%d)=%p\n",
+           worldRank, (int)FLAGCX_BLOCK_IDX_X, intraPeer, peerPtr);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+
   flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/0,
                srcMemPtr, /*srcOff=*/0, bytes,
-               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+
+  // DEBUG: after INTRA put, check what was written (from block 0 only)
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    __threadfence_system();
+    // Check local recvBuff (what the PREVIOUS rank wrote to us)
+    const flagcxDevMem *dst = (const flagcxDevMem *)dstMemPtr;
+    float *localRecv = (float *)flagcxGetLocalPointer(*dst, 0);
+    printf("[rank %d] S16 POST-INTRA localRecv: [0]=%f [1]=%f [last]=%f\n",
+           worldRank, localRecv[0], localRecv[1], localRecv[bytes/4 - 1]);
+    // Check what we wrote to peer (read via peerPtr)
+    flagcxTeam team = flagcxMakeTeamFromKind(*comm, FLAGCX_TEAM_INTRA);
+    float *peerRecv = (float *)flagcxGetPeerPointer(*dst, 0, team, intraPeer);
+    if (peerRecv) {
+      printf("[rank %d] S16 POST-INTRA peerRecv: [0]=%f [1]=%f [last]=%f\n",
+             worldRank, peerRecv[0], peerRecv[1], peerRecv[bytes/4 - 1]);
+    }
+    // Also check src to verify what we SHOULD have written
+    const flagcxDevMem *src = (const flagcxDevMem *)srcMemPtr;
+    float *localSrc = (float *)flagcxGetLocalPointer(*src, 0);
+    printf("[rank %d] S16 SRC: [0]=%f [1]=%f [last]=%f\n",
+           worldRank, localSrc[0], localSrc[1], localSrc[bytes/4 - 1]);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // --- WORLD team: peer = next world-rank ---
   int worldPeer = (worldRank + 1) % nRanks;
   flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/bytes,
                srcMemPtr, /*srcOff=*/bytes, bytes,
-               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
   // --- INTER team: peer = next node-index (self-op if nNodes==1) ---
-  int interPeer = (nodeIdx + 1) % nNodes;
+  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
   flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/2 * bytes,
                srcMemPtr, /*srcOff=*/2 * bytes, bytes,
-               FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
   // Flush to ensure all FIFO operations complete before kernel returns
@@ -1467,7 +1512,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   // --- INTRA: put + signal slot 0 ---
   int intraPeer = (intraRank + 1) % intraSize;
   flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 0, srcMemPtr, 0, bytes,
-                       FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_BLOCK,
+                       FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_GRID,
                        flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                        (flagcxDevSignal_t)0);
 
@@ -1479,7 +1524,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   // --- WORLD: put + signal slot 1 ---
   int worldPeer = (worldRank + 1) % nRanks;
   flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, bytes, srcMemPtr, bytes, bytes,
-                       FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_BLOCK,
+                       FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                        flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                        (flagcxDevSignal_t)1);
 
@@ -1489,9 +1534,9 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                       flagcxDeviceMemoryOrderAcquire);
 
   // --- INTER: put + signal slot 2 (self-op if nNodes==1) ---
-  int interPeer = (nodeIdx + 1) % nNodes;
+  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
   flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 2 * bytes, srcMemPtr, 2 * bytes,
-                       bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_BLOCK,
+                       bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
                        flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                        (flagcxDevSignal_t)2);
 
@@ -1551,19 +1596,19 @@ __global__ void kernelDevGetS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   flagcxDevGet(devCommPtr, remoteMemPtr, 0, localMemPtr, 0, bytes,
-               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
 
   // --- WORLD team: get from next world-rank ---
   int worldPeer = (worldRank + 1) % nRanks;
   flagcxDevGet(devCommPtr, remoteMemPtr, bytes, localMemPtr, bytes, bytes,
-               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
 
   // --- INTER team: get from next node-index (self-op if nNodes==1) ---
-  int interPeer = (nodeIdx + 1) % nNodes;
+  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
   flagcxDevGet(devCommPtr, remoteMemPtr, 2 * bytes, localMemPtr, 2 * bytes,
-               bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_BLOCK,
+               bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
 
   // Flush to ensure all FIFO operations complete before kernel returns
@@ -1700,7 +1745,7 @@ __global__ void kernelDevPutWarpS(const void *devCommPtr,
   }
   // Warp 2: INTER put (self-op if nNodes==1)
   if (FLAGCX_THREAD_IDX_X >= 64 && FLAGCX_THREAD_IDX_X < 96) {
-    int interPeer = (nodeIdx + 1) % nNodes;
+    int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
     flagcxDevPut(devCommPtr, dstMemPtr, 2 * bytes, srcMemPtr, 2 * bytes, bytes,
                  FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_WARP,
                  flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
@@ -1778,7 +1823,7 @@ __global__ void kernelDevSignalStandaloneS(const void *devCommPtr,
                       flagcxDeviceMemoryOrderAcquire);
 
   // --- INTER: signal slot 2 (self-signal if nNodes==1) ---
-  int interPeer = (nodeIdx + 1) % nNodes;
+  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
   if (FLAGCX_THREAD_IDX_X == 0) {
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, interPeer,
                        (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_THREAD,
@@ -1873,7 +1918,7 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
   // --- INTER: put my tag to next node-index's buffer at offset[myNodeIdx] ---
-  int interPeer = (nodeIdx + 1) % nNodes;
+  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
   size_t interDstOff = interOff + (size_t)nodeIdx * sizeof(float);
   flagcxDevPut(devCommPtr, dstMemPtr, interDstOff,
                srcMemPtr, 0, sizeof(float),

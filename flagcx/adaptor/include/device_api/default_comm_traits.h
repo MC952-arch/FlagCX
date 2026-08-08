@@ -236,6 +236,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   using CoopWarp = typename PlatformTraits<PlatformTag>::CoopWarp;
   using CoopTileSpan = typename PlatformTraits<PlatformTag>::CoopTileSpan;
   using CoopLanes = typename PlatformTraits<PlatformTag>::CoopLanes;
+  using CoopGrid = typename PlatformTraits<PlatformTag>::CoopGrid;
   using CoopAny = typename PlatformTraits<PlatformTag>::CoopAny;
 
   // ---- Barrier handles ----

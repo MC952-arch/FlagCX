@@ -163,6 +163,7 @@ struct CommTraits<NvshmemBackend> {
   using CoopWarp = typename PlatformTraits<NvidiaPlatform>::CoopWarp;
   using CoopTileSpan = typename PlatformTraits<NvidiaPlatform>::CoopTileSpan;
   using CoopLanes = typename PlatformTraits<NvidiaPlatform>::CoopLanes;
+  using CoopGrid = typename PlatformTraits<NvidiaPlatform>::CoopGrid;
   using CoopAny = typename PlatformTraits<NvidiaPlatform>::CoopAny;
 
   // ---- Barrier handles ----

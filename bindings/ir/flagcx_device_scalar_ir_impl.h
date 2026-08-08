@@ -31,6 +31,8 @@ flagcxMakeCoopFromKind(flagcxCoopKind_t kind) {
       return flagcxCoopAny(flagcxCoopWarp());
     case FLAGCX_COOP_THREAD:
       return flagcxCoopAny(flagcxCoopThread());
+    case FLAGCX_COOP_GRID:
+      return flagcxCoopAny(flagcxCoopGrid());
     default:
       return flagcxCoopAny(flagcxCoopThread()); // fail-safe: no-op sync
   }
@@ -50,6 +52,8 @@ static FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny flagcxMakeCoopFromKindEx(
           flagcxCoopTileSpan((int)param0, (int)param1, (int)param2));
     case FLAGCX_COOP_LANES:
       return flagcxCoopAny(flagcxCoopLanes(param0));
+    case FLAGCX_COOP_GRID:
+      return flagcxCoopAny(flagcxCoopGrid());
     default:
       return flagcxCoopAny(flagcxCoopThread()); // fail-safe: no-op sync
   }

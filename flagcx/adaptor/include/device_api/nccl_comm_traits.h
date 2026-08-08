@@ -229,6 +229,20 @@ struct CommTraits<NcclBackend> {
     }
   };
 
+  // ---- CoopGrid: arithmetic-based grid-level cooperation ----
+  // Does not require native NCCL grid support
+  struct CoopGrid {
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      return FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X + FLAGCX_THREAD_IDX_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      return FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      // No-op: grid sync not needed for memcpy striping
+    }
+  };
+
   // ---- CoopAny: wraps ncclCoopAny ----
   struct CoopAny {
     ncclCoopAny _impl;
@@ -241,6 +255,8 @@ struct CommTraits<NcclBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR CoopAny(CoopTile<N> t) : _impl(t._impl) {}
     FLAGCX_DEVICE_INLINE_DECORATOR CoopAny(CoopTileSpan s) : _impl(s._impl) {}
     FLAGCX_DEVICE_INLINE_DECORATOR CoopAny(CoopLanes l) : _impl(l._impl) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopAny(CoopGrid g)
+        : _impl(PlatformCoop(g)) {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
       return _impl.thread_rank();
