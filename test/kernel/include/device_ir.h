@@ -176,16 +176,11 @@ void launchKernelDevBarrierIntraS(const void *devCommPtr, int *devResult,
 void launchKernelDevBarrierWorldS(const void *devCommPtr, int *devResult,
                                   flagcxStream_t stream);
 
-// S21: Unified Put — Warp-level (fine-grained)
-void launchKernelDevPutWarpS(const void *devCommPtr, const void *dstMemPtr,
-                             const void *srcMemPtr, int *devResult,
-                             size_t bytes, flagcxStream_t stream);
-
-// S22: Unified Signal — standalone signal + wait
+// S21: Unified Signal — standalone signal + wait
 void launchKernelDevSignalStandaloneS(const void *devCommPtr, int *devResult,
                                       flagcxStream_t stream);
 
-// S23: Team-resolution correctness test
+// S22: Team-resolution correctness test
 void launchKernelDevTeamResolutionS(const void *devCommPtr,
                                     const void *dstMemPtr,
                                     const void *srcMemPtr, int *devResult,

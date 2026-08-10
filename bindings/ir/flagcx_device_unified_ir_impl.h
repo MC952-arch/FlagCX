@@ -16,6 +16,7 @@
 #define FLAGCX_DEVICE_UNIFIED_IR_IMPL_H_
 
 #include "flagcx_device_unified_ir.h"
+#include <stdint.h> // For uint64_t, uint32_t, uint16_t
 
 /* ================================================================
  * Internal helper: scoped memory fence
@@ -38,10 +39,9 @@ flagcxScopedFence(flagcxDeviceScope_t scope) {
 /* ================================================================
  * Internal helper: cooperative memcpy (P2P path)
  *
- * Distributes byte copy across threads in the cooperative group.
- * Uses 4-byte aligned loads/stores for the bulk, byte copy for tail.
- *
- * Requires: dst and src must be 4-byte aligned.
+ * Distributes copy across threads using largest aligned chunks possible.
+ * Cascades from 16B vectors down to byte-level for unaligned data.
+ * Pattern adopted from NVSHMEM for stronger memory ordering guarantees.
  * ================================================================ */
 
 static FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -50,20 +50,72 @@ flagcxCoopMemcpy(flagcxCoopKind_t coopKind, void *dst, const void *src,
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
   int rank = coop.threadRank();
   int size = coop.size();
-  // 4-byte aligned bulk copy (safe for GPU — no strict alignment trap)
-  uint32_t *d = (uint32_t *)dst;
-  const uint32_t *s = (const uint32_t *)src;
-  size_t n4 = bytes / 4;
-  for (size_t i = (size_t)rank; i < n4; i += (size_t)size) {
-    d[i] = s[i];
+
+  // Try 16B aligned vector copy (int4 = 128-bit)
+  if (((uintptr_t)dst % 16 == 0) && ((uintptr_t)src % 16 == 0)) {
+    int4 *d = (int4 *)dst;
+    const int4 *s = (const int4 *)src;
+    size_t nelems = bytes / 16;
+    for (size_t i = (size_t)rank; i < nelems; i += (size_t)size) {
+      d[i] = s[i];
+    }
+    bytes -= nelems * 16;
+    if (bytes == 0)
+      return;
+    dst = (void *)(d + nelems);
+    src = (const void *)(s + nelems);
   }
-  // Tail bytes (thread 0 only)
-  size_t tail = bytes - n4 * 4;
-  if (tail > 0 && rank == 0) {
-    char *dc = (char *)dst + n4 * 4;
-    const char *sc = (const char *)src + n4 * 4;
-    for (size_t i = 0; i < tail; i++)
-      dc[i] = sc[i];
+
+  // Try 8B aligned copy (uint64_t)
+  if (((uintptr_t)dst % 8 == 0) && ((uintptr_t)src % 8 == 0)) {
+    uint64_t *d = (uint64_t *)dst;
+    const uint64_t *s = (const uint64_t *)src;
+    size_t nelems = bytes / 8;
+    for (size_t i = (size_t)rank; i < nelems; i += (size_t)size) {
+      d[i] = s[i];
+    }
+    bytes -= nelems * 8;
+    if (bytes == 0)
+      return;
+    dst = (void *)(d + nelems);
+    src = (const void *)(s + nelems);
+  }
+
+  // Try 4B aligned copy (uint32_t)
+  if (((uintptr_t)dst % 4 == 0) && ((uintptr_t)src % 4 == 0)) {
+    uint32_t *d = (uint32_t *)dst;
+    const uint32_t *s = (const uint32_t *)src;
+    size_t nelems = bytes / 4;
+    for (size_t i = (size_t)rank; i < nelems; i += (size_t)size) {
+      d[i] = s[i];
+    }
+    bytes -= nelems * 4;
+    if (bytes == 0)
+      return;
+    dst = (void *)(d + nelems);
+    src = (const void *)(s + nelems);
+  }
+
+  // Try 2B aligned copy (uint16_t)
+  if (((uintptr_t)dst % 2 == 0) && ((uintptr_t)src % 2 == 0)) {
+    uint16_t *d = (uint16_t *)dst;
+    const uint16_t *s = (const uint16_t *)src;
+    size_t nelems = bytes / 2;
+    for (size_t i = (size_t)rank; i < nelems; i += (size_t)size) {
+      d[i] = s[i];
+    }
+    bytes -= nelems * 2;
+    if (bytes == 0)
+      return;
+    dst = (void *)(d + nelems);
+    src = (const void *)(s + nelems);
+  }
+
+  // Fallback: byte-level copy for remainder or unaligned data
+  unsigned char *d = (unsigned char *)dst;
+  const unsigned char *s = (const unsigned char *)src;
+  for (size_t i = (size_t)rank; i < bytes; i += (size_t)size) {
+    d[i] = s[i];
   }
 }
 
@@ -180,7 +232,11 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
                flagcxCoopKind_t coopKind, flagcxDeviceMemoryOrder_t order) {
   const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
-  flagcxDevNetFlushS(net, coopKind, order);
+  if (net) {
+    // Only flush if Net path is active (FIFO-based operations)
+    // P2P operations don't need explicit flush - fencing is per-operation
+    flagcxDevNetFlushS(net, coopKind, order);
+  }
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -392,11 +448,16 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
         order == flagcxDeviceMemoryOrderAcqRel)
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
+    // All threads fence to flush their own store buffers before signaling
+    flagcxScopedFence(flagcxDeviceScopeSystem);
     // Signal after data lands
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
+    // Grid-level barrier to ensure all blocks finished memcpy before signaling
+    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
+      flagcxGridSync(comm->_gridBarrierState);
+    }
     if (coop.threadRank() == 0) {
-      flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
     }
@@ -435,10 +496,15 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
         order == flagcxDeviceMemoryOrderAcqRel)
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
+    // All threads fence to flush their own store buffers before signaling
+    flagcxScopedFence(flagcxDeviceScopeSystem);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
+    // Grid-level barrier to ensure all blocks finished memcpy before signaling
+    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
+      flagcxGridSync(comm->_gridBarrierState);
+    }
     if (coop.threadRank() == 0) {
-      flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
                          contextId, FLAGCX_COOP_THREAD,
                          flagcxDeviceScopeSystem);
@@ -480,13 +546,21 @@ flagcxDevPut_RCtrInc(const void *commOpaque, const void *dstOpaque,
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
     // Counter increment after data lands
+    // All threads fence to flush their own store buffers before signaling
+    flagcxScopedFence(flagcxDeviceScopeSystem);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
+    // Grid-level barrier to ensure all blocks finished memcpy before counter
+    // increment
+    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
+      flagcxGridSync(comm->_gridBarrierState);
+    }
     if (coop.threadRank() == 0) {
-      flagcxScopedFence(flagcxDeviceScopeSystem);
-      const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
-      flagcxDevNetSignalCtrIncS(net, commOpaque, teamKind, peer,
-                                FLAGCX_COOP_THREAD, remoteCounter);
+      // Counter is local to sender — increment counterBuffer directly
+      int idx =
+          (int)contextId * comm->_commBase.counterCount + (int)remoteCounter;
+      DeviceAPI::Atomic::fetchAdd(&comm->_commBase.counterBuffer[idx],
+                                  (uint64_t)1, flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
