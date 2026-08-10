@@ -275,20 +275,23 @@ int main(int argc, char *argv[]) {
           }
         }
       }
-      // Region 2 (INTER): data from previous node (self-op if nNodes==1)
+      // Region 2 (INTER): skip validation on single-node (INTER requires
+      // inter-node peers)
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
-      int prevNodeWorld =
-          (nNodes > 1) ? (prevNode * intraSize + intraRank) : proc; // self
-      if (s16Pass) {
-        for (size_t i = 0; i < count; i++) {
-          float expected = (float)(prevNodeWorld * 1000 + (int)(2 * count + i));
-          if (hostRecv[2 * count + i] != expected) {
-            s16Pass = false;
-            s16FailRegion = 2;
-            s16FailIdx = i;
-            s16FailExpected = expected;
-            s16FailActual = hostRecv[2 * count + i];
-            break;
+      int prevNodeWorld = (nNodes > 1) ? (prevNode * intraSize + intraRank) : 0;
+      if (nNodes > 1) {
+        if (s16Pass) {
+          for (size_t i = 0; i < count; i++) {
+            float expected =
+                (float)(prevNodeWorld * 1000 + (int)(2 * count + i));
+            if (hostRecv[2 * count + i] != expected) {
+              s16Pass = false;
+              s16FailRegion = 2;
+              s16FailIdx = i;
+              s16FailExpected = expected;
+              s16FailActual = hostRecv[2 * count + i];
+              break;
+            }
           }
         }
       }
@@ -357,15 +360,18 @@ int main(int argc, char *argv[]) {
           break;
         }
       }
-      // Region 2 (INTER): from previous node (self if nNodes==1)
-      int prevNode17 = (nodeIdx + nNodes - 1) % nNodes;
-      int prevNodeWorld17 =
-          (nNodes > 1) ? (prevNode17 * intraSize + intraRank) : proc;
-      for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevNodeWorld17 * 2000 + (int)(2 * count + i));
-        if (hostRecv[2 * count + i] != expected) {
-          dataOk = false;
-          break;
+      // Region 2 (INTER): skip validation on single-node (INTER requires
+      // inter-node peers)
+      if (nNodes > 1) {
+        int prevNode17 = (nodeIdx + nNodes - 1) % nNodes;
+        int prevNodeWorld17 = prevNode17 * intraSize + intraRank;
+        for (size_t i = 0; i < count; i++) {
+          float expected =
+              (float)(prevNodeWorld17 * 2000 + (int)(2 * count + i));
+          if (hostRecv[2 * count + i] != expected) {
+            dataOk = false;
+            break;
+          }
         }
       }
 
@@ -417,15 +423,17 @@ int main(int argc, char *argv[]) {
           break;
         }
       }
-      // Region 2 (INTER): got from next node (self if nNodes==1)
-      int nextNode = (nodeIdx + 1) % nNodes;
-      int nextNodeWorld =
-          (nNodes > 1) ? (nextNode * intraSize + intraRank) : proc;
-      for (size_t i = 0; i < count; i++) {
-        float expected = (float)(nextNodeWorld * 3000 + (int)(2 * count + i));
-        if (hostRecv[2 * count + i] != expected) {
-          s18Pass = false;
-          break;
+      // Region 2 (INTER): skip validation on single-node (INTER requires
+      // inter-node peers)
+      if (nNodes > 1) {
+        int nextNode = (nodeIdx + 1) % nNodes;
+        int nextNodeWorld = nextNode * intraSize + intraRank;
+        for (size_t i = 0; i < count; i++) {
+          float expected = (float)(nextNodeWorld * 3000 + (int)(2 * count + i));
+          if (hostRecv[2 * count + i] != expected) {
+            s18Pass = false;
+            break;
+          }
         }
       }
       RPRINTF("S18 DevGet(INTRA+WORLD+INTER): %s\n", s18Pass ? "PASS" : "FAIL");
@@ -474,15 +482,18 @@ int main(int argc, char *argv[]) {
           break;
         }
       }
-      // Region 2 (INTER warp): from previous node (self if nNodes==1)
-      int prevNode21 = (nodeIdx + nNodes - 1) % nNodes;
-      int prevNodeWorld21 =
-          (nNodes > 1) ? (prevNode21 * intraSize + intraRank) : proc;
-      for (size_t i = 0; i < count; i++) {
-        float expected = (float)(prevNodeWorld21 * 4000 + (int)(2 * count + i));
-        if (hostRecv[2 * count + i] != expected) {
-          s21Pass = false;
-          break;
+      // Region 2 (INTER): skip validation on single-node (INTER requires
+      // inter-node peers)
+      if (nNodes > 1) {
+        int prevNode21 = (nodeIdx + nNodes - 1) % nNodes;
+        int prevNodeWorld21 = prevNode21 * intraSize + intraRank;
+        for (size_t i = 0; i < count; i++) {
+          float expected =
+              (float)(prevNodeWorld21 * 4000 + (int)(2 * count + i));
+          if (hostRecv[2 * count + i] != expected) {
+            s21Pass = false;
+            break;
+          }
         }
       }
       RPRINTF("S21 DevPut(Warp,INTRA+WORLD+INTER): %s\n",
@@ -535,24 +546,34 @@ int main(int argc, char *argv[]) {
     // rank
     int prevIntra23 = (intraRank + intraSize - 1) % intraSize;
     float expectedIntra23 = (float)(intraBase + prevIntra23);
-    if (s23Recv[prevIntra23] != expectedIntra23)
+    if (s23Recv[prevIntra23] != expectedIntra23) {
+      printf("[rank %d] S23 INTRA FAIL: slot[%d] = %.1f, expected %.1f\n", proc,
+             prevIntra23, s23Recv[prevIntra23], expectedIntra23);
       s23Pass = false;
+    }
 
     // WORLD region: slot[prevWorldRank] should contain prevWorldRank
     int prevWorld23 = (proc + totalProcs - 1) % totalProcs;
     float expectedWorld23 = (float)prevWorld23;
-    if (s23Recv[intraSize + prevWorld23] != expectedWorld23)
+    if (s23Recv[intraSize + prevWorld23] != expectedWorld23) {
+      printf("[rank %d] S23 WORLD FAIL: slot[%d] = %.1f, expected %.1f\n", proc,
+             intraSize + prevWorld23, s23Recv[intraSize + prevWorld23],
+             expectedWorld23);
       s23Pass = false;
+    }
 
-    // INTER region: slot[prevNodeIdx] should contain prevNode's world rank
-    int prevNode23 = (nodeIdx + nNodes - 1) % nNodes;
-    float expectedInter23;
-    if (nNodes > 1)
-      expectedInter23 = (float)(prevNode23 * intraSize + intraRank);
-    else
-      expectedInter23 = (float)proc; // self-op
-    if (s23Recv[intraSize + totalProcs + prevNode23] != expectedInter23)
-      s23Pass = false;
+    // INTER region: skip validation on single-node (INTER requires inter-node
+    // peers)
+    if (nNodes > 1) {
+      int prevNode23 = (nodeIdx + nNodes - 1) % nNodes;
+      float expectedInter23 = (float)(prevNode23 * intraSize + intraRank);
+      if (s23Recv[intraSize + totalProcs + prevNode23] != expectedInter23) {
+        printf("[rank %d] S23 INTER FAIL: slot[%d] = %.1f, expected %.1f\n",
+               proc, intraSize + totalProcs + prevNode23,
+               s23Recv[intraSize + totalProcs + prevNode23], expectedInter23);
+        s23Pass = false;
+      }
+    }
 
     RPRINTF("S23 TeamResolution(INTRA+WORLD+INTER): %s\n",
             s23Pass ? "PASS" : "FAIL");

@@ -1355,9 +1355,6 @@ __global__ void kernelDevPutS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
 
-  // Early exit for blocks beyond nContexts (only nContexts blocks launched)
-  if (FLAGCX_BLOCK_IDX_X >= nContexts) return;
-
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1367,7 +1364,7 @@ __global__ void kernelDevPutS(const void *devCommPtr,
 
   // --- INTRA team: peer = next intra-rank ---
   int intraPeer = (intraRank + 1) % intraSize;
-  flagcxDevContext_t contextId = FLAGCX_BLOCK_IDX_X; // blockIdx IS contextId (one-to-one)
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
   // DEBUG: trace dispatch path (block 0, thread 0 only)
   if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1442,12 +1439,14 @@ __global__ void kernelDevPutS(const void *devCommPtr,
                FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
-  // --- INTER team: peer = next node-index (self-op if nNodes==1) ---
-  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
-  flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/2 * bytes,
-               srcMemPtr, /*srcOff=*/2 * bytes, bytes,
-               FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
-               flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  // --- INTER team: skip on single-node (INTER requires inter-node peers) ---
+  if (nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
+    flagcxDevPut(devCommPtr, dstMemPtr, /*dstOff=*/2 * bytes,
+                 srcMemPtr, /*srcOff=*/2 * bytes, bytes,
+                 FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
+                 flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  }
 
   // Flush to ensure all FIFO operations complete before kernel returns
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
@@ -1480,9 +1479,6 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
 
-  // Early exit for blocks beyond nContexts
-  if (FLAGCX_BLOCK_IDX_X >= nContexts) return;
-
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1490,7 +1486,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   int nNodes = nRanks / intraSize;
   int nodeIdx = worldRank / intraSize;
 
-  flagcxDevContext_t contextId = FLAGCX_BLOCK_IDX_X; // blockIdx IS contextId
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
   // DEBUG: trace dispatch path (block 0, thread 0 only)
   if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1533,17 +1529,19 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                       /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
                       flagcxDeviceMemoryOrderAcquire);
 
-  // --- INTER: put + signal slot 2 (self-op if nNodes==1) ---
-  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
-  flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 2 * bytes, srcMemPtr, 2 * bytes,
-                       bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
-                       flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
-                       (flagcxDevSignal_t)2);
+  // --- INTER: skip on single-node (INTER requires inter-node peers) ---
+  if (nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
+    flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, 2 * bytes, srcMemPtr, 2 * bytes,
+                         bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
+                         flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
+                         (flagcxDevSignal_t)2);
 
-  // Wait for INTER signal (self-signal if nNodes==1)
-  flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, /*least=*/1,
-                      /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
-                      flagcxDeviceMemoryOrderAcquire);
+    // Wait for INTER signal
+    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, /*least=*/1,
+                        /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
+                        flagcxDeviceMemoryOrderAcquire);
+  }
 
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) result[0] = 1;
 }
@@ -1567,9 +1565,6 @@ __global__ void kernelDevGetS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
 
-  // Early exit for blocks beyond nContexts
-  if (FLAGCX_BLOCK_IDX_X >= nContexts) return;
-
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1579,7 +1574,7 @@ __global__ void kernelDevGetS(const void *devCommPtr,
 
   // --- INTRA team: get from next intra-rank ---
   int intraPeer = (intraRank + 1) % intraSize;
-  flagcxDevContext_t contextId = FLAGCX_BLOCK_IDX_X; // blockIdx IS contextId
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
   // DEBUG (block 0, thread 0)
   if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1605,11 +1600,13 @@ __global__ void kernelDevGetS(const void *devCommPtr,
                FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
 
-  // --- INTER team: get from next node-index (self-op if nNodes==1) ---
-  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
-  flagcxDevGet(devCommPtr, remoteMemPtr, 2 * bytes, localMemPtr, 2 * bytes,
-               bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
-               flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
+  // --- INTER team: skip on single-node (INTER requires inter-node peers) ---
+  if (nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
+    flagcxDevGet(devCommPtr, remoteMemPtr, 2 * bytes, localMemPtr, 2 * bytes,
+                 bytes, FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
+                 flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderAcquire);
+  }
 
   // Flush to ensure all FIFO operations complete before kernel returns
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
@@ -1702,9 +1699,6 @@ __global__ void kernelDevPutWarpS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
 
-  // Early exit for blocks beyond nContexts
-  if (FLAGCX_BLOCK_IDX_X >= nContexts) return;
-
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1712,7 +1706,7 @@ __global__ void kernelDevPutWarpS(const void *devCommPtr,
   int nNodes = nRanks / intraSize;
   int nodeIdx = worldRank / intraSize;
 
-  flagcxDevContext_t contextId = FLAGCX_BLOCK_IDX_X; // blockIdx IS contextId
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
   // DEBUG (block 0, thread 0)
   if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1743,9 +1737,9 @@ __global__ void kernelDevPutWarpS(const void *devCommPtr,
                  FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_WARP,
                  flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
   }
-  // Warp 2: INTER put (self-op if nNodes==1)
-  if (FLAGCX_THREAD_IDX_X >= 64 && FLAGCX_THREAD_IDX_X < 96) {
-    int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
+  // Warp 2: INTER put (skip on single-node - INTER requires inter-node peers)
+  if (FLAGCX_THREAD_IDX_X >= 64 && FLAGCX_THREAD_IDX_X < 96 && nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
     flagcxDevPut(devCommPtr, dstMemPtr, 2 * bytes, srcMemPtr, 2 * bytes, bytes,
                  FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_WARP,
                  flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
@@ -1822,16 +1816,18 @@ __global__ void kernelDevSignalStandaloneS(const void *devCommPtr,
                       /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
                       flagcxDeviceMemoryOrderAcquire);
 
-  // --- INTER: signal slot 2 (self-signal if nNodes==1) ---
-  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
-  if (FLAGCX_THREAD_IDX_X == 0) {
-    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, interPeer,
-                       (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_THREAD,
-                       flagcxDeviceScopeSystem);
+  // --- INTER: signal slot 2 (skip on single-node - INTER requires inter-node peers) ---
+  if (nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, interPeer,
+                         (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_THREAD,
+                         flagcxDeviceScopeSystem);
+    }
+    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, /*least=*/1,
+                        /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
+                        flagcxDeviceMemoryOrderAcquire);
   }
-  flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, /*least=*/1,
-                      /*bits=*/64, contextId, FLAGCX_COOP_BLOCK,
-                      flagcxDeviceMemoryOrderAcquire);
 
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) result[0] = 1;
 }
@@ -1869,9 +1865,6 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
 
-  // Early exit for blocks beyond nContexts
-  if (FLAGCX_BLOCK_IDX_X >= nContexts) return;
-
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -1884,7 +1877,7 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
   size_t worldOff = (size_t)intraSize * sizeof(float);
   size_t interOff = worldOff + (size_t)nRanks * sizeof(float);
 
-  flagcxDevContext_t contextId = FLAGCX_BLOCK_IDX_X; // blockIdx IS contextId
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
   // DEBUG (block 0, thread 0)
   if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
@@ -1906,7 +1899,7 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
   size_t intraDstOff = intraOff + (size_t)intraRank * sizeof(float);
   flagcxDevPut(devCommPtr, dstMemPtr, intraDstOff,
                srcMemPtr, 0, sizeof(float),
-               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_INTRA, intraPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
   // --- WORLD: put my tag to next world-rank's buffer at offset[myWorldRank] ---
@@ -1914,16 +1907,19 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
   size_t worldDstOff = worldOff + (size_t)worldRank * sizeof(float);
   flagcxDevPut(devCommPtr, dstMemPtr, worldDstOff,
                srcMemPtr, 0, sizeof(float),
-               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_BLOCK,
+               FLAGCX_TEAM_WORLD, worldPeer, contextId, FLAGCX_COOP_GRID,
                flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
 
   // --- INTER: put my tag to next node-index's buffer at offset[myNodeIdx] ---
-  int interPeer = (nNodes > 1) ? ((nodeIdx + 1) % nNodes) : nodeIdx;
-  size_t interDstOff = interOff + (size_t)nodeIdx * sizeof(float);
-  flagcxDevPut(devCommPtr, dstMemPtr, interDstOff,
-               srcMemPtr, 0, sizeof(float),
-               FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_BLOCK,
-               flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  // Skip on single-node (INTER requires inter-node peers)
+  if (nNodes > 1) {
+    int interPeer = (nodeIdx + 1) % nNodes;
+    size_t interDstOff = interOff + (size_t)nodeIdx * sizeof(float);
+    flagcxDevPut(devCommPtr, dstMemPtr, interDstOff,
+                 srcMemPtr, 0, sizeof(float),
+                 FLAGCX_TEAM_INTER, interPeer, contextId, FLAGCX_COOP_GRID,
+                 flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  }
 
   // Flush to ensure all FIFO operations complete before barrier
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
@@ -1934,7 +1930,7 @@ __global__ void kernelDevTeamResolutionS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
   // Barrier to ensure all puts land before host reads
-  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, /*index=*/0,
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, /*index=*/FLAGCX_BLOCK_IDX_X,
                        contextId, FLAGCX_COOP_BLOCK,
                        flagcxDeviceMemoryOrderAcqRel,
                        flagcxDeviceScopeSystem);
