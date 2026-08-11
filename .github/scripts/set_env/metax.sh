@@ -25,6 +25,24 @@ FLAGCX_CI_INTRA_NP=8
 FLAGCX_CI_RUNNER_NP=8
 export NP=8
 
+flagcx_ci_configure_suite() {
+  local suite=$1
+
+  case "$suite" in
+    p2p)
+      # The MetaX backend does not implement the P2P engine GPU-read path yet.
+      # Keep the shared P2P tests vendor-neutral and expose this limitation in
+      # the platform-owned test selection.
+      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*"
+      ;;
+    rma)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(
+        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
+      )
+      ;;
+  esac
+}
+
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing MetaX environment for unit-test suite: $suite"

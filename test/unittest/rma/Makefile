@@ -11,11 +11,6 @@ MPI_TARGET := $(BINDIR)/rma_mpi_tests
 # Environment variables to force hetero mode on single node
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0
 
-ifeq ($(DEVICE_PLATFORM), MACA)
-CXXFLAGS += -DFLAGCX_TEST_METAX
-HETERO_ENV += -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1
-endif
-
 .PHONY: all clean run-unit run-mpi run
 
 ALL_TARGETS :=

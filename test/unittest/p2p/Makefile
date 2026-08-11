@@ -1,9 +1,5 @@
 include ../../make.inc
 
-ifeq ($(DEVICE_PLATFORM), MACA)
-CXXFLAGS += -DFLAGCX_TEST_METAX
-endif
-
 # [unit] tests: test_*.cpp — no MPI, requires IB hardware for some tests
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)

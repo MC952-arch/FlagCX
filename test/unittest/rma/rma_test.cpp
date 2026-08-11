@@ -24,11 +24,6 @@ void RmaTest::SetUpTestSuite() {
   oneSidedAvailable = false;
   oneSidedSkipReason = "RMA one-sided setup not completed";
 
-#ifdef FLAGCX_TEST_METAX
-  oneSidedSkipReason = "MetaX RMA one-sided signal path is not supported yet";
-  return;
-#endif
-
   flagcxDeviceHandleInit(&devHandle);
 
   int numDevices;
