@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Platform to run: all, cuda, metax, or comma-separated names
+        description: "Platform config name, all, or comma-separated names"
         required: true
         type: string
         default: all

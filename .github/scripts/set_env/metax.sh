@@ -60,16 +60,18 @@ flagcx_ci_run_suite_override() {
   local -a args=("$@")
 
   if [[ "$suite" == "runner" ]]; then
+    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
     make -C "$suite_dir" run-unit "${args[@]}"
     echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
-    return 0
+    return
   fi
 
   if [[ "$suite" == "symmem" ]]; then
+    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
     "$suite_dir/build/bin/symmem_unit_tests"
     echo "Skipping MetaX symmem MPI tests: symmetric windows are not supported by the current MetaX backend."
-    return 0
+    return
   fi
 
-  return 1
+  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
 }

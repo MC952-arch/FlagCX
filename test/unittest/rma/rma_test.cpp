@@ -24,6 +24,11 @@ void RmaTest::SetUpTestSuite() {
   oneSidedAvailable = false;
   oneSidedSkipReason = "RMA one-sided setup not completed";
 
+#ifdef FLAGCX_TEST_METAX
+  oneSidedSkipReason = "MetaX RMA one-sided signal path is not supported yet";
+  return;
+#endif
+
   flagcxDeviceHandleInit(&devHandle);
 
   int numDevices;
@@ -73,19 +78,14 @@ void RmaTest::SetUpTestSuite() {
                                  FLAGCX_WIN_COLL_SYMMETRIC);
   if (res != flagcxSuccess || dataWin == nullptr) {
     // Net adaptor doesn't support one-sided, tests will skip
-    dataWin = nullptr;
     oneSidedSkipReason = "Net adaptor does not support one-sided ops";
     return;
   }
-  oneSidedAvailable = true;
-  oneSidedSkipReason = nullptr;
 
   // Allocate and register signal buffer
   res = flagcxMemAlloc(&signalBuff, signalSize);
   if (res != flagcxSuccess || signalBuff == nullptr) {
     signalBuff = nullptr;
-    dataWin = nullptr;
-    oneSidedAvailable = false;
     oneSidedSkipReason = "Signal buffer allocation is not supported";
     return;
   }
@@ -95,11 +95,12 @@ void RmaTest::SetUpTestSuite() {
   if (res != flagcxSuccess) {
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
-    dataWin = nullptr;
-    oneSidedAvailable = false;
     oneSidedSkipReason = "Signal buffer registration is not supported";
     return;
   }
+
+  oneSidedAvailable = true;
+  oneSidedSkipReason = nullptr;
 }
 
 void RmaTest::TearDownTestSuite() {
@@ -129,7 +130,7 @@ void RmaTest::TearDownTestSuite() {
     stream = nullptr;
   }
 
-  if (comm && oneSidedAvailable) {
+  if (comm) {
     flagcxCommDestroy(comm);
     comm = nullptr;
   }

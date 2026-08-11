@@ -59,7 +59,9 @@ build_suite() {
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
   if declare -F flagcx_ci_build_suite_override >/dev/null; then
-    if flagcx_ci_build_suite_override "$SUITE" "$suite_dir" "${args[@]}"; then
+    FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
+    flagcx_ci_build_suite_override "$SUITE" "$suite_dir" "${args[@]}"
+    if [[ "$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
       return
     fi
   fi
@@ -112,7 +114,9 @@ run_suite() {
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
   if declare -F flagcx_ci_run_suite_override >/dev/null; then
-    if flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"; then
+    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
+    flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"
+    if [[ "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
       return
     fi
   fi
