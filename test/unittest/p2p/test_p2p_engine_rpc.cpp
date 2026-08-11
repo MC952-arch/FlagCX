@@ -255,9 +255,9 @@ TEST_F(P2pEngineRpcIbTest, ConnectAcceptIsLocalSameHost) {
 }
 
 TEST_F(P2pEngineRpcIbTest, ConnectToInvalidHostReturnsNull) {
-  // RFC 5737 TEST-NET-1: 192.0.2.0/24 — reserved, unreachable
+  // Use an invalid numeric IPv4 literal so address parsing fails fast.
   FlagcxP2pConn *conn =
-      flagcxP2pEngineConnect(clientEngine, "192.0.2.1", -1, 12345, false);
+      flagcxP2pEngineConnect(clientEngine, "256.256.256.256", -1, 12345, false);
   EXPECT_EQ(conn, nullptr);
 }
 

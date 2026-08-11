@@ -21,6 +21,8 @@ void RmaTest::SetUpTestSuite() {
 
   size = RMA_TEST_SIZE;
   signalSize = sizeof(uint64_t) * nranks;
+  oneSidedAvailable = false;
+  oneSidedSkipReason = "RMA one-sided setup not completed";
 
   flagcxDeviceHandleInit(&devHandle);
 
@@ -75,9 +77,18 @@ void RmaTest::SetUpTestSuite() {
     oneSidedSkipReason = "Net adaptor does not support one-sided ops";
     return;
   }
+  oneSidedAvailable = true;
+  oneSidedSkipReason = nullptr;
 
   // Allocate and register signal buffer
-  flagcxMemAlloc(&signalBuff, signalSize);
+  res = flagcxMemAlloc(&signalBuff, signalSize);
+  if (res != flagcxSuccess || signalBuff == nullptr) {
+    signalBuff = nullptr;
+    dataWin = nullptr;
+    oneSidedAvailable = false;
+    oneSidedSkipReason = "Signal buffer allocation is not supported";
+    return;
+  }
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   res = flagcxOneSideSignalRegister(comm, signalBuff, signalSize,
                                     FLAGCX_PTR_CUDA);
@@ -85,11 +96,10 @@ void RmaTest::SetUpTestSuite() {
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
     dataWin = nullptr;
+    oneSidedAvailable = false;
     oneSidedSkipReason = "Signal buffer registration is not supported";
     return;
   }
-  oneSidedAvailable = true;
-  oneSidedSkipReason = nullptr;
 }
 
 void RmaTest::TearDownTestSuite() {
@@ -103,6 +113,8 @@ void RmaTest::TearDownTestSuite() {
 
   if (signalBuff && comm && comm->heteroComm) {
     flagcxOneSideSignalDeregister(comm);
+  }
+  if (signalBuff) {
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
   }

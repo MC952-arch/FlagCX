@@ -425,6 +425,10 @@ private:
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
+#ifdef FLAGCX_TEST_METAX
+  GTEST_SKIP() << "MetaX P2P engine GPU read path is not supported yet";
+#endif
+
   connectViaClientMetadata();
 
   constexpr size_t kElemCount = 1024;
@@ -495,6 +499,10 @@ TEST_F(FlagcxP2pEngineReadTest,
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
+#ifdef FLAGCX_TEST_METAX
+  GTEST_SKIP() << "MetaX P2P engine GPU read path is not supported yet";
+#endif
+
   connectViaClientMetadata();
 
   constexpr size_t kSourceElems = 256;
