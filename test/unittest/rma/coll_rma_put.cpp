@@ -67,9 +67,8 @@ TEST_F(RmaTest, PutSignalSmall) {
     devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
                             flagcxMemcpyHostToDevice, nullptr);
 
-    opRes =
-        flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0, comm,
-                        s);
+    opRes = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0,
+                            comm, s);
   }
 
   int globalStatus = collectiveOpStatus(opRes);
@@ -135,9 +134,8 @@ TEST_F(RmaTest, PutSignalLarge) {
     devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
                             flagcxMemcpyHostToDevice, nullptr);
 
-    opRes =
-        flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0, comm,
-                        s);
+    opRes = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0,
+                            comm, s);
   }
 
   int globalStatus = collectiveOpStatus(opRes);

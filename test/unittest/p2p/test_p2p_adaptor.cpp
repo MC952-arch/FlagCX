@@ -101,13 +101,9 @@ TEST(P2pAdaptorStruct, TwoSidedStubsReturnError) {
 // ---------------------------------------------------------------------------
 // 2. Init + Devices — requires IB hardware
 // ---------------------------------------------------------------------------
-TEST_F(P2pAdaptorTest, InitSucceeds) {
-  EXPECT_EQ(initResult, flagcxSuccess);
-}
+TEST_F(P2pAdaptorTest, InitSucceeds) { EXPECT_EQ(initResult, flagcxSuccess); }
 
-TEST_F(P2pAdaptorTest, DevicesReturnsPositive) {
-  EXPECT_GT(nDevs, 0);
-}
+TEST_F(P2pAdaptorTest, DevicesReturnsPositive) { EXPECT_GT(nDevs, 0); }
 
 TEST_F(P2pAdaptorTest, InitIsIdempotent) {
   // Calling init again should succeed without side effects

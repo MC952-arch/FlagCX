@@ -142,8 +142,7 @@ protected:
           std::future_status::ready) {
         serverConn = acceptFuture.get();
       }
-      return ::testing::AssertionFailure()
-             << "client connection is null";
+      return ::testing::AssertionFailure() << "client connection is null";
     }
 
     if (acceptFuture.wait_for(std::chrono::seconds(10)) !=
@@ -180,7 +179,8 @@ protected:
   void SetUp() override {
     P2pEngineRpcTest::SetUp();
     if (!hasIbDevices()) {
-      GTEST_SKIP() << "No IB devices available, skipping P2P RPC connection test";
+      GTEST_SKIP()
+          << "No IB devices available, skipping P2P RPC connection test";
     }
   }
 };
