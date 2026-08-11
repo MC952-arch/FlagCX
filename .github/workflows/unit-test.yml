@@ -9,6 +9,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to run: all, cuda, metax, or comma-separated names
+        required: true
+        type: string
+        default: all
 
 permissions:
   contents: read
@@ -33,7 +39,9 @@ jobs:
 
       - name: Build platform matrix
         id: config
-        run: ruby .github/scripts/ci/load_platform_matrix.rb
+        env:
+          FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+        run: ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
 
   unit_tests:
     name: ${{ matrix.display_name }} unit tests

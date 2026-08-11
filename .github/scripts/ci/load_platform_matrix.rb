@@ -5,12 +5,12 @@ require "json"
 require "yaml"
 
 config_dir = ARGV.fetch(0, ".github/configs")
-config_files = Dir.glob(File.join(config_dir, "*.yml")).sort
-abort "No platform configs found in #{config_dir}" if config_files.empty?
+selection = ARGV.fetch(1, ENV.fetch("FLAGCX_CI_PLATFORM", "all"))
+registry_path = File.join(config_dir, "platforms.yml")
 
-platforms = config_files.map do |path|
+load_yaml = lambda do |path|
   contents = File.read(path)
-  config = begin
+  begin
     YAML.safe_load(
       contents,
       permitted_classes: [],
@@ -23,6 +23,41 @@ platforms = config_files.map do |path|
     # runners, whose safe_load API only accepts positional arguments.
     YAML.safe_load(contents, [], [], false, path)
   end
+end
+
+registry = if File.file?(registry_path)
+             load_yaml.call(registry_path)
+           else
+             {}
+           end
+registered_platforms = registry.fetch("platforms", {})
+abort "#{registry_path}: platforms must be a map" unless registered_platforms.is_a?(Hash)
+
+selected_platforms = if selection.nil? || selection.empty? || selection == "all"
+                       if registered_platforms.empty?
+                         nil
+                       else
+                         registered_platforms.select do |_name, settings|
+                           !settings.is_a?(Hash) || settings.fetch("enabled", true)
+                         end.keys
+                       end
+                     else
+                       selection.split(",").map(&:strip).reject(&:empty?)
+                     end
+
+config_files = if selected_platforms.nil?
+                 Dir.glob(File.join(config_dir, "*.yml")).reject do |path|
+                   File.basename(path) == "platforms.yml"
+                 end.sort
+               else
+                 selected_platforms.map { |platform| File.join(config_dir, "#{platform}.yml") }
+               end
+abort "No platform configs found in #{config_dir}" if config_files.empty?
+
+platforms = config_files.map do |path|
+  abort "Platform config not found: #{path}" unless File.file?(path)
+
+  config = load_yaml.call(path)
   required_keys = %w[hardware_name display_name]
   missing = required_keys.reject { |key| config.key?(key) }
   abort "#{path}: missing required keys: #{missing.join(', ')}" unless missing.empty?
