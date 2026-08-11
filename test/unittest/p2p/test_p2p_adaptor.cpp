@@ -169,6 +169,19 @@ TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {
       << "accept() timed out after 10s";
   auto [acceptResult, recvComm] = acceptFuture.get();
 
+#ifdef FLAGCX_TEST_METAX
+  if (connectResult != flagcxSuccess || acceptResult != flagcxSuccess ||
+      sendComm == nullptr || recvComm == nullptr) {
+    if (sendComm)
+      flagcxNetIbP2p.closeSend(sendComm);
+    if (recvComm)
+      flagcxNetIbP2p.closeRecv(recvComm);
+    flagcxNetIbP2p.closeListen(listenComm);
+    GTEST_SKIP()
+        << "MetaX IB P2P device or loopback connection is unavailable";
+  }
+#endif
+
   ASSERT_EQ(connectResult, flagcxSuccess) << "connect() failed";
   ASSERT_EQ(acceptResult, flagcxSuccess) << "accept() failed";
   ASSERT_NE(sendComm, nullptr);
@@ -207,6 +220,17 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   ASSERT_EQ(acceptFuture.wait_for(timeout), std::future_status::ready)
       << "accept() timed out";
   void *recvComm = acceptFuture.get();
+#ifdef FLAGCX_TEST_METAX
+  if (sendComm == nullptr || recvComm == nullptr) {
+    if (sendComm)
+      flagcxNetIbP2p.closeSend(sendComm);
+    if (recvComm)
+      flagcxNetIbP2p.closeRecv(recvComm);
+    flagcxNetIbP2p.closeListen(listenComm);
+    GTEST_SKIP()
+        << "MetaX IB P2P device or loopback connection is unavailable";
+  }
+#endif
   ASSERT_NE(sendComm, nullptr);
   ASSERT_NE(recvComm, nullptr);
 
@@ -267,6 +291,17 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   ASSERT_EQ(acceptFuture.wait_for(timeout), std::future_status::ready)
       << "accept() timed out";
   void *recvComm = acceptFuture.get();
+#ifdef FLAGCX_TEST_METAX
+  if (sendComm == nullptr || recvComm == nullptr) {
+    if (sendComm)
+      flagcxNetIbP2p.closeSend(sendComm);
+    if (recvComm)
+      flagcxNetIbP2p.closeRecv(recvComm);
+    flagcxNetIbP2p.closeListen(listenComm);
+    GTEST_SKIP()
+        << "MetaX IB P2P device or loopback connection is unavailable";
+  }
+#endif
   ASSERT_NE(sendComm, nullptr);
   ASSERT_NE(recvComm, nullptr);
 

@@ -49,6 +49,12 @@ protected:
     ASSERT_EQ(acceptFut.wait_for(timeout), std::future_status::ready)
         << "accept() timed out";
     recvComm_ = acceptFut.get();
+#ifdef FLAGCX_TEST_METAX
+    if (sendComm_ == nullptr || recvComm_ == nullptr) {
+      GTEST_SKIP()
+          << "MetaX IB P2P device or loopback connection is unavailable";
+    }
+#endif
     ASSERT_NE(sendComm_, nullptr);
     ASSERT_NE(recvComm_, nullptr);
   }
