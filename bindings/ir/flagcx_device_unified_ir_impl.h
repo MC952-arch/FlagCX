@@ -174,6 +174,12 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxTeamKind_t teamKind, int peer,
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
     int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("[SignalInc P2P] signal=%d slot=%d localPeer=%d value=%lu\n",
+             (int)signal, slot, localPeer, value);
+    }
+
     DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], value,
                                 flagcxDeviceMemoryOrderRelease);
   } else {
@@ -202,9 +208,19 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
     uint64_t *localBuf = comm->_commBase.signalBuffer;
     int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
 
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("[WaitSignal P2P] signal=%d slot=%d least=%lu current=%lu\n",
+             (int)signal, slot, least,
+             DeviceAPI::Atomic::load(&localBuf[slot], order));
+    }
+
     // Spin-wait until signal reaches expected value
     while (DeviceAPI::Atomic::load(&localBuf[slot], order) < least) {
       // Busy-wait
+    }
+
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("[WaitSignal P2P] signal=%d DONE\n", (int)signal);
     }
   } else {
     // Net FIFO path for multi-node
@@ -250,6 +266,10 @@ flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevNet *net =
       (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[DevFlush] nInterPeers=%d\n", comm->_commBase.nInterPeers);
+  }
 
   // Dispatch based on communication path:
   // - P2P path (nInterPeers == 0): single-node, all operations use IPC → fence
@@ -386,8 +406,16 @@ flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
   int myIntraBase = comm._commBase.rank - comm._commBase.intraRank;
 
   // Check if peer's world rank is in my node's range
-  return (worldPeer >= myIntraBase) &&
-         (worldPeer < myIntraBase + comm._commBase.intraSize);
+  bool isLocal = (worldPeer >= myIntraBase) &&
+                 (worldPeer < myIntraBase + comm._commBase.intraSize);
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[IsPeerLocal] peer=%d worldPeer=%d myIntraBase=%d intraSize=%d "
+           "isLocal=%d\n",
+           peer, worldPeer, myIntraBase, comm._commBase.intraSize, isLocal);
+  }
+
+  return isLocal;
 }
 
 // Helper: Validate team semantics and determine dispatch path
@@ -399,6 +427,13 @@ flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
                           const char *funcName, bool &shouldReturn) {
   shouldReturn = false;
   bool isPeerLocal = flagcxIsPeerLocal(comm, team, peer);
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[ValidateDispatch] %s: teamKind=%d peer=%d isPeerLocal=%d "
+           "nInterPeers=%d\n",
+           funcName, (int)teamKind, peer, isPeerLocal,
+           comm._commBase.nInterPeers);
+  }
 
   // Validate team semantics
   if (teamKind == FLAGCX_TEAM_INTRA && !isPeerLocal) {
@@ -415,8 +450,12 @@ flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
   }
 
   // Determine dispatch path
-  return (teamKind == FLAGCX_TEAM_INTRA) ||
-         (teamKind == FLAGCX_TEAM_WORLD && isPeerLocal);
+  bool useP2P = (teamKind == FLAGCX_TEAM_INTRA) ||
+                (teamKind == FLAGCX_TEAM_WORLD && isPeerLocal);
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[ValidateDispatch] %s: useP2P=%d\n", funcName, useP2P);
+  }
+  return useP2P;
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -436,14 +475,25 @@ flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
   if (shouldReturn)
     return;
 
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[DevPut] teamKind=%d peer=%d useP2P=%d bytes=%zu\n", (int)teamKind,
+           peer, useP2P, bytes);
+  }
+
   if (useP2P) {
     void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("[DevPut] P2P path: peerPtr=%p localSrc=%p\n", peerPtr, localSrc);
+    }
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
   } else {
+    if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+      printf("[DevPut] Net FIFO path\n");
+    }
     const flagcxDevNet *net =
         (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
@@ -469,6 +519,11 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
                                           "flagcxDevPut_RSigInc", shouldReturn);
   if (shouldReturn)
     return;
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    printf("[DevPut_RSigInc] teamKind=%d peer=%d useP2P=%d signal=%d\n",
+           (int)teamKind, peer, useP2P, (int)remoteSignal);
+  }
 
   if (useP2P) {
     void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);

@@ -575,13 +575,15 @@ int main(int argc, char *argv[]) {
         MPI_Abort(MPI_COMM_WORLD, 1);
       }
 
-      if (proc == 0) {
-        printf("[Host S23] Rank %d calling streamSynchronize\n", proc);
-      }
+      printf("[Host S23] Rank %d about to call cudaStreamSynchronize\n", proc);
+      fflush(stdout);
+      cudaError_t syncErr = cudaGetLastError();
+      printf("[Host S23] Rank %d CUDA error before sync: %s\n", proc,
+             cudaGetErrorString(syncErr));
+      fflush(stdout);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      if (proc == 0) {
-        printf("[Host S23] Rank %d streamSynchronize returned\n", proc);
-      }
+      printf("[Host S23] Rank %d streamSynchronize returned\n", proc);
+      fflush(stdout);
 
       int hostRes = 0;
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),

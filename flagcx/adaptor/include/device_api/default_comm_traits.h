@@ -865,6 +865,11 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    if (_coop.threadRank() == 0) {
+      printf(
+          "[IntraBarrier::arrive] myRank=%d nRanks=%d epoch=%lu ctaIndex=%u\n",
+          _myRank, _nRanks, _epoch, _ctaIndex);
+    }
     _coop.sync();
     for (int i = _coop.threadRank(); i < _nRanks - 1; i += _coop.size()) {
       int peer = 1 + _myRank + i;
@@ -873,25 +878,48 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
       uint64_t *slot = &_peerBuffers[peer][_myRank * _nBarriers + _ctaIndex];
       Atomic::store(slot, _epoch + 1, flagcxDeviceMemoryOrderRelease);
     }
+    if (_coop.threadRank() == 0) {
+      printf("[IntraBarrier::arrive] myRank=%d ctaIndex=%u completed\n",
+             _myRank, _ctaIndex);
+    }
   }
 
   // wait: thread-striped spin on own inbox slots from each peer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    if (_coop.threadRank() == 0) {
+      printf("[IntraBarrier::wait] myRank=%d nRanks=%d epoch=%lu ctaIndex=%u\n",
+             _myRank, _nRanks, _epoch, _ctaIndex);
+    }
     for (int i = _coop.threadRank(); i < _nRanks - 1; i += _coop.size()) {
       int peer = 1 + _myRank + i;
       if (peer >= _nRanks)
         peer -= _nRanks;
       uint64_t *slot = &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex];
       int iter = 0;
-      while (Atomic::load(slot, flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
+      uint64_t current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
+      if (_coop.threadRank() == 0 && i == 0) {
+        printf("[IntraBarrier::wait] myRank=%d waiting for peer=%d current=%lu "
+               "need=%lu\n",
+               _myRank, peer, current, _epoch + 1);
+      }
+      while (current < _epoch + 1) {
         Intrin::spinBackoff(iter++);
+        current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
+        if (iter == 1000000 && _coop.threadRank() == 0 && i == 0) {
+          printf("[IntraBarrier::wait] myRank=%d STUCK waiting for peer=%d "
+                 "current=%lu need=%lu\n",
+                 _myRank, peer, current, _epoch + 1);
+        }
       }
     }
     _epoch += 1;
     if (_coop.threadRank() == 0) {
       Atomic::store(&_epochBuffer[_ctaIndex], _epoch,
                     flagcxDeviceMemoryOrderRelease);
+      printf("[IntraBarrier::wait] myRank=%d ctaIndex=%u completed, new "
+             "epoch=%lu\n",
+             _myRank, _ctaIndex, _epoch);
     }
     _coop.sync();
   }
@@ -953,6 +981,11 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[InterBarrier::arrive] teamRank=%d nTeamRanks=%d "
+             "barrierSignal0=%d\n",
+             _teamRank, _nTeamRanks, _barrierSignal0);
+    }
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
@@ -965,6 +998,11 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
       // signalIdx = barrierSignal0 + myTeamRank (where peer expects my signal)
       int signalIdx = _barrierSignal0 + _teamRank;
       int combinedIdx = _contextId * _signalCount + signalIdx;
+      if (i == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        printf("[InterBarrier::arrive] Signaling peerIdx=%d targetRank=%d "
+               "signalIdx=%d\n",
+               peerIdx, targetRank, signalIdx);
+      }
       uint64_t trdSpecific =
           ((uint64_t)0 << flagcxDeviceTriggerOffBufferType) |
           ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
@@ -975,12 +1013,20 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
                                                   targetRank, trdSpecific));
     }
     FLAGCX_DEVICE_SYNC_THREADS();
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[InterBarrier::arrive] teamRank=%d completed\n", _teamRank);
+    }
   }
 
   // wait: wait for all remote peers' signals at MY buffer
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf(
+          "[InterBarrier::wait] teamRank=%d nTeamRanks=%d barrierSignal0=%d\n",
+          _teamRank, _nTeamRanks, _barrierSignal0);
+    }
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
@@ -994,17 +1040,35 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
       // Increment shadow (expected value) and spin on signal buffer
       _shadowBuffer[absIdx] += 1;
       uint64_t expected = _shadowBuffer[absIdx];
+      uint64_t current =
+          Atomic::load(&_signalBuffer[absIdx], flagcxDeviceMemoryOrderAcquire);
+      if (i == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        printf("[InterBarrier::wait] Waiting for peerIdx=%d signalIdx=%d "
+               "absIdx=%d current=%lu expected=%lu\n",
+               peerIdx, signalIdx, absIdx, current, expected);
+      }
       int iter = 0;
-      while (Atomic::load(&_signalBuffer[absIdx],
-                          flagcxDeviceMemoryOrderAcquire) < expected) {
+      while (current < expected) {
         Intrin::spinBackoff(iter++);
+        current = Atomic::load(&_signalBuffer[absIdx],
+                               flagcxDeviceMemoryOrderAcquire);
+        if (iter == 1000000 && i == 0 && FLAGCX_THREAD_IDX_X == 0) {
+          printf("[InterBarrier::wait] STUCK waiting for peerIdx=%d "
+                 "current=%lu expected=%lu\n",
+                 peerIdx, current, expected);
+        }
       }
     }
     // Flush: ensure all signal FIFO entries from arrive() completed on wire
     if (FLAGCX_THREAD_IDX_X == 0 && _fifoBuffer != nullptr) {
+      printf("[InterBarrier::wait] Calling fifoFlush\n");
       CommTraits<DefaultBackend<P>>::fifoFlush(_fifoBuffer);
+      printf("[InterBarrier::wait] fifoFlush completed\n");
     }
     FLAGCX_DEVICE_SYNC_THREADS();
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[InterBarrier::wait] teamRank=%d completed\n", _teamRank);
+    }
   }
 
   // sync = arrive + wait
@@ -1081,17 +1145,45 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (_coop.threadRank() == 0) {
+      printf("[WorldBarrier::sync] _nInterPeers=%d\n", _nInterPeers);
+    }
     if (_nInterPeers > 0) {
       // Phase 1: inter signal+wait (rank-to-rank across nodes)
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Multi-node path: calling _inter.arrive\n");
+      }
       _inter.arrive(order, fence);
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Multi-node path: calling _inter.wait\n");
+      }
       _inter.wait(order, fence);
       // Phase 2: intra sync (broadcast inter completion to local ranks)
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Multi-node path: calling _intra.arrive\n");
+      }
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Multi-node path: calling _intra.wait\n");
+      }
       _intra.wait(flagcxDeviceMemoryOrderAcquire);
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Multi-node path: completed\n");
+      }
     } else {
       // Single-node: one intra sync
+      if (_coop.threadRank() == 0) {
+        printf(
+            "[WorldBarrier::sync] Single-node path: calling _intra.arrive\n");
+      }
       _intra.arrive(order);
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Single-node path: calling _intra.wait\n");
+      }
       _intra.wait(order);
+      if (_coop.threadRank() == 0) {
+        printf("[WorldBarrier::sync] Single-node path: completed\n");
+      }
     }
   }
 };
