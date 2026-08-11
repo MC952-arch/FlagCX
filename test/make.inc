@@ -28,10 +28,19 @@ FLAGCX_INCLUDES := \
 FLAGCX_LIB  := $(PROJECT_ROOT)/build/lib
 FLAGCX_LINK := -L$(FLAGCX_LIB) -Wl,--no-as-needed -Wl,-rpath,$(FLAGCX_LIB) -lflagcx
 
-# GoogleTest
-GTEST_DIR     := $(PROJECT_ROOT)/third-party/googletest
+# GoogleTest. Prefer the vendored copy, fall back to distro packages in the
+# Docker image when submodules are not checked out.
+GTEST_DIR ?= $(PROJECT_ROOT)/third-party/googletest
+ifneq ($(wildcard $(GTEST_DIR)/googletest/include/gtest/gtest.h),)
 GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
 GTEST_LIB     := $(GTEST_DIR)/build/lib
+GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
+else
+GTEST_DIR     := /usr/src/googletest
+GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
+GTEST_LIB     := /usr/lib/x86_64-linux-gnu
+GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
+endif
 GTEST_LINK    := -L$(GTEST_LIB) -lgtest -lgtest_main -lpthread
 
 # Shared test fixtures
@@ -41,9 +50,20 @@ FIXTURE_INCLUDE := -I$(PROJECT_ROOT)/test/fixtures
 UNITTEST_INCLUDE := -I$(PROJECT_ROOT)/test/unittest/include
 
 # MPI (used by _mpi_tests targets)
-MPI_HOME    ?= /usr/local/mpi
-MPI_INCLUDE := -I$(MPI_HOME)/include
-MPI_LINK    := -L$(MPI_HOME)/lib -lmpi
+MPI_HOME ?= /usr/local/mpi
+ifeq ($(wildcard $(MPI_HOME)/include/mpi.h),)
+  ifneq ($(wildcard /usr/include/x86_64-linux-gnu/mpi/mpi.h),)
+    MPI_HOME := /usr
+    MPI_INCLUDE := -I/usr/include/x86_64-linux-gnu/mpi
+    MPI_LINK := -L/usr/lib/x86_64-linux-gnu/openmpi/lib -lmpi
+  else
+    MPI_INCLUDE := -I$(MPI_HOME)/include
+    MPI_LINK := -L$(MPI_HOME)/lib -lmpi
+  endif
+else
+  MPI_INCLUDE := -I$(MPI_HOME)/include
+  MPI_LINK := -L$(MPI_HOME)/lib -lmpi
+endif
 
 # CCL (vendor collective library)
 CCL_HOME    ?= /usr/local

@@ -9,7 +9,11 @@ MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
 # Environment variables to force hetero mode on single node
-HETERO_ENV := FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0
+HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0
+
+ifeq ($(DEVICE_PLATFORM), MACA)
+HETERO_ENV += -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1
+endif
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -47,6 +51,6 @@ run-unit:
 	@echo "No non-MPI unit tests for rma."
 
 run-mpi: $(MPI_TARGET)
-	@$(HETERO_ENV) mpirun --allow-run-as-root -np 2 $(MPI_TARGET)
+	@mpirun --allow-run-as-root -np 2 $(HETERO_ENV) $(MPI_TARGET)
 
 run: run-unit run-mpi

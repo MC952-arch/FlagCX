@@ -1,4 +1,5 @@
 #include "rma_test.hpp"
+#include "comm.h"
 #include <cstring>
 
 // Static member definitions
@@ -10,6 +11,8 @@ void *RmaTest::signalBuff = nullptr;
 flagcxWindow_t RmaTest::dataWin = nullptr;
 size_t RmaTest::size = 0;
 size_t RmaTest::signalSize = 0;
+bool RmaTest::oneSidedAvailable = false;
+const char *RmaTest::oneSidedSkipReason = "RMA one-sided setup not completed";
 
 void RmaTest::SetUpTestSuite() {
   int rank, nranks;
@@ -32,10 +35,29 @@ void RmaTest::SetUpTestSuite() {
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  flagcxResult_t res = flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  if (res != flagcxSuccess) {
+    comm = nullptr;
+    oneSidedSkipReason = "Communicator initialization failed";
+    return;
+  }
 
   // Skip setup if hetero comm not available
   if (comm == nullptr || comm->heteroComm == nullptr) {
+    oneSidedSkipReason = "Hetero communicator not available";
+    return;
+  }
+
+  if (comm->heteroComm->rmaProxy == nullptr) {
+    oneSidedSkipReason = "RMA proxy not available";
+    return;
+  }
+
+  if (comm->heteroComm->netAdaptor == nullptr ||
+      comm->heteroComm->netAdaptor->iput == nullptr ||
+      comm->heteroComm->netAdaptor->iget == nullptr ||
+      comm->heteroComm->netAdaptor->iputSignal == nullptr) {
+    oneSidedSkipReason = "Net adaptor does not support one-sided RMA";
     return;
   }
 
@@ -45,11 +67,12 @@ void RmaTest::SetUpTestSuite() {
   flagcxMemAlloc(&dataBuff, size);
   devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
 
-  flagcxResult_t res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
-                                                FLAGCX_WIN_COLL_SYMMETRIC);
+  res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
+                                 FLAGCX_WIN_COLL_SYMMETRIC);
   if (res != flagcxSuccess || dataWin == nullptr) {
     // Net adaptor doesn't support one-sided, tests will skip
     dataWin = nullptr;
+    oneSidedSkipReason = "Net adaptor does not support one-sided ops";
     return;
   }
 
@@ -62,8 +85,11 @@ void RmaTest::SetUpTestSuite() {
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
     dataWin = nullptr;
+    oneSidedSkipReason = "Signal buffer registration is not supported";
     return;
   }
+  oneSidedAvailable = true;
+  oneSidedSkipReason = nullptr;
 }
 
 void RmaTest::TearDownTestSuite() {
@@ -91,7 +117,7 @@ void RmaTest::TearDownTestSuite() {
     stream = nullptr;
   }
 
-  if (comm) {
+  if (comm && oneSidedAvailable) {
     flagcxCommDestroy(comm);
     comm = nullptr;
   }
@@ -102,8 +128,8 @@ void RmaTest::TearDownTestSuite() {
 
 void RmaTest::SetUp() {
   FlagCXTest::SetUp();
-  if (comm == nullptr || comm->heteroComm == nullptr) {
-    GTEST_SKIP() << "Hetero communicator not available";
+  if (!oneSidedAvailable) {
+    GTEST_SKIP() << oneSidedSkipReason;
   }
   if (dataWin == nullptr) {
     GTEST_SKIP() << "Net adaptor does not support one-sided ops (iput/iget)";
