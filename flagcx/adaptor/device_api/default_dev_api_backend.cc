@@ -68,8 +68,10 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   int myNode = hetero->node;
   int nNodes = hetero->nNodes;
 
-  if (nNodes <= 1)
+  if (nNodes <= 1) {
+    devComm->nInterPeers = 0;
     return flagcxSuccess;
+  }
 
   // Already initialized: just copy pointers into devComm
   if (hetero->relayInitialized) {

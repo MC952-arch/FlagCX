@@ -176,6 +176,10 @@ void launchKernelDevBarrierIntraS(const void *devCommPtr, int *devResult,
 void launchKernelDevBarrierWorldS(const void *devCommPtr, int *devResult,
                                   flagcxStream_t stream);
 
+// INTER Barrier: Inter-node synchronization
+void launchKernelDevBarrierInterS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream);
+
 // S21: Unified Signal — standalone signal + wait
 void launchKernelDevSignalStandaloneS(const void *devCommPtr, int *devResult,
                                       flagcxStream_t stream);

@@ -1558,9 +1558,9 @@ void launchKernelDevPutS(const void *devCommPtr, const void *dstMemPtr,
 }
 
 // ---------------------------------------------------------------------------
-// S17: flagcxDevPut_RSigInc + flagcxDevWaitSignal — Comprehensive multi-level multi-team test
+// S23: flagcxDevPut_RSigInc + flagcxDevWaitSignal — Comprehensive multi-level multi-team test
 // Tests 4 cooperation levels × 3 teams = 12 combinations
-// Buffer layout: same as S16 (12× base size)
+// Buffer layout: same as S20 (12× base size)
 // Signal slots: 0-11, one per combination
 // NOTE: Requires concurrent multi-rank launch (ring dependency).
 // ---------------------------------------------------------------------------
@@ -1584,7 +1584,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   int nBlocksPerContext = (nBlocks + nContexts - 1) / nContexts;
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Start reading signal baselines: nBlocks=%d nContexts=%d contextId=%d\n",
+    printf("[S23 Rank %d] Start reading signal baselines: nBlocks=%d nContexts=%d contextId=%d\n",
            worldRank, nBlocks, nContexts, contextId);
   }
 
@@ -1615,9 +1615,17 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                                         flagcxDeviceMemoryOrderRelaxed);
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Read baselines: 0=%lu 1=%lu 2=%lu 3=%lu 4=%lu 5=%lu 6=%lu 7=%lu 8=%lu 9=%lu 10=%lu 11=%lu\n",
+    printf("[S23 Rank %d] Read baselines: 0=%lu 1=%lu 2=%lu 3=%lu 4=%lu 5=%lu 6=%lu 7=%lu 8=%lu 9=%lu 10=%lu 11=%lu\n",
            worldRank, base0, base1, base2, base3, base4, base5, base6, base7, base8, base9, base10, base11);
-    printf("[S17 Rank %d] Entering initial WORLD barrier\n", worldRank);
+
+    // DEBUG: Verify _nInterPeers value
+    const void *netOpaque = flagcxDevNetGetFromCommS(devCommPtr, contextId);
+    const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+    printf("[S23 Rank %d] DEBUG: net._nInterPeers=%d (nNodes=%d, expected=%d for %s)\n",
+           worldRank, net ? net->_nInterPeers : -1, nNodes,
+           (nNodes > 1 ? nNodes - 1 : 0), (nNodes > 1 ? "multi-node" : "single-node"));
+
+    printf("[S23 Rank %d] Entering initial WORLD barrier\n", worldRank);
   }
 
   // Initial WORLD barrier: ensure all ranks have read their signal baselines before any sends
@@ -1628,7 +1636,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                        flagcxDeviceScopeSystem);
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Passed initial WORLD barrier, starting combinations\n", worldRank);
+    printf("[S23 Rank %d] Passed initial WORLD barrier, starting combinations\n", worldRank);
   }
 
   // === Combination 0: THREAD + INTRA ===
@@ -1644,7 +1652,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)0, base0 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 0 done (wait sig0 >= %lu)\n", worldRank, base0 + 1);
+    printf("[S23 Rank %d] Combo 0 done (wait sig0 >= %lu)\n", worldRank, base0 + 1);
   }
 
   // === Combination 1: THREAD + WORLD ===
@@ -1660,7 +1668,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)1, base1 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 1 done (wait sig1 >= %lu)\n", worldRank, base1 + 1);
+    printf("[S23 Rank %d] Combo 1 done (wait sig1 >= %lu)\n", worldRank, base1 + 1);
   }
 
   // === Combination 2: THREAD + INTER ===
@@ -1678,7 +1686,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 2 done (wait sig2 >= %lu)\n", worldRank, base2 + 1);
+    printf("[S23 Rank %d] Combo 2 done (wait sig2 >= %lu)\n", worldRank, base2 + 1);
   }
 
   // === Combination 3: WARP + INTRA ===
@@ -1694,7 +1702,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)3, base3 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 3 done (wait sig3 >= %lu)\n", worldRank, base3 + 1);
+    printf("[S23 Rank %d] Combo 3 done (wait sig3 >= %lu)\n", worldRank, base3 + 1);
   }
 
   // === Combination 4: WARP + WORLD ===
@@ -1710,7 +1718,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)4, base4 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 4 done (wait sig4 >= %lu)\n", worldRank, base4 + 1);
+    printf("[S23 Rank %d] Combo 4 done (wait sig4 >= %lu)\n", worldRank, base4 + 1);
   }
 
   // === Combination 5: WARP + INTER ===
@@ -1728,7 +1736,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 5 done (wait sig5 >= %lu)\n", worldRank, base5 + 1);
+    printf("[S23 Rank %d] Combo 5 done (wait sig5 >= %lu)\n", worldRank, base5 + 1);
   }
 
   // === Combination 6: BLOCK + INTRA ===
@@ -1750,7 +1758,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)6, base6 + nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 6 done (wait sig6 >= %lu)\n", worldRank, base6 + nBlocksPerContext);
+    printf("[S23 Rank %d] Combo 6 done (wait sig6 >= %lu)\n", worldRank, base6 + nBlocksPerContext);
   }
 
   // === Combination 7: BLOCK + WORLD ===
@@ -1772,7 +1780,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)7, base7 + nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 7 done (wait sig7 >= %lu)\n", worldRank, base7 + nBlocksPerContext);
+    printf("[S23 Rank %d] Combo 7 done (wait sig7 >= %lu)\n", worldRank, base7 + nBlocksPerContext);
   }
 
   // === Combination 8: BLOCK + INTER ===
@@ -1796,15 +1804,15 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 8 done (wait sig8 >= %lu)\n", worldRank, base8 + nBlocksPerContext);
+    printf("[S23 Rank %d] Combo 8 done (wait sig8 >= %lu)\n", worldRank, base8 + nBlocksPerContext);
   }
 
-  // === Combination 9: GRID + INTRA ===
+  // === Combination 9: BLOCK + INTRA ===
   {
     int peer = (intraRank + 1) % intraSize;
     size_t off = 9 * bytes;
     flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,
-                         FLAGCX_TEAM_INTRA, peer, contextId, FLAGCX_COOP_GRID,
+                         FLAGCX_TEAM_INTRA, peer, contextId, FLAGCX_COOP_BLOCK,
                          flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                          (flagcxDevSignal_t)9);
   }
@@ -1812,15 +1820,15 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)9, base9 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 9 done (wait sig9 >= %lu)\n", worldRank, base9 + 1);
+    printf("[S23 Rank %d] Combo 9 done (wait sig9 >= %lu)\n", worldRank, base9 + 1);
   }
 
-  // === Combination 10: GRID + WORLD ===
+  // === Combination 10: BLOCK + WORLD ===
   {
     int peer = (worldRank + 1) % nRanks;
     size_t off = 10 * bytes;
     flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,
-                         FLAGCX_TEAM_WORLD, peer, contextId, FLAGCX_COOP_GRID,
+                         FLAGCX_TEAM_WORLD, peer, contextId, FLAGCX_COOP_BLOCK,
                          flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                          (flagcxDevSignal_t)10);
   }
@@ -1828,15 +1836,15 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)10, base10 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 10 done (wait sig10 >= %lu)\n", worldRank, base10 + 1);
+    printf("[S23 Rank %d] Combo 10 done (wait sig10 >= %lu)\n", worldRank, base10 + 1);
   }
 
-  // === Combination 11: GRID + INTER ===
+  // === Combination 11: BLOCK + INTER ===
   if (nNodes > 1) {
     int peer = (nodeIdx + 1) % nNodes;
     size_t off = 11 * bytes;
     flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,
-                         FLAGCX_TEAM_INTER, peer, contextId, FLAGCX_COOP_GRID,
+                         FLAGCX_TEAM_INTER, peer, contextId, FLAGCX_COOP_BLOCK,
                          flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease,
                          (flagcxDevSignal_t)11);
   }
@@ -1846,7 +1854,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Combo 11 done (wait sig11 >= %lu)\n", worldRank, base11 + 1);
+    printf("[S23 Rank %d] Combo 11 done (wait sig11 >= %lu)\n", worldRank, base11 + 1);
   }
 
   // Flush to ensure all FIFO operations are submitted before final barrier
@@ -1854,7 +1862,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                  flagcxDeviceMemoryOrderRelaxed);
 
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
-    printf("[S17 Rank %d] Flushed, entering final WORLD barrier\n", worldRank);
+    printf("[S23 Rank %d] Flushed, entering final WORLD barrier\n", worldRank);
   }
 
   // Final WORLD barrier to ensure all operations complete (matching S11 pattern)
@@ -1864,7 +1872,7 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
                        flagcxDeviceScopeSystem);
 
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) {
-    printf("[S17 Rank %d] Passed final WORLD barrier, writing result=1\n", worldRank);
+    printf("[S23 Rank %d] Passed final WORLD barrier, writing result=1\n", worldRank);
     result[0] = 1;
   }
 }
@@ -2086,6 +2094,28 @@ __global__ void kernelDevBarrierIntraS(const void *devCommPtr, int *result) {
 void launchKernelDevBarrierIntraS(const void *devCommPtr, int *devResult,
                                   flagcxStream_t stream) {
   kernelDevBarrierIntraS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResult);
+}
+
+// ---------------------------------------------------------------------------
+// INTER: flagcxDevBarrierSync — Inter-node only
+// ---------------------------------------------------------------------------
+__global__ void kernelDevBarrierInterS(const void *devCommPtr, int *result) {
+  if (FLAGCX_BLOCK_IDX_X >= FLAGCX_DEVICE_CTA_COUNT) return;
+
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int nContexts = comm->getContextCount();
+  flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
+
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTER, /*index=*/FLAGCX_BLOCK_IDX_X,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
+}
+
+void launchKernelDevBarrierInterS(const void *devCommPtr, int *devResult,
+                                  flagcxStream_t stream) {
+  kernelDevBarrierInterS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------

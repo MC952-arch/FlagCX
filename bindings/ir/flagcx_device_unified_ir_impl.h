@@ -193,8 +193,24 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
                     uint64_t least, int bits, flagcxDevContext_t contextId,
                     flagcxCoopKind_t coopKind,
                     flagcxDeviceMemoryOrder_t order) {
-  const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
-  flagcxDevNetWaitSignalS(net, coopKind, signal, least, bits, order);
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+
+  // P2P fast path for single-node: poll local signal buffer directly
+  if (comm->_commBase.nInterPeers == 0) {
+    const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
+    const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+    uint64_t *localBuf = comm->_commBase.signalBuffer;
+    int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+
+    // Spin-wait until signal reaches expected value
+    while (DeviceAPI::Atomic::load(&localBuf[slot], order) < least) {
+      // Busy-wait
+    }
+  } else {
+    // Net FIFO path for multi-node
+    const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
+    flagcxDevNetWaitSignalS(net, coopKind, signal, least, bits, order);
+  }
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -231,11 +247,24 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadCounter(
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
                flagcxCoopKind_t coopKind, flagcxDeviceMemoryOrder_t order) {
-  const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
-  if (net) {
-    // Only flush if Net path is active (FIFO-based operations)
-    // P2P operations don't need explicit flush - fencing is per-operation
-    flagcxDevNetFlushS(net, coopKind, order);
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+  const flagcxDevNet *net =
+      (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
+
+  // Dispatch based on communication path:
+  // - P2P path (nInterPeers == 0): single-node, all operations use IPC → fence
+  // only
+  // - Net path (nInterPeers > 0): multi-node, operations use FIFO → flush only
+
+  if (comm->_commBase.nInterPeers > 0) {
+    // Multi-node: flush FIFO queue via proxy thread
+    if (net) {
+      flagcxDevNetFlushS((const void *)net, coopKind, order);
+    }
+  } else {
+    // Single-node: issue memory fence for P2P operations (IPC atomics, direct
+    // memcpy)
+    DeviceAPI::Intrin::threadfenceSystem();
   }
 }
 
