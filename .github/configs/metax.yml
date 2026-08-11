@@ -2,7 +2,7 @@
 hardware_name: metax
 display_name: MetaX Tests
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:20260811-metax-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
 
 runner_labels:
   - mx-8g-cicd-flagcx
