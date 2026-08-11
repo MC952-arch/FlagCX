@@ -349,9 +349,18 @@ int main(int argc, char *argv[]) {
 
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
+      if (proc == 0) {
+        printf("[Host S17] Rank %d launching kernel\n", proc);
+      }
       launchKernelDevPutSignalWaitS(devCommPtr, recvMemPtr, sendMemPtr,
                                     devResults, bytes, stream);
+      if (proc == 0) {
+        printf("[Host S17] Rank %d calling streamSynchronize\n", proc);
+      }
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      if (proc == 0) {
+        printf("[Host S17] Rank %d streamSynchronize returned\n", proc);
+      }
 
       int hostRes = 0;
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),

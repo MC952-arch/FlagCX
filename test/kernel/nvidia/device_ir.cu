@@ -1583,9 +1583,55 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
   int nBlocksPerContext = (nBlocks + nContexts - 1) / nContexts;
 
-  // === Combination 0: THREAD + INTRA ===
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Start reading signal baselines: nBlocks=%d nContexts=%d contextId=%d\n",
+           worldRank, nBlocks, nContexts, contextId);
+  }
+
+  // Read all signal baselines before any sends to avoid cross-rank contamination
   uint64_t base0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)0, 64, contextId,
                                        flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base1 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)1, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base2 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)2, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base3 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)3, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base4 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)4, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base5 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)5, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base6 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)6, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base7 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)7, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base8 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)8, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base9 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)9, 64, contextId,
+                                       flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base10 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)10, 64, contextId,
+                                        flagcxDeviceMemoryOrderRelaxed);
+  uint64_t base11 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)11, 64, contextId,
+                                        flagcxDeviceMemoryOrderRelaxed);
+
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Read baselines: 0=%lu 1=%lu 2=%lu 3=%lu 4=%lu 5=%lu 6=%lu 7=%lu 8=%lu 9=%lu 10=%lu 11=%lu\n",
+           worldRank, base0, base1, base2, base3, base4, base5, base6, base7, base8, base9, base10, base11);
+    printf("[S17 Rank %d] Entering initial WORLD barrier\n", worldRank);
+  }
+
+  // Initial WORLD barrier: ensure all ranks have read their signal baselines before any sends
+  // This prevents race where one rank's send modifies another rank's signal during read phase
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_WORLD, myBlockIdx,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Passed initial WORLD barrier, starting combinations\n", worldRank);
+  }
+
+  // === Combination 0: THREAD + INTRA ===
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
     int peer = (intraRank + 1) % intraSize;
     size_t off = 0 * bytes;
@@ -1597,10 +1643,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)0, base0 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 0 done (wait sig0 >= %lu)\n", worldRank, base0 + 1);
+  }
 
   // === Combination 1: THREAD + WORLD ===
-  uint64_t base1 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)1, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
     int peer = (worldRank + 1) % nRanks;
     size_t off = 1 * bytes;
@@ -1612,10 +1659,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)1, base1 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 1 done (wait sig1 >= %lu)\n", worldRank, base1 + 1);
+  }
 
   // === Combination 2: THREAD + INTER ===
-  uint64_t base2 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)2, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (nNodes > 1 && myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
     int peer = (nodeIdx + 1) % nNodes;
     size_t off = 2 * bytes;
@@ -1629,10 +1677,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, base2 + 1, 64, contextId,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 2 done (wait sig2 >= %lu)\n", worldRank, base2 + 1);
+  }
 
   // === Combination 3: WARP + INTRA ===
-  uint64_t base3 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)3, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X < 32) {
     int peer = (intraRank + 1) % intraSize;
     size_t off = 3 * bytes;
@@ -1644,10 +1693,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)3, base3 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 3 done (wait sig3 >= %lu)\n", worldRank, base3 + 1);
+  }
 
   // === Combination 4: WARP + WORLD ===
-  uint64_t base4 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)4, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X < 32) {
     int peer = (worldRank + 1) % nRanks;
     size_t off = 4 * bytes;
@@ -1659,10 +1709,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)4, base4 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 4 done (wait sig4 >= %lu)\n", worldRank, base4 + 1);
+  }
 
   // === Combination 5: WARP + INTER ===
-  uint64_t base5 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)5, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (nNodes > 1 && myBlockIdx == 0 && FLAGCX_THREAD_IDX_X < 32) {
     int peer = (nodeIdx + 1) % nNodes;
     size_t off = 5 * bytes;
@@ -1676,10 +1727,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)5, base5 + 1, 64, contextId,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 5 done (wait sig5 >= %lu)\n", worldRank, base5 + 1);
+  }
 
   // === Combination 6: BLOCK + INTRA ===
-  uint64_t base6 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)6, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   {
     int peer = (intraRank + 1) % intraSize;
     size_t blockBytes = (bytes + nBlocks - 1) / nBlocks;
@@ -1697,10 +1749,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)6, base6 + nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 6 done (wait sig6 >= %lu)\n", worldRank, base6 + nBlocksPerContext);
+  }
 
   // === Combination 7: BLOCK + WORLD ===
-  uint64_t base7 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)7, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   {
     int peer = (worldRank + 1) % nRanks;
     size_t blockBytes = (bytes + nBlocks - 1) / nBlocks;
@@ -1718,10 +1771,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)7, base7 + nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 7 done (wait sig7 >= %lu)\n", worldRank, base7 + nBlocksPerContext);
+  }
 
   // === Combination 8: BLOCK + INTER ===
-  uint64_t base8 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)8, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   if (nNodes > 1) {
     int peer = (nodeIdx + 1) % nNodes;
     size_t blockBytes = (bytes + nBlocks - 1) / nBlocks;
@@ -1741,10 +1795,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)8, base8 + nBlocksPerContext, 64, contextId,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 8 done (wait sig8 >= %lu)\n", worldRank, base8 + nBlocksPerContext);
+  }
 
   // === Combination 9: GRID + INTRA ===
-  uint64_t base9 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)9, 64, contextId,
-                                       flagcxDeviceMemoryOrderRelaxed);
   {
     int peer = (intraRank + 1) % intraSize;
     size_t off = 9 * bytes;
@@ -1756,10 +1811,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)9, base9 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 9 done (wait sig9 >= %lu)\n", worldRank, base9 + 1);
+  }
 
   // === Combination 10: GRID + WORLD ===
-  uint64_t base10 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)10, 64, contextId,
-                                        flagcxDeviceMemoryOrderRelaxed);
   {
     int peer = (worldRank + 1) % nRanks;
     size_t off = 10 * bytes;
@@ -1771,10 +1827,11 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)10, base10 + 1, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 10 done (wait sig10 >= %lu)\n", worldRank, base10 + 1);
+  }
 
   // === Combination 11: GRID + INTER ===
-  uint64_t base11 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)11, 64, contextId,
-                                        flagcxDeviceMemoryOrderRelaxed);
   if (nNodes > 1) {
     int peer = (nodeIdx + 1) % nNodes;
     size_t off = 11 * bytes;
@@ -1788,18 +1845,28 @@ __global__ void kernelDevPutSignalWaitS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)11, base11 + 1, 64, contextId,
                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
   }
-
-  // Flush to ensure all FIFO operations complete before kernel returns
-  // Only first block in each context flushes to avoid concurrent FIFO access
-  if (myBlockIdx < nContexts) {
-    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
-                   flagcxDeviceMemoryOrderRelaxed);
-  } else {
-    // Other blocks just sync to wait for flush to complete
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Combo 11 done (wait sig11 >= %lu)\n", worldRank, base11 + 1);
   }
 
-  if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
+  // Flush to ensure all FIFO operations are submitted before final barrier
+  flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    printf("[S17 Rank %d] Flushed, entering final WORLD barrier\n", worldRank);
+  }
+
+  // Final WORLD barrier to ensure all operations complete (matching S11 pattern)
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_WORLD, myBlockIdx,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+
+  if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) {
+    printf("[S17 Rank %d] Passed final WORLD barrier, writing result=1\n", worldRank);
+    result[0] = 1;
+  }
 }
 void launchKernelDevPutSignalWaitS(const void *devCommPtr,
                                    const void *dstMemPtr,
