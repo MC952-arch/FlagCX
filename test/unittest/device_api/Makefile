@@ -33,11 +33,12 @@ CXXFLAGS += -DCOMPILE_KERNEL
 # Test targets
 MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
-               $(BINDIR)/test_device_ir_unified \
+               $(BINDIR)/test_device_ir_unified_intra \
+               $(BINDIR)/test_device_ir_unified_inter \
                $(BINDIR)/test_device_api_intra \
                $(BINDIR)/test_device_api_inter
 
-.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run-mpi-unified run
+.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run
 
 all: $(MPI_TARGETS)
 
@@ -70,7 +71,12 @@ $(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(DLIN
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_unified: test_device_ir_unified.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_intra: test_device_ir_unified_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_ir_unified_inter: test_device_ir_unified_inter.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
@@ -114,11 +120,16 @@ run-mpi-inter: $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter
 	@echo "Running inter-node Device API tests..."
 	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 
-# Unified one-sided IR tests: transport-transparent (works single-node or multi-node)
-run-mpi-unified: $(BINDIR)/test_device_ir_unified
-	@echo "Running unified one-sided IR tests..."
-	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_ir_unified
+# Unified Intra suite: INTRA + WORLD teams (single-node)
+run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra
+	@echo "Running unified intra suite tests (INTRA + WORLD, 8-combo)..."
+	mpirun -np 8 --allow-run-as-root $(BINDIR)/test_device_ir_unified_intra
 
-run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified
+# Unified Inter suite: INTER + WORLD teams (requires multi-node)
+run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
+	@echo "Running unified inter suite tests (INTER + WORLD, 8-combo)..."
+	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_ir_unified_inter
+
+run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra run-mpi-unified-inter
 
 run: run-mpi
