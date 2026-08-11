@@ -30,4 +30,46 @@ flagcx_ci_prepare() {
   echo "Preparing MetaX environment for unit-test suite: $suite"
   command -v mpirun
   command -v mxcc
+
+  if [[ "$suite" == "p2p" ]]; then
+    if compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
+      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
+    fi
+
+    if [[ -d /sys/class/net/bond0 ]]; then
+      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
+    fi
+
+    export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
+    export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,ENV}
+
+    echo "MetaX P2P diagnostics:"
+    echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
+    echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
+    ls /dev/infiniband 2>/dev/null || true
+    ibv_devices 2>/dev/null || true
+    ibv_devinfo 2>/dev/null || true
+    ip -o addr show 2>/dev/null || true
+  fi
+}
+
+flagcx_ci_run_suite_override() {
+  local suite=$1
+  local suite_dir=$2
+  shift 2
+  local -a args=("$@")
+
+  if [[ "$suite" == "runner" ]]; then
+    make -C "$suite_dir" run-unit "${args[@]}"
+    echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
+    return 0
+  fi
+
+  if [[ "$suite" == "symmem" ]]; then
+    "$suite_dir/build/bin/symmem_unit_tests"
+    echo "Skipping MetaX symmem MPI tests: symmetric windows are not supported by the current MetaX backend."
+    return 0
+  fi
+
+  return 1
 }
