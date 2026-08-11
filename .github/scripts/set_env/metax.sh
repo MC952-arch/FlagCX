@@ -22,41 +22,12 @@ export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_INTRA_NP=8
+FLAGCX_CI_RUNNER_NP=8
 export NP=8
-
-flagcx_ci_build_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-
-  case "$suite" in
-    runner|symmem)
-      make -C "$suite_dir" --jobs="$(nproc)" run-unit "$@"
-      return 0
-      ;;
-  esac
-
-  return 1
-}
 
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing MetaX environment for unit-test suite: $suite"
   command -v mpirun
   command -v mxcc
-}
-
-flagcx_ci_run_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-
-  case "$suite" in
-    runner|symmem)
-      make -C "$suite_dir" run-unit "$@"
-      return 0
-      ;;
-  esac
-
-  return 1
 }
