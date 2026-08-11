@@ -1811,6 +1811,10 @@ void *flagcxProxyKernelService(void *args) {
 
   int ctx = contextId + 1; // kernel proxy context index
 
+  // Debug counters for FIFO tracking (must be declared before any goto)
+  uint64_t lastProduced = 0, lastCompleted = 0;
+  int logCounter = 0;
+
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
 
@@ -1868,6 +1872,31 @@ init_done:
   while (true) {
     if (comm->proxyState->kernelState.stop == 1)
       break;
+
+    // Debug: track FIFO produced/completed counters
+    uint64_t prod =
+        __atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced], __ATOMIC_ACQUIRE);
+    uint64_t comp = __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                                    __ATOMIC_ACQUIRE);
+    if (prod != lastProduced || comp != lastCompleted) {
+      INFO(FLAGCX_PROXY,
+           "rank=%d FIFO: produced=%lu completed=%lu gap=%lu inflight=%u",
+           comm->rank, (unsigned long)prod, (unsigned long)comp,
+           (unsigned long)(prod - comp), kproxyState->totalInflight);
+      lastProduced = prod;
+      lastCompleted = comp;
+      logCounter = 0;
+    } else {
+      logCounter++;
+      if (logCounter == 10000000) {
+        INFO(FLAGCX_PROXY,
+             "rank=%d FIFO IDLE: produced=%lu completed=%lu (no change for 10M "
+             "iters)",
+             comm->rank, (unsigned long)prod, (unsigned long)comp);
+        logCounter = 0;
+      }
+    }
+
     // Poll completions for direct-posted IB ops
     flagcxKernelProxyPoll(kproxyState, comm);
     dequeue(fifo->buffer, ptr);
@@ -2104,6 +2133,15 @@ init_done:
     if (res != flagcxSuccess)
       break;
   }
+
+  INFO(FLAGCX_PROXY,
+       "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu completed=%lu",
+       comm->rank, comm->proxyState->kernelState.stop, (int)res,
+       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced],
+                                      __ATOMIC_ACQUIRE),
+       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                                      __ATOMIC_ACQUIRE));
+
 out:
   // Drain all in-flight direct IB requests before teardown
   if (kproxyState != NULL) {
