@@ -57,6 +57,13 @@ build_project() {
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+
+  if declare -F flagcx_ci_build_suite_override >/dev/null; then
+    if flagcx_ci_build_suite_override "$SUITE" "$suite_dir" "${args[@]}"; then
+      return
+    fi
+  fi
+
   make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
 }
 
@@ -103,6 +110,13 @@ run_device_api() {
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+
+  if declare -F flagcx_ci_run_suite_override >/dev/null; then
+    if flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"; then
+      return
+    fi
+  fi
+
   case "$SUITE" in
     adaptor|core|service)
       make -C "$suite_dir" run-unit "${args[@]}"

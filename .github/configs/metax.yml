@@ -1,0 +1,28 @@
+# MetaX Hardware Configuration
+hardware_name: metax
+display_name: MetaX Tests
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:20260811-metax-dev
+
+runner_labels:
+  - mx-8g-cicd-flagcx
+
+container_volumes: []
+
+container_options: >-
+  --gpus all
+  --privileged
+  --ipc=host
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+
+set_env: .github/scripts/set_env/metax.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem
