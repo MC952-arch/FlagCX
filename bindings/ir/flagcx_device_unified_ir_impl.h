@@ -137,6 +137,16 @@ flagcxDevSignalInc(const void *commOpaque, flagcxTeamKind_t teamKind, int peer,
                   (peer - team._teamBase.rank) * team._teamBase.stride;
   int localPeer =
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    printf(
+        "[SignalInc] rank=%d blk=%d team=%d peer=%d worldPeer=%d localPeer=%d"
+        " signal=%d ctx=%d p2pSupport=%d intraSize=%d\n",
+        comm->_commBase.rank, FLAGCX_BLOCK_IDX_X, (int)teamKind, peer,
+        worldPeer, localPeer, (int)signal, (int)contextId,
+        (int)(localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
+              comm->_commBase.p2pSignalSupport(localPeer)),
+        comm->_commBase.intraSize);
+  }
   if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
       comm->_commBase.p2pSignalSupport(localPeer)) {
     // P2P fast path: direct atomic on peer's IPC-mapped signal buffer
@@ -144,10 +154,20 @@ flagcxDevSignalInc(const void *commOpaque, flagcxTeamKind_t teamKind, int peer,
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
     int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[SignalInc P2P] rank=%d blk=%d signal=%d slot=%d peerBuf=%p\n",
+             comm->_commBase.rank, FLAGCX_BLOCK_IDX_X, (int)signal, slot,
+             (void *)peerBuf);
+    }
     DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], (uint64_t)1,
                                 flagcxDeviceMemoryOrderRelease);
   } else {
     // Net FIFO fallback (inter-node or P2P not available)
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[SignalInc FIFO] rank=%d blk=%d signal=%d worldPeer=%d ctx=%d\n",
+             comm->_commBase.rank, FLAGCX_BLOCK_IDX_X, (int)signal, worldPeer,
+             (int)contextId);
+    }
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxDevNetSignalSigIncS(net, commOpaque, teamKind, peer, coopKind,
                               signal);
@@ -225,7 +245,26 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
   } else {
     // Net FIFO path for multi-node
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      const flagcxDevNet *dbgNet = (const flagcxDevNet *)net;
+      int dbgSlot =
+          dbgNet ? (dbgNet->contextId * dbgNet->signalCount + (int)signal) : -1;
+      uint64_t dbgCur =
+          (dbgNet && dbgNet->signalBuffer)
+              ? DeviceAPI::Atomic::load(&dbgNet->signalBuffer[dbgSlot],
+                                        flagcxDeviceMemoryOrderRelaxed)
+              : (uint64_t)-1;
+      printf("[WaitSignal NET] rank=%d blk=%d signal=%d slot=%d least=%llu"
+             " cur=%llu ctx=%d nInterPeers=%d\n",
+             comm->_commBase.rank, FLAGCX_BLOCK_IDX_X, (int)signal, dbgSlot,
+             (unsigned long long)least, (unsigned long long)dbgCur,
+             (int)contextId, comm->_commBase.nInterPeers);
+    }
     flagcxDevNetWaitSignalS(net, coopKind, signal, least, bits, order);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      printf("[WaitSignal NET DONE] rank=%d blk=%d signal=%d\n",
+             comm->_commBase.rank, FLAGCX_BLOCK_IDX_X, (int)signal);
+    }
   }
 }
 

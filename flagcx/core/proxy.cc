@@ -1991,14 +1991,18 @@ init_done:
         if (bufType == 0) {
           // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
           int peerRank = (int)ptr->getPeerRank();
-          INFO(FLAGCX_P2P,
-               "rank=%d PrimSignal(remote) peer=%d sigIdx=%d sigOff=%zu "
-               "sigVal=%lu inflight=%u",
+          WARN("rank=%d PrimSignal(remote) peer=%d sigIdx=%d sigOff=%zu "
+               "sigVal=%lu ctx=%d inflight=%u signalHandle=%p",
                comm->rank, peerRank, signalIdx, signalOff,
-               (unsigned long)signalValue, kproxyState->totalInflight);
+               (unsigned long)signalValue, contextId,
+               kproxyState->totalInflight, (void *)comm->signalHandle);
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
+          if (res != flagcxSuccess) {
+            WARN("rank=%d PrimSignal: ValidatePeer failed res=%d peer=%d ctx=%d"
+                 " oneSideHandleCount=%d",
+                 comm->rank, (int)res, peerRank, ctx, comm->oneSideHandleCount);
             break;
+          }
           if (comm->signalHandle == NULL) {
             WARN("flagcxDevicePrimSignal: signal handles not initialized "
                  "for this comm — call flagcxOneSideSignalRegister() before "
@@ -2009,8 +2013,8 @@ init_done:
           res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
                                       FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0, 0,
                                       -1, -1, signalOff, signalValue, 0);
-          INFO(FLAGCX_P2P, "rank=%d PrimSignal posted res=%d postedIB=%d",
-               comm->rank, (int)res, (res == flagcxSuccess));
+          WARN("rank=%d PrimSignal posted res=%d postedIB=%d peer=%d",
+               comm->rank, (int)res, (res == flagcxSuccess), peerRank);
           postedIB = (res == flagcxSuccess);
         } else {
           // Counter buffer: local CPU atomic increment (no network operation)

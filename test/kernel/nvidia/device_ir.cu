@@ -1692,33 +1692,32 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 2: WARP + INTRA ===
+  // All threads in warp 0 must call the signal function for COOP_WARP
   if (FLAGCX_THREAD_IDX_X < 32) {
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      int peer = (intraRank + 1) % intraSize;
-      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
-                         (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_WARP,
-                         flagcxDeviceScopeSystem);
-    }
+    int peer = (intraRank + 1) % intraSize;
+    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
+                       (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_WARP,
+                       flagcxDeviceScopeSystem);
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 3: WARP + WORLD ===
+  // All threads in warp 0 must call the signal function for COOP_WARP
   if (FLAGCX_THREAD_IDX_X < 32) {
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      int peer = (worldRank + 1) % nRanks;
-      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                         (flagcxDevSignal_t)3, contextId, FLAGCX_COOP_WARP,
-                         flagcxDeviceScopeSystem);
-    }
+    int peer = (worldRank + 1) % nRanks;
+    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                       (flagcxDevSignal_t)3, contextId, FLAGCX_COOP_WARP,
+                       flagcxDeviceScopeSystem);
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)3, nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 4: BLOCK + INTRA ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads in the block must call the signal function for COOP_BLOCK
+  {
     int peer = (intraRank + 1) % intraSize;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
                        (flagcxDevSignal_t)4, contextId, FLAGCX_COOP_BLOCK,
@@ -1729,7 +1728,8 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 5: BLOCK + WORLD ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads in the block must call the signal function for COOP_BLOCK
+  {
     int peer = (worldRank + 1) % nRanks;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
                        (flagcxDevSignal_t)5, contextId, FLAGCX_COOP_BLOCK,
@@ -1740,7 +1740,8 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 6: GRID + INTRA ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads must call the signal function for COOP_GRID
+  {
     int peer = (intraRank + 1) % intraSize;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
                        (flagcxDevSignal_t)6, contextId, FLAGCX_COOP_GRID,
@@ -1751,7 +1752,8 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 7: GRID + WORLD ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads must call the signal function for COOP_GRID
+  {
     int peer = (worldRank + 1) % nRanks;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
                        (flagcxDevSignal_t)7, contextId, FLAGCX_COOP_GRID,
@@ -2444,33 +2446,32 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 2: WARP + INTER ===
+  // All threads in warp 0 must call the signal function for COOP_WARP
   if (FLAGCX_THREAD_IDX_X < 32) {
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      int peer = (nodeIdx + 1) % nNodes;
-      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, peer,
-                         (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_WARP,
-                         flagcxDeviceScopeSystem);
-    }
+    int peer = (nodeIdx + 1) % nNodes;
+    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, peer,
+                       (flagcxDevSignal_t)2, contextId, FLAGCX_COOP_WARP,
+                       flagcxDeviceScopeSystem);
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)2, nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 3: WARP + WORLD ===
+  // All threads in warp 0 must call the signal function for COOP_WARP
   if (FLAGCX_THREAD_IDX_X < 32) {
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      int peer = (worldRank + 1) % nRanks;
-      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
-                         (flagcxDevSignal_t)3, contextId, FLAGCX_COOP_WARP,
-                         flagcxDeviceScopeSystem);
-    }
+    int peer = (worldRank + 1) % nRanks;
+    flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                       (flagcxDevSignal_t)3, contextId, FLAGCX_COOP_WARP,
+                       flagcxDeviceScopeSystem);
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
   flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)3, nBlocksPerContext, 64, contextId,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 4: BLOCK + INTER ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads in the block must call the signal function for COOP_BLOCK
+  {
     int peer = (nodeIdx + 1) % nNodes;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, peer,
                        (flagcxDevSignal_t)4, contextId, FLAGCX_COOP_BLOCK,
@@ -2481,7 +2482,8 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 5: BLOCK + WORLD ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads in the block must call the signal function for COOP_BLOCK
+  {
     int peer = (worldRank + 1) % nRanks;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
                        (flagcxDevSignal_t)5, contextId, FLAGCX_COOP_BLOCK,
@@ -2492,7 +2494,8 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 6: GRID + INTER ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads must call the signal function for COOP_GRID
+  {
     int peer = (nodeIdx + 1) % nNodes;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTER, peer,
                        (flagcxDevSignal_t)6, contextId, FLAGCX_COOP_GRID,
@@ -2503,7 +2506,8 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
   // === Combination 7: GRID + WORLD ===
-  if (FLAGCX_THREAD_IDX_X == 0) {
+  // All threads must call the signal function for COOP_GRID
+  {
     int peer = (worldRank + 1) % nRanks;
     flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_WORLD, peer,
                        (flagcxDevSignal_t)7, contextId, FLAGCX_COOP_GRID,

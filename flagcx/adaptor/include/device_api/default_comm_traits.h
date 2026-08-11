@@ -59,7 +59,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         int index = team.rank + (peer - team.rank) * team.stride;
         return (char *)flatBasePtr + (size_t)index * allocSize + offset;
       } else if (ipcBasePtrs) {
-        int index = team.rank + (peer - team.rank) * team.stride;
+        int index = intraRank + (peer - team.rank) * team.stride;
         if (index < 0 || index >= intraSize)
           return nullptr; // Not a local peer — fall through to Net
         return (char *)ipcBasePtrs[index] + offset;
@@ -739,10 +739,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       if (coop.threadRank() == 0) {
         int idx = contextId * signalCount + (int)signalId;
         int iter = 0;
-        while (Atomic::load(&signalBuffer[idx],
-                            flagcxDeviceMemoryOrderAcquire) < least) {
+        uint64_t cur;
+        while ((cur = Atomic::load(&signalBuffer[idx],
+                                   flagcxDeviceMemoryOrderAcquire)) < least) {
+          if ((iter & 0xFFFFF) == 0) {
+            printf("[waitSignal spin] blk=%d contextId=%d signalId=%d idx=%d"
+                   " cur=%llu least=%llu iter=%d buf=%p\n",
+                   FLAGCX_BLOCK_IDX_X, contextId, (int)signalId, idx,
+                   (unsigned long long)cur, (unsigned long long)least, iter,
+                   (void *)signalBuffer);
+          }
           Intrin::spinBackoff(iter++);
         }
+        printf("[waitSignal done] blk=%d contextId=%d signalId=%d idx=%d"
+               " cur=%llu least=%llu iters=%d\n",
+               FLAGCX_BLOCK_IDX_X, contextId, (int)signalId, idx,
+               (unsigned long long)cur, (unsigned long long)least, iter);
       }
       coop.sync();
     }
