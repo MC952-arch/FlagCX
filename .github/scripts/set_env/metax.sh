@@ -85,6 +85,13 @@ flagcx_ci_run_suite_override() {
     return
   fi
 
+  if [[ "$suite" == "rma" ]]; then
+    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
+    make -C "$suite_dir" run-unit "${args[@]}"
+    echo "Skipping MetaX RMA MPI tests: one-sided RMA is not supported by the current MetaX backend."
+    return
+  fi
+
   if [[ "$suite" == "symmem" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
     "$suite_dir/build/bin/symmem_unit_tests"
