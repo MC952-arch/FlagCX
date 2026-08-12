@@ -30,10 +30,9 @@ flagcx_ci_configure_suite() {
 
   case "$suite" in
     p2p)
-      # The MetaX backend does not implement the P2P engine GPU-read path yet.
-      # Keep the shared P2P tests vendor-neutral and expose this limitation in
-      # the platform-owned test selection.
-      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*"
+      # The MetaX CI RoCE environment cannot establish IB_P2P QPs reliably yet.
+      # Keep structure/bootstrap/slice tests enabled and skip real IB_P2P paths.
+      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*:P2pLoopbackTest.*:P2pBatchTest.*:P2pEngineRpcIbTest.*"
       ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
