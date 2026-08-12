@@ -10,11 +10,17 @@ runner_labels:
 container_volumes: []
 
 container_options: >-
-  --gpus all
-  --privileged
+  --hostname=te_cicd
   --ipc=host
+  --privileged=true
+  --shm-size=100gb
   --ulimit memlock=-1
-  --ulimit stack=67108864
+  --user root
+  --ulimit nofile=65535:65535
+  --group-add video
+  -e PLATFORM=metax
+  -e TORCH_DISTRIBUTED_BACKEND=mccl
+  -e LD_LIBRARY_PATH=/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
 
 set_env: .github/scripts/set_env/metax.sh
 
