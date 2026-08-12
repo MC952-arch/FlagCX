@@ -27,7 +27,6 @@ typedef enum {
   FLAGCX_COOP_BLOCK = 2,     /* Entire CTA */
   FLAGCX_COOP_TILE_SPAN = 3, /* Consecutive tile span (needs t0, nTiles, id) */
   FLAGCX_COOP_LANES = 4,     /* Arbitrary lane bitmask */
-  FLAGCX_COOP_GRID = 5,      /* Grid-level cooperation (all blocks) */
 } flagcxCoopKind_t;
 
 /* ================================================================

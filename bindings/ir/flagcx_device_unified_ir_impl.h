@@ -576,10 +576,6 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
     // Signal after data lands
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
-    // Grid-level barrier to ensure all blocks finished memcpy before signaling
-    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
-      flagcxGridSync(comm->_gridBarrierState);
-    }
     if (coop.threadRank() == 0) {
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
@@ -623,10 +619,6 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
     flagcxScopedFence(flagcxDeviceScopeSystem);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
-    // Grid-level barrier to ensure all blocks finished memcpy before signaling
-    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
-      flagcxGridSync(comm->_gridBarrierState);
-    }
     if (coop.threadRank() == 0) {
       flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
                          contextId, FLAGCX_COOP_THREAD,
@@ -673,11 +665,6 @@ flagcxDevPut_RCtrInc(const void *commOpaque, const void *dstOpaque,
     flagcxScopedFence(flagcxDeviceScopeSystem);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
-    // Grid-level barrier to ensure all blocks finished memcpy before counter
-    // increment
-    if (coopKind == FLAGCX_COOP_GRID && comm->_gridBarrierState) {
-      flagcxGridSync(comm->_gridBarrierState);
-    }
     if (coop.threadRank() == 0) {
       // Counter is local to sender — increment counterBuffer directly
       int idx =

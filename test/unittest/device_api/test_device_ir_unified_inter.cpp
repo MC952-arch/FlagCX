@@ -4,7 +4,7 @@
  * Device IR Unified Inter Suite Tests — INTER + WORLD teams
  * Tests one-sided operations with inter-node communication.
  *
- * Tests S16–S21 (8 combinations: 4 coop × 2 teams):
+ * Tests S16–S21 (6 combinations: 3 coop × 2 teams):
  *   S16: DevPut — INTER + WORLD
  *   S17: DevGet — INTER + WORLD
  *   S18: DevPutSignalWait — INTER + WORLD
@@ -82,17 +82,19 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   // Create DevComm with signal/counter/barrier slots
-  // Inter suite uses 8 combinations (INTER + WORLD), signal slots 0-7
+  // Inter suite uses 6 combinations (INTER + WORLD) for most tests
+  // S18 uses 8 signal slots (includes extra BLOCK single-leader patterns)
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 8; // 8 combinations for S18 and S20
+  reqs.interSignalCount =
+      8; // 8 slots for S18 (6 standard + 2 BLOCK single-leader)
   reqs.interCounterCount = 1;
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate send/recv buffers (8x for 8-combination regions)
+  // Allocate send/recv buffers (8x for S18's 8-combination regions)
   size_t bufSize = maxBytes * 8;
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_COMM_TRAITS_SHMEM
@@ -129,7 +131,7 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
                                       flagcxMemDevice, NULL));
 
-  // Host scratch - allocate 8× buffers for 8 combinations
+  // Host scratch - allocate 8× buffers for S18's 8 combinations
   float *hostSend = new float[bufSize * 8 / sizeof(float)];
   float *hostRecv = new float[bufSize * 8 / sizeof(float)];
 
@@ -204,7 +206,7 @@ int main(int argc, char *argv[]) {
       int maxRanks = totalProcs;
       if (nNodes > maxRanks)
         maxRanks = nNodes;
-      size_t s21Size = 8 * maxRanks * sizeof(float);
+      size_t s21Size = 6 * maxRanks * sizeof(float);
 
       float myTag = (float)proc;
       FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
@@ -225,7 +227,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      float *s21Recv = new float[8 * maxRanks];
+      float *s21Recv = new float[6 * maxRanks];
       FLAGCXCHECK(devHandle->deviceMemcpy(s21Recv, recvBuff, s21Size,
                                           flagcxMemcpyDeviceToHost, stream));
 
@@ -233,7 +235,7 @@ int main(int argc, char *argv[]) {
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
 
-      for (int combo = 0; combo < 8 && s21Pass; combo++) {
+      for (int combo = 0; combo < 6 && s21Pass; combo++) {
         int teamIdx = combo % 2; // 0=INTER, 1=WORLD
         size_t baseOff = combo * maxRanks;
 
@@ -262,11 +264,11 @@ int main(int argc, char *argv[]) {
     // =======================================================================
     {
       // Initialize: fill sendBuff with rank pattern
-      for (size_t i = 0; i < 8 * count; i++)
+      for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 1000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -282,7 +284,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s16Pass = (hostRes == 1);
@@ -290,7 +292,7 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 8 && s16Pass; combo++) {
+      for (int combo = 0; combo < 6 && s16Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -312,11 +314,11 @@ int main(int argc, char *argv[]) {
     // S17: DevGet — INTER + WORLD
     // =======================================================================
     {
-      for (size_t i = 0; i < 8 * count; i++)
+      for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -332,7 +334,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 8 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s17Pass = (hostRes == 1);
@@ -340,7 +342,7 @@ int main(int argc, char *argv[]) {
       int nextWorld = (proc + 1) % totalProcs;
       int nextNodeBase = nextNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 8 && s17Pass; combo++) {
+      for (int combo = 0; combo < 6 && s17Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int sourceRank = (teamIdx == 0) ? nextNodeBase : nextWorld;
@@ -383,7 +385,8 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S18: DevPutSignalWait — INTER + WORLD
+    // S18: DevPutSignalWait — INTER + WORLD (8 combinations including
+    // single-leader)
     // =======================================================================
     {
       for (size_t i = 0; i < 8 * count; i++)
