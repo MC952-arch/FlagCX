@@ -694,19 +694,13 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     if (op->connection->transport == TRANSPORT_P2P) {
       // P2P transport
       if (op->connection->send) {
-        INFO(FLAGCX_PROXY, "Calling flagcxP2pSendProxyConnect");
         flagcxP2pSendProxyConnect(op->connection, NULL, op->reqBuff,
                                   op->reqSize, op->respBuff, op->respSize,
                                   &done);
-        INFO(FLAGCX_PROXY, "flagcxP2pSendProxyConnect completed, done=%d",
-             done);
       } else {
-        INFO(FLAGCX_PROXY, "Calling flagcxP2pRecvProxyConnect");
         flagcxP2pRecvProxyConnect(op->connection, NULL, op->reqBuff,
                                   op->reqSize, op->respBuff, op->respSize,
                                   &done);
-        INFO(FLAGCX_PROXY, "flagcxP2pRecvProxyConnect completed, done=%d",
-             done);
       }
     } else if (op->connection->transport == TRANSPORT_NET) {
       // NET transport (original logic)
@@ -874,16 +868,12 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
              op->connection->transport == TRANSPORT_P2P) {
     if (op->connection->send) {
       // P2P Send side setup
-      INFO(FLAGCX_PROXY, "Calling flagcxP2pSendProxySetup");
       flagcxP2pSendProxySetup(op->connection, NULL, op->reqBuff, op->reqSize,
                               op->respBuff, op->respSize, &done);
-      INFO(FLAGCX_PROXY, "flagcxP2pSendProxySetup completed, done=%d", done);
     } else {
       // P2P Recv side setup
-      INFO(FLAGCX_PROXY, "Calling flagcxP2pRecvProxySetup");
       flagcxP2pRecvProxySetup(op->connection, NULL, op->reqBuff, op->reqSize,
                               op->respBuff, op->respSize, &done);
-      INFO(FLAGCX_PROXY, "flagcxP2pRecvProxySetup completed, done=%d", done);
     }
   } else {
     return flagcxInternalError;
@@ -1623,7 +1613,6 @@ static flagcxResult_t flagcxKernelProxyPost(
       // (tracking only the signal request) is sufficient — the data op is
       // guaranteed to complete before the signal op returns done from test().
       if (net->iputSignal == NULL) {
-        WARN("flagcxKernelProxyPost: netAdaptor->iputSignal not implemented");
         res = flagcxNotSupported;
         break;
       }
@@ -1873,30 +1862,6 @@ init_done:
     if (comm->proxyState->kernelState.stop == 1)
       break;
 
-    // Debug: track FIFO produced/completed counters
-    uint64_t prod =
-        __atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced], __ATOMIC_ACQUIRE);
-    uint64_t comp = __atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
-                                    __ATOMIC_ACQUIRE);
-    if (prod != lastProduced || comp != lastCompleted) {
-      INFO(FLAGCX_PROXY,
-           "rank=%d FIFO: produced=%lu completed=%lu gap=%lu inflight=%u",
-           comm->rank, (unsigned long)prod, (unsigned long)comp,
-           (unsigned long)(prod - comp), kproxyState->totalInflight);
-      lastProduced = prod;
-      lastCompleted = comp;
-      logCounter = 0;
-    } else {
-      logCounter++;
-      if (logCounter == 10000000) {
-        INFO(FLAGCX_PROXY,
-             "rank=%d FIFO IDLE: produced=%lu completed=%lu (no change for 10M "
-             "iters)",
-             comm->rank, (unsigned long)prod, (unsigned long)comp);
-        logCounter = 0;
-      }
-    }
-
     // Poll completions for direct-posted IB ops
     flagcxKernelProxyPoll(kproxyState, comm);
     dequeue(fifo->buffer, ptr);
@@ -1991,36 +1956,22 @@ init_done:
         if (bufType == 0) {
           // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
           int peerRank = (int)ptr->getPeerRank();
-          WARN("rank=%d PrimSignal(remote) peer=%d sigIdx=%d sigOff=%zu "
-               "sigVal=%lu ctx=%d inflight=%u signalHandle=%p",
-               comm->rank, peerRank, signalIdx, signalOff,
-               (unsigned long)signalValue, contextId,
-               kproxyState->totalInflight, (void *)comm->signalHandle);
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
           if (res != flagcxSuccess) {
-            WARN("rank=%d PrimSignal: ValidatePeer failed res=%d peer=%d ctx=%d"
-                 " oneSideHandleCount=%d",
-                 comm->rank, (int)res, peerRank, ctx, comm->oneSideHandleCount);
             break;
           }
           if (comm->signalHandle == NULL) {
-            WARN("flagcxDevicePrimSignal: signal handles not initialized "
-                 "for this comm — call flagcxOneSideSignalRegister() before "
-                 "use");
             res = flagcxInternalError;
             break;
           }
           res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
                                       FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0, 0,
                                       -1, -1, signalOff, signalValue, 0);
-          WARN("rank=%d PrimSignal posted res=%d postedIB=%d peer=%d",
-               comm->rank, (int)res, (res == flagcxSuccess), peerRank);
           postedIB = (res == flagcxSuccess);
         } else {
           // Counter buffer: local CPU atomic increment (no network operation)
           flagcxDevComm_t dc = comm->devCommHandle;
           if (dc == NULL || dc->counterBuffer == NULL) {
-            WARN("flagcxDevicePrimSignal: counterBuffer not initialized");
             res = flagcxInternalError;
             break;
           }
@@ -2055,8 +2006,6 @@ init_done:
         uint64_t signalValue = ptr->getSignalValue();
         size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
         if (comm->signalHandle == NULL) {
-          WARN("flagcxDevicePrimPutSignal: signal handles not initialized "
-               "for this comm — call flagcxOneSideSignalRegister() before use");
           res = flagcxInternalError;
           break;
         }
