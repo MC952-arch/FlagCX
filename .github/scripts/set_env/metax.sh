@@ -63,6 +63,7 @@ flagcx_ci_prepare() {
 
     echo "MetaX P2P diagnostics:"
     echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
+    echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
     echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
     ls /dev/infiniband 2>/dev/null || true
     ibv_devices 2>/dev/null || true
