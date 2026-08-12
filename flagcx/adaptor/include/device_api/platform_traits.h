@@ -15,22 +15,12 @@
 #define FLAGCX_PLATFORM_TRAITS_H_
 
 #include "device_utils.h"
+#include "flagcx_device_enums.h"
 
-// Common enum types used as parameters to PlatformTraits::Atomic methods
-typedef enum {
-  flagcxDeviceMemoryOrderRelaxed = 0,
-  flagcxDeviceMemoryOrderAcquire = 1,
-  flagcxDeviceMemoryOrderRelease = 2,
-  flagcxDeviceMemoryOrderAcqRel = 3,
-  flagcxDeviceMemoryOrderSeqCst = 4
-} flagcxDeviceMemoryOrder_t;
-
-typedef enum {
-  flagcxDeviceScopeSystem = 0,
-  flagcxDeviceScopeDevice = 1,
-  flagcxDeviceScopeBlock = 2,
-  flagcxDeviceScopeThread = 3
-} flagcxDeviceScope_t;
+// Legacy type aliases for backward compatibility with existing platform
+// implementations
+typedef flagcxDevMemoryOrder_t flagcxDeviceMemoryOrder_t;
+typedef flagcxDevMemoryScope_t flagcxDeviceScope_t;
 
 // Primary template — each platform provides a specialization
 template <typename Platform>
