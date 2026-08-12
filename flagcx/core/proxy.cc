@@ -1800,10 +1800,6 @@ void *flagcxProxyKernelService(void *args) {
 
   int ctx = contextId + 1; // kernel proxy context index
 
-  // Debug counters for FIFO tracking (must be declared before any goto)
-  uint64_t lastProduced = 0, lastCompleted = 0;
-  int logCounter = 0;
-
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
 

@@ -5,12 +5,12 @@
  * Tests one-sided operations with inter-node communication.
  *
  * Tests S16–S21 (6 combinations: 3 coop × 2 teams):
- *   S16: DevPut — INTER + WORLD
- *   S17: DevGet — INTER + WORLD
- *   S18: DevPutSignalWait — INTER + WORLD
- *   S19: DevBarrier — INTER + WORLD (merged)
+ *   S16: DevBarrier — INTER + WORLD (merged)
+ *   S17: DevTeamResolution — INTER + WORLD
+ *   S18: DevPut — INTER + WORLD
+ *   S19: DevGet — INTER + WORLD
  *   S20: DevSignalStandalone — INTER + WORLD
- *   S21: DevTeamResolution — INTER + WORLD
+ *   S21: DevPutSignalWait — INTER + WORLD
  *
  * Requirements:
  *   - Multi-node with 2+ nodes (requires INTER team)
@@ -173,7 +173,7 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // =======================================================================
-    // S19: DevBarrier — INTER + WORLD (merged)
+    // S16: DevBarrier — INTER + WORLD (merged)
     // =======================================================================
     {
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
@@ -187,31 +187,31 @@ int main(int argc, char *argv[]) {
                                           FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      bool s19Pass = true;
+      bool s16Pass = true;
       for (int i = 0; i < FLAGCX_DEVICE_CTA_COUNT; i++) {
         if (hostResults[i] != 1) {
-          s19Pass = false;
+          s16Pass = false;
           break;
         }
       }
-      RPRINTF("S19 DevBarrier(INTER+WORLD): %s\n", s19Pass ? "PASS" : "FAIL");
-      allPass &= s19Pass;
+      RPRINTF("S16 DevBarrier(INTER+WORLD): %s\n", s16Pass ? "PASS" : "FAIL");
+      allPass &= s16Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
     // =======================================================================
-    // S21: DevTeamResolution — INTER + WORLD (8 combinations)
+    // S17: DevTeamResolution — INTER + WORLD (8 combinations)
     // =======================================================================
     {
       int maxRanks = totalProcs;
       if (nNodes > maxRanks)
         maxRanks = nNodes;
-      size_t s21Size = 6 * maxRanks * sizeof(float);
+      size_t s17Size = 6 * maxRanks * sizeof(float);
 
       float myTag = (float)proc;
       FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, s21Size, flagcxMemDevice,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, s17Size, flagcxMemDevice,
                                           stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -227,40 +227,40 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      float *s21Recv = new float[6 * maxRanks];
-      FLAGCXCHECK(devHandle->deviceMemcpy(s21Recv, recvBuff, s21Size,
+      float *s17Recv = new float[6 * maxRanks];
+      FLAGCXCHECK(devHandle->deviceMemcpy(s17Recv, recvBuff, s17Size,
                                           flagcxMemcpyDeviceToHost, stream));
 
-      bool s21Pass = (hostRes == 1);
+      bool s17Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
 
-      for (int combo = 0; combo < 6 && s21Pass; combo++) {
+      for (int combo = 0; combo < 6 && s17Pass; combo++) {
         int teamIdx = combo % 2; // 0=INTER, 1=WORLD
         size_t baseOff = combo * maxRanks;
 
         if (teamIdx == 0) { // INTER
           float expected = (float)(prevNode * intraSize + intraRank);
-          if (s21Recv[baseOff + prevNode] != expected) {
-            s21Pass = false;
+          if (s17Recv[baseOff + prevNode] != expected) {
+            s17Pass = false;
           }
         } else { // WORLD
           float expected = (float)prevWorld;
-          if (s21Recv[baseOff + prevWorld] != expected) {
-            s21Pass = false;
+          if (s17Recv[baseOff + prevWorld] != expected) {
+            s17Pass = false;
           }
         }
       }
 
-      RPRINTF("S21 DevTeamResolution(INTER+WORLD): %s\n",
-              s21Pass ? "PASS" : "FAIL");
-      allPass &= s21Pass;
-      delete[] s21Recv;
+      RPRINTF("S17 DevTeamResolution(INTER+WORLD): %s\n",
+              s17Pass ? "PASS" : "FAIL");
+      allPass &= s17Pass;
+      delete[] s17Recv;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
     // =======================================================================
-    // S16: DevPut — INTER + WORLD
+    // S18: DevPut — INTER + WORLD
     // =======================================================================
     {
       // Initialize: fill sendBuff with rank pattern
@@ -287,31 +287,31 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
-      bool s16Pass = (hostRes == 1);
+      bool s18Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s16Pass; combo++) {
+      for (int combo = 0; combo < 6 && s18Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
 
-        for (size_t i = 0; i < count && s16Pass; i++) {
+        for (size_t i = 0; i < count && s18Pass; i++) {
           float expected = (float)(senderRank * 1000 + off + i);
           if (hostRecv[off + i] != expected) {
-            s16Pass = false;
+            s18Pass = false;
           }
         }
       }
 
-      RPRINTF("S16 DevPut(INTER+WORLD): %s\n", s16Pass ? "PASS" : "FAIL");
-      allPass &= s16Pass;
+      RPRINTF("S18 DevPut(INTER+WORLD): %s\n", s18Pass ? "PASS" : "FAIL");
+      allPass &= s18Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
     // =======================================================================
-    // S17: DevGet — INTER + WORLD
+    // S19: DevGet — INTER + WORLD
     // =======================================================================
     {
       for (size_t i = 0; i < 6 * count; i++)
@@ -337,26 +337,26 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
-      bool s17Pass = (hostRes == 1);
+      bool s19Pass = (hostRes == 1);
       int nextNode = (nodeIdx + 1) % nNodes;
       int nextWorld = (proc + 1) % totalProcs;
       int nextNodeBase = nextNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s17Pass; combo++) {
+      for (int combo = 0; combo < 6 && s19Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int sourceRank = (teamIdx == 0) ? nextNodeBase : nextWorld;
 
-        for (size_t i = 0; i < count && s17Pass; i++) {
+        for (size_t i = 0; i < count && s19Pass; i++) {
           float expected = (float)(sourceRank * 2000 + off + i);
           if (hostRecv[off + i] != expected) {
-            s17Pass = false;
+            s19Pass = false;
           }
         }
       }
 
-      RPRINTF("S17 DevGet(INTER+WORLD): %s\n", s17Pass ? "PASS" : "FAIL");
-      allPass &= s17Pass;
+      RPRINTF("S19 DevGet(INTER+WORLD): %s\n", s19Pass ? "PASS" : "FAIL");
+      allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
@@ -385,7 +385,7 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S18: DevPutSignalWait — INTER + WORLD (8 combinations including
+    // S21: DevPutSignalWait — INTER + WORLD (8 combinations including
     // single-leader)
     // =======================================================================
     {
@@ -412,27 +412,27 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 8 * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
-      bool s18Pass = (hostRes == 1);
+      bool s21Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 8 && s18Pass; combo++) {
+      for (int combo = 0; combo < 8 && s21Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
 
-        for (size_t i = 0; i < count && s18Pass; i++) {
+        for (size_t i = 0; i < count && s21Pass; i++) {
           float expected = (float)(senderRank * 3000 + off + i);
           if (hostRecv[off + i] != expected) {
-            s18Pass = false;
+            s21Pass = false;
           }
         }
       }
 
-      RPRINTF("S18 DevPutSignalWait(INTER+WORLD): %s\n",
-              s18Pass ? "PASS" : "FAIL");
-      allPass &= s18Pass;
+      RPRINTF("S21 DevPutSignalWait(INTER+WORLD): %s\n",
+              s21Pass ? "PASS" : "FAIL");
+      allPass &= s21Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
 
