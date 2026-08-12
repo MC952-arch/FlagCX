@@ -17,11 +17,6 @@
 #include "device_utils.h"
 #include "flagcx_device_enums.h"
 
-// Legacy type aliases for backward compatibility with existing platform
-// implementations
-typedef flagcxDevMemoryOrder_t flagcxDeviceMemoryOrder_t;
-typedef flagcxDevMemoryScope_t flagcxDeviceScope_t;
-
 // Primary template — each platform provides a specialization
 template <typename Platform>
 struct PlatformTraits;
