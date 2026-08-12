@@ -23,7 +23,7 @@
 #include "flagcx_device_enums.h"
 
 /* ================================================================
- * Category U1: Unified Put (4)
+ * Category U1: Unified Put (6)
  *
  * Transport-transparent put. Checks peer reachability via P2P;
  * falls back to Net path if unreachable.
@@ -68,14 +68,32 @@ flagcxDevPut_RSigAdd(const void *comm, const void *dst, size_t dstOffset,
                      flagcxDeviceScope_t scope, flagcxDeviceMemoryOrder_t order,
                      flagcxDevSignal_t remoteSignal, uint64_t signalValue);
 
-/** @brief Put + remote counter increment on completion. */
+/** @brief Put + local counter increment on completion (sender-side tracking).
+ */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPut_RCtrInc(const void *comm, const void *dst, size_t dstOffset,
+flagcxDevPut_LCtrInc(const void *comm, const void *dst, size_t dstOffset,
                      const void *src, size_t srcOffset, size_t bytes,
                      flagcxTeamKind_t teamKind, int peer,
                      flagcxDevContext_t contextId, flagcxCoopKind_t coopKind,
                      flagcxDeviceScope_t scope, flagcxDeviceMemoryOrder_t order,
-                     flagcxDevCounter_t remoteCounter);
+                     flagcxDevCounter_t localCounter);
+
+/** @brief Put + remote signal increment + local counter increment. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPut_RSigInc_LCtrInc(
+    const void *comm, const void *dst, size_t dstOffset, const void *src,
+    size_t srcOffset, size_t bytes, flagcxTeamKind_t teamKind, int peer,
+    flagcxDevContext_t contextId, flagcxCoopKind_t coopKind,
+    flagcxDeviceScope_t scope, flagcxDeviceMemoryOrder_t order,
+    flagcxDevSignal_t remoteSignal, flagcxDevCounter_t localCounter);
+
+/** @brief Put + remote signal add + local counter increment. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPut_RSigAdd_LCtrInc(
+    const void *comm, const void *dst, size_t dstOffset, const void *src,
+    size_t srcOffset, size_t bytes, flagcxTeamKind_t teamKind, int peer,
+    flagcxDevContext_t contextId, flagcxCoopKind_t coopKind,
+    flagcxDeviceScope_t scope, flagcxDeviceMemoryOrder_t order,
+    flagcxDevSignal_t remoteSignal, uint64_t signalValue,
+    flagcxDevCounter_t localCounter);
 
 /* ================================================================
  * Category U2: Unified Get (1)
@@ -103,7 +121,7 @@ flagcxDevGet(const void *comm, const void *src, size_t srcOffset,
              flagcxDeviceMemoryOrder_t order);
 
 /* ================================================================
- * Category U3: Unified PutValue (2)
+ * Category U3: Unified PutValue (3)
  *
  * Scalar value write to remote peer.
  *
@@ -132,6 +150,15 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPutValue_RSigInc(
     flagcxTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
     flagcxCoopKind_t coopKind, flagcxDeviceScope_t scope,
     flagcxDeviceMemoryOrder_t order, flagcxDevSignal_t remoteSignal);
+
+/** @brief Write a scalar value + remote signal add. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevPutValue_RSigAdd(const void *comm, const void *dst, size_t dstOffset,
+                          uint64_t value, flagcxTeamKind_t teamKind, int peer,
+                          flagcxDevContext_t contextId,
+                          flagcxCoopKind_t coopKind, flagcxDeviceScope_t scope,
+                          flagcxDeviceMemoryOrder_t order,
+                          flagcxDevSignal_t remoteSignal, uint64_t signalValue);
 
 /* ================================================================
  * Category U4: Unified Signal (2)

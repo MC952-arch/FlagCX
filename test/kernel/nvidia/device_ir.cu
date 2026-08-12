@@ -522,9 +522,6 @@ void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
 //     uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, 64,
 //                                            flagcxDeviceMemoryOrderRelaxed);
 //
-//     flagcxDevNetSignalCtrIncS(net, devCommPtr, FLAGCX_TEAM_WORLD, next,
-//                               FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0);
-//
 //     flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
 //                              c0 + 1, 64, flagcxDeviceMemoryOrderAcquire);
 //   }
