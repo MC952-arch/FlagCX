@@ -1338,7 +1338,7 @@ void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
 }
 
 // ---------------------------------------------------------------------------
-// S16: flagcxDevPut — INTRA + WORLD teams
+// S18: flagcxDevPut (includes DevPutValue) — INTRA + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout (8× base size):
 //   Combination index = coopLevel * 2 + teamIdx
@@ -1456,12 +1456,12 @@ __global__ void kernelDevPutIntraWorldS(const void *devCommPtr,
 void launchKernelDevPutIntraWorldS(const void *devCommPtr, const void *dstMemPtr,
                                     const void *srcMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
-  kernelDevPutIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S18 sub-block: flagcxDevPutValue — INTRA + WORLD teams
+// S18: flagcxDevPutValue — INTRA + WORLD teams
 // Writes a scalar value (uint64) to a remote peer's buffer.
 // Uses 6 combinations: 3 coop kinds × 2 teams (INTRA, WORLD).
 // Buffer layout: slot combo = coopIdx*2 + teamIdx, each holds 1 uint64_t.
@@ -1553,13 +1553,13 @@ __global__ void kernelDevPutValueIntraWorldS(const void *devCommPtr,
 void launchKernelDevPutValueIntraWorldS(const void *devCommPtr,
                                         const void *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
-  kernelDevPutValueIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0,
+  kernelDevPutValueIntraWorldS<<<4, 128, 0,
                                  stream->base>>>(devCommPtr, dstMemPtr,
                                                  devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S17: flagcxDevGet — INTRA + WORLD teams
+// S19: flagcxDevGet — INTRA + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout: same as S16 (8× base size)
 // ---------------------------------------------------------------------------
@@ -1665,12 +1665,12 @@ __global__ void kernelDevGetIntraWorldS(const void *devCommPtr,
 void launchKernelDevGetIntraWorldS(const void *devCommPtr, const void *remoteMemPtr,
                                     const void *localMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
-  kernelDevGetIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevGetIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, remoteMemPtr, localMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S19: flagcxDevBarrierSync — INTRA + WORLD (merged)
+// S16: flagcxDevBarrierSync (includes ArriveWait) — INTRA + WORLD (merged)
 // Part 1: INTRA barrier
 // Part 2: WORLD barrier
 // ---------------------------------------------------------------------------
@@ -1699,12 +1699,12 @@ __global__ void kernelDevBarrierIntraWorldS(const void *devCommPtr, int *result)
 
 void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
                                         flagcxStream_t stream) {
-  kernelDevBarrierIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevBarrierIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S16 sub-block: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTRA + WORLD
+// S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTRA + WORLD
 // Verifies split arrive/wait semantics for both INTRA and WORLD teams.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
@@ -1742,7 +1742,7 @@ __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
 void launchKernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
-  kernelDevBarrierArriveWaitIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0,
+  kernelDevBarrierArriveWaitIntraWorldS<<<4, 128, 0,
                                          stream->base>>>(devCommPtr, devResult);
 }
 
@@ -1769,80 +1769,147 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? myBlockIdx % nContexts : 0;
 
+  uint64_t expectedInc = 1;  // leg A: 4 blocks, 4 contexts, 1 block per context
+  uint64_t expectedAdd = 5;  // leg B: 1 block per context does +5
+
   bool ok = true;
 
 #define S20_INTRA_COMBO(comboIdx, slot, teamKind, peer)                        \
   do {                                                                         \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d peer=%d: enter\n",       \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot), (int)(peer));     \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d peer=%d: enter\n",\
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (int)(peer));                                                     \
     }                                                                          \
     /* Reset and verify zero */                                                \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                         \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot)); \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      uint64_t v0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+                                        64, contextId,                         \
+                                        flagcxDeviceMemoryOrderAcquire);       \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: RESET-A "        \
+             "post=%llu\n",                                                    \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)v0);                                          \
+    }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                       \
-      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, myBlockIdx,            \
+                         contextId, FLAGCX_COOP_BLOCK,                         \
+                         flagcxDeviceMemoryOrderAcqRel,                        \
+                         flagcxDeviceScopeSystem);                             \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: READ "           \
+             "post-barrier-A value=%llu (expect 0)\n",                         \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)v);                                           \
       if (v != 0) ok = false;                                                  \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d: leg A pre-wait\n",      \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot));                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg A "          \
+             "pre-wait\n",                                                     \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
     }                                                                          \
     /* Leg A: SignalInc */                                                     \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                         \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevSignalInc(devCommPtr, teamKind, peer,                           \
                          (flagcxDevSignal_t)(slot), contextId,                 \
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);         \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), 1, 64,          \
-                        contextId, FLAGCX_COOP_BLOCK,                          \
-                        flagcxDeviceMemoryOrderAcquire);                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d: leg A post-wait\n",     \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot));                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: SIGNAL-INC "     \
+             "peer=%d\n",                                                      \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (int)(peer));                                                     \
     }                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                       \
-      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
-      if (v != 1) ok = false;                                                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-A pre "     \
+             "least=%llu cur=%llu\n",                                          \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)expectedInc, (unsigned long long)v);          \
+    }                                                                          \
+    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedInc, 64,\
+                        contextId, FLAGCX_COOP_BLOCK,                          \
+                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg A "          \
+             "post-wait\n",                                                    \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
+    }                                                                          \
+    /* Reset before Leg B */                                                   \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
+      uint64_t v0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+                                        64, contextId,                         \
+                                        flagcxDeviceMemoryOrderAcquire);       \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: RESET-B "        \
+             "post=%llu\n",                                                    \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)v0);                                          \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                             \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
+                                       64, contextId,                          \
+                                       flagcxDeviceMemoryOrderAcquire);        \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: READ "           \
+             "post-barrier-B value=%llu (expect 0)\n",                         \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)v);                                           \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    /* Reset before Leg B */                                                   \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                         \
-      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot)); \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d: leg B pre-wait\n",      \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot));                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg B "          \
+             "pre-wait\n",                                                     \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
     }                                                                          \
     /* Leg B: SignalAdd(value=5) */                                            \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                         \
-      flagcxDevSignalAdd(devCommPtr, teamKind, peer,                           \
-                         (flagcxDevSignal_t)(slot), (uint64_t)5, contextId,   \
-                         FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);         \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), 5, 64,          \
-                        contextId, FLAGCX_COOP_BLOCK,                          \
-                        flagcxDeviceMemoryOrderAcquire);                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d: leg B post-wait\n",     \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot));                  \
+      flagcxDevSignalAdd(devCommPtr, teamKind, peer,                           \
+                         (flagcxDevSignal_t)(slot), (uint64_t)5, contextId,    \
+                         FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);         \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: SIGNAL-ADD "     \
+             "peer=%d value=5\n",                                              \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (int)(peer));                                                     \
     }                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                       \
-      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
-      if (v != 5) ok = false;                                                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-B pre "     \
+             "least=%llu cur=%llu\n",                                          \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)expectedAdd, (unsigned long long)v);          \
+    }                                                                          \
+    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedAdd, 64,\
+                        contextId, FLAGCX_COOP_BLOCK,                          \
+                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg B "          \
+             "post-wait\n",                                                    \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
+    }                                                                          \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
+                                       64, contextId,                          \
+                                       flagcxDeviceMemoryOrderAcquire);        \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-B post "    \
+             "value=%llu (expect %llu)\n",                                     \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
+             (unsigned long long)v, (unsigned long long)expectedAdd);          \
+      if (v != expectedAdd) ok = false;                                        \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d] S20 combo=%d slot=%d: exit\n",                \
-             worldRank, myBlockIdx, (comboIdx), (int)(slot));                  \
+      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: exit\n",         \
+             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
     }                                                                          \
   } while (0)
 
@@ -1861,17 +1928,17 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
 
 #undef S20_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0 && ok) atomicAnd(result, 1);
 }
 
 void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
-  kernelDevSignalStandaloneIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevSignalStandaloneIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S21: flagcxDevTeamResolution — INTRA + WORLD teams
+// S17: flagcxDevTeamResolution — INTRA + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Each rank writes sizeof(float) to peer's buffer at deterministic offset
 // Buffer layout: [i*maxRanks*sizeof(float), (i+1)*maxRanks*sizeof(float)) for combo i
@@ -1984,12 +2051,12 @@ void launchKernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
                                                const void *dstMemPtr,
                                                const void *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
-  kernelDevTeamResolutionIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevTeamResolutionIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S18: flagcxDevPut_RSigInc + flagcxDevWaitSignal — INTRA + WORLD teams
+// S22: flagcxDevPut_RSigInc + flagcxDevWaitSignal — INTRA + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout: 8× base size
 // Signal slots: 0-7, one per combination
@@ -2077,7 +2144,7 @@ void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
                                               const void *dstMemPtr,
                                               const void *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
-  kernelDevPutSignalWaitIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutSignalWaitIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -2169,7 +2236,7 @@ void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
                                         const void *dstMemPtr,
                                         const void *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
-  kernelDevPutRSigIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -2291,7 +2358,7 @@ void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
                                            const void *dstMemPtr,
                                            const void *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
-  kernelDevPutCounterIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutCounterIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -2384,7 +2451,7 @@ void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
                                              const void *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
-  kernelDevPutValueRSigIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutValueRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, devResult, bytes);
 }
 
@@ -2478,7 +2545,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
-  kernelDevSignalShadowFlushIntraWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevSignalShadowFlushIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }
 
@@ -2489,7 +2556,7 @@ void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// S16: flagcxDevPut — INTER + WORLD teams
+// S18: flagcxDevPut — INTER + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout (8× base size):
 //   Combination index = coopLevel * 2 + teamIdx
@@ -2609,12 +2676,12 @@ __global__ void kernelDevPutInterWorldS(const void *devCommPtr,
 void launchKernelDevPutInterWorldS(const void *devCommPtr, const void *dstMemPtr,
                                    const void *srcMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
-  kernelDevPutInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S18 sub-block: flagcxDevPutValue — INTER + WORLD teams
+// S18: flagcxDevPutValue — INTER + WORLD teams
 // Writes a scalar uint64 value to a remote peer's buffer.
 // Uses 6 combinations: 3 coop kinds × 2 teams (INTER, WORLD).
 // Expected value at slot combo = (uint64_t)(proc * 100 + combo).
@@ -2706,13 +2773,13 @@ __global__ void kernelDevPutValueInterWorldS(const void *devCommPtr,
 void launchKernelDevPutValueInterWorldS(const void *devCommPtr,
                                         const void *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
-  kernelDevPutValueInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0,
+  kernelDevPutValueInterWorldS<<<4, 128, 0,
                                  stream->base>>>(devCommPtr, dstMemPtr,
                                                  devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S17: flagcxDevGet — INTER + WORLD teams
+// S19: flagcxDevGet — INTER + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout: same as S16 (8× base size)
 // ---------------------------------------------------------------------------
@@ -2819,12 +2886,12 @@ __global__ void kernelDevGetInterWorldS(const void *devCommPtr,
 void launchKernelDevGetInterWorldS(const void *devCommPtr, const void *remoteMemPtr,
                                    const void *localMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
-  kernelDevGetInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevGetInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, remoteMemPtr, localMemPtr, devResult, bytes);
 }
 
 // ---------------------------------------------------------------------------
-// S19: flagcxDevBarrierSync — INTER + WORLD (merged)
+// S16: flagcxDevBarrierSync (includes ArriveWait) — INTER + WORLD (merged)
 // Part 1: INTER barrier
 // Part 2: WORLD barrier
 // ---------------------------------------------------------------------------
@@ -2853,12 +2920,12 @@ __global__ void kernelDevBarrierInterWorldS(const void *devCommPtr, int *result)
 
 void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult,
                                        flagcxStream_t stream) {
-  kernelDevBarrierInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevBarrierInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S16 sub-block: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTER + WORLD
+// S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTER + WORLD
 // Verifies split arrive/wait semantics for both INTER and WORLD teams.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
@@ -2896,7 +2963,7 @@ __global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
 void launchKernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
-  kernelDevBarrierArriveWaitInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0,
+  kernelDevBarrierArriveWaitInterWorldS<<<4, 128, 0,
                                          stream->base>>>(devCommPtr, devResult);
 }
 
@@ -2999,12 +3066,12 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
 
 void launchKernelDevSignalStandaloneInterWorldS(const void *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
-  kernelDevSignalStandaloneInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevSignalStandaloneInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S21: flagcxDevTeamResolution — INTER + WORLD teams
+// S17: flagcxDevTeamResolution — INTER + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Each rank writes sizeof(float) to peer's buffer at deterministic offset
 // Buffer layout: [i*maxRanks*sizeof(float), (i+1)*maxRanks*sizeof(float)) for combo i
@@ -3118,12 +3185,12 @@ void launchKernelDevTeamResolutionInterWorldS(const void *devCommPtr,
                                                const void *dstMemPtr,
                                                const void *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
-  kernelDevTeamResolutionInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevTeamResolutionInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult);
 }
 
 // ---------------------------------------------------------------------------
-// S18: flagcxDevPut_RSigInc + flagcxDevWaitSignal — INTER + WORLD teams
+// S21: flagcxDevPut_RSigInc + flagcxDevWaitSignal — INTER + WORLD teams
 // Tests 4 cooperation levels × 2 teams = 8 combinations
 // Buffer layout: 8× base size
 // Signal slots: 0-7, one per combination
@@ -3200,7 +3267,7 @@ void launchKernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
                                               const void *dstMemPtr,
                                               const void *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
-  kernelDevPutSignalWaitInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutSignalWaitInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -3293,7 +3360,7 @@ void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
                                         const void *dstMemPtr,
                                         const void *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
-  kernelDevPutRSigInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutRSigInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -3416,7 +3483,7 @@ void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
                                            const void *dstMemPtr,
                                            const void *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
-  kernelDevPutCounterInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutCounterInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
 }
 
@@ -3510,7 +3577,7 @@ void launchKernelDevPutValueRSigInterWorldS(const void *devCommPtr,
                                              const void *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
-  kernelDevPutValueRSigInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevPutValueRSigInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, devResult, bytes);
 }
 
@@ -3605,6 +3672,6 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
 void launchKernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
-  kernelDevSignalShadowFlushInterWorldS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+  kernelDevSignalShadowFlushInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
 }

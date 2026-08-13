@@ -266,9 +266,6 @@ flagcxIntraBarrierSyncS(const void *commOpaque, flagcxCoopKind_t coopKind,
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(coop, *comm, team,
                                                           index, multimem);
   bar.sync(order);
-  if (comm->_gridBarrierState) {
-    flagcxGridSync(comm->_gridBarrierState);
-  }
 }
 
 /* ================================================================
@@ -312,9 +309,6 @@ flagcxInterBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(coop, *net, team,
                                                           index);
   bar.sync(order, fence);
-  if (net->_gridBarrierState) {
-    flagcxGridSync(net->_gridBarrierState);
-  }
 }
 
 /* ================================================================
@@ -358,9 +352,6 @@ flagcxWorldBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
       coop, flagcxTeamTagWorld{}, *net, index, multimem);
   bar.sync(order, fence);
-  if (net->_gridBarrierState) {
-    flagcxGridSync(net->_gridBarrierState);
-  }
 }
 
 /* ================================================================

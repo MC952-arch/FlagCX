@@ -383,9 +383,10 @@ int main(int argc, char *argv[]) {
     //      — INTRA + WORLD
     // =======================================================================
     {
-      RPRINTF("S20: pre-launch (memset devResults)\n");
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      RPRINTF("S20: pre-launch (init devResults to 1)\n");
+      int hostInit = 1;
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &hostInit, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       RPRINTF("S20: launching kernel\n");
