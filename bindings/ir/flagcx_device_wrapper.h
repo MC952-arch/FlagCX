@@ -266,7 +266,7 @@ flagcxDevNetFlush(const void *trans, const void *coop,
  * @param delta  Value to add to signal shadow.
  * ================================================================ */
 
-/** @brief Reset a signal slot to zero. */
+/** @brief Reset a signal slot and its local shadow to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetResetSignal(const void *net, flagcxDevSignal_t slot);
 /** @brief Reset a counter slot to zero. */

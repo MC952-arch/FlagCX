@@ -348,6 +348,8 @@ struct CommTraits<NvshmemBackend> {
     resetSignal(flagcxDevSignal_t signalId) const {
       Atomic::store(&_dc.signalBuffer[(int)signalId], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
+      Atomic::store(&_dc.shadowBuffer[(int)signalId], (uint64_t)0,
+                    flagcxDeviceMemoryOrderRelease);
     }
 
     // ---- Counter: waitCounter ----

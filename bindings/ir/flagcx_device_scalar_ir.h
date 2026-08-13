@@ -325,7 +325,7 @@ flagcxDevNetFlushS(const void *net, flagcxCoopKind_t coopKind,
 
 /* Reset / Shadow (no coop needed — shared with C API) */
 
-/** @brief Reset a signal slot to zero. */
+/** @brief Reset a signal slot and its local shadow to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetResetSignal(const void *net, flagcxDevSignal_t slot);
 /** @brief Reset a counter slot to zero. */

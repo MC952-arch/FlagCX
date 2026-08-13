@@ -255,7 +255,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevFlush(const void *comm, flagcxDevContext_t contextId,
                flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order);
 
-/** @brief Reset a signal slot to zero. */
+/** @brief Reset a signal slot and its local shadow to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevResetSignal(const void *comm, flagcxDevContext_t contextId,
                      flagcxDevSignal_t slot);

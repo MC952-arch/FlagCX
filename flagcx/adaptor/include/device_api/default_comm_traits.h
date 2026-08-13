@@ -780,6 +780,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       int idx = contextId * signalCount + (int)signalId;
       Atomic::store(&signalBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
+      Atomic::store(&shadowBuffer[idx], (uint64_t)0,
+                    flagcxDeviceMemoryOrderRelease);
     }
 
     // ---- Counter: GPU spin on counterBuffer[ctx*N+id] ----
