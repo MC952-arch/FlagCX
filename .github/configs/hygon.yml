@@ -2,7 +2,7 @@
 hardware_name: hygon
 display_name: Hygon DCU Tests
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:20260813-hygon-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
 
 runner_labels:
   - hg-8g-cicd-flagcx
