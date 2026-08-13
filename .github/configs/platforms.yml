@@ -5,6 +5,8 @@
 # platform=all.
 platforms:
   cuda:
+    enabled: false
+  hygon:
     enabled: true
   metax:
-    enabled: true
+    enabled: false
