@@ -38,7 +38,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
         with:
           driver-opts: |
-            image=harbor.baai.ac.cn/flagos-dev/buildkit:buildx-stable-1
+            image=harbor.baai.ac.cn/flagos-dev/flagcx/buildkit:buildx-stable-1
 
       - name: Build ${{ matrix.backend }} packages
         run: ./packaging/debian/build-helpers/build-flagcx.sh ${{ matrix.backend }}
