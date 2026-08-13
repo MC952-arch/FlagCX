@@ -413,8 +413,9 @@ int main(int argc, char *argv[]) {
     //      — INTER + WORLD
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
       launchKernelDevSignalStandaloneInterWorldS(devCommPtr, devResults,
