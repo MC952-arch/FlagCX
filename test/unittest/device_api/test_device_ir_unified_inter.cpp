@@ -557,9 +557,12 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
+      RPRINTF("S23: launching kernel\n");
       launchKernelDevPutCounterInterWorldS(devCommPtr, recvMemPtr, sendMemPtr,
                                            devResults, bytes, stream);
+      RPRINTF("S23: kernel launched, streamSynchronize begin\n");
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      RPRINTF("S23: streamSynchronize done\n");
       MPI_Barrier(MPI_COMM_WORLD);
 
       int hostRes = 0;

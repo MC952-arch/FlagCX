@@ -613,7 +613,7 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
         (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     net->put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_CounterInc{localCounter}, flagcxDevNet_None{}, coop);
+             flagcxDevNet_None{}, flagcxDevNet_CounterInc{localCounter}, coop);
   }
 }
 
