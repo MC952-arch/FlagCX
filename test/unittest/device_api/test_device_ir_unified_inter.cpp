@@ -176,7 +176,7 @@ int main(int argc, char *argv[]) {
     // S16: DevBarrier — INTER + WORLD (BarrierSync + ArriveWait)
     // =======================================================================
     {
-      int hostResults[FLAGCX_DEVICE_CTA_COUNT];
+      int hostResults[4];
       bool s16Pass = true;
 
       // Sub-block A: BarrierSync
@@ -186,9 +186,9 @@ int main(int argc, char *argv[]) {
       launchKernelDevBarrierInterWorldS(devCommPtr, devResults, stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
-                                          FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
+                                          4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
-      for (int i = 0; i < FLAGCX_DEVICE_CTA_COUNT; i++) {
+      for (int i = 0; i < 4; i++) {
         if (hostResults[i] != 1) {
           s16Pass = false;
           break;
@@ -204,9 +204,9 @@ int main(int argc, char *argv[]) {
                                                   stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
-                                          FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
+                                          4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
-      for (int i = 0; i < FLAGCX_DEVICE_CTA_COUNT; i++) {
+      for (int i = 0; i < 4; i++) {
         if (hostResults[i] != 1) {
           s16Pass = false;
           break;

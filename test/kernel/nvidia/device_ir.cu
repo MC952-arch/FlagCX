@@ -1776,141 +1776,74 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
 
 #define S20_INTRA_COMBO(comboIdx, slot, teamKind, peer)                        \
   do {                                                                         \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d peer=%d: enter\n",\
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (int)(peer));                                                     \
-    }                                                                          \
-    /* Reset and verify zero */                                                \
+    /* Reset local signal (local op), then verify zero, then barrier */        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
-      uint64_t v0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
-                                        64, contextId,                         \
-                                        flagcxDeviceMemoryOrderAcquire);       \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: RESET-A "        \
-             "post=%llu\n",                                                    \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)v0);                                          \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, myBlockIdx,            \
-                         contextId, FLAGCX_COOP_BLOCK,                         \
-                         flagcxDeviceMemoryOrderAcqRel,                        \
-                         flagcxDeviceScopeSystem);                             \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: READ "           \
-             "post-barrier-A value=%llu (expect 0)\n",                         \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)v);                                           \
       if (v != 0) ok = false;                                                  \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg A "          \
-             "pre-wait\n",                                                     \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
-    }                                                                          \
+    /* Barrier: all ranks have reset before any rank sends signal */           \
+    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, myBlockIdx,            \
+                         contextId, FLAGCX_COOP_BLOCK,                         \
+                         flagcxDeviceMemoryOrderAcqRel,                        \
+                         flagcxDeviceScopeSystem);                             \
     /* Leg A: SignalInc */                                                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevSignalInc(devCommPtr, teamKind, peer,                           \
                          (flagcxDevSignal_t)(slot), contextId,                 \
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);         \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: SIGNAL-INC "     \
-             "peer=%d\n",                                                      \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (int)(peer));                                                     \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
-                                       64, contextId,                          \
-                                       flagcxDeviceMemoryOrderAcquire);        \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-A pre "     \
-             "least=%llu cur=%llu\n",                                          \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)expectedInc, (unsigned long long)v);          \
-    }                                                                          \
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedInc, 64,\
                         contextId, FLAGCX_COOP_BLOCK,                          \
                         flagcxDeviceMemoryOrderAcquire);                       \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg A "          \
-             "post-wait\n",                                                    \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
+      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
+                                       64, contextId,                          \
+                                       flagcxDeviceMemoryOrderAcquire);        \
+      if (v != expectedInc) ok = false;                                        \
     }                                                                          \
-    /* Reset before Leg B */                                                   \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    /* Reset before Leg B (local), then verify, then barrier */                \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
-      uint64_t v0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
-                                        64, contextId,                         \
-                                        flagcxDeviceMemoryOrderAcquire);       \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: RESET-B "        \
-             "post=%llu\n",                                                    \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)v0);                                          \
     }                                                                          \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                             \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: READ "           \
-             "post-barrier-B value=%llu (expect 0)\n",                         \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)v);                                           \
+      if (v != 0) ok = false;                                                  \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg B "          \
-             "pre-wait\n",                                                     \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
-    }                                                                          \
+    /* Barrier: all ranks have reset before any rank sends Leg B signal */     \
+    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, myBlockIdx,            \
+                         contextId, FLAGCX_COOP_BLOCK,                         \
+                         flagcxDeviceMemoryOrderAcqRel,                        \
+                         flagcxDeviceScopeSystem);                             \
     /* Leg B: SignalAdd(value=5) */                                            \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevSignalAdd(devCommPtr, teamKind, peer,                           \
                          (flagcxDevSignal_t)(slot), (uint64_t)5, contextId,    \
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);         \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: SIGNAL-ADD "     \
-             "peer=%d value=5\n",                                              \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (int)(peer));                                                     \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
-                                       64, contextId,                          \
-                                       flagcxDeviceMemoryOrderAcquire);        \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-B pre "     \
-             "least=%llu cur=%llu\n",                                          \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)expectedAdd, (unsigned long long)v);          \
-    }                                                                          \
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedAdd, 64,\
                         contextId, FLAGCX_COOP_BLOCK,                          \
                         flagcxDeviceMemoryOrderAcquire);                       \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: leg B "          \
-             "post-wait\n",                                                    \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
-    }                                                                          \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
                                        flagcxDeviceMemoryOrderAcquire);        \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: WAIT-B post "    \
-             "value=%llu (expect %llu)\n",                                     \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot),   \
-             (unsigned long long)v, (unsigned long long)expectedAdd);          \
       if (v != expectedAdd) ok = false;                                        \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      printf("[rank %d block %d ctx %d] S20 combo=%d slot=%d: exit\n",         \
-             worldRank, myBlockIdx, (int)contextId, (comboIdx), (int)(slot));  \
-    }                                                                          \
   } while (0)
 
   // combo 0: THREAD + INTRA  (slot 0)
@@ -2092,34 +2025,75 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
 
 #define S21_INTRA_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
+    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d team=%d peer=%d: enter\n",  \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot),               \
+             (int)(teamKind), (int)(peer));                                    \
+    }                                                                           \
     if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+      uint64_t v0 = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), \
+                                        64, contextId,                         \
+                                        flagcxDeviceMemoryOrderAcquire);       \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: RESET sig=%llu\n",         \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot),               \
+             (unsigned long long)v0);                                          \
+    }                                                                           \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
+    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
       size_t off = (slot)*bytes;                                                \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: PUT off=%zu bytes=%zu\n",  \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot),               \
+             off, bytes);                                                      \
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, FLAGCX_COOP_THREAD,               \
                    flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);    \
-      if ((slot) % 2 == 0)                                                      \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: PUT done, now signal\n",   \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot));              \
+      if ((slot) % 2 == 0) {                                                    \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                          \
                            (flagcxDevSignal_t)(slot), contextId,                \
                            FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);        \
-      else                                                                      \
+        printf("[rank %d blk %d ctx %d] S21 slot=%d: SIGNAL-INC done\n",      \
+               worldRank, myBlockIdx, (int)contextId, (int)(slot));            \
+      } else {                                                                  \
         flagcxDevSignalAdd(devCommPtr, teamKind, peer,                          \
                            (flagcxDevSignal_t)(slot), (uint64_t)3, contextId,   \
                            FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);        \
+        printf("[rank %d blk %d ctx %d] S21 slot=%d: SIGNAL-ADD(3) done\n",   \
+               worldRank, myBlockIdx, (int)contextId, (int)(slot));            \
+      }                                                                         \
     }                                                                           \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
+    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+      uint64_t v_pre = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),\
+                                           64, contextId,                      \
+                                           flagcxDeviceMemoryOrderAcquire);    \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: pre-WAIT sig=%llu expect=%llu\n",\
+             worldRank, myBlockIdx, (int)contextId, (int)(slot),               \
+             (unsigned long long)v_pre, (unsigned long long)expected);         \
+    }                                                                           \
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
     if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: post-WAIT\n",              \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot));              \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: READ sig=%llu expect=%llu\n",\
+             worldRank, myBlockIdx, (int)contextId, (int)(slot),               \
+             (unsigned long long)v, (unsigned long long)expected);             \
       if (v != expected) ok = false;                                            \
     }                                                                           \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
+    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+      printf("[rank %d blk %d ctx %d] S21 slot=%d: exit\n",                   \
+             worldRank, myBlockIdx, (int)contextId, (int)(slot));              \
+    }                                                                           \
   } while (0)
 
   // combo 0: THREAD + INTRA (even → Inc, expected=1)
