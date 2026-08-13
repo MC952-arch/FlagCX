@@ -270,6 +270,11 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevIncreaseSignalShadow(const void *comm, flagcxDevContext_t contextId,
                               flagcxDevSignal_t slot, uint64_t delta);
 
+/** @brief Spin-wait until signal meets its local shadow value. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevWaitSignalMeetShadow(
+    const void *comm, flagcxDevContext_t contextId, flagcxDevSignal_t slot,
+    int bits, flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order);
+
 /* ================================================================
  * Category U8: Unified Barrier (3)
  *

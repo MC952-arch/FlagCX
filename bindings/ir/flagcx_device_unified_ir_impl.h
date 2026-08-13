@@ -292,6 +292,34 @@ flagcxDevIncreaseSignalShadow(const void *commOpaque,
   flagcxDevNetIncreaseSignalShadow(net, slot, delta);
 }
 
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxDevWaitSignalMeetShadow(const void *commOpaque,
+                              flagcxDevContext_t contextId,
+                              flagcxDevSignal_t slot, int bits,
+                              flagcxDevCoopKind_t coopKind,
+                              flagcxDevMemoryOrder_t order) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+
+  // P2P fast path for single-node: poll signal vs shadow directly
+  if (comm->_commBase.nInterPeers == 0) {
+    const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
+    const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+    uint64_t *signalBuf = comm->_commBase.signalBuffer;
+    uint64_t *shadowBuf = comm->_commBase.shadowBuffer;
+    int idx = net->contextId * comm->_commBase.signalCount + (int)slot;
+
+    // Spin-wait until signal catches up to shadow
+    uint64_t expectedVal = DeviceAPI::Atomic::load(&shadowBuf[idx], order);
+    while (DeviceAPI::Atomic::load(&signalBuf[idx], order) < expectedVal) {
+      // Busy-wait
+    }
+  } else {
+    // Net FIFO path for multi-node
+    const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
+    flagcxDevNetWaitSignalMeetShadowS(net, coopKind, slot, bits, order);
+  }
+}
+
 /* ================================================================
  * Category U8: Unified Barrier (3)
  * ================================================================ */

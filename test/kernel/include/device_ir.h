@@ -218,6 +218,16 @@ void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
 void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
                                        flagcxStream_t stream);
 
+// S16 sub-block: DevBarrierArriveWait — INTRA + WORLD
+void launchKernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream);
+
+// S18 sub-block: DevPutValue — INTRA + WORLD
+void launchKernelDevPutValueIntraWorldS(const void *devCommPtr,
+                                        const void *dstMemPtr, int *devResult,
+                                        size_t bytes, flagcxStream_t stream);
+
 // S20: DevSignalStandalone — INTRA + WORLD
 void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                                                 int *devResult,
@@ -258,6 +268,16 @@ void launchKernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
 void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult,
                                        flagcxStream_t stream);
 
+// S16 sub-block: DevBarrierArriveWait — INTER + WORLD
+void launchKernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream);
+
+// S18 sub-block: DevPutValue — INTER + WORLD
+void launchKernelDevPutValueInterWorldS(const void *devCommPtr,
+                                        const void *dstMemPtr, int *devResult,
+                                        size_t bytes, flagcxStream_t stream);
+
 // S20: DevSignalStandalone — INTER + WORLD
 void launchKernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
                                                 int *devResult,
@@ -269,5 +289,59 @@ void launchKernelDevTeamResolutionInterWorldS(const void *devCommPtr,
                                               const void *srcMemPtr,
                                               int *devResult,
                                               flagcxStream_t stream);
+
+// =========================================================================
+// Unified One-Sided IR Tests — S22–S25 (new scenarios)
+// =========================================================================
+
+// S22: DevPut_RSigInc + DevPut_RSigAdd — INTRA + WORLD
+void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
+                                       const void *dstMemPtr,
+                                       const void *srcMemPtr, int *devResult,
+                                       size_t bytes, flagcxStream_t stream);
+
+// S22: DevPut_RSigInc + DevPut_RSigAdd — INTER + WORLD
+void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
+                                       const void *dstMemPtr,
+                                       const void *srcMemPtr, int *devResult,
+                                       size_t bytes, flagcxStream_t stream);
+
+// S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTRA
+// + WORLD
+void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
+                                          const void *dstMemPtr,
+                                          const void *srcMemPtr, int *devResult,
+                                          size_t bytes, flagcxStream_t stream);
+
+// S23: DevPut_LCtrInc + DevPut_RSigInc_LCtrInc + DevPut_RSigAdd_LCtrInc — INTER
+// + WORLD
+void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
+                                          const void *dstMemPtr,
+                                          const void *srcMemPtr, int *devResult,
+                                          size_t bytes, flagcxStream_t stream);
+
+// S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTRA + WORLD
+void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
+                                            const void *dstMemPtr,
+                                            int *devResult, size_t bytes,
+                                            flagcxStream_t stream);
+
+// S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTER + WORLD
+void launchKernelDevPutValueRSigInterWorldS(const void *devCommPtr,
+                                            const void *dstMemPtr,
+                                            int *devResult, size_t bytes,
+                                            flagcxStream_t stream);
+
+// S25: DevIncreaseSignalShadow + DevWaitSignalMeetShadow + DevFlush — INTRA +
+// WORLD
+void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream);
+
+// S25: DevIncreaseSignalShadow + DevWaitSignalMeetShadow + DevFlush — INTER +
+// WORLD
+void launchKernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream);
 
 #endif // TEST_KERNEL_DEVICE_IR_H_

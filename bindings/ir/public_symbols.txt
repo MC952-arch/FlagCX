@@ -89,6 +89,7 @@ flagcxDevSignalAdd
 flagcxDevSignalInc
 flagcxDevWaitCounter
 flagcxDevWaitSignal
+flagcxDevWaitSignalMeetShadow
 flagcxGetIntraPointerC
 flagcxGetIntraPointerS
 flagcxGetLocalPointerC
