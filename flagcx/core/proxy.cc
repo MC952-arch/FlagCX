@@ -1495,10 +1495,9 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
           __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
                              __ATOMIC_RELEASE) +
           1;
-      INFO(FLAGCX_PROXY,
+      INFO(FLAGCX_P2P,
            "rank=%d Poll: retired peer=%d completed=%lu inflight=%u",
            comm->rank, p, (unsigned long)nextCompleted, state->totalInflight);
-      fflush(flagcxDebugFile);
     }
   }
 }
@@ -1920,15 +1919,13 @@ init_done:
         break;
       }
       case flagcxDevicePrimPut: {
-        INFO(FLAGCX_PROXY,
-             "rank=%d PrimPut begin context=%d peer=%d srcOff=%lu "
-             "dstOff=%lu size=%lu "
+        INFO(FLAGCX_P2P,
+             "rank=%d PrimPut peer=%d srcOff=%lu dstOff=%lu size=%lu "
              "inflight=%u",
-             comm->rank, contextId, (int)ptr->getPeerRank(),
+             comm->rank, (int)ptr->getPeerRank(),
              (unsigned long)ptr->getSrcOffset(),
              (unsigned long)ptr->getDstOffset(), (unsigned long)ptr->getSize(),
              kproxyState->totalInflight);
-        fflush(flagcxDebugFile);
         int peerRank = (int)ptr->getPeerRank();
         res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
         if (res != flagcxSuccess)
@@ -1941,12 +1938,8 @@ init_done:
         res = flagcxKernelProxyPost(kproxyState, comm, peerRank, FLAGCX_RMA_PUT,
                                     contextId, srcOffset, dstOffset, size,
                                     srcMrIdx, dstMrIdx, 0, 0, 0);
-        INFO(FLAGCX_PROXY,
-             "rank=%d PrimPut posted context=%d res=%d postedIB=%d "
-             "inflight=%u",
-             comm->rank, contextId, (int)res, (res == flagcxSuccess),
-             kproxyState->totalInflight);
-        fflush(flagcxDebugFile);
+        INFO(FLAGCX_P2P, "rank=%d PrimPut posted res=%d postedIB=%d",
+             comm->rank, (int)res, (res == flagcxSuccess));
         postedIB = (res == flagcxSuccess);
         break;
       }
@@ -1976,12 +1969,6 @@ init_done:
           // trigger follows its put trigger in this context's FIFO, so wait
           // for all previously posted IB operations before publishing the
           // completion to the GPU.
-          INFO(FLAGCX_PROXY,
-               "rank=%d Counter completion begin context=%d encodedIdx=%d "
-               "value=%lu inflight=%u",
-               comm->rank, contextId, signalIdx, (unsigned long)signalValue,
-               kproxyState->totalInflight);
-          fflush(flagcxDebugFile);
           int64_t timeoutSec = flagcxParamKernelProxyBackpressureTimeout();
           struct timespec deadline;
           clock_gettime(CLOCK_MONOTONIC, &deadline);
@@ -2037,15 +2024,7 @@ init_done:
           // here again would address the wrong slot.
           size_t counterOffset = (size_t)signalIdx;
           uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + counterOffset;
-          uint64_t oldValue =
-              __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
-          INFO(FLAGCX_PROXY,
-               "rank=%d Counter completion published context=%d counter=%d "
-               "offset=%zu value=%lu->%lu",
-               comm->rank, contextId, counterId, counterOffset,
-               (unsigned long)oldValue,
-               (unsigned long)(oldValue + signalValue));
-          fflush(flagcxDebugFile);
+          __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
         }
         break;
       }
