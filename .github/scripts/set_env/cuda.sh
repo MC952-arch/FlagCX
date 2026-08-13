@@ -31,12 +31,16 @@ export NP=8
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x CUDA_VISIBLE_DEVICES=0,1,2,3
   -x FLAGCX_HOSTID=node0
+  -x NCCL_HOSTID=node0
   -x FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3
+  -x NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3
 )
 FLAGCX_CI_NODE2_MPI_ARGS=(
   -x CUDA_VISIBLE_DEVICES=4,5,6,7
   -x FLAGCX_HOSTID=node1
+  -x NCCL_HOSTID=node1
   -x FLAGCX_IB_HCA=mlx5_4,mlx5_5,mlx5_6,mlx5_7
+  -x NCCL_IB_HCA=mlx5_4,mlx5_5,mlx5_6,mlx5_7
 )
 
 flagcx_ci_configure_suite() {
@@ -45,7 +49,7 @@ flagcx_ci_configure_suite() {
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    device_api)
+    device_api|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(FORCE_DEFAULT_PATH=1)
       ;;

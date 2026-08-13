@@ -39,6 +39,7 @@ on:
 jobs:
   unit_test:
     name: ${{ inputs.display_name }} / ${{ matrix.suite }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
