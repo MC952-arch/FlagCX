@@ -79,8 +79,14 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
   }
 
   // split and obtain sub-clusters
+  // Splitting a communicator into sub-clusters only makes sense for collective
+  // communicators that span the full heterogeneous topology. Dedicated P2P
+  // pair communicators (nranks <= 2) must never be split: splitting a 2-rank
+  // comm into two single-rank sub-clusters would force every send/recv through
+  // inter-cluster RMA and deadlock ring-shaped P2P patterns. Collective comms
+  // (group sizes >= 3) are unaffected and keep being split as before.
   const char *clusterSplitInfo = flagcxGetEnv("FLAGCX_CLUSTER_SPLIT_LIST");
-  if (clusterSplitInfo != NULL) {
+  if (clusterSplitInfo != NULL && nranks > 2) {
     std::vector<int> clusterSplitList;
     FLAGCXCHECK(parseClusterSplitList(clusterSplitInfo, clusterSplitList));
     if (*ncluster != int(clusterSplitList.size())) {

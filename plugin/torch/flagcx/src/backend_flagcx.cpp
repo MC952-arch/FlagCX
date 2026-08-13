@@ -339,9 +339,6 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
-  char vendor[64] = {};
-  C10D_FLAGCX_CHECK(devHandle_->getVendor(vendor), std::nullopt);
-  needsPairComm_ = (strcmp(vendor, "SUNRISE") == 0);
 }
 #else
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
@@ -352,25 +349,23 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
-  char vendor[64] = {};
-  C10D_FLAGCX_CHECK(devHandle_->getVendor(vendor), std::nullopt);
-  needsPairComm_ = (strcmp(vendor, "SUNRISE") == 0);
 }
 #endif
 
 flagcxBackend::~flagcxBackend() {
+  for (auto &s : flagcxStreams_) {
+    devHandle_->streamDestroy(s.second);
+  }
+  // Pair communicators can be initialized lazily by send/recv, before the
+  // process-group communicator is initialized.
+  for (auto &kv : pairComms_) {
+    auto ret = flagcxCommDestroy(kv.second);
+    if (ret != flagcxSuccess) {
+      TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first);
+    }
+  }
+  pairComms_.clear();
   if (status_ == 1) {
-    for (auto &s : flagcxStreams_) {
-      devHandle_->streamDestroy(s.second);
-    }
-    // Destroy pair comms before the global comm
-    for (auto &kv : pairComms_) {
-      auto ret = flagcxCommDestroy(kv.second);
-      if (ret != flagcxSuccess) {
-        TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first);
-      }
-    }
-    pairComms_.clear();
     flagcxCommDestroy(comm_);
     status_ = 0;
   }
@@ -571,62 +566,37 @@ void flagcxBackend::groupEnd() {
 }
 
 void flagcxBackend::startCoalescing() {
-  if (needsPairComm_) {
-    // Pair-comm mode: defer ops, no groupStart (PCCL crashes with group
-    // brackets on pair comms)
-    TORCH_CHECK(!pairCoalesce_.active,
-                "Nested coalescing is not supported in pair-comm mode");
-    initComm();
-    pairCoalesce_.active = true;
-    pairCoalesce_.pendingOps.clear();
-  } else {
-    groupStart();
-  }
+  // P2P operations use dedicated communicators and are submitted at
+  // endCoalescing instead of using a communicator group.
+  TORCH_CHECK(!pairCoalesce_.active,
+              "Nested coalescing is not supported for P2P operations");
+  initComm();
+  pairCoalesce_.active = true;
+  pairCoalesce_.pendingOps.clear();
 }
 
 c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
-  if (needsPairComm_) {
-    TORCH_CHECK(pairCoalesce_.active,
-                "endCoalescing called without matching startCoalescing");
+  TORCH_CHECK(pairCoalesce_.active,
+              "endCoalescing called without matching startCoalescing");
 
-    // Sort by peer ascending: canonical (min,max) order avoids deadlock
-    std::stable_sort(
-        pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
-        [](const auto &a, const auto &b) { return a.first < b.first; });
-    for (auto &kv : pairCoalesce_.pendingOps) {
-      kv.second();
-    }
-    pairCoalesce_.pendingOps.clear();
-    pairCoalesce_.active = false;
-
-    auto stream = getStreamByIndex(0);
-    auto work =
-        c10::make_intrusive<flagcxWork>(OpType::COALESCED, stream, devHandle_);
-    work->event_->record(stream, deviceId_);
-    work->deviceId_ = deviceId_;
-    work->isBarrierOp_ = false;
-    work->future_ = c10::make_intrusive<c10::ivalue::Future>(
-        c10::ListType::create(c10::TensorType::get()));
-    work->future_->markCompleted(c10::IValue(0));
-    return work;
+  // Sort by peer ascending: canonical (min,max) order avoids deadlock.
+  std::stable_sort(
+      pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
+      [](const auto &a, const auto &b) { return a.first < b.first; });
+  for (auto &kv : pairCoalesce_.pendingOps) {
+    kv.second();
   }
+  pairCoalesce_.pendingOps.clear();
+  pairCoalesce_.active = false;
 
-  groupEnd();
-
-  auto work = c10::make_intrusive<flagcxWork>(OpType::COALESCED,
-                                              getStreamByIndex(0), devHandle_);
-  work->event_->record(getStreamByIndex(0), deviceId_);
+  auto stream = getStreamByIndex(0);
+  auto work =
+      c10::make_intrusive<flagcxWork>(OpType::COALESCED, stream, devHandle_);
+  work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
-  // Currently, hetero coalesced ops require a barrier op to avoid hanging issue
-  // TODO: remove this barrier op when the hanging issue is resolved
-  int isHomo;
-  flagcxIsHomoComm(comm_, &isHomo);
-  work->isBarrierOp_ = !isHomo;
-  // Create a future to track the coalesced operation
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()));
   work->future_->markCompleted(c10::IValue(0));
-
   return work;
 }
 
@@ -1432,11 +1402,15 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 
 c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
                                              int dstRank, int tag) {
+  TORCH_CHECK(tensors.size() == 1, "FlagCX send expects a single tensor");
   auto &tensor = tensors.back();
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
   auto stream = getStreamByIndex(0);
   auto work = c10::make_intrusive<flagcxWork>(OpType::SEND, stream, devHandle_);
-  initComm(tensor.device());
+  // Do not initialize the process-group communicator for P2P. Only the
+  // sender and receiver participate in the dedicated communicator.
+  deviceId_ = tensor.device().index();
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1447,31 +1421,18 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
 #endif
 
-  if (needsPairComm_) {
-    // Pair-comm mode: route through dedicated 2-rank sub-comm
-    auto doSend = [this, tensor, flagcxDataType, stream, dstRank]() {
-      flagcxComm_t pairComm = getOrCreatePairComm(dstRank);
-      int peerInPair = (rank_ < dstRank) ? 1 : 0;
-      C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
-                                   flagcxDataType, peerInPair, pairComm,
-                                   stream),
-                        std::nullopt);
-    };
-    if (pairCoalesce_.active) {
-      pairCoalesce_.pendingOps.emplace_back(dstRank, std::move(doSend));
-      return nullptr;
-    }
-    doSend();
-  } else {
-    // Standard mode: use global comm
+  auto doSend = [this, tensor, flagcxDataType, stream, dstRank]() {
+    flagcxComm_t p2pComm = getOrCreatePairComm(dstRank);
+    int peerRank = (rank_ < dstRank) ? 1 : 0;
     C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
-                                 flagcxDataType, dstRank, comm_, stream),
+                                 flagcxDataType, peerRank, p2pComm, stream),
                       std::nullopt);
-
-    if (activeGroupCounter_ > 0) {
-      return nullptr;
-    }
+  };
+  if (pairCoalesce_.active) {
+    pairCoalesce_.pendingOps.emplace_back(dstRank, std::move(doSend));
+    return nullptr;
   }
+  doSend();
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
@@ -1484,11 +1445,14 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
 c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
                                              int srcRank, int tag) {
+  TORCH_CHECK(tensors.size() == 1, "FlagCX recv expects a single tensor");
   auto &tensor = tensors.back();
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
   auto stream = getStreamByIndex(0);
   auto work = c10::make_intrusive<flagcxWork>(OpType::RECV, stream, devHandle_);
-  initComm(tensor.device());
+  // See send(): create/reuse only the communicator for this rank pair.
+  deviceId_ = tensor.device().index();
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1499,31 +1463,18 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
 
 #endif
 
-  if (needsPairComm_) {
-    // Pair-comm mode: route through dedicated 2-rank sub-comm
-    auto doRecv = [this, tensor, flagcxDataType, stream, srcRank]() {
-      flagcxComm_t pairComm = getOrCreatePairComm(srcRank);
-      int peerInPair = (rank_ < srcRank) ? 1 : 0;
-      C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
-                                   flagcxDataType, peerInPair, pairComm,
-                                   stream),
-                        std::nullopt);
-    };
-    if (pairCoalesce_.active) {
-      pairCoalesce_.pendingOps.emplace_back(srcRank, std::move(doRecv));
-      return nullptr;
-    }
-    doRecv();
-  } else {
-    // Standard mode: use global comm
+  auto doRecv = [this, tensor, flagcxDataType, stream, srcRank]() {
+    flagcxComm_t p2pComm = getOrCreatePairComm(srcRank);
+    int peerRank = (rank_ < srcRank) ? 1 : 0;
     C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
-                                 flagcxDataType, srcRank, comm_, stream),
+                                 flagcxDataType, peerRank, p2pComm, stream),
                       std::nullopt);
-
-    if (activeGroupCounter_ > 0) {
-      return nullptr;
-    }
+  };
+  if (pairCoalesce_.active) {
+    pairCoalesce_.pendingOps.emplace_back(srcRank, std::move(doRecv));
+    return nullptr;
   }
+  doRecv();
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
