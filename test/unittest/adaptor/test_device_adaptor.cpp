@@ -456,10 +456,10 @@ TEST_F(DeviceAdaptorTest, HostGetDevicePointer) {
   EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, hostPtr),
             flagcxSuccess);
   EXPECT_NE(devicePtr, nullptr);
-  EXPECT_NE(devHandle->hostGetDevicePointer(nullptr, hostPtr),
-            flagcxSuccess);
-  EXPECT_NE(devHandle->hostGetDevicePointer(&devicePtr, nullptr),
-            flagcxSuccess);
+  EXPECT_EQ(devHandle->hostGetDevicePointer(nullptr, hostPtr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, nullptr),
+            flagcxInvalidArgument);
   EXPECT_EQ(devHandle->deviceFree(hostPtr, flagcxMemHost, nullptr),
             flagcxSuccess);
 }
@@ -493,18 +493,18 @@ TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
   }
   free(hostPtr);
 
-  // Verify invalid arguments are rejected (backends may use different errors).
+  // Verify invalid arguments are rejected (only if backend has real impl)
   auto nullResult = deviceAdaptor->hostRegister(NULL, sz);
   if (nullResult != flagcxNotSupported) {
-    EXPECT_NE(nullResult, flagcxSuccess);
+    EXPECT_EQ(nullResult, flagcxInvalidArgument);
   }
   auto zeroResult = deviceAdaptor->hostRegister(hostPtr, 0);
   if (zeroResult != flagcxNotSupported) {
-    EXPECT_NE(zeroResult, flagcxSuccess);
+    EXPECT_EQ(zeroResult, flagcxInvalidArgument);
   }
   auto unregNullResult = deviceAdaptor->hostUnregister(NULL);
   if (unregNullResult != flagcxNotSupported) {
-    EXPECT_NE(unregNullResult, flagcxSuccess);
+    EXPECT_EQ(unregNullResult, flagcxInvalidArgument);
   }
 }
 
