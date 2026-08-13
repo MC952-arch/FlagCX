@@ -157,6 +157,8 @@ int main(int argc, char *argv[]) {
   }
 
   bool allPass = true;
+  // S21-S25 atomically clear this value if any device context fails.
+  int passResult = 1;
 
   // =========================================================================
   // Main test loop
@@ -442,8 +444,8 @@ int main(int argc, char *argv[]) {
                                           flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
                                           flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -495,8 +497,8 @@ int main(int argc, char *argv[]) {
                                           flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
                                           flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -549,8 +551,8 @@ int main(int argc, char *argv[]) {
                                           flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
                                           flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -599,8 +601,8 @@ int main(int argc, char *argv[]) {
     {
       FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * sizeof(uint64_t),
                                           flagcxMemDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 
@@ -645,8 +647,8 @@ int main(int argc, char *argv[]) {
     // SignalInc × 5 → WaitSignalMeetShadow → assert ReadSignal==5 → Flush
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
+                                          flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       MPI_Barrier(MPI_COMM_WORLD);
 

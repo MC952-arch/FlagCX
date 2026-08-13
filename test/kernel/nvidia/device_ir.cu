@@ -2025,14 +2025,14 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
 
 #define S21_INTRA_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     flagcxDevBarrierSync(devCommPtr, teamKind, myBlockIdx,                     \
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, FLAGCX_COOP_THREAD,               \
@@ -2051,7 +2051,7 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2075,7 +2075,7 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
 
 #undef S21_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
@@ -2114,10 +2114,10 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
 
 #define S22_INTRA_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2128,7 +2128,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       if ((slot) % 2 == 0)                                                      \
         flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
@@ -2147,7 +2147,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2171,7 +2171,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
 
 #undef S22_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
@@ -2218,13 +2218,13 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
     flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                         \
     int variant = (slot) % 3;                                                   \
     /* Reset counter and signal */                                              \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetCounter(devCommPtr, contextId, ctr);                        \
       flagcxDevResetSignal(devCommPtr, contextId, sig);                         \
     }                                                                           \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     /* Assert both are zero */                                                  \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
                                           flagcxDeviceMemoryOrderAcquire);      \
       uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,        \
@@ -2237,7 +2237,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                    \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       if (variant == 0)                                                         \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
@@ -2262,7 +2262,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
     /* Wait and verify counter */                                               \
     flagcxDevWaitCounter(devCommPtr, ctr, 1, 64, contextId,                     \
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);    \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
                                           flagcxDeviceMemoryOrderAcquire);      \
       if (cv != 1) ok = false;                                                  \
@@ -2273,7 +2273,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                            \
       flagcxDevWaitSignal(devCommPtr, sig, expectedSig, 64, contextId,          \
                           FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);   \
-      if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                      \
+      if (FLAGCX_THREAD_IDX_X == 0) {                                          \
         uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,      \
                                            flagcxDeviceMemoryOrderAcquire);     \
         if (sv != expectedSig) ok = false;                                      \
@@ -2297,7 +2297,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
 
 #undef S23_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
@@ -2336,10 +2336,10 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
 
 #define S24_INTRA_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2350,7 +2350,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot) * sizeof(uint64_t);                                  \
       uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
       if ((slot) % 2 == 0)                                                      \
@@ -2370,7 +2370,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2394,7 +2394,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
 
 #undef S24_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
@@ -2433,10 +2433,10 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 
 #define S25_INTRA_COMBO(slot, teamKind, peer)                                  \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2448,13 +2448,13 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
     /* Increase shadow by 5 */                                                  \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevIncreaseSignalShadow(devCommPtr, contextId,                     \
                                     (flagcxDevSignal_t)(slot),                 \
                                     (uint64_t)5);                               \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     /* Signal 5 times to meet shadow */                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       for (int i = 0; i < 5; i++)                                               \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                          \
                            (flagcxDevSignal_t)(slot), contextId,                \
@@ -2466,7 +2466,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
                                   (flagcxDevSignal_t)(slot), 64,                \
                                   FLAGCX_COOP_BLOCK,                            \
                                   flagcxDeviceMemoryOrderAcquire);              \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -2493,7 +2493,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 
 #undef S25_INTRA_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
@@ -3169,14 +3169,14 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
 
 #define S21_INTER_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     flagcxDevBarrierSync(devCommPtr, teamKind, myBlockIdx,                     \
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       flagcxDevPut(devCommPtr, dstMemPtr, off, srcMemPtr, off, bytes,          \
                    teamKind, peer, contextId, FLAGCX_COOP_THREAD,               \
@@ -3194,7 +3194,7 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3218,7 +3218,7 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
 
 #undef S21_INTER_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
@@ -3258,10 +3258,10 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
 
 #define S22_INTER_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3272,7 +3272,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       if ((slot) % 2 == 0)                                                      \
         flagcxDevPut_RSigInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
@@ -3291,7 +3291,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3315,7 +3315,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
 
 #undef S22_INTER_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
@@ -3363,13 +3363,13 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
     flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                         \
     int variant = (slot) % 3;                                                   \
     /* Reset counter and signal */                                              \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       flagcxDevResetCounter(devCommPtr, contextId, ctr);                        \
       flagcxDevResetSignal(devCommPtr, contextId, sig);                         \
     }                                                                           \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     /* Assert both are zero */                                                  \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
                                           flagcxDeviceMemoryOrderAcquire);      \
       uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,        \
@@ -3382,7 +3382,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
     /* Put operation with counter (and optionally signal) */                    \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot)*bytes;                                                \
       if (variant == 0)                                                         \
         flagcxDevPut_LCtrInc(devCommPtr, dstMemPtr, off, srcMemPtr, off,       \
@@ -3407,7 +3407,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
     /* Wait and verify counter */                                               \
     flagcxDevWaitCounter(devCommPtr, ctr, 1, 64, contextId,                     \
                          FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);    \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
                                           flagcxDeviceMemoryOrderAcquire);      \
       if (cv != 1) ok = false;                                                  \
@@ -3418,7 +3418,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                            \
       flagcxDevWaitSignal(devCommPtr, sig, expectedSig, 64, contextId,          \
                           FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);   \
-      if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                      \
+      if (FLAGCX_THREAD_IDX_X == 0) {                                          \
         uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,      \
                                            flagcxDeviceMemoryOrderAcquire);     \
         if (sv != expectedSig) ok = false;                                      \
@@ -3442,7 +3442,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
 
 #undef S23_INTER_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
@@ -3482,10 +3482,10 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
 
 #define S24_INTER_COMBO(slot, teamKind, peer, expected)                        \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3496,7 +3496,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
                          contextId, FLAGCX_COOP_BLOCK,                         \
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       size_t off = (slot) * sizeof(uint64_t);                                  \
       uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
       if ((slot) % 2 == 0)                                                      \
@@ -3516,7 +3516,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
     flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64,    \
                         contextId, FLAGCX_COOP_BLOCK,                           \
                         flagcxDeviceMemoryOrderAcquire);                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3540,7 +3540,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
 
 #undef S24_INTER_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevPutValueRSigInterWorldS(const void *devCommPtr,
@@ -3580,10 +3580,10 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
 
 #define S25_INTER_COMBO(slot, teamKind, peer)                                  \
   do {                                                                          \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3595,13 +3595,13 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
                          flagcxDeviceMemoryOrderAcqRel,                        \
                          flagcxDeviceScopeSystem);                             \
     /* Increase shadow by 5 */                                                  \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0)                          \
+    if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevIncreaseSignalShadow(devCommPtr, contextId,                     \
                                     (flagcxDevSignal_t)(slot),                 \
                                     (uint64_t)5);                               \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     /* Signal 5 times to meet shadow */                                         \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       for (int i = 0; i < 5; i++)                                               \
         flagcxDevSignalInc(devCommPtr, teamKind, peer,                          \
                            (flagcxDevSignal_t)(slot), contextId,                \
@@ -3613,7 +3613,7 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
                                   (flagcxDevSignal_t)(slot), 64,                \
                                   FLAGCX_COOP_BLOCK,                            \
                                   flagcxDeviceMemoryOrderAcquire);              \
-    if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {                        \
+    if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
                                        flagcxDeviceMemoryOrderAcquire);         \
@@ -3640,7 +3640,7 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
 
 #undef S25_INTER_COMBO
 
-  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0 && ok) result[0] = 1;
+  if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
