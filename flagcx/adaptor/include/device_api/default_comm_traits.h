@@ -62,6 +62,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         int index = intraRank + (peer - team.rank) * team.stride;
         if (index < 0 || index >= intraSize)
           return nullptr; // Not a local peer — fall through to Net
+        if (ipcBasePtrs[index] == nullptr)
+          return nullptr;
         return (char *)ipcBasePtrs[index] + offset;
       }
       return nullptr;
@@ -70,7 +72,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       if (mode == SYMMETRIC && flatBasePtr)
         return (char *)flatBasePtr + (size_t)intraRank * allocSize + offset;
-      else if (ipcBasePtrs)
+      else if (ipcBasePtrs && intraRank >= 0 && intraRank < intraSize &&
+               ipcBasePtrs[intraRank])
         return (char *)ipcBasePtrs[intraRank] + offset;
       return (char *)rawPtr + offset;
     }
@@ -79,7 +82,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                                                          int peer) const {
       if (mode == SYMMETRIC && flatBasePtr)
         return (char *)flatBasePtr + (size_t)peer * allocSize + offset;
-      else if (ipcBasePtrs)
+      else if (ipcBasePtrs && peer >= 0 && peer < intraSize &&
+               ipcBasePtrs[peer])
         return (char *)ipcBasePtrs[peer] + offset;
       return nullptr;
     }
@@ -94,7 +98,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
       return (mode == SYMMETRIC && flatBasePtr != nullptr) ||
-             (mode == ASYMMETRIC && ipcBasePtrs != nullptr);
+             (mode == ASYMMETRIC && ipcBasePtrs != nullptr) || mrIndex >= 0;
     }
     FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return rawPtr; }
     FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
@@ -171,6 +175,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int counterCount;
     int contextCount;
 
+    int netOneSidedReady;
+    int netSignalReady;
+    int netPutValueReady;
+    int useP2pSignals;
+
     // P2P signal delivery (IPC-mapped pointers to each peer's signal buffers).
     // signalPeerPtrs[peer] → peer's signalBuffer (nullptr if not P2P-reachable)
     uint64_t **signalPeerPtrs;
@@ -225,6 +234,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.counterCount = di.counterCount;
       dc.contextCount = di.contextCount;
       dc.signalPeerPtrs = di.signalPeerPtrs;
+      dc.netOneSidedReady = di.netOneSidedReady;
+      dc.netSignalReady = di.netSignalReady;
+      dc.netPutValueReady = di.netPutValueReady;
+      dc.useP2pSignals = di.useP2pSignals;
     }
   };
 

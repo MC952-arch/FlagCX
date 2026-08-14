@@ -362,6 +362,9 @@ static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         flagcxDevComm_t devComm) {
+  const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
+  const bool oneSidedRequested =
+      reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, devComm);
@@ -496,8 +499,10 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
     }
 
-    // PutValue staging buffer (only needed for inter-node RDMA path)
-    if (devComm->nInterPeers > 0 && comm->heteroComm != nullptr) {
+    // Prepare the Net fallback even on a single node.  IPC setup can fail for
+    // an otherwise valid local allocation, and PutValue then needs this
+    // registered staging source to make the fallback complete.
+    if (comm->heteroComm != nullptr) {
       size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
            stagingSize);
@@ -506,10 +511,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                                       stagingSize, flagcxMemHost, NULL);
       if (res != flagcxSuccess) {
         WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
-        return res;
+        devComm->putValueStagingBuffer = nullptr;
+      } else {
+        memset(devComm->putValueStagingBuffer, 0, stagingSize);
+        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
       }
-      memset(devComm->putValueStagingBuffer, 0, stagingSize);
-      INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer OK");
 
       // Register signal buffer for RDMA one-sided access
       if (devComm->signalBuffer) {
@@ -522,13 +528,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                                           (size_t)devComm->signalCount *
                                               bufCtxCount * sizeof(uint64_t),
                                           sigPtrType);
-        if (res != flagcxSuccess) {
+        if (res != flagcxSuccess || comm->heteroComm->signalHandle == nullptr) {
           WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed "
-               "(%d)",
-               res);
-          return res;
+               "(%d, handle=%p)",
+               res, (void *)comm->heteroComm->signalHandle);
+        } else {
+          devComm->netSignalReady = 1;
+          INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
         }
-        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
       }
 
       // Register staging buffer for PutValue RDMA source
@@ -536,13 +543,15 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
         res = flagcxOneSideStagingRegister(comm, devComm->putValueStagingBuffer,
                                            stagingSize);
-        if (res != flagcxSuccess) {
+        if (res != flagcxSuccess ||
+            comm->heteroComm->stagingHandle == nullptr) {
           WARN("defaultDevApiCommCreate: flagcxOneSideStagingRegister failed "
-               "(%d)",
-               res);
-          return res;
+               "(%d, handle=%p)",
+               res, (void *)comm->heteroComm->stagingHandle);
+        } else {
+          devComm->netPutValueReady = 1;
+          INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
         }
-        INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
       }
     }
 
@@ -556,7 +565,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   // P2P signal/counter IPC setup (intra-node direct atomic fast path)
   // Only for GDR device memory path (IPC requires device memory).
   // ==========================================================================
-  if (devComm->signalBuffer && !flagcxParamSignalHostEnable()) {
+  if (devComm->signalBuffer && !flagcxParamSignalHostEnable() &&
+      !forceOneSidedNet) {
     size_t sigSize =
         (size_t)devComm->signalCount * devComm->contextCount * sizeof(uint64_t);
     int slot = buildIpcPeerPointers(comm, devComm->signalBuffer, sigSize);
@@ -572,6 +582,21 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     }
   }
 
+  devComm->useP2pSignals =
+      (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0) ? 1 : 0;
+
+  if (devComm->signalBuffer && !devComm->useP2pSignals &&
+      !devComm->netSignalReady) {
+    WARN("defaultDevApiCommCreate: neither signal IPC nor Net fallback is "
+         "available");
+    return flagcxNotSupported;
+  }
+  if (oneSidedRequested && forceOneSidedNet && !devComm->netPutValueReady) {
+    WARN("defaultDevApiCommCreate: forced Net fallback requested but "
+         "PutValue staging is not registered");
+    return flagcxNotSupported;
+  }
+
   // Pre-establish full-mesh connections from main thread
   INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
   {
@@ -582,6 +607,28 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     }
   }
   INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
+  if (comm->heteroComm != nullptr && comm->heteroComm->oneSideHandleCount > 0 &&
+      comm->heteroComm->oneSideHandles[0] != nullptr &&
+      comm->heteroComm->oneSideHandles[0]->fullSendComms != nullptr) {
+    devComm->netOneSidedReady = 1;
+    for (int i = 0; i < devComm->contextCount; i++) {
+      if (devComm->fifoBuffers[i] == nullptr) {
+        devComm->netOneSidedReady = 0;
+        break;
+      }
+    }
+  }
+  if (oneSidedRequested && forceOneSidedNet && !devComm->netOneSidedReady) {
+    WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
+    return flagcxNotSupported;
+  }
+
+  INFO(FLAGCX_INIT,
+       "defaultDevApiCommCreate: one-sided paths p2pSignal=%d net=%d "
+       "netSignal=%d netPutValue=%d forceNet=%d",
+       devComm->useP2pSignals, devComm->netOneSidedReady,
+       devComm->netSignalReady, devComm->netPutValueReady,
+       forceOneSidedNet ? 1 : 0);
 
   return flagcxSuccess;
 }
@@ -754,7 +801,8 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
         devMem->mrIndex = d->mrIndex;
         devMem->mrBase = d->mrBase;
       }
-      if (d == nullptr || !d->isVMM || !d->flatBase) {
+      if ((d == nullptr || !d->isVMM || !d->flatBase) &&
+          !flagcxParamDeviceOneSidedForceNet()) {
         // Priority 2: Symmetric IPC fallback (VMM not available)
         int idx = buildIpcPeerPointers(comm, buff, size);
         if (idx >= 0) {
@@ -773,7 +821,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       devMem->winHandle = (void *)win;
     }
     // ---- Priority 4 & 5: No window — IPC ----
-    else if (win == nullptr) {
+    else if (win == nullptr && !flagcxParamDeviceOneSidedForceNet()) {
       // Check if buffer supports IPC (VMM-allocated buffers do not support
       // cudaIpcGetMemHandle). Probe via ipcMemHandleGet before entering the
       // collective buildIpcPeerPointers.
@@ -830,6 +878,33 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                            (devMem->ipcIndex >= 0 && comm)
                                ? comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                                : nullptr);
+    if (flagcxParamDeviceOneSidedForceNet()) {
+      kWin->mode = DeviceAPI::ASYMMETRIC;
+      kWin->flatBasePtr = nullptr;
+      kWin->ipcBasePtrs = nullptr;
+    }
+
+    bool hasP2pAccess =
+        (kWin->mode == DeviceAPI::SYMMETRIC && kWin->flatBasePtr != nullptr) ||
+        (kWin->mode == DeviceAPI::ASYMMETRIC && kWin->ipcBasePtrs != nullptr);
+    flagcxDevComm_t dc = (comm != nullptr && comm->heteroComm != nullptr)
+                             ? comm->heteroComm->devCommHandle
+                             : nullptr;
+    bool hasRemotePeers = comm != nullptr && comm->heteroComm != nullptr &&
+                          comm->heteroComm->nNodes > 1;
+    bool needsNetFallback = !hasP2pAccess || hasRemotePeers;
+    if (win != nullptr && win->isSymmetricDefault && needsNetFallback) {
+      bool netFallbackReady = dc != nullptr && dc->netOneSidedReady &&
+                              dc->netPutValueReady && devMem->mrIndex >= 0;
+      if (!netFallbackReady) {
+        WARN("flagcxDevMemCreate: Net fallback is required but incomplete "
+             "(mrIndex=%d, net=%d, putValue=%d)",
+             devMem->mrIndex, dc ? dc->netOneSidedReady : 0,
+             dc ? dc->netPutValueReady : 0);
+        delete kWin;
+        return flagcxInvalidUsage;
+      }
+    }
     devMem->window = kWin;
     devMem->hasWindow = kWin->hasAccess();
 
@@ -845,6 +920,19 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                : nullptr);
       delete kWin;
       return flagcxInvalidUsage;
+    }
+
+    if (flagcxParamDeviceOneSidedForceNet()) {
+      if (devMem->mrIndex < 0 || dc == nullptr || !dc->netOneSidedReady ||
+          !dc->netPutValueReady) {
+        WARN("flagcxDevMemCreate: forced Net fallback is incomplete for buff "
+             "%p (mrIndex=%d, net=%d, putValue=%d)",
+             buff, devMem->mrIndex, dc ? dc->netOneSidedReady : 0,
+             dc ? dc->netPutValueReady : 0);
+        delete kWin;
+        devMem->window = nullptr;
+        return flagcxInvalidUsage;
+      }
     }
   }
 

@@ -137,8 +137,8 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
-  if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
-      comm->_commBase.p2pSignalSupport(localPeer)) {
+  if (comm->_commBase.useP2pSignals && localPeer >= 0 &&
+      localPeer < comm->_commBase.intraSize) {
     // P2P fast path: one atomic per cooperative group.
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
@@ -171,8 +171,8 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
-  if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
-      comm->_commBase.p2pSignalSupport(localPeer)) {
+  if (comm->_commBase.useP2pSignals && localPeer >= 0 &&
+      localPeer < comm->_commBase.intraSize) {
     // P2P fast path: one atomic per cooperative group.
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
@@ -205,8 +205,8 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
                     flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
-  // P2P fast path for single-node: poll local signal buffer directly
-  if (comm->_commBase.nInterPeers == 0) {
+  // Send and wait share one communicator-wide signal transport decision.
+  if (comm->_commBase.useP2pSignals) {
     const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *localBuf = comm->_commBase.signalBuffer;
@@ -261,20 +261,11 @@ flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
   const flagcxDevNet *net =
       (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
 
-  // Dispatch based on communication path:
-  // - P2P path (nInterPeers == 0): single-node, all operations use IPC → fence
-  // only
-  // - Net path (nInterPeers > 0): multi-node, operations use FIFO → flush only
-
-  if (comm->_commBase.nInterPeers > 0) {
-    // Multi-node: flush FIFO queue via proxy thread
-    if (net) {
-      flagcxDevNetFlushS((const void *)net, coopKind, order);
-    }
-  } else {
-    // Single-node: issue memory fence for P2P operations (IPC atomics, direct
-    // memcpy)
-    DeviceAPI::Intrin::threadfenceSystem();
+  // A communicator may use IPC for one memory object and Net fallback for
+  // another, so flush both domains.  Flushing an empty FIFO is harmless.
+  DeviceAPI::Intrin::threadfenceSystem();
+  if (comm->_commBase.netOneSidedReady && net) {
+    flagcxDevNetFlushS((const void *)net, coopKind, order);
   }
 }
 
@@ -308,8 +299,7 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
                               flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
-  // P2P fast path for single-node: poll signal vs shadow directly
-  if (comm->_commBase.nInterPeers == 0) {
+  if (comm->_commBase.useP2pSignals) {
     const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *signalBuf = comm->_commBase.signalBuffer;
@@ -428,13 +418,14 @@ flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
   return isLocal;
 }
 
-// Helper: Validate team semantics and determine dispatch path
-// Returns true if should use P2P, false if should use Net
-// Returns false and prints warning if team semantics are inconsistent
+// Validate team semantics and return whether the peer is a P2P candidate.
+// Callers must still check the actual peer pointer: topology alone does not
+// guarantee that IPC/VMM setup succeeded.
 static FLAGCX_DEVICE_INLINE_DECORATOR bool
 flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
                           int peer, flagcxDevTeamKind_t teamKind,
                           const char *funcName, bool &shouldReturn) {
+  (void)funcName;
   shouldReturn = false;
   bool isPeerLocal = flagcxIsPeerLocal(comm, team, peer);
 
@@ -470,9 +461,11 @@ flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
                                           "flagcxDevPut", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -504,9 +497,11 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
                                           "flagcxDevPut_RSigInc", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -548,9 +543,11 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
                                           "flagcxDevPut_RSigAdd", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -593,9 +590,11 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
                                           "flagcxDevPut_LCtrInc", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -642,9 +641,11 @@ flagcxDevPut_RSigInc_LCtrInc(
                                 "flagcxDevPut_RSigInc_LCtrInc", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -693,9 +694,11 @@ flagcxDevPut_RSigAdd_LCtrInc(
                                 "flagcxDevPut_RSigAdd_LCtrInc", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
     if (order == flagcxDeviceMemoryOrderRelease ||
         order == flagcxDeviceMemoryOrderAcqRel)
@@ -746,9 +749,11 @@ flagcxDevGet(const void *commOpaque, const void *srcOpaque, size_t srcOffset,
                                           "flagcxDevGet", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*src, srcOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*src, srcOffset, team, peer);
     void *localDst = flagcxGetLocalPointer(*dst, dstOffset);
     flagcxCoopMemcpy(coopKind, localDst, peerPtr, bytes);
     if (order == flagcxDeviceMemoryOrderAcquire ||
@@ -781,12 +786,14 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
                                           "flagcxDevPutValue", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
-      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
@@ -820,12 +827,14 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
       *comm, team, peer, teamKind, "flagcxDevPutValue_RSigInc", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
-      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
@@ -860,12 +869,14 @@ flagcxDevPutValue_RSigAdd(
       *comm, team, peer, teamKind, "flagcxDevPutValue_RSigAdd", shouldReturn);
   if (shouldReturn)
     return;
+  void *peerPtr =
+      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
+  useP2P = peerPtr != nullptr;
 
   if (useP2P) {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
-      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
