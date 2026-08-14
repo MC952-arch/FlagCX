@@ -30,8 +30,8 @@ jobs:
             runson: 'h20'
             no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             build-args: |
-              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-nvidia
-              BASE_IMAGE_VERSION=latest
+              BASE_IMAGE=harbor.baai.ac.cn/flagos-base/flagos-base-nvidia-cuda12.8
+              BASE_IMAGE_VERSION=2.1.2
               VENDOR=USE_NVIDIA
           
           # use h20 instance just for build image.
@@ -43,8 +43,8 @@ jobs:
             runson: 'h20'
             no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             build-args: |
-              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-metax
-              BASE_IMAGE_VERSION=latest
+              BASE_IMAGE=harbor.baai.ac.cn/flagos-base/flagos-base-metax-maca3.8.1.3
+              BASE_IMAGE_VERSION=2.1.2
               VENDOR=USE_METAX
 
           # use h20 instance just for build image.
@@ -56,8 +56,8 @@ jobs:
             runson: 'h20'
             no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             build-args: |
-              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-ascend
-              BASE_IMAGE_VERSION=latest
+              BASE_IMAGE=harbor.baai.ac.cn/flagos-base/flagos-base-ascend-cann8.5.0
+              BASE_IMAGE_VERSION=2.1.2
               VENDOR=USE_ASCEND
 
           # use h20 instance just for build image.
@@ -69,8 +69,8 @@ jobs:
             runson: 'h20'
             no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             build-args: |
-              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-tsingmicro
-              BASE_IMAGE_VERSION=latest
+              BASE_IMAGE=harbor.baai.ac.cn/flagos-base/flagos-base-tsingmicro-tsm260610
+              BASE_IMAGE_VERSION=2.1.2
               VENDOR=USE_TSM
     
     uses: flagos-ai/build-infra/.github/workflows/imagebuild.yml@main
