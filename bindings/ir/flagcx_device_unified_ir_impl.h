@@ -198,6 +198,23 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
  * Category U5: Unified Wait (2)
  * ================================================================ */
 
+// Atomic loads only accept Relaxed, Acquire, or SeqCst.  A wait is the
+// consuming side of signal publication, so normalize store-only orders to
+// Acquire rather than forwarding an invalid Release/AcqRel load order.
+static FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevMemoryOrder_t
+flagcxWaitLoadOrder(flagcxDevMemoryOrder_t order) {
+  switch (order) {
+    case flagcxDeviceMemoryOrderRelaxed:
+    case flagcxDeviceMemoryOrderAcquire:
+    case flagcxDeviceMemoryOrderSeqCst:
+      return order;
+    case flagcxDeviceMemoryOrderRelease:
+    case flagcxDeviceMemoryOrderAcqRel:
+    default:
+      return flagcxDeviceMemoryOrderAcquire;
+  }
+}
+
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
                     uint64_t least, int bits, flagcxDevContext_t contextId,
@@ -211,11 +228,17 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *localBuf = comm->_commBase.signalBuffer;
     int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+    flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
-    // Spin-wait until signal reaches expected value
-    while (DeviceAPI::Atomic::load(&localBuf[slot], order) < least) {
-      // Busy-wait
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      int iter = 0;
+      while (DeviceAPI::Atomic::load(&localBuf[slot], loadOrder) < least) {
+        DeviceAPI::Intrin::spinBackoff(iter++);
+      }
     }
+    coop.sync();
   } else {
     // Net FIFO path for multi-node
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
@@ -305,12 +328,20 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
     uint64_t *signalBuf = comm->_commBase.signalBuffer;
     uint64_t *shadowBuf = comm->_commBase.shadowBuffer;
     int idx = net->contextId * comm->_commBase.signalCount + (int)slot;
+    flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
-    // Spin-wait until signal catches up to shadow
-    uint64_t expectedVal = DeviceAPI::Atomic::load(&shadowBuf[idx], order);
-    while (DeviceAPI::Atomic::load(&signalBuf[idx], order) < expectedVal) {
-      // Busy-wait
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      uint64_t expectedVal =
+          DeviceAPI::Atomic::load(&shadowBuf[idx], loadOrder);
+      int iter = 0;
+      while (DeviceAPI::Atomic::load(&signalBuf[idx], loadOrder) <
+             expectedVal) {
+        DeviceAPI::Intrin::spinBackoff(iter++);
+      }
     }
+    coop.sync();
   } else {
     // Net FIFO path for multi-node
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);

@@ -1783,7 +1783,7 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
 
   bool ok = true;
 
-#define S20_INTRA_COMBO(slot, teamKind, peer, coopKind)                        \
+#define S20_INTRA_COMBO(slot, teamKind, peer, coopKind, waitOrder)             \
   do {                                                                         \
     /* Reset local signal (local op), then verify zero, then barrier */        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
@@ -1809,9 +1809,10 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                          coopKind, flagcxDeviceScopeSystem);                   \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedInc, 64,\
-                        contextId, FLAGCX_COOP_BLOCK,                          \
-                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedInc,  \
+                          64, contextId, coopKind, waitOrder);                 \
+    }                                                                          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
@@ -1843,9 +1844,10 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
                          coopKind, flagcxDeviceScopeSystem);                   \
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedAdd, 64,\
-                        contextId, FLAGCX_COOP_BLOCK,                          \
-                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expectedAdd,  \
+                          64, contextId, coopKind, waitOrder);                 \
+    }                                                                          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                          \
@@ -1857,22 +1859,22 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
 
   // combo 0: THREAD + INTRA  (slot 0)
   S20_INTRA_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
-                  FLAGCX_COOP_THREAD);
+                  FLAGCX_COOP_THREAD, flagcxDeviceMemoryOrderRelaxed);
   // combo 1: THREAD + WORLD  (slot 1)
   S20_INTRA_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-                  FLAGCX_COOP_THREAD);
+                  FLAGCX_COOP_THREAD, flagcxDeviceMemoryOrderAcquire);
   // combo 2: WARP + INTRA    (slot 2)
   S20_INTRA_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
-                  FLAGCX_COOP_WARP);
+                  FLAGCX_COOP_WARP, flagcxDeviceMemoryOrderRelease);
   // combo 3: WARP + WORLD    (slot 3)
   S20_INTRA_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-                  FLAGCX_COOP_WARP);
+                  FLAGCX_COOP_WARP, flagcxDeviceMemoryOrderAcqRel);
   // combo 4: BLOCK + INTRA   (slot 4)
   S20_INTRA_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
-                  FLAGCX_COOP_BLOCK);
+                  FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderSeqCst);
   // combo 5: BLOCK + WORLD   (slot 5)
   S20_INTRA_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-                  FLAGCX_COOP_BLOCK);
+                  FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
 
 #undef S20_INTRA_COMBO
 
@@ -2452,7 +2454,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 
   bool ok = true;
 
-#define S25_INTRA_COMBO(slot, teamKind, peer)                                  \
+#define S25_INTRA_COMBO(slot, teamKind, peer, coopKind)                        \
   do {                                                                          \
     if (FLAGCX_THREAD_IDX_X == 0)                                              \
       flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)(slot));  \
@@ -2483,10 +2485,12 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
     }                                                                           \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                         \
     /* Wait for shadow to be met */                                             \
-    flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                        \
-                                  (flagcxDevSignal_t)(slot), 64,                \
-                                  FLAGCX_COOP_BLOCK,                            \
-                                  flagcxDeviceMemoryOrderAcquire);              \
+    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                              \
+      flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                      \
+                                    (flagcxDevSignal_t)(slot), 64,              \
+                                    coopKind,                                   \
+                                    flagcxDeviceMemoryOrderAcqRel);             \
+    }                                                                           \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v = flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot),  \
                                        64, contextId,                           \
@@ -2500,17 +2504,23 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
   } while (0)
 
   // combo 0: THREAD + INTRA
-  S25_INTRA_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S25_INTRA_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_THREAD);
   // combo 1: THREAD + WORLD
-  S25_INTRA_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+  S25_INTRA_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_THREAD);
   // combo 2: WARP + INTRA
-  S25_INTRA_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S25_INTRA_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_WARP);
   // combo 3: WARP + WORLD
-  S25_INTRA_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+  S25_INTRA_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_WARP);
   // combo 4: BLOCK + INTRA
-  S25_INTRA_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S25_INTRA_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_BLOCK);
   // combo 5: BLOCK + WORLD
-  S25_INTRA_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+  S25_INTRA_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_BLOCK);
 
 #undef S25_INTRA_COMBO
 
