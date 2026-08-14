@@ -30,8 +30,8 @@ jobs:
             runson: 'h20'
             no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             build-args: |
-              BASE_IMAGE=harbor.baai.ac.cn/flagos-base/flagos-base-nvidia-cuda12.8
-              BASE_IMAGE_VERSION=2.1.2
+              BASE_IMAGE=harbor.baai.ac.cn/flagos-dev/flagcx
+              BASE_IMAGE_VERSION=55c5c6f-cuda-dev
               VENDOR=USE_NVIDIA
           
           # use h20 instance just for build image.
