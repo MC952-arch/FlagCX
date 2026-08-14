@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -44,7 +44,7 @@ jobs:
         run: ./packaging/rpm/build-flagcx-rpm.sh ${{ matrix.backend }}
 
       - name: Upload ${{ matrix.backend }} RPM packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flagcx-${{ matrix.backend }}-rpm-packages
           path: rpm-packages/${{ matrix.backend }}/**/*.rpm
@@ -72,7 +72,7 @@ jobs:
 
     steps:
       - name: Download ${{ matrix.backend }} RPM packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: flagcx-${{ matrix.backend }}-rpm-packages
           path: rpm-packages/${{ matrix.backend }}
