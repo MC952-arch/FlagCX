@@ -139,13 +139,18 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
   if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
       comm->_commBase.p2pSignalSupport(localPeer)) {
-    // P2P fast path: direct atomic on peer's IPC-mapped signal buffer
-    const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
-    const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-    uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
-    int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
-    DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], (uint64_t)1,
-                                flagcxDeviceMemoryOrderRelease);
+    // P2P fast path: one atomic per cooperative group.
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
+      const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+      uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
+      int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+      DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], (uint64_t)1,
+                                  flagcxDeviceMemoryOrderRelease);
+    }
+    coop.sync();
   } else {
     // Net FIFO fallback (inter-node or P2P not available)
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
@@ -168,14 +173,19 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
   if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
       comm->_commBase.p2pSignalSupport(localPeer)) {
-    // P2P fast path: direct atomic on peer's IPC-mapped signal buffer
-    const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
-    const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-    uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
-    int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+    // P2P fast path: one atomic per cooperative group.
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
+      const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
+      uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
+      int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
 
-    DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], value,
-                                flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], value,
+                                  flagcxDeviceMemoryOrderRelease);
+    }
+    coop.sync();
   } else {
     // Net FIFO fallback (inter-node or P2P not available)
     const void *net = flagcxDevNetGetFromCommS(commOpaque, contextId);
@@ -773,11 +783,16 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
     return;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
-    if (order == flagcxDeviceMemoryOrderRelease ||
-        order == flagcxDeviceMemoryOrderAcqRel)
-      flagcxScopedFence(scope);
-    *(volatile uint64_t *)peerPtr = value;
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
+      if (order == flagcxDeviceMemoryOrderRelease ||
+          order == flagcxDeviceMemoryOrderAcqRel)
+        flagcxScopedFence(scope);
+      *(volatile uint64_t *)peerPtr = value;
+    }
+    coop.sync();
   } else {
     const flagcxDevNet *net =
         (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
@@ -807,14 +822,19 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
     return;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
-    if (order == flagcxDeviceMemoryOrderRelease ||
-        order == flagcxDeviceMemoryOrderAcqRel)
-      flagcxScopedFence(scope);
-    *(volatile uint64_t *)peerPtr = value;
-    flagcxScopedFence(flagcxDeviceScopeSystem);
-    flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
-                       FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
+      if (order == flagcxDeviceMemoryOrderRelease ||
+          order == flagcxDeviceMemoryOrderAcqRel)
+        flagcxScopedFence(scope);
+      *(volatile uint64_t *)peerPtr = value;
+      flagcxScopedFence(flagcxDeviceScopeSystem);
+      flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
+                         FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
+    }
+    coop.sync();
   } else {
     const flagcxDevNet *net =
         (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
@@ -842,14 +862,20 @@ flagcxDevPutValue_RSigAdd(
     return;
 
   if (useP2P) {
-    void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
-    if (order == flagcxDeviceMemoryOrderRelease ||
-        order == flagcxDeviceMemoryOrderAcqRel)
-      flagcxScopedFence(scope);
-    *(volatile uint64_t *)peerPtr = value;
-    flagcxScopedFence(flagcxDeviceScopeSystem);
-    flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
-                       contextId, FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      void *peerPtr = flagcxGetPeerPointer(*dst, dstOffset, team, peer);
+      if (order == flagcxDeviceMemoryOrderRelease ||
+          order == flagcxDeviceMemoryOrderAcqRel)
+        flagcxScopedFence(scope);
+      *(volatile uint64_t *)peerPtr = value;
+      flagcxScopedFence(flagcxDeviceScopeSystem);
+      flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
+                         contextId, FLAGCX_COOP_THREAD,
+                         flagcxDeviceScopeSystem);
+    }
+    coop.sync();
   } else {
     const flagcxDevNet *net =
         (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
