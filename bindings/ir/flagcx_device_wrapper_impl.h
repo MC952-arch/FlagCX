@@ -607,5 +607,8 @@ flagcxDevNetGet(const void *transOpaque, const void *teamOpaque, int peer,
 // Include scalar IR implementations (struct-free API for Triton/LLVM)
 #include "flagcx_device_scalar_ir_impl.h"
 
+// Keep deprecated pre-Unified-IR one-sided symbols linkable.
+#include "flagcx_device_compat_ir_impl.h"
+
 #endif /* FLAGCX_CHECK_DEVICE_CC */
 #endif /* FLAGCX_DEVICE_WRAPPER_IMPL_H_ */

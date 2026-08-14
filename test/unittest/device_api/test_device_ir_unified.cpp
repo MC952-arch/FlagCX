@@ -130,9 +130,9 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
                                       flagcxMemDevice, NULL));
 
-  // Host scratch - allocate 12× buffers for 12 combinations
-  float *hostSend = new float[bufSize * 12 / sizeof(float)];
-  float *hostRecv = new float[bufSize * 12 / sizeof(float)];
+  // Host scratch mirrors the already combination-scaled device buffers.
+  float *hostSend = new float[bufSize / sizeof(float)];
+  float *hostRecv = new float[bufSize / sizeof(float)];
 
   if (proc == 0) {
     printf("=== Device IR Unified One-Sided Tests (P2P path) ===\n");

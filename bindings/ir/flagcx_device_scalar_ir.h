@@ -387,6 +387,9 @@ flagcxDevNetTermS(const void *net, flagcxCoopKind_t coopKind);
  * @param coopKind       Cooperation level for the operation.
  * @param remoteSignal   Remote signal slot to increment/add on completion.
  * @param remoteValue    Value to add to remote signal (SigAdd variants).
+ * @param remoteCounter  Remote counter slot to increment on completion.
+ * @param localSignal    Local signal slot to increment/add on completion.
+ * @param localValue     Value to add to local signal (LSigAdd variants).
  * @param localCounter   Local counter slot to increment on completion.
  * ================================================================ */
 
@@ -413,6 +416,89 @@ flagcxDevNetPutS_RSigAdd(const void *net, const void *comm,
                          size_t bytes, flagcxCoopKind_t coopKind,
                          flagcxDevSignal_t remoteSignal, uint64_t remoteValue);
 
+/* Deprecated compatibility variants retained for one deprecation cycle. */
+
+/* (CtrInc, None) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_RCtrInc(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevCounter_t remoteCounter);
+
+/* (None, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_LSigInc(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevSignal_t localSignal);
+
+/* (SigInc, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RSigInc_LSigInc(const void *net, const void *comm,
+                                 flagcxTeamKind_t teamKind, int peer,
+                                 const void *dst, size_t dstOffset,
+                                 const void *src, size_t srcOffset,
+                                 size_t bytes, flagcxCoopKind_t coopKind,
+                                 flagcxDevSignal_t remoteSignal,
+                                 flagcxDevSignal_t localSignal);
+
+/* (SigAdd, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RSigAdd_LSigInc(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevSignal_t remoteSignal,
+    uint64_t remoteValue, flagcxDevSignal_t localSignal);
+
+/* (CtrInc, SigInc) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RCtrInc_LSigInc(const void *net, const void *comm,
+                                 flagcxTeamKind_t teamKind, int peer,
+                                 const void *dst, size_t dstOffset,
+                                 const void *src, size_t srcOffset,
+                                 size_t bytes, flagcxCoopKind_t coopKind,
+                                 flagcxDevCounter_t remoteCounter,
+                                 flagcxDevSignal_t localSignal);
+
+/* (None, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_LSigAdd(const void *net, const void *comm,
+                         flagcxTeamKind_t teamKind, int peer, const void *dst,
+                         size_t dstOffset, const void *src, size_t srcOffset,
+                         size_t bytes, flagcxCoopKind_t coopKind,
+                         flagcxDevSignal_t localSignal, uint64_t localValue);
+
+/* (SigInc, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RSigInc_LSigAdd(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevSignal_t remoteSignal,
+    flagcxDevSignal_t localSignal, uint64_t localValue);
+
+/* (SigAdd, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RSigAdd_LSigAdd(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevSignal_t remoteSignal,
+    uint64_t remoteValue, flagcxDevSignal_t localSignal, uint64_t localValue);
+
+/* (CtrInc, SigAdd) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutS_RCtrInc_LSigAdd(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
+    size_t bytes, flagcxCoopKind_t coopKind, flagcxDevCounter_t remoteCounter,
+    flagcxDevSignal_t localSignal, uint64_t localValue);
+
 /* (None, CtrInc) */
 FLAGCX_DEPRECATED("use flagcxDevPut_LCtrInc")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_LCtrInc(
@@ -420,15 +506,15 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutS_LCtrInc(
     const void *dst, size_t dstOffset, const void *src, size_t srcOffset,
     size_t bytes, flagcxCoopKind_t coopKind, flagcxDevCounter_t localCounter);
 
-/* (SigInc, CtrInc) */
-FLAGCX_DEPRECATED("use flagcxDevPut_RSigInc")
+/* (CtrInc, CtrInc) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetPutS_RSigInc_LCtrInc(const void *net, const void *comm,
+flagcxDevNetPutS_RCtrInc_LCtrInc(const void *net, const void *comm,
                                  flagcxTeamKind_t teamKind, int peer,
                                  const void *dst, size_t dstOffset,
                                  const void *src, size_t srcOffset,
                                  size_t bytes, flagcxCoopKind_t coopKind,
-                                 flagcxDevSignal_t remoteSignal,
+                                 flagcxDevCounter_t remoteCounter,
                                  flagcxDevCounter_t localCounter);
 
 /* (SigAdd, CtrInc) */
@@ -477,6 +563,12 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetSignalSigAddS(
     const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
     flagcxCoopKind_t coopKind, flagcxDevSignal_t signal, uint64_t value);
 
+/** @brief Increment a remote counter (deprecated compatibility entry point). */
+FLAGCX_DEPRECATED("migrate to signal completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetSignalCtrIncS(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    flagcxCoopKind_t coopKind, flagcxDevCounter_t counter);
+
 /* ================================================================
  * Category 14: Net — One-Sided putValue<uint64_t> (scalar) (4)
  *
@@ -515,6 +607,13 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutValueS_RSigAdd(
     const void *dst, size_t dstOffset, uint64_t value,
     flagcxCoopKind_t coopKind, flagcxDevSignal_t remoteSignal,
     uint64_t remoteAddValue);
+
+/** @brief Put a value + increment remote counter (deprecated compatibility). */
+FLAGCX_DEPRECATED("migrate to signal completion in the Unified IR API")
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutValueS_RCtrInc(
+    const void *net, const void *comm, flagcxTeamKind_t teamKind, int peer,
+    const void *dst, size_t dstOffset, uint64_t value,
+    flagcxCoopKind_t coopKind, flagcxDevCounter_t remoteCounter);
 
 /* ================================================================
  * Category 15: Net — One-Sided get (scalar) (1)

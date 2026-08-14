@@ -105,4 +105,9 @@ typedef uint32_t flagcxDevSignal_t;
 typedef uint32_t flagcxDevCounter_t;
 typedef uint32_t flagcxDevContext_t;
 
+// Legacy one-sided IR slot names. Keep these aliases for source compatibility
+// while the deprecated flagcxDevNet* entry points remain exported.
+typedef flagcxDevSignal_t flagcxDevNetSignal_t;
+typedef flagcxDevCounter_t flagcxDevNetCounter_t;
+
 #endif /* FLAGCX_DEVICE_ENUMS_H_ */

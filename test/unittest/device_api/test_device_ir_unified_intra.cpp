@@ -127,9 +127,9 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 256 * sizeof(int),
                                       flagcxMemDevice, NULL));
 
-  // Host scratch - allocate 8× buffers for S18's 8 combinations
-  float *hostSend = new float[bufSize * 8 / sizeof(float)];
-  float *hostRecv = new float[bufSize * 8 / sizeof(float)];
+  // Host scratch mirrors the already combination-scaled device buffers.
+  float *hostSend = new float[bufSize / sizeof(float)];
+  float *hostRecv = new float[bufSize / sizeof(float)];
 
   // Team geometry (single-node: intraSize == totalProcs, nNodes == 1)
   int intraSize = totalProcs;
@@ -647,8 +647,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  FLAGCXCHECK(flagcxMemFree(sendBuff));
-  FLAGCXCHECK(flagcxMemFree(recvBuff));
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
