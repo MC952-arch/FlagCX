@@ -1338,7 +1338,7 @@ void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR bool
-flagcxUnifiedIrTestCoopActive(flagcxDevCoopKind_t coopKind) {
+flagcxUnifiedIrTestCoopActive(flagcxDevCoop_t coopKind) {
   if (coopKind == FLAGCX_COOP_THREAD)
     return FLAGCX_THREAD_IDX_X == 0;
   if (coopKind == FLAGCX_COOP_WARP)

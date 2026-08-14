@@ -84,7 +84,9 @@ typedef enum {
 #define flagcxDeviceScopeThread FLAGCX_MEMORY_SCOPE_THREAD
 
 // Type aliases for Unified IR naming convention
-typedef flagcxCoopKind_t flagcxDevCoopKind_t;
+typedef flagcxCoopKind_t flagcxDevCoop_t;
+// Backward-compatible name retained for existing Unified IR callers.
+typedef flagcxDevCoop_t flagcxDevCoopKind_t;
 typedef flagcxTeamKind_t flagcxDevTeamKind_t;
 typedef flagcxMemoryOrder_t flagcxDevMemoryOrder_t;
 typedef flagcxMemoryScope_t flagcxDevMemoryScope_t;
