@@ -29,7 +29,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include <cuda_runtime.h>
 #include <iostream>
 
 // ===========================================================================
@@ -351,21 +350,10 @@ int main(int argc, char *argv[]) {
       if (worldRank == 0)
         printf("[Test] S20 kernel launched\n");
 
-      // Check for immediate kernel launch error
-      cudaError_t launchErr = cudaGetLastError();
-      if (launchErr != cudaSuccess) {
-        fprintf(stderr, "[Rank %d] S20 kernel launch error: %s\n", worldRank,
-                cudaGetErrorString(launchErr));
-      }
-
       flagcxResult_t syncErr = devHandle->streamSynchronize(stream);
       if (syncErr != flagcxSuccess) {
-        // Get the underlying CUDA error
-        cudaError_t cudaErr = cudaGetLastError();
-        fprintf(stderr,
-                "[Rank %d] S20 streamSync failed: flagcxResult=%d, "
-                "cudaError=%s (code %d)\n",
-                worldRank, syncErr, cudaGetErrorString(cudaErr), cudaErr);
+        fprintf(stderr, "[Rank %d] S20 streamSync failed: flagcxResult=%d\n",
+                worldRank, syncErr);
         FLAGCXCHECK(syncErr);
       }
       if (worldRank == 0)
@@ -567,19 +555,7 @@ int main(int argc, char *argv[]) {
       launchKernelDevPutSignalWaitS(devCommPtr, recvMemPtr, sendMemPtr,
                                     devResults, bytes, stream);
 
-      // Check for kernel launch errors
-      cudaError_t launchErr = cudaGetLastError();
-      if (launchErr != cudaSuccess) {
-        fprintf(stderr, "[Rank %d] S23 kernel launch error: %s\n", proc,
-                cudaGetErrorString(launchErr));
-        MPI_Abort(MPI_COMM_WORLD, 1);
-      }
-
-      printf("[Host S23] Rank %d about to call cudaStreamSynchronize\n", proc);
-      fflush(stdout);
-      cudaError_t syncErr = cudaGetLastError();
-      printf("[Host S23] Rank %d CUDA error before sync: %s\n", proc,
-             cudaGetErrorString(syncErr));
+      printf("[Host S23] Rank %d about to synchronize stream\n", proc);
       fflush(stdout);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       printf("[Host S23] Rank %d streamSynchronize returned\n", proc);

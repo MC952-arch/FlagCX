@@ -152,13 +152,29 @@ int main(int argc, char *argv[]) {
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
-  if (localRegister == 0) {
-    if (proc == 0)
-      printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
+  int intraSize = comm->localRanks;
+  int nNodes = 0;
+  if (intraSize > 0 && totalProcs % intraSize == 0)
+    nNodes = totalProcs / intraSize;
+  if (nNodes < 2) {
+    if (proc == 0) {
+      printf("ERROR: inter test requires at least two logical nodes; "
+             "totalRanks=%d intraSize=%d\n",
+             totalProcs, intraSize);
+    }
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
-    return 0;
+    return 1;
+  }
+
+  if (localRegister == 0) {
+    if (proc == 0)
+      printf("ERROR: one-sided ops require -R 1 or -R 2.\n");
+    FLAGCXCHECK(flagcxCommDestroy(comm));
+    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
+    MPI_Finalize();
+    return 1;
   }
 
   size_t recvBuffSize = maxBytes + (size_t)totalProcs * sizeof(uint64_t);
@@ -503,5 +519,5 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();
-  return 0;
+  return globalPass ? 0 : 1;
 }

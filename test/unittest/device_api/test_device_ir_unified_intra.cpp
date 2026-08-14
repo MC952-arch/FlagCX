@@ -4,13 +4,17 @@
  * Device IR Unified Intra Suite Tests — INTRA + WORLD teams
  * Tests one-sided operations with intra-node communication.
  *
- * Tests S16–S21 (6 combinations: 3 coop × 2 teams):
+ * Tests S16–S25 (INTRA + WORLD teams across cooperative variants):
  *   S16: DevBarrier — INTRA + WORLD (merged)
  *   S17: DevTeamResolution — INTRA + WORLD
  *   S18: DevPut — INTRA + WORLD
  *   S19: DevGet — INTRA + WORLD
  *   S20: DevSignalStandalone — INTRA + WORLD
  *   S21: DevPutSignalWait — INTRA + WORLD
+ *   S22: DevPut_RSig — INTRA + WORLD
+ *   S23: DevPutCounter — INTRA + WORLD
+ *   S24: DevPutValue_RSig — INTRA + WORLD
+ *   S25: DevSignalShadowFlush — INTRA + WORLD
  *
  * Requirements:
  *   - Single-node with 2+ GPUs (P2P path)
@@ -28,7 +32,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include <cuda_runtime.h>
 #include <iostream>
 
 int main(int argc, char *argv[]) {

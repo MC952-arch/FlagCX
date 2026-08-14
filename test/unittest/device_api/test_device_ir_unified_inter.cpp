@@ -4,13 +4,17 @@
  * Device IR Unified Inter Suite Tests — INTER + WORLD teams
  * Tests one-sided operations with inter-node communication.
  *
- * Tests S16–S21 (6 combinations: 3 coop × 2 teams):
+ * Tests S16–S25 (INTER + WORLD teams across cooperative variants):
  *   S16: DevBarrier — INTER + WORLD (merged)
  *   S17: DevTeamResolution — INTER + WORLD
  *   S18: DevPut — INTER + WORLD
  *   S19: DevGet — INTER + WORLD
  *   S20: DevSignalStandalone — INTER + WORLD
  *   S21: DevPutSignalWait — INTER + WORLD
+ *   S22: DevPut_RSig — INTER + WORLD
+ *   S23: DevPutCounter — INTER + WORLD
+ *   S24: DevPutValue_RSig — INTER + WORLD
+ *   S25: DevSignalShadowFlush — INTER + WORLD
  *
  * Requirements:
  *   - Multi-node with 2+ nodes (requires INTER team)
@@ -28,7 +32,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include <cuda_runtime.h>
 #include <iostream>
 
 // ===========================================================================
