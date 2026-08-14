@@ -3041,7 +3041,9 @@ void launchKernelDevSignalStandaloneInterWorldS(const void *devCommPtr, int *dev
 
 // ---------------------------------------------------------------------------
 // S17: flagcxDevTeamResolution — INTER + WORLD teams
-// Tests 4 cooperation levels × 2 teams = 8 combinations
+// Six INTER/WORLD combinations plus one INTRA regression on the same
+// two-virtual-node communicator.  The INTRA case is what verifies that ranks
+// on a nonzero node use the caller's world rank as the team-conversion base.
 // Each rank writes sizeof(float) to peer's buffer at deterministic offset
 // Buffer layout: [i*maxRanks*sizeof(float), (i+1)*maxRanks*sizeof(float)) for combo i
 // Within region: rank writes at rankInTeam * sizeof(float) offset
@@ -3053,6 +3055,7 @@ __global__ void kernelDevTeamResolutionInterWorldS(const void *devCommPtr,
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int nNodes = nRanks / intraSize;
   int nodeIdx = worldRank / intraSize;
@@ -3122,6 +3125,18 @@ __global__ void kernelDevTeamResolutionInterWorldS(const void *devCommPtr,
     size_t dstOff = 5 * maxRanks * sizeof(float) + worldRank * sizeof(float);
     flagcxDevPut(devCommPtr, dstMemPtr, dstOff, srcMemPtr, 0, sizeof(float),
                  FLAGCX_TEAM_WORLD, peer, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+
+  // === Combination 6: THREAD + INTRA on the multi-node communicator ===
+  // On node 1, worldRank != intraRank.  Using team.rank as the world-rank
+  // conversion base makes flagcxValidateAndDispatch silently drop this put.
+  if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) {
+    int peer = (intraRank + 1) % intraSize;
+    size_t dstOff = 6 * maxRanks * sizeof(float) + intraRank * sizeof(float);
+    flagcxDevPut(devCommPtr, dstMemPtr, dstOff, srcMemPtr, 0, sizeof(float),
+                 FLAGCX_TEAM_INTRA, peer, contextId, FLAGCX_COOP_THREAD,
                  flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);
   }
   flagcxCoopSyncS(FLAGCX_COOP_BLOCK);

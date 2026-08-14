@@ -134,8 +134,7 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   // Resolve team-scoped peer to local rank for P2P indexing
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
-  int worldPeer = comm->_commBase.rank +
-                  (peer - team._teamBase.rank) * team._teamBase.stride;
+  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
   if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
@@ -164,8 +163,7 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   // Resolve team-scoped peer to local rank for P2P indexing
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
-  int worldPeer = comm->_commBase.rank +
-                  (peer - team._teamBase.rank) * team._teamBase.stride;
+  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
       worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
   if (localPeer >= 0 && localPeer < comm->_commBase.intraSize &&
@@ -408,9 +406,7 @@ flagcxDevBarrierSync(const void *commOpaque, flagcxDevTeamKind_t teamKind,
 // Helper: Returns true if peer is on the same node (local)
 static FLAGCX_DEVICE_INLINE_DECORATOR bool
 flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
-  // Resolve peer to world rank
-  int worldPeer = team._teamBase.rank +
-                  (peer - team._teamBase.rank) * team._teamBase.stride;
+  int worldPeer = flagcxTeamRankToWorld(comm, team, peer);
 
   // Get my intra base (world rank of rank-0 on my node)
   int myIntraBase = comm._commBase.rank - comm._commBase.intraRank;

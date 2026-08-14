@@ -221,13 +221,13 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S17: DevTeamResolution — INTER + WORLD (8 combinations)
+    // S17: DevTeamResolution — INTER + WORLD, plus nonzero-node INTRA
     // =======================================================================
     {
       int maxRanks = totalProcs;
       if (nNodes > maxRanks)
         maxRanks = nNodes;
-      size_t s17Size = 6 * maxRanks * sizeof(float);
+      size_t s17Size = 7 * maxRanks * sizeof(float);
 
       float myTag = (float)proc;
       FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
@@ -248,7 +248,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      float *s17Recv = new float[6 * maxRanks];
+      float *s17Recv = new float[7 * maxRanks];
       FLAGCXCHECK(devHandle->deviceMemcpy(s17Recv, recvBuff, s17Size,
                                           flagcxMemcpyDeviceToHost, stream));
 
@@ -273,7 +273,17 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      RPRINTF("S17 DevTeamResolution(INTER+WORLD): %s\n",
+      // Combination 6 is an INTRA ring on the same virtual-node topology.
+      // It specifically covers ranks on node 1, where worldRank != intraRank.
+      if (s17Pass) {
+        int prevIntra = (intraRank + intraSize - 1) % intraSize;
+        float expected = (float)(nodeIdx * intraSize + prevIntra);
+        if (s17Recv[6 * maxRanks + prevIntra] != expected) {
+          s17Pass = false;
+        }
+      }
+
+      RPRINTF("S17 DevTeamResolution(INTER+WORLD+INTRA-locality): %s\n",
               s17Pass ? "PASS" : "FAIL");
       allPass &= s17Pass;
       delete[] s17Recv;
