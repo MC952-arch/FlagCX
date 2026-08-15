@@ -526,7 +526,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_RSigAdd(
            flagcxDevNet_None{}, coop);
 }
 
-/* (SigInc, CtrInc) */
+/* (None, CtrInc) */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevNetPutS_LCtrInc(
     const void *netOpaque, const void *commOpaque, flagcxTeamKind_t teamKind,
     int peer, const void *dstOpaque, size_t dstOffset, const void *srcOpaque,

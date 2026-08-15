@@ -413,7 +413,8 @@ flagcxDevNetTerm(const void *transOpaque, const void *coopOpaque) {
 }
 
 /* ================================================================
- * Category 11: Transport — One-Sided put (16)
+ * Category 11: Transport — One-Sided put
+ * (6 supported + 10 deprecated compatibility variants)
  * ================================================================ */
 
 /* (None, None) */

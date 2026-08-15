@@ -318,7 +318,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
 flagcxDevNetTerm(const void *trans, const void *coop);
 
 /* ================================================================
- * Category 11: Transport — One-Sided put (16)
+ * Category 11: Transport — One-Sided put
+ * (6 supported + 10 deprecated compatibility variants)
  *
  * Naming: flagcxDevNetPut[_R<remote>][_L<local>]
  * Actions: None, SigInc, SigAdd, CtrInc
