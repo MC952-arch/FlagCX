@@ -34,7 +34,12 @@ FLAGCX_CI_COMMON_MAKE_ARGS=(
   CCL_HOME="$CUDA_PATH"
 )
 
-FLAGCX_CI_PROJECT_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
+# The DU makefile does not currently pull the default device-api backend into
+# libflagcx.so by itself, so CI passes it through as an extra source.
+FLAGCX_CI_PROJECT_MAKE_ARGS=(
+  "${FLAGCX_CI_COMMON_MAKE_ARGS[@]}"
+  PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
+)
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 
 FLAGCX_CI_INTRA_NP=8
