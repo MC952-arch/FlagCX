@@ -71,7 +71,7 @@ struct CommTraits<NcclBackend> {
 
     FLAGCX_HOST_DEVICE_INLINE Window() : _impl() {}
 
-#if NCCL_CHECK_CUDACC
+#if FLAGCX_CHECK_DEVICE_CC
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
       return ncclGetPeerPointer(_impl, offset, (ncclTeam_t)team, peer);
@@ -90,7 +90,7 @@ struct CommTraits<NcclBackend> {
     getMulticastPointer(size_t offset, const Multimem &mm) const {
       return ncclGetMultimemPointer(_impl, offset, mm._impl);
     }
-#endif // NCCL_CHECK_CUDACC
+#endif // FLAGCX_CHECK_DEVICE_CC
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
       return _impl != nullptr;
@@ -178,7 +178,7 @@ struct CommTraits<NcclBackend> {
                                                                const DI &) {}
   };
 
-#if NCCL_CHECK_CUDACC
+#if FLAGCX_CHECK_DEVICE_CC
   // ---- CoopBlock: wraps ncclCoopCta ----
   struct CoopBlock {
     ncclCoopCta _impl;
@@ -260,7 +260,7 @@ struct CommTraits<NcclBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
   };
-#endif // NCCL_CHECK_CUDACC
+#endif // FLAGCX_CHECK_DEVICE_CC
 
   // ---- Barrier handles ----
   struct IntraBarrierHandle {
@@ -270,7 +270,7 @@ struct CommTraits<NcclBackend> {
     ncclGinBarrierHandle _impl;
   };
 
-#if NCCL_CHECK_CUDACC
+#if FLAGCX_CHECK_DEVICE_CC
   // ---- Barrier alias: delegates to standalone Barrier<Backend, Tag>
   // ----
   template <typename Tag, typename Coop>
@@ -466,11 +466,11 @@ struct CommTraits<NcclBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void get(Team, int, Window, size_t, Window,
                                             size_t, size_t, Coop) const {}
   };
-#endif // NCCL_CHECK_CUDACC
+#endif // FLAGCX_CHECK_DEVICE_CC
 };
 
 // Fence level mapping (file scope for CUDA __constant__ compatibility)
-#if defined(FLAGCX_DEVICE_COMPILE) && NCCL_CHECK_CUDACC
+#if defined(FLAGCX_DEVICE_COMPILE) && FLAGCX_CHECK_DEVICE_CC
 FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
     flagcxDevNetFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
 static_assert(sizeof(flagcxDevNetFenceLevelMap) /
@@ -483,7 +483,7 @@ static_assert(sizeof(flagcxDevNetFenceLevelMap) /
 // ============================================================
 // Barrier specializations for NcclBackend
 // ============================================================
-#if NCCL_CHECK_CUDACC
+#if FLAGCX_CHECK_DEVICE_CC
 
 // ---- Barrier<NcclBackend, flagcxTeamTagIntra, Coop> ----
 // Wraps ncclLsaBarrierSession<ncclCoopCta> via placement new.
@@ -691,7 +691,7 @@ struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
     }
   }
 };
-#endif // NCCL_CHECK_CUDACC
+#endif // FLAGCX_CHECK_DEVICE_CC
 
 #define FLAGCX_DEVICE_API_VENDOR 1
 using DeviceAPI = CommTraits<NcclBackend>;

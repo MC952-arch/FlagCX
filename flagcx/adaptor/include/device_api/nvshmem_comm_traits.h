@@ -345,14 +345,13 @@ struct CommTraits<NvshmemBackend> {
                            Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
         uint64_t shadow = *getSignalShadowPtr(signalId);
         uint64_t target = shadow + (uint64_t)leastDelta;
         uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, target);
-        uint64_t cur = Atomic::load(addr, flagcxDeviceMemoryOrderAcquire);
+        uint64_t cur = Atomic::load(addr, order);
         if (before)
           *before = (Uint)shadow;
         if (delta)
@@ -376,9 +375,7 @@ struct CommTraits<NvshmemBackend> {
     readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
-      return Atomic::load(getSignalPtr(signalId),
-                          flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(getSignalPtr(signalId), order);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -395,12 +392,11 @@ struct CommTraits<NvshmemBackend> {
     waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
         uint64_t *counter = getCounterPtr(counterId);
         int iter = 0;
-        while (Atomic::load(counter, flagcxDeviceMemoryOrderAcquire) < least) {
+        while (Atomic::load(counter, order) < least) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -411,9 +407,7 @@ struct CommTraits<NvshmemBackend> {
     readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
-      return Atomic::load(getCounterPtr(counterId),
-                          flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(getCounterPtr(counterId), order);
     }
 
     // ---- Two-sided: send/recv/term/wait (NVSHMEM uses one-sided, these are

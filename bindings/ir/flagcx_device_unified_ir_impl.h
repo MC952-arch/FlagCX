@@ -196,23 +196,6 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
  * Category U5: Unified Wait (2)
  * ================================================================ */
 
-// Atomic loads only accept Relaxed, Acquire, or SeqCst.  A wait is the
-// consuming side of signal publication, so normalize store-only orders to
-// Acquire rather than forwarding an invalid Release/AcqRel load order.
-static FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevMemoryOrder_t
-flagcxWaitLoadOrder(flagcxDevMemoryOrder_t order) {
-  switch (order) {
-    case flagcxDeviceMemoryOrderRelaxed:
-    case flagcxDeviceMemoryOrderAcquire:
-    case flagcxDeviceMemoryOrderSeqCst:
-      return order;
-    case flagcxDeviceMemoryOrderRelease:
-    case flagcxDeviceMemoryOrderAcqRel:
-    default:
-      return flagcxDeviceMemoryOrderAcquire;
-  }
-}
-
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
                     uint64_t least, int bits, flagcxDevContext_t contextId,
@@ -225,13 +208,12 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
     const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *localSignal = net->getSignalPtr(signal);
-    flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
     coop.sync();
     if (coop.threadRank() == 0) {
       int iter = 0;
-      while (DeviceAPI::Atomic::load(localSignal, loadOrder) < least) {
+      while (DeviceAPI::Atomic::load(localSignal, order) < least) {
         DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
@@ -324,14 +306,13 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
     uint64_t *signalPtr = net->getSignalPtr(slot);
     uint64_t *shadowPtr = net->getSignalShadowPtr(slot);
-    flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
     coop.sync();
     if (coop.threadRank() == 0) {
-      uint64_t expectedVal = DeviceAPI::Atomic::load(shadowPtr, loadOrder);
+      uint64_t expectedVal = DeviceAPI::Atomic::load(shadowPtr, order);
       int iter = 0;
-      while (DeviceAPI::Atomic::load(signalPtr, loadOrder) < expectedVal) {
+      while (DeviceAPI::Atomic::load(signalPtr, order) < expectedVal) {
         DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }

@@ -762,14 +762,12 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
         int idx = _contextId * signalCount + (int)signalId;
         int iter = 0;
         uint64_t cur;
-        while ((cur = Atomic::load(&signalBuffer[idx],
-                                   flagcxDeviceMemoryOrderAcquire)) < least) {
+        while ((cur = Atomic::load(&signalBuffer[idx], order)) < least) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -816,9 +814,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       int idx = _contextId * signalCount + (int)signalId;
-      return Atomic::load(&signalBuffer[idx], flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(&signalBuffer[idx], order);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -836,13 +833,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
         int idx = _contextId * counterCount + (int)counterId;
         int iter = 0;
-        while (Atomic::load(&counterBuffer[idx],
-                            flagcxDeviceMemoryOrderAcquire) < least) {
+        while (Atomic::load(&counterBuffer[idx], order) < least) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -853,9 +848,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       int idx = _contextId * counterCount + (int)counterId;
-      return Atomic::load(&counterBuffer[idx], flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(&counterBuffer[idx], order);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
