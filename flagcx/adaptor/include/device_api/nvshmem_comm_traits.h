@@ -128,8 +128,10 @@ struct CommTraits<NvshmemBackend> {
       return true;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getSignalPeerPtr(int peer) const {
-      return (uint64_t *)nvshmem_ptr((void *)signalBuffer, peer);
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPeerPtr(int localPeer) const {
+      int worldPeer = rank - intraRank + localPeer;
+      return (uint64_t *)nvshmem_ptr((void *)signalBuffer, worldPeer);
     }
 
     // Unified IR must use NVSHMEM signal operations rather than directly
@@ -216,18 +218,18 @@ struct CommTraits<NvshmemBackend> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
     getSignalPtr(flagcxDevSignal_t signalId) const {
-      return &_dc.signalBuffer[(int)signalId];
+      return &_dc.signalBuffer[signalIndex(signalId)];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
     getPeerSignalPtr(int localPeer, flagcxDevSignal_t signalId) const {
       uint64_t *peerBuffer = _dc.getSignalPeerPtr(localPeer);
-      return peerBuffer ? &peerBuffer[(int)signalId] : nullptr;
+      return peerBuffer ? &peerBuffer[signalIndex(signalId)] : nullptr;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
     getCounterPtr(flagcxDevCounter_t counterId) const {
-      return &_dc.counterBuffer[(int)counterId];
+      return &_dc.counterBuffer[counterIndex(counterId)];
     }
 
     // ---- Helper: resolve PE from team + peer index ----
@@ -314,7 +316,7 @@ struct CommTraits<NvshmemBackend> {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, least);
       }
       coop.sync();
@@ -329,8 +331,8 @@ struct CommTraits<NvshmemBackend> {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t target = _dc.shadowBuffer[(int)signalId];
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t target = *getSignalShadowPtr(signalId);
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, target);
       }
       coop.sync();
@@ -346,9 +348,9 @@ struct CommTraits<NvshmemBackend> {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t shadow = _dc.shadowBuffer[(int)signalId];
+        uint64_t shadow = *getSignalShadowPtr(signalId);
         uint64_t target = shadow + (uint64_t)leastDelta;
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, target);
         uint64_t cur = Atomic::load(addr, flagcxDeviceMemoryOrderAcquire);
         if (before)
@@ -362,12 +364,12 @@ struct CommTraits<NvshmemBackend> {
     // ---- Shadow access ----
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
     getSignalShadowPtr(flagcxDevSignal_t signalId) const {
-      return &_dc.shadowBuffer[(int)signalId];
+      return &_dc.shadowBuffer[signalIndex(signalId)];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
-      _dc.shadowBuffer[(int)signalId] += delta;
+      *getSignalShadowPtr(signalId) += delta;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
@@ -375,15 +377,15 @@ struct CommTraits<NvshmemBackend> {
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
-      return Atomic::load(&_dc.signalBuffer[(int)signalId],
+      return Atomic::load(getSignalPtr(signalId),
                           flagcxDeviceMemoryOrderAcquire);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetSignal(flagcxDevSignal_t signalId) const {
-      Atomic::store(&_dc.signalBuffer[(int)signalId], (uint64_t)0,
+      Atomic::store(getSignalPtr(signalId), (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
-      Atomic::store(&_dc.shadowBuffer[(int)signalId], (uint64_t)0,
+      Atomic::store(getSignalShadowPtr(signalId), (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
 
@@ -396,10 +398,9 @@ struct CommTraits<NvshmemBackend> {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        int idx = (int)counterId;
+        uint64_t *counter = getCounterPtr(counterId);
         int iter = 0;
-        while (Atomic::load(&_dc.counterBuffer[idx],
-                            flagcxDeviceMemoryOrderAcquire) < least) {
+        while (Atomic::load(counter, flagcxDeviceMemoryOrderAcquire) < least) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -411,7 +412,7 @@ struct CommTraits<NvshmemBackend> {
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
-      return Atomic::load(&_dc.counterBuffer[(int)counterId],
+      return Atomic::load(getCounterPtr(counterId),
                           flagcxDeviceMemoryOrderAcquire);
     }
 
@@ -459,12 +460,22 @@ struct CommTraits<NvshmemBackend> {
     }
 
   private:
+    FLAGCX_DEVICE_INLINE_DECORATOR int
+    signalIndex(flagcxDevSignal_t signalId) const {
+      return _contextId * _dc.signalCount + (int)signalId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int
+    counterIndex(flagcxDevCounter_t counterId) const {
+      return _contextId * _dc.counterCount + (int)counterId;
+    }
+
     // ---- put dispatch: select fused put+signal vs plain put ----
     template <typename LA>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalInc ra, LA la) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmem_putmem_signal(dst, src, bytes, sigAddr, 1, NVSHMEM_SIGNAL_ADD,
                             pe);
       counterImpl(la);
@@ -474,7 +485,7 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalAdd ra, LA la) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmem_putmem_signal(dst, src, bytes, sigAddr, ra.value,
                             NVSHMEM_SIGNAL_ADD, pe);
       counterImpl(la);
@@ -498,12 +509,12 @@ struct CommTraits<NvshmemBackend> {
     // ---- signal dispatch ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signalImpl(int pe, flagcxDevNet_SignalInc ra) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmemx_signal_op(sigAddr, 1, NVSHMEM_SIGNAL_ADD, pe);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signalImpl(int pe, flagcxDevNet_SignalAdd ra) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmemx_signal_op(sigAddr, ra.value, NVSHMEM_SIGNAL_ADD, pe);
     }
     template <typename RA>
@@ -512,7 +523,7 @@ struct CommTraits<NvshmemBackend> {
     // ---- counter helper ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     counterImpl(flagcxDevNet_CounterInc c) const {
-      Atomic::fetchAdd(&_dc.counterBuffer[(int)c.counter], (uint64_t)1,
+      Atomic::fetchAdd(getCounterPtr(c.counter), (uint64_t)1,
                        flagcxDeviceMemoryOrderRelease);
     }
     template <typename LA>
@@ -522,8 +533,7 @@ struct CommTraits<NvshmemBackend> {
     // ---- reset counter ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetCounter(flagcxDevCounter_t counterId) const {
-      int idx = (int)counterId;
-      Atomic::store(&_dc.counterBuffer[idx], (uint64_t)0,
+      Atomic::store(getCounterPtr(counterId), (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
   }; // struct Net

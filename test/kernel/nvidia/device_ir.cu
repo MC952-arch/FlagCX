@@ -1878,7 +1878,8 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
 
 #undef S20_INTRA_COMBO
 
-  if (FLAGCX_THREAD_IDX_X == 0 && ok) atomicAnd(result, 1);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    atomicAnd(result, ok ? 1 : 0);
 }
 
 void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr, int *devResult,

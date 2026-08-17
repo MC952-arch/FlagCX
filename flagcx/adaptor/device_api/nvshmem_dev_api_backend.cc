@@ -48,8 +48,15 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
     return ret;
   }
 
+  // NVSHMEM has no user-visible transport-context API, but FlagCX logical
+  // contexts still require disjoint signal/counter/shadow namespaces.  Pass
+  // the context count selected by the common Device API layer to the SHMEM
+  // adaptor so its metadata allocation matches the device-visible Net array.
+  flagcxDevCommRequirements shmemReqs = *reqs;
+  shmemReqs.interContextCount = devComm->contextCount;
+
   flagcxShmemComm_t shmemComm = nullptr;
-  ret = shmemAdaptor->devCommCreate(comm, reqs, &shmemComm);
+  ret = shmemAdaptor->devCommCreate(comm, &shmemReqs, &shmemComm);
   if (ret != flagcxSuccess) {
     shmemAdaptor->finalize();
     return ret;
@@ -61,8 +68,8 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
   devComm->counterBuffer = shmemComm->counterBuffer;
   devComm->signalCount = shmemComm->signalCount;
   devComm->counterCount = shmemComm->counterCount;
-  // NVSHMEM uses 1 logical transport context (nvshmem_put/signal).
-  devComm->contextCount = 1;
+  // All logical contexts share NVSHMEM's transport, while their metadata is
+  // partitioned by context in CommTraits<NvshmemBackend>::Net.
   // NVSHMEM doesn't need a host-side relay, but the World barrier uses
   // nInterPeers to decide whether to compose the inter-node barrier phase.
   int intraSize = shmemComm->intraSize;
