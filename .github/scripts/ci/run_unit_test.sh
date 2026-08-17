@@ -56,6 +56,9 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  if [[ "$SUITE" == device_api_unified_ir ]]; then
+    suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
   if declare -F flagcx_ci_build_suite_override >/dev/null; then
@@ -109,6 +112,82 @@ run_device_api() {
     build/bin/test_device_ir_inter "${flags[@]}"
 }
 
+run_device_api_unified_ir() {
+  local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local -a common_env=(
+    -x FLAGCX_USE_HETERO_COMM=1
+    -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_IB_GID_INDEX=3
+    -x NCCL_DEBUG=INFO
+    -x NCCL_DEBUG_SUBSYS=INIT
+    -x NCCL_NVLS_ENABLE=0
+    -x NCCL_IB_GID_INDEX=3
+    -x LD_LIBRARY_PATH
+  )
+  local -a intra_env=(
+    "${common_env[@]}"
+    -x FLAGCX_DEBUG=TRACE
+    -x FLAGCX_DEBUG_SUBSYS=ALL
+  )
+  local -a inter_env=(
+    "${common_env[@]}"
+    -x FLAGCX_DEBUG=INFO
+    -x FLAGCX_DEBUG_SUBSYS=PROXY
+  )
+  local -a intra_fallback_env=(
+    "${intra_env[@]}"
+    -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1
+  )
+  local -a inter_fallback_env=(
+    "${inter_env[@]}"
+    -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1
+  )
+  local -a intra_flags=(-b 1K -e 16M -f 2 -R 1)
+  local -a inter_flags=(-b 1K -e 16M -f 2 -R 1)
+  # Two sizes cover both initial and reused signal/shadow/counter state while
+  # keeping the forced-fallback regression reasonably small.
+  local -a fallback_flags=(-b 1K -e 2K -f 2 -R 1)
+
+  declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
+    echo "The platform set_env script must define FLAGCX_CI_NODE1_MPI_ARGS" >&2
+    exit 1
+  }
+  declare -p FLAGCX_CI_NODE2_MPI_ARGS >/dev/null 2>&1 || {
+    echo "The platform set_env script must define FLAGCX_CI_NODE2_MPI_ARGS" >&2
+    exit 1
+  }
+  : "${FLAGCX_CI_INTRA_NP:?The platform set_env script must define FLAGCX_CI_INTRA_NP}"
+  : "${FLAGCX_CI_NODE_NP:?The platform set_env script must define FLAGCX_CI_NODE_NP}"
+
+  cd "$suite_dir"
+
+  # Keep P2P enabled so the intra test covers signal/counter buffers and their
+  # shadows. The INTER team below crosses the two logical nodes through NET.
+  mpirun -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
+    build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+
+  mpirun --allow-run-as-root \
+    -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${inter_flags[@]}" \
+    : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
+
+  # Fault injection: disable only one-sided data/signal IPC.  Barriers retain
+  # their IPC transport so these runs specifically validate IPC-to-Net
+  # fallback for S18-S25.
+  mpirun -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+    "${intra_fallback_env[@]}" \
+    build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+
+  mpirun --allow-run-as-root \
+    -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+    "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}" \
+    : -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+    "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
+}
+
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
@@ -155,6 +234,9 @@ run_suite() {
     device_api)
       run_device_api
       ;;
+    device_api_unified_ir)
+      run_device_api_unified_ir
+      ;;
     *)
       echo "Unsupported unit test suite: $SUITE" >&2
       exit 2
@@ -163,7 +245,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  device_api|symmem)
+  device_api|device_api_unified_ir|symmem)
     ;;
   adaptor|core|p2p|rma|runner|service)
     build_googletest

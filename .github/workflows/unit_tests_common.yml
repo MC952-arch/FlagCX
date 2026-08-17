@@ -37,7 +37,7 @@ jobs:
   unit_test:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

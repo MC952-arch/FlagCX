@@ -409,7 +409,7 @@ struct flagcxCoopLanes {
   }
 };
 
-// ---- 6g. flagcxCoopAny — type-erased cooperative group ----
+// ---- 6h. flagcxCoopAny — type-erased cooperative group ----
 struct flagcxCoopAny {
   typename DeviceAPI::CoopAny _base;
 
@@ -756,14 +756,16 @@ struct flagcxDevNet : DeviceAPI::Net {
                                               ? idx % devComm._contextCount
                                               : 0),
         _nInterPeers(devComm._nInterPeers),
-        _gridBarrierState(devComm._gridBarrierState) {}
+        _gridBarrierState(devComm._gridBarrierState) {
+    // Guard against division by zero if contextCount is 0
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
     return DeviceAPI::Net::isValid();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
-      flagcxDevNetSignal_t signalId, int bits = 64,
+      flagcxDevSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readSignal(signalId, bits, order);
   }
@@ -777,21 +779,21 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
-      Coop coop, flagcxDevNetSignal_t signalId, uint64_t least, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignal(coop._base, signalId, least, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalMeetShadow(
-      Coop coop, flagcxDevNetSignal_t signalId, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalMeetShadow(coop._base, signalId, bits, order);
   }
 
   template <typename Coop, typename Uint>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalFollowShadow(
-      Coop coop, flagcxDevNetSignal_t signalId, Uint leastDelta, Uint *before,
+      Coop coop, flagcxDevSignal_t signalId, Uint leastDelta, Uint *before,
       Uint *delta, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalFollowShadow(coop._base, signalId, leastDelta,
@@ -800,13 +802,13 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
-      Coop coop, flagcxDevNetCounter_t counterId, uint64_t least, int bits = 56,
+      Coop coop, flagcxDevCounter_t counterId, uint64_t least, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitCounter(coop._base, counterId, least, bits, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
-      flagcxDevNetCounter_t counterId, int bits = 56,
+      flagcxDevCounter_t counterId, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readCounter(counterId, bits, order);
   }

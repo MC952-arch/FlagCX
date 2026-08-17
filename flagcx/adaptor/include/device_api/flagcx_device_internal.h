@@ -89,6 +89,17 @@ struct flagcxDevCommInternal {
   void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
   void *putValueStagingMr;     // MR handle for staging buffer
 
+  // One-sided transport readiness.  Signal send/wait must use the same
+  // communicator-wide path because waits do not identify a sender.
+  int netOneSidedReady;
+  int netSignalReady;
+  int netPutValueReady;
+  int useP2pSignals;
+
+  // ---- P2P signal IPC pointers (intra-node direct atomic path) ----
+  uint64_t **signalPeerPtrs; // Device array: [localRanks] → peer signal bufs
+  int signalIpcSlot; // IPC table slot for signal peer pointers (-1 if not used)
+
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)

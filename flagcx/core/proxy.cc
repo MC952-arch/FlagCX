@@ -694,19 +694,13 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     if (op->connection->transport == TRANSPORT_P2P) {
       // P2P transport
       if (op->connection->send) {
-        INFO(FLAGCX_PROXY, "Calling flagcxP2pSendProxyConnect");
         flagcxP2pSendProxyConnect(op->connection, NULL, op->reqBuff,
                                   op->reqSize, op->respBuff, op->respSize,
                                   &done);
-        INFO(FLAGCX_PROXY, "flagcxP2pSendProxyConnect completed, done=%d",
-             done);
       } else {
-        INFO(FLAGCX_PROXY, "Calling flagcxP2pRecvProxyConnect");
         flagcxP2pRecvProxyConnect(op->connection, NULL, op->reqBuff,
                                   op->reqSize, op->respBuff, op->respSize,
                                   &done);
-        INFO(FLAGCX_PROXY, "flagcxP2pRecvProxyConnect completed, done=%d",
-             done);
       }
     } else if (op->connection->transport == TRANSPORT_NET) {
       // NET transport (original logic)
@@ -874,16 +868,12 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
              op->connection->transport == TRANSPORT_P2P) {
     if (op->connection->send) {
       // P2P Send side setup
-      INFO(FLAGCX_PROXY, "Calling flagcxP2pSendProxySetup");
       flagcxP2pSendProxySetup(op->connection, NULL, op->reqBuff, op->reqSize,
                               op->respBuff, op->respSize, &done);
-      INFO(FLAGCX_PROXY, "flagcxP2pSendProxySetup completed, done=%d", done);
     } else {
       // P2P Recv side setup
-      INFO(FLAGCX_PROXY, "Calling flagcxP2pRecvProxySetup");
       flagcxP2pRecvProxySetup(op->connection, NULL, op->reqBuff, op->reqSize,
                               op->respBuff, op->respSize, &done);
-      INFO(FLAGCX_PROXY, "flagcxP2pRecvProxySetup completed, done=%d", done);
     }
   } else {
     return flagcxInternalError;
@@ -1623,7 +1613,6 @@ static flagcxResult_t flagcxKernelProxyPost(
       // (tracking only the signal request) is sufficient — the data op is
       // guaranteed to complete before the signal op returns done from test().
       if (net->iputSignal == NULL) {
-        WARN("flagcxKernelProxyPost: netAdaptor->iputSignal not implemented");
         res = flagcxNotSupported;
         break;
       }
@@ -1868,6 +1857,7 @@ init_done:
   while (true) {
     if (comm->proxyState->kernelState.stop == 1)
       break;
+
     // Poll completions for direct-posted IB ops
     flagcxKernelProxyPoll(kproxyState, comm);
     dequeue(fifo->buffer, ptr);
@@ -1962,37 +1952,79 @@ init_done:
         if (bufType == 0) {
           // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
           int peerRank = (int)ptr->getPeerRank();
-          INFO(FLAGCX_P2P,
-               "rank=%d PrimSignal(remote) peer=%d sigIdx=%d sigOff=%zu "
-               "sigVal=%lu inflight=%u",
-               comm->rank, peerRank, signalIdx, signalOff,
-               (unsigned long)signalValue, kproxyState->totalInflight);
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
+          if (res != flagcxSuccess) {
             break;
+          }
           if (comm->signalHandle == NULL) {
-            WARN("flagcxDevicePrimSignal: signal handles not initialized "
-                 "for this comm — call flagcxOneSideSignalRegister() before "
-                 "use");
             res = flagcxInternalError;
             break;
           }
           res = flagcxKernelProxyPost(kproxyState, comm, peerRank,
                                       FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0, 0,
                                       -1, -1, signalOff, signalValue, 0);
-          INFO(FLAGCX_P2P, "rank=%d PrimSignal posted res=%d postedIB=%d",
-               comm->rank, (int)res, (res == flagcxSuccess));
           postedIB = (res == flagcxSuccess);
         } else {
-          // Counter buffer: local CPU atomic increment (no network operation)
+          // Counter buffer: local completion notification.  The counter
+          // trigger follows its put trigger in this context's FIFO, so wait
+          // for all previously posted IB operations before publishing the
+          // completion to the GPU.
+          int64_t timeoutSec = flagcxParamKernelProxyBackpressureTimeout();
+          struct timespec deadline;
+          clock_gettime(CLOCK_MONOTONIC, &deadline);
+          deadline.tv_sec += timeoutSec;
+          while (kproxyState->totalInflight > 0) {
+            flagcxKernelProxyPoll(kproxyState, comm);
+            if (kproxyState->totalInflight > 0) {
+              struct timespec now;
+              clock_gettime(CLOCK_MONOTONIC, &now);
+              if (now.tv_sec > deadline.tv_sec ||
+                  (now.tv_sec == deadline.tv_sec &&
+                   now.tv_nsec >= deadline.tv_nsec)) {
+                WARN("rank=%d counter completion timeout (%lds) context=%d",
+                     comm->rank, (long)timeoutSec, contextId);
+                __atomic_store_n((int *)&comm->rmaProxy->rmaError, 1,
+                                 __ATOMIC_RELEASE);
+                res = flagcxInternalError;
+                break;
+              }
+              sched_yield();
+            }
+          }
+          if (res != flagcxSuccess)
+            break;
+
           flagcxDevComm_t dc = comm->devCommHandle;
           if (dc == NULL || dc->counterBuffer == NULL) {
-            WARN("flagcxDevicePrimSignal: counterBuffer not initialized");
             res = flagcxInternalError;
             break;
           }
-          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + signalIdx;
-          __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELAXED);
+          int contextCount = dc->contextCount > 0 ? dc->contextCount : 1;
+          size_t totalCounterCount =
+              (size_t)contextCount * (size_t)dc->counterCount;
+          if (dc->counterCount <= 0 || signalIdx < 0 ||
+              (size_t)signalIdx >= totalCounterCount) {
+            WARN("rank=%d invalid encoded counter index=%d count=%d "
+                 "contexts=%d",
+                 comm->rank, signalIdx, dc->counterCount, contextCount);
+            res = flagcxInvalidArgument;
+            break;
+          }
+          int encodedContext = signalIdx / dc->counterCount;
+          int counterId = signalIdx % dc->counterCount;
+          if (encodedContext != contextId) {
+            WARN("rank=%d counter context mismatch proxy=%d encoded=%d "
+                 "counter=%d",
+                 comm->rank, contextId, encodedContext, counterId);
+            res = flagcxInternalError;
+            break;
+          }
+          // enqueueFifoSignal has already flattened context and counter into
+          // signalIdx. Use that offset directly; applying the context stride
+          // here again would address the wrong slot.
+          size_t counterOffset = (size_t)signalIdx;
+          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + counterOffset;
+          __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
         }
         break;
       }
@@ -2022,8 +2054,6 @@ init_done:
         uint64_t signalValue = ptr->getSignalValue();
         size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
         if (comm->signalHandle == NULL) {
-          WARN("flagcxDevicePrimPutSignal: signal handles not initialized "
-               "for this comm — call flagcxOneSideSignalRegister() before use");
           res = flagcxInternalError;
           break;
         }
@@ -2104,6 +2134,15 @@ init_done:
     if (res != flagcxSuccess)
       break;
   }
+
+  INFO(FLAGCX_PROXY,
+       "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu completed=%lu",
+       comm->rank, comm->proxyState->kernelState.stop, (int)res,
+       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced],
+                                      __ATOMIC_ACQUIRE),
+       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
+                                      __ATOMIC_ACQUIRE));
+
 out:
   // Drain all in-flight direct IB requests before teardown
   if (kproxyState != NULL) {

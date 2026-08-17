@@ -459,7 +459,13 @@ class FLAGCXLibrary:
                 f"'{so_path}' nor '{build_so_path}' exists. "
                 f"Please build FlagCX or check FLAGCX_PATH."
             )
-        # 2. Fall back to <repo_root>/build/lib/libflagcx.so
+        # 2. Check alongside the installed flagcx Python package
+        #    (build.sh copies libflagcx.so into the package directory)
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        pkg_so = os.path.join(pkg_dir, "libflagcx.so")
+        if os.path.isfile(pkg_so):
+            return pkg_so
+        # 3. Fall back to <repo_root>/build/lib/libflagcx.so
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
@@ -469,8 +475,9 @@ class FLAGCXLibrary:
         raise FileNotFoundError(
             f"Cannot find libflagcx.so. Searched:\n"
             f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
-            f"  - {so_path} (not found)\n"
-            f"Please set FLAGCX_PATH or build FlagCX first."
+            f"  - {pkg_so} (not in package)\n"
+            f"  - {so_path} (not in source tree)\n"
+            f"Please set FLAGCX_PATH or reinstall flagcx."
         )
 
     def __init__(self, so_file: Optional[str] = None):
@@ -867,7 +874,7 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        raw_stream = getattr(old_stream, 'musa_stream', old_stream.cuda_stream)
+        raw_stream = getattr(old_stream, 'musa_stream', getattr(old_stream, 'npu_stream', getattr(old_stream, 'cuda_stream', 0)))
         self.FLAGCX_CHECK(self.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 

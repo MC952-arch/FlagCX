@@ -123,6 +123,15 @@ struct CommTraits<NvshmemBackend> {
       return mm;
     }
 
+    // P2P signal support — NVSHMEM always has P2P capability
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pSignalSupport(int /*peer*/) const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *getSignalPeerPtr(int peer) const {
+      return (uint64_t *)nvshmem_ptr((void *)signalBuffer, peer);
+    }
+
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {
@@ -264,8 +273,8 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignal ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevNetSignal_t signalId, uint64_t least,
-               int bits, flagcxDeviceMemoryOrder_t order) const {
+    waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
       coop.sync();
@@ -279,7 +288,7 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignalMeetShadow ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signalId, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signalId, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -295,7 +304,7 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignalFollowShadow ----
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signalId,
+    waitSignalFollowShadow(Coop coop, flagcxDevSignal_t signalId,
                            Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
@@ -317,17 +326,17 @@ struct CommTraits<NvshmemBackend> {
 
     // ---- Shadow access ----
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevNetSignal_t signalId) const {
+    getSignalShadowPtr(flagcxDevSignal_t signalId) const {
       return &_dc.shadowBuffer[(int)signalId];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevNetSignal_t signalId, uint64_t delta) const {
+    increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
       _dc.shadowBuffer[(int)signalId] += delta;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevNetSignal_t signalId, int bits,
+    readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -336,15 +345,17 @@ struct CommTraits<NvshmemBackend> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevNetSignal_t signalId) const {
+    resetSignal(flagcxDevSignal_t signalId) const {
       Atomic::store(&_dc.signalBuffer[(int)signalId], (uint64_t)0,
+                    flagcxDeviceMemoryOrderRelease);
+      Atomic::store(&_dc.shadowBuffer[(int)signalId], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
 
     // ---- Counter: waitCounter ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevNetCounter_t counterId, uint64_t least,
+    waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -361,7 +372,7 @@ struct CommTraits<NvshmemBackend> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevNetCounter_t counterId, int bits,
+    readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
@@ -475,7 +486,7 @@ struct CommTraits<NvshmemBackend> {
   public:
     // ---- reset counter ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevNetCounter_t counterId) const {
+    resetCounter(flagcxDevCounter_t counterId) const {
       int idx = (int)counterId;
       Atomic::store(&_dc.counterBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);

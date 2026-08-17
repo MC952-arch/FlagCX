@@ -105,15 +105,15 @@ constexpr unsigned int flagcxDeviceTriggerBitsCount = 32;
 
 // One-sided Put/PutSignal: trd prim-specific
 //   trd[35:29] = srcMrIdx(7), trd[28:22] = dstMrIdx(7)
-//   PutSignal: trd[21:14] = signalIdx(8), trd[13:0] = unused
+//   PutSignal: trd[21:10] = signalIdx(12), trd[9:0] = unused
 //   fst = srcOffset(32)|dstOffset(32), snd =
 //   size(32)|signalValue(16)|reserved(16)
 constexpr unsigned int flagcxDeviceTriggerOffSrcMrIdx = 29;
 constexpr unsigned int flagcxDeviceTriggerBitsSrcMrIdx = 7;
 constexpr unsigned int flagcxDeviceTriggerOffDstMrIdx = 22;
 constexpr unsigned int flagcxDeviceTriggerBitsDstMrIdx = 7;
-constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 14;
-constexpr unsigned int flagcxDeviceTriggerBitsSignalIdx = 8;
+constexpr unsigned int flagcxDeviceTriggerOffSignalIdx = 10;
+constexpr unsigned int flagcxDeviceTriggerBitsSignalIdx = 12;
 // PutSignal signalValue in snd[15:0] (same max as PrimSignal: 16b)
 constexpr unsigned int flagcxDeviceTriggerOffSignalValuePut = 0;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalValuePut = 16;
@@ -132,14 +132,14 @@ constexpr unsigned int flagcxDeviceTriggerBitsSize = 32;
 //   snd = value(64)
 
 // Signal/WaitSignal: all in trd prim-specific
-//   trd[35:34] = bufferType(2), trd[33:26] = signalIdx(8),
-//   trd[25:10] = signalValue/expectedValue(16), trd[9:0] = unused
+//   trd[35:34] = bufferType(2), trd[33:22] = signalIdx(12),
+//   trd[21:6] = signalValue/expectedValue(16), trd[5:0] = unused
 //   fst = 0, snd = 0
 constexpr unsigned int flagcxDeviceTriggerOffBufferType = 34;
 constexpr unsigned int flagcxDeviceTriggerBitsBufferType = 2;
-constexpr unsigned int flagcxDeviceTriggerOffSignalIdxSig = 26;
-constexpr unsigned int flagcxDeviceTriggerBitsSignalIdxSig = 8;
-constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 10;
+constexpr unsigned int flagcxDeviceTriggerOffSignalIdxSig = 22;
+constexpr unsigned int flagcxDeviceTriggerBitsSignalIdxSig = 12;
+constexpr unsigned int flagcxDeviceTriggerOffSignalValue = 6;
 constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
     16; // max signal value: 2^16 (65535)
 

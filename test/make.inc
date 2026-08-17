@@ -127,8 +127,11 @@ endif
 
 # Test kernel build directory (platform-specific device code)
 KERNEL_DIR := $(PROJECT_ROOT)/test/kernel
+# Only require DEVICE_PLATFORM for build targets, not for clean/help/info
+ifeq ($(filter clean help info,$(MAKECMDGOALS)),)
 ifeq ($(strip $(DEVICE_PLATFORM)),)
   $(error DEVICE_PLATFORM is not set by the selected makefiles/<platform>.mk; cannot determine test kernel platform)
+endif
 endif
 KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
 ifeq ($(KERNEL_PLATFORM), cuda)
