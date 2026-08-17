@@ -160,6 +160,18 @@ struct CommTraits<NcclBackend> {
       return nullptr;
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR bool usesDirectP2pSignals() const {
+      return false;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isOneSidedTransportReady() const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool supportsDirectCounterAccess() const {
+      return false;
+    }
+
     // No-op: vendor Comm is populated via devComm pointer cast
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &,
@@ -301,6 +313,25 @@ struct CommTraits<NcclBackend> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const { return true; }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int getContextId() const {
+      return _contextId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPtr(flagcxDevSignal_t /*signal*/) const {
+      return nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getPeerSignalPtr(int /*localPeer*/, flagcxDevSignal_t /*signal*/) const {
+      return nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getCounterPtr(flagcxDevCounter_t /*counter*/) const {
+      return nullptr;
+    }
 
     // --- One-sided: put (raw Window) ---
     template <typename RA, typename LA, typename Coop, typename Desc>

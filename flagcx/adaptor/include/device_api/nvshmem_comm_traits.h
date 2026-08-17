@@ -132,6 +132,20 @@ struct CommTraits<NvshmemBackend> {
       return (uint64_t *)nvshmem_ptr((void *)signalBuffer, peer);
     }
 
+    // Unified IR must use NVSHMEM signal operations rather than directly
+    // atomically updating an implementation-owned symmetric buffer.
+    FLAGCX_DEVICE_INLINE_DECORATOR bool usesDirectP2pSignals() const {
+      return false;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isOneSidedTransportReady() const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool supportsDirectCounterAccess() const {
+      return counterBuffer != nullptr;
+    }
+
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {
@@ -183,9 +197,10 @@ struct CommTraits<NvshmemBackend> {
   // ---- Net ----
   struct Net {
     Comm _dc;
+    int _contextId;
 
     FLAGCX_HOST_DEVICE_INLINE
-    Net(const Comm &dc, int /*contextIndex*/) : _dc(dc) {}
+    Net(const Comm &dc, int contextIndex) : _dc(dc), _contextId(contextIndex) {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
       if (_dc.signalCount > 0 && _dc.signalBuffer == nullptr)
@@ -193,6 +208,26 @@ struct CommTraits<NvshmemBackend> {
       if (_dc.counterCount > 0 && _dc.counterBuffer == nullptr)
         return false;
       return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int getContextId() const {
+      return _contextId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPtr(flagcxDevSignal_t signalId) const {
+      return &_dc.signalBuffer[(int)signalId];
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getPeerSignalPtr(int localPeer, flagcxDevSignal_t signalId) const {
+      uint64_t *peerBuffer = _dc.getSignalPeerPtr(localPeer);
+      return peerBuffer ? &peerBuffer[(int)signalId] : nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getCounterPtr(flagcxDevCounter_t counterId) const {
+      return &_dc.counterBuffer[(int)counterId];
     }
 
     // ---- Helper: resolve PE from team + peer index ----

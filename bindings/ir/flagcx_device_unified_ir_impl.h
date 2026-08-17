@@ -136,18 +136,17 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
 
   int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
-      worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
-  if (comm->_commBase.useP2pSignals && localPeer >= 0 &&
-      localPeer < comm->_commBase.intraSize) {
+      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
+  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
+      localPeer < comm->_commBase.getIntraSize()) {
     // P2P fast path: one atomic per cooperative group.
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
       const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
       const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-      uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
-      int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
-      DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], (uint64_t)1,
+      uint64_t *peerSignal = net->getPeerSignalPtr(localPeer, signal);
+      DeviceAPI::Atomic::fetchAdd(peerSignal, (uint64_t)1,
                                   flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
@@ -170,19 +169,18 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
 
   int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
   int localPeer =
-      worldPeer - (comm->_commBase.rank - comm->_commBase.intraRank);
-  if (comm->_commBase.useP2pSignals && localPeer >= 0 &&
-      localPeer < comm->_commBase.intraSize) {
+      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
+  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
+      localPeer < comm->_commBase.getIntraSize()) {
     // P2P fast path: one atomic per cooperative group.
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
       const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
       const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-      uint64_t *peerBuf = comm->_commBase.getSignalPeerPtr(localPeer);
-      int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+      uint64_t *peerSignal = net->getPeerSignalPtr(localPeer, signal);
 
-      DeviceAPI::Atomic::fetchAdd(&peerBuf[slot], value,
+      DeviceAPI::Atomic::fetchAdd(peerSignal, value,
                                   flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
@@ -223,18 +221,17 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
   // Send and wait share one communicator-wide signal transport decision.
-  if (comm->_commBase.useP2pSignals) {
+  if (comm->_commBase.usesDirectP2pSignals()) {
     const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-    uint64_t *localBuf = comm->_commBase.signalBuffer;
-    int slot = net->contextId * comm->_commBase.signalCount + (int)signal;
+    uint64_t *localSignal = net->getSignalPtr(signal);
     flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
     coop.sync();
     if (coop.threadRank() == 0) {
       int iter = 0;
-      while (DeviceAPI::Atomic::load(&localBuf[slot], loadOrder) < least) {
+      while (DeviceAPI::Atomic::load(localSignal, loadOrder) < least) {
         DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
@@ -287,7 +284,7 @@ flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
   // A communicator may use IPC for one memory object and Net fallback for
   // another, so flush both domains.  Flushing an empty FIFO is harmless.
   DeviceAPI::Intrin::threadfenceSystem();
-  if (comm->_commBase.netOneSidedReady && net) {
+  if (comm->_commBase.isOneSidedTransportReady() && net) {
     flagcxDevNetFlushS((const void *)net, coopKind, order);
   }
 }
@@ -322,22 +319,19 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
                               flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
-  if (comm->_commBase.useP2pSignals) {
+  if (comm->_commBase.usesDirectP2pSignals()) {
     const void *netOpaque = flagcxDevNetGetFromCommS(commOpaque, contextId);
     const flagcxDevNet *net = (const flagcxDevNet *)netOpaque;
-    uint64_t *signalBuf = comm->_commBase.signalBuffer;
-    uint64_t *shadowBuf = comm->_commBase.shadowBuffer;
-    int idx = net->contextId * comm->_commBase.signalCount + (int)slot;
+    uint64_t *signalPtr = net->getSignalPtr(slot);
+    uint64_t *shadowPtr = net->getSignalShadowPtr(slot);
     flagcxDevMemoryOrder_t loadOrder = flagcxWaitLoadOrder(order);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
 
     coop.sync();
     if (coop.threadRank() == 0) {
-      uint64_t expectedVal =
-          DeviceAPI::Atomic::load(&shadowBuf[idx], loadOrder);
+      uint64_t expectedVal = DeviceAPI::Atomic::load(shadowPtr, loadOrder);
       int iter = 0;
-      while (DeviceAPI::Atomic::load(&signalBuf[idx], loadOrder) <
-             expectedVal) {
+      while (DeviceAPI::Atomic::load(signalPtr, loadOrder) < expectedVal) {
         DeviceAPI::Intrin::spinBackoff(iter++);
       }
     }
@@ -440,11 +434,11 @@ flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
   int worldPeer = flagcxTeamRankToWorld(comm, team, peer);
 
   // Get my intra base (world rank of rank-0 on my node)
-  int myIntraBase = comm._commBase.rank - comm._commBase.intraRank;
+  int myIntraBase = comm._commBase.getRank() - comm._commBase.getIntraRank();
 
   // Check if peer's world rank is in my node's range
   bool isLocal = (worldPeer >= myIntraBase) &&
-                 (worldPeer < myIntraBase + comm._commBase.intraSize);
+                 (worldPeer < myIntraBase + comm._commBase.getIntraSize());
 
   return isLocal;
 }
@@ -623,7 +617,9 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
     return;
   void *peerPtr =
       useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
-  useP2P = peerPtr != nullptr;
+  const flagcxDevNet *net =
+      (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
+  useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
 
   if (useP2P) {
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
@@ -637,16 +633,12 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     coop.sync();
     if (coop.threadRank() == 0) {
-      // Counter is local to sender — increment counterBuffer directly
-      int idx =
-          (int)contextId * comm->_commBase.counterCount + (int)localCounter;
-      DeviceAPI::Atomic::fetchAdd(&comm->_commBase.counterBuffer[idx],
-                                  (uint64_t)1, flagcxDeviceMemoryOrderRelease);
+      // Counter is local to sender.
+      DeviceAPI::Atomic::fetchAdd(net->getCounterPtr(localCounter), (uint64_t)1,
+                                  flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
-    const flagcxDevNet *net =
-        (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     net->put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
              flagcxDevNet_None{}, flagcxDevNet_CounterInc{localCounter}, coop);
@@ -674,7 +666,9 @@ flagcxDevPut_RSigInc_LCtrInc(
     return;
   void *peerPtr =
       useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
-  useP2P = peerPtr != nullptr;
+  const flagcxDevNet *net =
+      (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
+  useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
 
   if (useP2P) {
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
@@ -690,15 +684,11 @@ flagcxDevPut_RSigInc_LCtrInc(
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
       // Local counter increment
-      int idx =
-          (int)contextId * comm->_commBase.counterCount + (int)localCounter;
-      DeviceAPI::Atomic::fetchAdd(&comm->_commBase.counterBuffer[idx],
-                                  (uint64_t)1, flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(net->getCounterPtr(localCounter), (uint64_t)1,
+                                  flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
-    const flagcxDevNet *net =
-        (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     net->put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
              flagcxDevNet_SignalInc{remoteSignal},
@@ -727,7 +717,9 @@ flagcxDevPut_RSigAdd_LCtrInc(
     return;
   void *peerPtr =
       useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer) : nullptr;
-  useP2P = peerPtr != nullptr;
+  const flagcxDevNet *net =
+      (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
+  useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
 
   if (useP2P) {
     void *localSrc = flagcxGetLocalPointer(*src, srcOffset);
@@ -744,15 +736,11 @@ flagcxDevPut_RSigAdd_LCtrInc(
                          contextId, FLAGCX_COOP_THREAD,
                          flagcxDeviceScopeSystem);
       // Local counter increment
-      int idx =
-          (int)contextId * comm->_commBase.counterCount + (int)localCounter;
-      DeviceAPI::Atomic::fetchAdd(&comm->_commBase.counterBuffer[idx],
-                                  (uint64_t)1, flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(net->getCounterPtr(localCounter), (uint64_t)1,
+                                  flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
-    const flagcxDevNet *net =
-        (const flagcxDevNet *)flagcxDevNetGetFromCommS(commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     net->put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
              flagcxDevNet_SignalAdd{remoteSignal, signalValue},

@@ -148,8 +148,9 @@ static flagcxResult_t nvshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   // Allocate + construct net context array on device.
   // flagcxDevNet is device-only (#ifdef FLAGCX_DEVICE_COMPILE), so we build the
   // equivalent bytes on the host.  NVSHMEM flagcxDevNet layout:
-  //   struct { Comm _dc; } (base: DeviceAPI::Net)
+  //   struct { Comm _dc; int _contextId; } (base: DeviceAPI::Net)
   //   int _nInterPeers;
+  //   unsigned int* _gridBarrierState;
   // The kernel-launch approach (flagcxDevNetLaunchConstruct) fails with
   // "invalid resource handle" when the library's device fatbinary isn't
   // registered in the calling process.  Use host memcpy instead.
@@ -157,7 +158,9 @@ static flagcxResult_t nvshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
     using Comm = CommTraits<NvshmemBackend>::Comm;
     struct HostNet {
       Comm _dc;
+      int _contextId;
       int _nInterPeers;
+      unsigned int *_gridBarrierState;
     };
     size_t netSize = flagcxDevNetSizeOf();
     if (netSize == 0)
@@ -174,7 +177,9 @@ static flagcxResult_t nvshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
       HostNet hn;
       memset(&hn, 0, sizeof(hn));
       hn._dc = hostCopy._commBase;
+      hn._contextId = i;
       hn._nInterPeers = hostCopy._nInterPeers;
+      hn._gridBarrierState = nullptr;
       FLAGCXCHECKGOTO(deviceAdaptor->deviceMemcpy(
                           (char *)netDevPtr + i * netSize, &hn, sizeof(hn),
                           flagcxMemcpyHostToDevice, NULL, NULL),
