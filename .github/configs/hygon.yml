@@ -21,7 +21,6 @@ container_options: >-
   --group-add video
   -e PLATFORM=hygon
   -e FLAGCX_ADAPTOR=du
-
 set_env: .github/scripts/set_env/hygon.sh
 
 unit_test_suites:
