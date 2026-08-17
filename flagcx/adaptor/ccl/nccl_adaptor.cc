@@ -420,6 +420,18 @@ flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
   ncclReqs.ginContextCount = reqs->interContextCount;
   ncclReqs.ginCounterCount = reqs->interCounterCount;
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 7)
+  // GIN resources require an explicit connection type starting with 2.29.7.
+  const bool needsFullGin = reqs->interForceEnable ||
+                            reqs->interSignalCount > 0 ||
+                            reqs->interCounterCount > 0;
+  const bool needsRailGin =
+      reqs->barrierCount > 0 || reqs->interBarrierCount > 0;
+  ncclReqs.ginConnectionType = needsFullGin   ? NCCL_GIN_CONNECTION_FULL
+                               : needsRailGin ? NCCL_GIN_CONNECTION_RAIL
+                                              : NCCL_GIN_CONNECTION_NONE;
+#endif
+
   flagcxResult_t ret =
       ncclDevCommCreateHelper(comm->base, &ncclReqs, &inner->base);
   if (ret != flagcxSuccess) {

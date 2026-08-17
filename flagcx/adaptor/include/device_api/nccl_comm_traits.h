@@ -11,6 +11,8 @@
 #ifndef FLAGCX_NCCL_COMM_TRAITS_H_
 #define FLAGCX_NCCL_COMM_TRAITS_H_
 
+#include <stdio.h>
+
 #include "nccl.h"
 #ifndef __CUDACC__
 #include "flagcx.h"
@@ -461,10 +463,23 @@ struct CommTraits<NcclBackend> {
       return flagcxInternalError;
     }
 
-    // --- get stub (fallback-only, vendor has no RDMA READ) ---
+    // --- One-sided: get (unsupported by the NCCL backend) ---
     template <typename Coop>
-    FLAGCX_DEVICE_INLINE_DECORATOR void get(Team, int, Window, size_t, Window,
-                                            size_t, size_t, Coop) const {}
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    get(Team team, int peer, Window src, size_t srcOff, Window dst,
+        size_t dstOff, size_t bytes, Coop coop) const {
+      if (coop.threadRank() == 0) {
+        printf("FLAGCX WARN: NCCL Device Get is unsupported; operation is a "
+               "no-op\n");
+      }
+      (void)team;
+      (void)peer;
+      (void)src;
+      (void)srcOff;
+      (void)dst;
+      (void)dstOff;
+      (void)bytes;
+    }
   };
 #endif // FLAGCX_CHECK_DEVICE_CC
 };
