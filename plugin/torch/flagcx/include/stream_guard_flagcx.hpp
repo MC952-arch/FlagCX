@@ -36,9 +36,10 @@
 #include <torch_musa/csrc/core/MUSAStream.h>
 #elif USE_DU_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/impl/CUDAGuardImpl.h>
-#include <cuda_runtime.h>
+#include <c10/hip/HIPGuard.h>
+#include <c10/hip/impl/HIPGuardImpl.h>
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
+#include <hip/hip_runtime.h>
 #elif USE_KUNLUNXIN_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -85,8 +86,8 @@ public:
         guard_(
             at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId))
 #elif USE_DU_ADAPTOR
-        guard_(
-            at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
+        guard_(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+            *(hipStream_t *)stream, deviceId))
 #elif USE_KUNLUNXIN_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
@@ -148,8 +149,8 @@ public:
     guard_.reset_stream(
         at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId_));
 #elif USE_DU_ADAPTOR
-    guard_.reset_stream(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
+    guard_.reset_stream(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+        *(hipStream_t *)stream, deviceId_));
 #elif USE_KUNLUNXIN_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
@@ -190,7 +191,7 @@ private:
 #elif USE_MUSA_ADAPTOR
   c10::musa::MUSAStreamGuard guard_;
 #elif USE_DU_ADAPTOR
-  c10::cuda::CUDAStreamGuard guard_;
+  c10::hip::HIPStreamGuard guard_;
 #elif USE_KUNLUNXIN_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ASCEND_ADAPTOR

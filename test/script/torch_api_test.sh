@@ -19,6 +19,11 @@ eval "$CMD"
 echo "[INFO] Completed PyTorch API tests in homogeneous mode"
 echo "--------------------------------------------------------"
 
+if [[ "${FLAGCX_SKIP_HETERO:-0}" == "1" ]]; then
+    echo "[INFO] Skipping heterogeneous PyTorch API tests for this backend"
+    exit 0
+fi
+
 # Wait for previous torchrun processes to fully release sockets
 sleep 5
 

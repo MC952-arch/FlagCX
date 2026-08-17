@@ -171,9 +171,24 @@ def get_device_config(adaptor_flag):
         library_dirs += ["/usr/local/musa/lib/", pytorch_library_path]
         libs += ["musa", "musart"]
     elif adaptor_flag == "-DUSE_DU_ADAPTOR":
-        include_dirs += ["${CUDA_PATH}/include"]
-        library_dirs += ["${CUDA_PATH}/lib64"]
-        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        cuda_home = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+        if not cuda_home:
+            cuda_home = "/usr/local/cuda"
+        include_dirs += [os.path.join(cuda_home, "include")]
+        library_dirs += [os.path.join(cuda_home, "lib64")]
+
+        # Hygon's PyTorch distribution uses the HIP library names while
+        # exposing the CUDA-compatible runtime headers and libraries.
+        try:
+            import torch
+            torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+            library_dirs += [torch_lib_dir]
+            if os.path.exists(os.path.join(torch_lib_dir, "libtorch_hip.so")):
+                libs += ["cuda", "cudart", "c10_hip", "torch_hip"]
+            else:
+                libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        except ImportError:
+            libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
     elif adaptor_flag == "-DUSE_KUNLUNXIN_ADAPTOR":
         include_dirs += ["/opt/kunlun/include"]
         library_dirs += ["/opt/kunlun/lib"]

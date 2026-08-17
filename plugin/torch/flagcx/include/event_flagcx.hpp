@@ -26,8 +26,9 @@
 #include "torch_musa/csrc/core/MUSAEvent.h"
 #include "torch_musa/csrc/core/MUSAStream.h"
 #elif USE_DU_ADAPTOR
-#include <ATen/cuda/CUDAEvent.h>
-#include <cuda_runtime.h>
+#include <ATen/hip/HIPEvent.h>
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
+#include <hip/hip_runtime.h>
 #elif USE_KUNLUNXIN_ADAPTOR
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
@@ -226,28 +227,28 @@ private:
 #elif USE_DU_ADAPTOR
 class flagcxDuEvent : public flagcxEvent {
 public:
-  flagcxDuEvent() { cudaEvent_ = at::cuda::CUDAEvent(cudaEventDisableTiming); }
+  flagcxDuEvent() { hipEvent_ = at::cuda::CUDAEvent(hipEventDisableTiming); }
 
   void record(const int deviceId) override {
-    cudaEvent_.record(at::cuda::getCurrentCUDAStream(deviceId));
+    hipEvent_.record(at::hip::getCurrentHIPStreamMasqueradingAsCUDA(deviceId));
   }
 
   void record(const flagcxStream_t &stream, const int deviceId) override {
-    cudaEvent_.record(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    hipEvent_.record(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+        *(hipStream_t *)stream, deviceId));
   }
 
   void block(const int deviceId) override {
-    cudaEvent_.block(at::cuda::getCurrentCUDAStream(deviceId));
+    hipEvent_.block(at::hip::getCurrentHIPStreamMasqueradingAsCUDA(deviceId));
   }
 
   void block(const flagcxStream_t &stream, const int deviceId) override {
-    cudaEvent_.block(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    hipEvent_.block(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+        *(hipStream_t *)stream, deviceId));
   }
 
 private:
-  at::cuda::CUDAEvent cudaEvent_;
+  at::cuda::CUDAEvent hipEvent_;
 };
 #elif USE_KUNLUNXIN_ADAPTOR
 class flagcxXpuEvent : public flagcxEvent {
