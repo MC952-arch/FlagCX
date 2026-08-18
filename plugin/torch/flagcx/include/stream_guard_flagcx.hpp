@@ -35,10 +35,10 @@
 #include <torch_musa/csrc/core/MUSAGuard.h>
 #include <torch_musa/csrc/core/MUSAStream.h>
 #elif USE_DU_ADAPTOR
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/hip/HIPGuard.h>
 #include <c10/hip/impl/HIPGuardImpl.h>
-#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
 #elif USE_KUNLUNXIN_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
