@@ -1,8 +1,14 @@
 name: Docker Image Build Orchestrator
 
+run-name: >-
+  ${{ github.event_name == 'schedule' && github.event.schedule == '0 2 * * 0' && 'weekly' ||
+      github.event_name == 'schedule' && 'daily' ||
+      'ci' }}
+
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * 1-6'
+    - cron: '0 2 * * 0'
   push:
     branches:
       - main
@@ -15,6 +21,10 @@ on:
         description: 'push image or not'
         type: boolean
         default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-matrix:
