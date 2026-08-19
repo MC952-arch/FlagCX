@@ -137,6 +137,7 @@ jobs:
           git submodule update --init --force --recursive
 
       - name: Prepare Hygon environment
+        shell: bash
         run: |
           source /opt/dtk/env.sh
           echo "PATH=/opt/mpi/bin:$PATH" >> "$GITHUB_ENV"
@@ -145,12 +146,14 @@ jobs:
           python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
 
       - name: Run `make` to build the project
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX
           source /opt/dtk/env.sh
           make USE_DU=1 -j$(nproc) PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
 
       - name: Install FlagCX PyTorch Plugin
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX/plugin/torch
           source /opt/dtk/env.sh
@@ -159,6 +162,7 @@ jobs:
           echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX/test/script
           source /opt/dtk/env.sh

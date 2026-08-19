@@ -199,6 +199,7 @@ jobs:
           git submodule update --init --force --recursive
 
       - name: Prepare Hygon environment
+        shell: bash
         run: |
           source /opt/dtk/env.sh
           export CUDA_PATH=/opt/dtk/cuda/cuda-12
@@ -211,12 +212,14 @@ jobs:
           python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
 
       - name: Build FlagCX
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX
           source /opt/dtk/env.sh
           make -j$(nproc) USE_DU=1 PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
 
       - name: Build perf tests
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX/test/perf
           source /opt/dtk/env.sh
@@ -226,6 +229,7 @@ jobs:
       # Heterogeneous, RMA, and device-API paths are covered only where the
       # backend advertises support; unsupported cases self-skip in the tests.
       - name: Perf tests (Hygon homogeneous 8-chip)
+        shell: bash
         run: |
           cd /__w/FlagCX/FlagCX
           source /opt/dtk/env.sh
