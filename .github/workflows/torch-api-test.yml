@@ -79,7 +79,7 @@ jobs:
 
   torch-api-test-hygon:
     name: torch-api-test (hygon)
-    runs-on: [self-hosted, hg-8g-cicd-flagcx]
+    runs-on: [hg-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
       volumes:
@@ -154,7 +154,7 @@ jobs:
 
   torch-api-test-cuda:
     name: torch-api-test (cuda)
-    runs-on: [self-hosted, nv-8g-cicd-flagcx]
+    runs-on: [nv-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
       options: >-
@@ -219,7 +219,7 @@ jobs:
 
   torch-api-test-metax:
     name: torch-api-test (metax)
-    runs-on: [self-hosted, mx-8g-cicd-flagcx]
+    runs-on: [mx-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
       options: >-
