@@ -87,7 +87,8 @@ public:
             at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId))
 #elif USE_DU_ADAPTOR
         guard_(at::hip::getStreamFromExternalMasqueradingAsCUDA(
-            *(hipStream_t *)stream, deviceId))
+                   *(hipStream_t *)stream, deviceId)
+                   .hip_stream())
 #elif USE_KUNLUNXIN_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
@@ -150,7 +151,8 @@ public:
         at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId_));
 #elif USE_DU_ADAPTOR
     guard_.reset_stream(at::hip::getStreamFromExternalMasqueradingAsCUDA(
-        *(hipStream_t *)stream, deviceId_));
+                            *(hipStream_t *)stream, deviceId_)
+                            .hip_stream());
 #elif USE_KUNLUNXIN_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
