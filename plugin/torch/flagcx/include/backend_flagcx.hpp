@@ -78,7 +78,6 @@ private:
   flagcxStream_t stream_;
   flagcxDeviceHandle_t devHandle_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
-  std::vector<at::Tensor> stashedTensors_;
   int deviceId_;
   bool isBarrierOp_;
   std::unique_ptr<flagcxEvent> event_;
@@ -232,7 +231,11 @@ public:
 #ifdef USE_NVIDIA_ADAPTOR
     devName = "cuda";
 #elif USE_ASCEND_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    devName = "flagos";
+#else
     devName = "npu";
+#endif
 #elif USE_ILUVATAR_COREX_ADAPTOR
     devName = "cuda";
 #elif USE_CAMBRICON_ADAPTOR
@@ -298,7 +301,7 @@ protected:
   // flagcxTuner knows which communicator it is tuning
   bool recordingEnded = false;
 #endif
-#ifdef USE_ASCEND_ADAPTOR
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
   aclrtStream acl_stream;
 #endif
 
