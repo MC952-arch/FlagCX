@@ -28,8 +28,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       - name: Set up Install Dependencies
         run: |
@@ -117,8 +125,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       - name: Prepare Hygon environment
         run: |
@@ -185,8 +201,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       - name: Prepare CUDA environment
         run: |
@@ -256,8 +280,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       - name: Prepare MetaX environment
         run: |
