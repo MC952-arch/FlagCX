@@ -5,7 +5,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=INIT
 
-CMD_BASE='torchrun --nproc_per_node 8 --nnodes=1 --node_rank=0 --master_addr="localhost"'
+CMD_BASE='python -m torch.distributed.run --nproc_per_node 8 --nnodes=1 --node_rank=0 --master_addr="localhost"'
 PY_SCRIPT='../../plugin/torch/example/example.py'
 
 echo "[INFO] Launching PyTorch API tests in homogeneous mode"
