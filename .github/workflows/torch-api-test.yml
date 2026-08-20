@@ -235,14 +235,20 @@ jobs:
 
       - name: Install FlagCX PyTorch Plugin
         run: |
+          export PATH=/root/miniconda3/bin:$PATH
+          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train
+          export PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
           cd /__w/FlagCX/FlagCX/plugin/torch
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           export FLAGCX_ADAPTOR=nvidia
-          python3 setup.py build_ext --inplace
+          "$PYTHON_BIN" setup.py build_ext --inplace
           echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         run: |
+          export PATH=/root/miniconda3/bin:$PATH
+          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train
+          export PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
           cd /__w/FlagCX/FlagCX/test/script
           export FLAGCX_ADAPTOR=nvidia
           export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7

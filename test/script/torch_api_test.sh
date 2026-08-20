@@ -5,6 +5,10 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=INIT
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+export PYTHONPATH="$REPO_ROOT/plugin/torch${PYTHONPATH:+:$PYTHONPATH}"
+
 hash -r
 
 PYTHON_BIN=${PYTHON_BIN:-}
