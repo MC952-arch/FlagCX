@@ -165,7 +165,13 @@ def get_device_config(adaptor_flag):
     elif adaptor_flag == "-DUSE_METAX_ADAPTOR":
         include_dirs += ["/opt/maca/include"]
         library_dirs += ["/opt/maca/lib64"]
-        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        try:
+            import torch
+            torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+            library_dirs += [torch_lib_dir]
+            libs += ["c10_cuda", "torch_cuda"]
+        except ImportError:
+            libs += ["c10_cuda", "torch_cuda"]
     elif adaptor_flag == "-DUSE_MUSA_ADAPTOR":
         import torch_musa
         pytorch_musa_install_path = os.path.dirname(os.path.abspath(torch_musa.__file__))
