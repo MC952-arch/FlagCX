@@ -5,6 +5,8 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=INIT
 
+hash -r
+
 PYTHON_BIN=${PYTHON_BIN:-}
 if [[ -z "$PYTHON_BIN" ]]; then
     for candidate in python3 python; do
@@ -17,8 +19,12 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 if [[ -z "$PYTHON_BIN" ]]; then
-    echo "[ERROR] Could not find a Python interpreter with torch installed"
-    exit 1
+    if [[ -x /root/miniconda3/envs/flagscale-train/bin/python ]]; then
+        PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
+    else
+        echo "[ERROR] Could not find a Python interpreter with torch installed"
+        exit 1
+    fi
 fi
 
 CMD_BASE="$PYTHON_BIN -m torch.distributed.run --nproc_per_node 8 --nnodes=1 --node_rank=0 --master_addr=\"localhost\""
