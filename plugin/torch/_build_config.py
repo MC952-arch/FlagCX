@@ -81,17 +81,19 @@ def _detect_platform():
 def detect_adaptor():
     """Detect the adaptor from FLAGCX_ADAPTOR env var, --adaptor CLI arg, or
     USE_* env vars. Returns the adaptor name string. Defaults to 'nvidia'."""
-    adaptor = os.environ.get("FLAGCX_ADAPTOR", "").strip()
-
-    # Check --adaptor CLI argument (consumed from sys.argv)
-    if not adaptor and "--adaptor" in sys.argv:
+    # Always consume the custom option before setuptools parses sys.argv.
+    # Otherwise it is reported as an unknown setuptools command option when
+    # an adaptor is already selected through the environment.
+    cli_adaptor = ""
+    if "--adaptor" in sys.argv:
         arg_index = sys.argv.index("--adaptor")
-        sys.argv.remove("--adaptor")
+        del sys.argv[arg_index]
         if arg_index < len(sys.argv):
-            adaptor = sys.argv[arg_index]
-            sys.argv.remove(adaptor)
+            cli_adaptor = sys.argv.pop(arg_index)
         else:
             print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
+
+    adaptor = os.environ.get("FLAGCX_ADAPTOR", "").strip() or cli_adaptor
 
     # Check USE_* env vars
     if not adaptor:
