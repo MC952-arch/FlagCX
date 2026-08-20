@@ -5,7 +5,23 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=INIT
 
-CMD_BASE='python -m torch.distributed.run --nproc_per_node 8 --nnodes=1 --node_rank=0 --master_addr="localhost"'
+PYTHON_BIN=${PYTHON_BIN:-}
+if [[ -z "$PYTHON_BIN" ]]; then
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+            "$candidate" -c 'import torch' >/dev/null 2>&1; then
+            PYTHON_BIN=$candidate
+            break
+        fi
+    done
+fi
+
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "[ERROR] Could not find a Python interpreter with torch installed"
+    exit 1
+fi
+
+CMD_BASE="$PYTHON_BIN -m torch.distributed.run --nproc_per_node 8 --nnodes=1 --node_rank=0 --master_addr=\"localhost\""
 PY_SCRIPT='../../plugin/torch/example/example.py'
 
 echo "[INFO] Launching PyTorch API tests in homogeneous mode"
