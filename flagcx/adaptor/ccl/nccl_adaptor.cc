@@ -6,6 +6,9 @@
 #include "alloc.h"
 #include "comm.h"
 
+static_assert(sizeof(ncclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "ncclUniqueId does not fit inside flagcxInnerUniqueId");
+
 static bool checkIsAllCudaP2p(ncclComm_t comm) {
   int gpuCount;
   if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
@@ -41,7 +44,7 @@ flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
 
-flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t ncclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -105,7 +108,7 @@ const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     void *p = malloc(sizeof(struct flagcxInnerComm));

@@ -26,6 +26,7 @@ from torch.cuda.memory import CUDAPluggableAllocator
 from torch.utils.cpp_extension import load_inline
 
 from flagcx_wrapper import (
+    FLAGCX_UNIQUE_ID_BYTES,
     FLAGCXLibrary,
     flagcxDevCommRequirements,
     flagcxUniqueId,
@@ -237,7 +238,7 @@ def main():
         unique_id = flagcx.flagcxGetUniqueId()
         id_bytes = bytes(unique_id.internal)
     else:
-        id_bytes = b"\x00" * 256
+        id_bytes = b"\x00" * FLAGCX_UNIQUE_ID_BYTES
 
     # Broadcast unique_id bytes via torch distributed
     id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
