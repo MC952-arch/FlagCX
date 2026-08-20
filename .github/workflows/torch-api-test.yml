@@ -217,6 +217,7 @@ jobs:
           git submodule update --init --force --recursive
 
       - name: Prepare CUDA environment
+        shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/cuda.sh
           echo "PATH=$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
@@ -296,6 +297,7 @@ jobs:
           git submodule update --init --force --recursive
 
       - name: Prepare MetaX environment
+        shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
           echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
