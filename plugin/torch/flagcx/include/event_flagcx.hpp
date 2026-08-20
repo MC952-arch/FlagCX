@@ -196,9 +196,8 @@ public:
   flagcxMacaEvent() : maca_event(c10::DeviceType::CUDA) {}
 
   void record(const int device_id) override {
-    auto stream = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA)
-                      ->getStream(c10::Device(c10::DeviceType::CUDA,
-                                              device_id));
+    auto stream = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA)->getStream(
+        c10::Device(c10::DeviceType::CUDA, device_id));
     maca_event.record(stream);
   }
 
@@ -207,9 +206,8 @@ public:
   }
 
   void block(const int device_id) override {
-    auto stream = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA)
-                      ->getStream(c10::Device(c10::DeviceType::CUDA,
-                                              device_id));
+    auto stream = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA)->getStream(
+        c10::Device(c10::DeviceType::CUDA, device_id));
     maca_event.block(stream);
   }
 
