@@ -191,7 +191,7 @@ os.makedirs(os.path.join(ROOT_DIR, "build"), exist_ok=True)
 
 setup(
     name="flagcx",
-    version="0.10.0",
+    version="0.13.0",
     description="FlagCX: A unified collective communication library",
     package_dir={"flagcx": "plugin/torch/flagcx"},
     packages=["flagcx"],
