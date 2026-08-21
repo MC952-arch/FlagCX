@@ -54,8 +54,13 @@ class flagcxDevCommRequirements(ctypes.Structure):
         ("interCounterCount", ctypes.c_int),
     ]
 
+FLAGCX_UNIQUE_ID_BYTES = 256
+
+
 class flagcxUniqueId(ctypes.Structure):
-    _fields_ = [("internal", ctypes.c_byte * 256)]
+    _fields_ = [("internal", ctypes.c_byte * FLAGCX_UNIQUE_ID_BYTES)]
+
+
 flagcxUniqueId_t = ctypes.POINTER(flagcxUniqueId)
 
 DEVICE_SYNCHRONIZE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t)
@@ -548,18 +553,20 @@ class FLAGCXLibrary:
         """
         Reconstructs a flagcxUniqueId object from bytes data.
         Args:
-            data: Must be a 256-byte data block (matching FlagCX's unique_id).
+            data: Must match the size of FlagCX's unique_id.
         Returns:
             flagcxUniqueId: The reconstructed FlagCX Unique ID object.
         Raises:
-            ValueError: If the input data length is not 256 bytes.
+            ValueError: If the input data length does not match unique_id.
         """
-        if len(data) != 256:
+        if len(data) != FLAGCX_UNIQUE_ID_BYTES:
             raise ValueError(
-                f"Expected 256 bytes for ncclUniqueId, got {len(data)} bytes")
+                f"Expected {FLAGCX_UNIQUE_ID_BYTES} bytes for flagcxUniqueId, "
+                f"got {len(data)} bytes")
 
         unique_id = flagcxUniqueId()
-        ctypes.memmove(ctypes.addressof(unique_id.internal), data, 256)
+        ctypes.memmove(ctypes.addressof(unique_id.internal), data,
+                       FLAGCX_UNIQUE_ID_BYTES)
         return unique_id
 
     def flagcxCommInitRank(self, world_size: int, unique_id: flagcxUniqueId,
@@ -889,6 +896,7 @@ class FLAGCXLibrary:
 
 
 __all__ = [
-    "FLAGCXLibrary", "flagcxDataTypeEnum", "flagcxRedOpTypeEnum", "flagcxUniqueId",
-    "flagcxDeviceHandle_t", "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
+    "FLAGCX_UNIQUE_ID_BYTES", "FLAGCXLibrary", "flagcxDataTypeEnum",
+    "flagcxRedOpTypeEnum", "flagcxUniqueId", "flagcxDeviceHandle_t",
+    "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
 ]
