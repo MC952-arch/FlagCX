@@ -405,7 +405,8 @@ jobs:
           set -e
           # MetaX MCCL currently crashes in mcclSend during AlltoAll/AlltoAllv.
           # mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
-          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
+          # MetaX MCCL currently crashes in mcclSend during Send/Recv.
+          # mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allreduce -b 128M -e 1G -f 2 -p 1
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reducescatter -b 128M -e 1G -f 2 -p 1
