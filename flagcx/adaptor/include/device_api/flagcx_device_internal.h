@@ -92,7 +92,6 @@ struct flagcxDevCommInternal {
   // Non-null only when this DevComm created the registration and therefore
   // must deregister it before freeing the backing allocation.
   struct flagcxOneSideHandleInfo *ownedSignalRegistration;
-  void *counterBufferMr;       // MR handle for counterBuffer
   void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
   struct flagcxOneSideHandleInfo *ownedStagingRegistration;
 

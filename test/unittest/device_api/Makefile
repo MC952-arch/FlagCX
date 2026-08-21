@@ -59,10 +59,14 @@ MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_api_intra \
                $(BINDIR)/test_device_api_inter
 
-.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter \
+.PHONY: all unit mpi clean run-unit run-mpi run-mpi-intra run-mpi-inter \
         run-mpi-unified-intra run-mpi-unified-inter run
 
-all: $(UNIT_TARGET) $(MPI_TARGETS)
+all: unit mpi
+
+unit: $(UNIT_TARGET)
+
+mpi: $(MPI_TARGETS)
 
 # Build device kernel objects via dispatcher
 KERNEL_API_TARGETS := device_api.o
@@ -126,7 +130,7 @@ $(BINDIR)/test_device_api_inter: test_device_api_inter.cpp $(DEVICE_API_OBJ) $(D
 clean:
 	@rm -rf $(BUILDDIR)
 
-run-unit: $(UNIT_TARGET)
+run-unit: unit
 	@$(UNIT_TARGET)
 
 # Env vars for inter-node testing on single node
