@@ -23,6 +23,7 @@
 #define USE_NVIDIA_ADAPTOR
 #include "device_api/comm_traits.h"
 #include "shmem_adaptor.h"
+#include "global_comm.h"
 
 using DC = CommTraits<NvshmemBackend>;
 
@@ -262,8 +263,12 @@ static void test_barrier_world() {
 // Test: host-side adaptor lifecycle
 // ============================================================
 static void test_host_adaptor_lifecycle() {
-  flagcxResult_t r1 = shmemAdaptor->init(g_pe, g_npes);
-  flagcxResult_t r2 = shmemAdaptor->init(g_pe, g_npes);
+  flagcxComm_t fakeComm = new flagcxComm();
+  fakeComm->rank = g_pe;
+  fakeComm->nranks = g_npes;
+
+  flagcxResult_t r1 = shmemAdaptor->init(fakeComm);
+  flagcxResult_t r2 = shmemAdaptor->init(fakeComm);
   bool initOk = (r1 == flagcxSuccess && r2 == flagcxSuccess);
 
   void *ptr = nullptr;
@@ -274,6 +279,8 @@ static void test_host_adaptor_lifecycle() {
 
   shmemAdaptor->finalize();
   shmemAdaptor->finalize();
+
+  delete fakeComm;
 
   if (g_pe == 0)
     printf("[%s] test_host_adaptor_lifecycle\n",

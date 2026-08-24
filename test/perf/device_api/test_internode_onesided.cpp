@@ -75,12 +75,18 @@ int main(int argc, char *argv[]) {
   }
 
   if (localRegister == 0) {
+#ifdef USE_KUNLUNXIN_ADAPTOR
+    if (proc == 0)
+      printf("Kunlunxin xshmem: running one-sided AlltoAll in raw (-R 0) mode "
+             "(kernel stages via its own symmetric heap).\n");
+#else
     if (proc == 0)
       printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
     return 0;
+#endif
   }
 
   // Create device communicator first — this triggers nvshmem_init()

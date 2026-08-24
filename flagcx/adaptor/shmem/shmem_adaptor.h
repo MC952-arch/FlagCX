@@ -25,7 +25,7 @@ struct flagcxShmemAdaptor {
   const char *name;
 
   // Lifecycle (reference-counted)
-  flagcxResult_t (*init)(int rank, int nRanks);
+  flagcxResult_t (*init)(flagcxComm_t comm);
   flagcxResult_t (*finalize)();
 
   // Symmetric memory management

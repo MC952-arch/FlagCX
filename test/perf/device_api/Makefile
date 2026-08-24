@@ -28,6 +28,11 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
+ifeq ($(USE_KUNLUNXIN), 1)
+ALL_LINK += -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) $(CCL_LINK) \
+            -Wl,-rpath,$(DEVICE_LIB)
+endif
+
 CXXFLAGS += -DCOMPILE_KERNEL
 
 .PHONY: all clean

@@ -43,7 +43,7 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
   }
 
   // Initialize NVSHMEM (reference-counted, safe to call multiple times)
-  flagcxResult_t ret = shmemAdaptor->init(comm->rank, comm->nranks);
+  flagcxResult_t ret = shmemAdaptor->init(comm);
   if (ret != flagcxSuccess) {
     return ret;
   }

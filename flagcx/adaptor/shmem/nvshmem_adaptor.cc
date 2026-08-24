@@ -27,11 +27,11 @@
 // ============================================================
 static int shmemInitRefCount = 0;
 
-static flagcxResult_t nvshmemAdaptorInit(int rank, int nRanks) {
+static flagcxResult_t nvshmemAdaptorInit(flagcxComm_t comm) {
   nvshmem_init();
   if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED)
     return flagcxInternalError;
-  if (nvshmem_my_pe() != rank || nvshmem_n_pes() != nRanks) {
+  if (nvshmem_my_pe() != comm->rank || nvshmem_n_pes() != comm->nranks) {
     nvshmem_finalize();
     return flagcxInternalError;
   }
