@@ -263,6 +263,7 @@ jobs:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
       options: >-
         --hostname=te-cicd
+        --volume /opt/mxdriver:/opt/mxdriver:ro
         --shm-size=500g
         --ipc=host
         --privileged=true
@@ -274,7 +275,7 @@ jobs:
         -e PLATFORM=metax
         -e TORCH_DISTRIBUTED_BACKEND=mccl
         -e FLAGCX_IB_GID_INDEX=0
-        -e LD_LIBRARY_PATH=/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
+        -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
     env:
       FLAGCX_ADAPTOR: metax
       USE_METAX: "1"
@@ -312,7 +313,7 @@ jobs:
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
           echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
           echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
           mx-smi 2>/dev/null || true
 
       - name: Build FlagCX
