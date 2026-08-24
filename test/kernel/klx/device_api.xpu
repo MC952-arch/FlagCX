@@ -1,71 +1,37 @@
-/*************************************************************************
- * Copyright (c) 2026 BAAI. All rights reserved.
- *
- * Kunlunxin (P800) test-only Device API kernels.
- *
- * The AllReduce KERNEL does all COMMUNICATION through
- * CommTraits<XshmemBackend> (Net::put/flush/signal/waitSignal,
- * device_api/xshmem_comm_traits.h selected via device_api/comm_traits.h);
- * PE identity is read via the pe query interfaces (xshmem_my_pe /
- * xshmem_n_pes) directly, keeping the .xpu implementation intuitive
- * (review decision; may be folded into the traits surface later).
- * Host-side setup (symmetric scratch, device-state handle) keeps the
- * native xshmem host API.
- ************************************************************************/
 
-// Traits selection must precede the comm_traits include.
-// (USE_KUNLUNXIN_ADAPTOR and COMPILE_KERNEL come from the Makefile.)
+
 #define FLAGCX_COMM_TRAITS_SHMEM
 
 #include "xpu/kernel/xtdk.h"
 #include "xpu/kernel/xtdk_math.h"
 #include "xpu/kernel/xtdk_io.h"
-#include "xpu/kernel/xtdk_simd.h" // float32x16_t vload/vstore/vvadd SIMD intrinsics
+#include "xpu/kernel/xtdk_simd.h"
 #include "xpu/runtime.h"
 
 #include "bkcl.h"
 #include "xshmem/xshmem.h"
 #include "xshmem/xshmemx.h"
 
-// Public FlagCX enums/typedefs only (flagcx.h is lightweight: stddef+stdint).
-// We deliberately AVOID flagcx_kernel_internal.h / device_api.h here: they pull
-// the whole host core stack (device.h etc.) which is not safe to parse under the
-// xpu3 device target (32-bit size_t breaks static_asserts). Instead we mirror
-// just the leading fields of the two opaque handles we need to read on the host.
 #include "flagcx.h"
 
-// AllReduce device-side encapsulation gateway: comm_traits.h selects the
-// KLX backend and already provides the DeviceAPI alias
-// (= CommTraits<XshmemBackend>; Net/Window/Comm).
 #include "device_api/comm_traits.h"
 
-// Opaque handle typedefs — MUST match tag names in flagcx_kernel_internal.h so
-// the launcher's C++ mangled name matches what the perf/unittest binaries call.
 typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 
-// Minimal host-side mirrors of the LEADING members of the real internal structs
-// (flagcx/adaptor/include/device_api/flagcx_device_internal.h). Only the fields
-// below are read; they are the first members of the real structs, so reading
-// them through these mirrors is layout-correct.
 struct flagcxDevMemInternal {
-  void *rawPtr; // registered buffer base (first member of the real struct)
+  void *rawPtr;
 };
 struct flagcxDevCommInternal {
-  int rank, nRanks;       // baseline, always populated by flagcxDevCommCreate
+  int rank, nRanks;
   int intraRank, intraSize;
 };
 
-// Launcher declaration (mirrors test/kernel/include/device_api.h L14-18).
 flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDataType_t datatype,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream);
 
-// Inter-node one-sided AlltoAll (mirrors device_api.h L21-24). count is the
-// per-peer element count: sendMem holds npes segments of `count` floats
-// (send[dst*count+i] = element i I send to dst); after the op recvMem holds
-// recv[src*count+i] = element i src sent to me.
 flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
                                                flagcxDevMem_t recvMem,
                                                size_t count,
@@ -73,18 +39,8 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
                                                flagcxDevComm_t devComm,
                                                flagcxStream_t stream);
 
-// ----------------------------------------------------------------------------
-// Host-side scratch: the remotely-written symmetric buffers (work_data put
-// target + signal AMO target) that the FlagCX registered buffer does NOT
-// provide. Allocated lazily on the xshmem symmetric heap, reused (and grown)
-// across calls. Sizing follows the tiled example so the put target always fits
-// the P800 C2C put window.
-// ----------------------------------------------------------------------------
 namespace {
 
-// Largest per-tile element count such that BOTH pingpong work buffers
-// (2 x tile*npes floats) together stay inside the ~2GB C2C put window
-// empirically validated in the tiled example, minus a 16M-element margin.
 static long xshmemTileElems(int npes) {
   const long PUT_WIN_BYTES = 2L * 1024 * 1024 * 1024;
   long t = (PUT_WIN_BYTES / 2) / ((long)npes * (long)sizeof(float)) -
@@ -94,8 +50,6 @@ static long xshmemTileElems(int npes) {
   return t;
 }
 
-// Single-launch alltoall tile: BOTH ping-pong stage halves must fit the ~2GB
-// C2C put window together, so the per-tile budget is HALF the tiled version's.
 static long xshmemTileElems1launch(int npes) {
   const long PUT_WIN_ELEMS = (2L * 1024 * 1024 * 1024) / sizeof(float);
   long t = (PUT_WIN_ELEMS / 2) / npes - (16L << 20);
@@ -105,19 +59,17 @@ static long xshmemTileElems1launch(int npes) {
 }
 
 struct XshmemScratch {
-  float *workPing = nullptr;  // symmetric C2C put targets, workElems * npes
-  float *workPong = nullptr;  // floats EACH (pingpong across tiles)
-  uint64_t *signal = nullptr; // symmetric AMO target: 2*clusternum*npes slots
-  long workElems = 0;         // per-pe element capacity of each work buffer
+  float *workPing = nullptr;
+  float *workPong = nullptr;
+  uint64_t *signal = nullptr;
+  long workElems = 0;
   int clusternum = 0;
   int npes = 0;
 };
 
 static XshmemScratch g_scratch;
-static long g_seq = 0; // globally-monotonic tile id: signal value AND pingpong
-                       // buffer selector, continuous across launches
+static long g_seq = 0;
 
-// Ensure scratch can service one tile of up to `tileElems` per pe for `npes`.
 static int ensureScratch(long tileElems, int npes, int clusternum) {
   bool needWork = (g_scratch.workPing == nullptr) || (npes != g_scratch.npes) ||
                   (tileElems > g_scratch.workElems);
@@ -129,9 +81,6 @@ static int ensureScratch(long tileElems, int npes, int clusternum) {
       xshmem_free(g_scratch.workPing);
     if (g_scratch.workPong)
       xshmem_free(g_scratch.workPong);
-    // Each buffer holds npes slots of one tile (slot s = data from source PE
-    // s); the pair pingpongs across tiles so the NEXT tile's C2C transfers
-    // overlap the CURRENT tile's reduce.
     g_scratch.workPing =
         (float *)xshmem_calloc((size_t)tileElems * npes, sizeof(float), 1024);
     g_scratch.workPong =
@@ -143,8 +92,6 @@ static int ensureScratch(long tileElems, int npes, int clusternum) {
   if (needSig) {
     if (g_scratch.signal)
       xshmem_free(g_scratch.signal);
-    // 1-kernel signal layout: [pingpong 2][clusterid][source pe] ->
-    // 2*clusternum*npes slots.
     g_scratch.signal = (uint64_t *)xshmem_calloc(
         (size_t)2 * clusternum * npes, sizeof(uint64_t), sizeof(uint64_t));
     if (!g_scratch.signal)
@@ -155,53 +102,9 @@ static int ensureScratch(long tileElems, int npes, int clusternum) {
   return 0;
 }
 
-} // namespace
+}
 
-// ----------------------------------------------------------------------------
-// SINGLE-LAUNCH IN-PLACE all_reduce (SUM), streaming/tiled, ported from the
-// pipelined xshmem_allreduce_inplace_1k example and re-expressed on the
-// CommTraits<XshmemBackend>::Net semantic surface.
-//
-// SEGMENT-based partition (race-free in place): each cluster OWNS segment
-// [start,end) of the current tile and does BOTH roles for it -- sends it to
-// EVERY peer, waits for every peer's segment, then reduces and writes
-// io_data[start,end) in place. The same cluster both reads (put source) and
-// writes (reduce) its segment; no other cluster touches it.
-//
-// The WHOLE all_reduce runs in ONE launch: the C2C-window tiling is walked
-// INSIDE the kernel, and two pingpong work buffers overlap the communication
-// of tile t+1 with the reduce of tile t:
-//   prologue:         issue puts(tile 0)                       (non-blocking)
-//   for each tile ti: finish puts(ti)   [flush + signal/wait handshake]
-//                     issue  puts(ti+1) -> other buffer        (non-blocking)
-//                     reduce (ti) -> io_data                   (overlapped)
-// The buffer selector is (seq & 1) with seq GLOBALLY monotonic across
-// launches, so consecutive tiles -- including across host calls -- always
-// alternate buffers: a peer writes tile s+1 into my buffer only after I
-// signaled tile s, which implies my reduce of tile s-1 (the previous user of
-// that buffer) already finished.
-//
-// Net mapping (ordering identical to the direct-xshmem original):
-//   put loop     -> Net::put(..., None)     (non-blocking, overlapped)
-//   quiet loop   -> Net::flush(AcqRel)      (sync + per-peer cooperative quiet)
-//   signal loop  -> Net::signal(SignalAdd)  (SET stamp into per-src slot)
-//   wait loop    -> Net::waitSignal(CMP_GE stamp; stamps are monotonic)
-// signal layout: [pingpong 2][clusterid][source pe] -> 2*clusternum*npes.
-// XSHMEM_DEVICE_INIT / XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD come from the
-// traits header (they declare kernel-scope __local__/__shared__ state, so
-// they must stay macros). rank/nRanks come from the pe query interfaces
-// (xshmem_my_pe / xshmem_n_pes), keeping the kernel intuitive (review
-// decision); the values equal devComm->rank / devComm->nRanks.
-// ----------------------------------------------------------------------------
 
-// Issue this cluster's segment of the tile at `dataWin` (rawPtr = tile base)
-// to EVERY peer's work slot [rank*stride + start ..): one non-blocking
-// Net::put per peer; completion is enforced later by finishSegPuts.
-// `stride` is the FIXED per-source slot stride (the allocated slot size), NOT
-// the per-tile tlen: the pingpong buffers are REUSED across tiles of
-// DIFFERENT tlen (the last tile is smaller), so the slot layout MUST be
-// tile-independent -- indexing by tlen would make a small tile's put land
-// where a big tile's reduce reads a DIFFERENT source.
 static __device__ inline void
 issueSegPuts(DeviceAPI::Net net, DeviceAPI::Team world,
              DeviceAPI::Window workWin, DeviceAPI::Window dataWin, int tlen,
@@ -220,11 +123,6 @@ issueSegPuts(DeviceAPI::Net net, DeviceAPI::Team world,
   }
 }
 
-// Complete the already-issued puts for one tile (flush = sync + per-peer
-// cooperative quiet) and run the all-to-all signal handshake so MY current
-// work buffer holds every source PE's segment. `seq` is the globally
-// monotonic tile id: stamp = seq+1 (waited CMP_GE; stamps only grow, so the
-// slots never need resetting), slot parity = seq&1.
 static __device__ inline void
 finishSegPuts(DeviceAPI::Net net, DeviceAPI::Team world, int seq, int rank,
               int nRanks, int clusterid, int clusternum,
@@ -233,10 +131,6 @@ finishSegPuts(DeviceAPI::Net net, DeviceAPI::Team world, int seq, int rank,
 
   uint64_t stamp = (uint64_t)seq + 1;
   int sigBase = (seq & 1) * clusternum * nRanks + clusterid * nRanks;
-  // Arrival stamp into slot [parity][clusterid][src=rank] on every PE
-  // (SET-only C2C signal -> per-source slots). Net::signal is core0-gated
-  // with no internal syncs; one sync after the loop, exactly like the
-  // direct-xshmem original.
   for (int p = 0; p < nRanks; ++p) {
     flagcxDevNet_SignalAdd arrive;
     arrive.signal = (flagcxDevNetSignal_t)(sigBase + rank);
@@ -245,8 +139,6 @@ finishSegPuts(DeviceAPI::Net net, DeviceAPI::Team world, int seq, int rank,
                flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
   }
   coop.sync();
-  // Wait until ALL nRanks sources delivered this tile's rows (core0-gated
-  // waits, one sync after the loop -- same sequence as the original).
   for (int s = 0; s < nRanks; ++s) {
     net.waitSignal(coop, (flagcxDevNetSignal_t)(sigBase + s), stamp, 64,
                    flagcxDeviceMemoryOrderRelaxed);
@@ -254,12 +146,6 @@ finishSegPuts(DeviceAPI::Net net, DeviceAPI::Team world, int seq, int rank,
   coop.sync();
 }
 
-// Reduce work_buf[s*stride + i] over sources s and write io_tile[i] in place,
-// for i in this cluster's segment of [0,tlen). Pure xtdk compute (SIMD adds,
-// LM pingpong staging). `local_buf` MUST be a PRIVATE per-core LM scratch,
-// NOT DeviceAPI::localScratch(): this reduce overlaps the still-in-flight
-// cluster put of the NEXT tile, which stages through that shared xshmem LM
-// buffer -- sharing it would leak reduce partial sums into the put payload.
 static __device__ inline void
 reduceSeg(__global_ptr__ float *io_tile, __global_ptr__ float *work_buf,
           int tlen, int stride, int nRanks, int clusterid, int clusternum,
@@ -327,13 +213,8 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
   XSHMEM_DEVICE_INIT(state_h);
   int rank = xshmem_my_pe();
   int nRanks = xshmem_n_pes();
-  // Every cluster puts to EVERY peer, so up to `clusternum` clusters target
-  // each dst rank.
   XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(clusternum);
 
-  // PRIVATE per-core LM scratch for the reduce, independent of the shared
-  // xshmem-internal LM buffer that the in-flight cluster puts of the NEXT
-  // tile stage through (see reduceSeg).
   __local__ __simd__ char reduce_lm[XSHMEMI_LOCAL_BUF_LEN];
 
   DeviceAPI::Comm comm;
@@ -358,8 +239,6 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
   world.rank = rank;
   world.stride = 1;
 
-  // Fixed per-source slot stride = the allocated per-slot size; every tile's
-  // tlen is <= stride, so all puts/reduces index the buffers identically.
   int stride = tile_elems < num_elems ? tile_elems : num_elems;
 
   DeviceAPI::Window pingWin, pongWin;
@@ -370,7 +249,6 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
   pongWin.rawPtr = work_pong;
   pongWin.allocSize = (size_t)nRanks * (size_t)stride * sizeof(float);
 
-  // Prologue: kick off tile 0's puts into its parity buffer (non-blocking).
   {
     DeviceAPI::Window dataWin;
     dataWin.symBase = io_data;
@@ -387,12 +265,8 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
     int seq = seq_base + ti;
     __global_ptr__ float *cur_buf = (seq & 1) ? work_pong : work_ping;
 
-    // Complete tile ti's puts + handshake: cur_buf now holds all sources.
     finishSegPuts(net, world, seq, rank, nRanks, clusterid, clusternum, coop);
 
-    // Prefetch tile ti+1 into the OTHER buffer (non-blocking) so its C2C
-    // transfer overlaps the reduce below; its flush/handshake happens at the
-    // top of the next iteration.
     long nt0 = t0 + tile_elems;
     if (nt0 < num_elems) {
       int ntlen = (int)((num_elems - nt0 < tile_elems) ? (num_elems - nt0)
@@ -405,7 +279,6 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
                    ntlen, stride, rank, nRanks, clusterid, clusternum, coop);
     }
 
-    // Reduce tile ti in place (overlaps tile ti+1's in-flight transfers).
     reduceSeg(io_data + t0, cur_buf, tlen, stride, nRanks, clusterid,
               clusternum, cid, corenum, (float *)reduce_lm,
               (int)XSHMEMI_LOCAL_BUF_LEN);
@@ -413,39 +286,28 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
   return;
 }
 
-// ----------------------------------------------------------------------------
-// device_api.h L14-18: intra-node AllReduce (SUM).
-// In-place on the FlagCX registered buffer devMem->rawPtr (count floats).
-// ----------------------------------------------------------------------------
 flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDataType_t datatype,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream) {
   if (devComm == nullptr || devMem == nullptr)
     return flagcxInternalError;
-  // Only float32 SUM is supported by this native path for now.
   if (datatype != flagcxFloat32)
     return flagcxInvalidArgument;
   if (count == 0)
     return flagcxSuccess;
 
-  float *buf = (float *)devMem->rawPtr; // in-place: single input/output buffer
+  float *buf = (float *)devMem->rawPtr;
   if (buf == nullptr)
     return flagcxInternalError;
 
-  // Intra-node = the whole (single-node) job here. Use the global rank count.
   int npes = devComm->nRanks;
   if (npes <= 0)
     return flagcxInternalError;
 
-  // Launch geometry: the segment-based partition has no clusternum-divisible-
-  // by-npes requirement. 12 clusters x 16 cores matches the validated
-  // example (P800 cluster C2C put is only correct with <=16 cores/cluster).
   int clusternum = 12;
   int corenum = 16;
 
-  // flagcxStream's first member is the CUDA-compat stream handle, reinterpreted
-  // as the XPU launch stream for <<<>>>.
   XPUStream cs = (XPUStream)(*(void **)stream);
   void *state = xshmem_get_xshmemi_device_state_h();
 
@@ -454,15 +316,9 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
   if (ensureScratch(slotElems, npes, clusternum) != 0)
     return flagcxSystemError;
 
-  // Guard the P800 C2C windows: remote writes only reach the low ~2GB of the
-  // peer heap offset; a remote-written symmetric buffer beyond that fails
-  // silently (receiver hangs on the wait) or faults in-kernel (-714 / channel
-  // status 700). The heap base is inferred as the lowest known symmetric
-  // address (the heap is a bump allocator), turning an otherwise silent hang
-  // into an explicit error before any launch.
   {
     const unsigned long long C2C_WIN = 2ULL * 1024 * 1024 * 1024;
-    char *base = (char *)buf; // registered buffer lives on the symmetric heap
+    char *base = (char *)buf;
     if ((char *)g_scratch.workPing < base)
       base = (char *)g_scratch.workPing;
     if ((char *)g_scratch.workPong < base)
@@ -482,14 +338,6 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
       return flagcxSystemError;
   }
 
-  // ONE fused launch per super-chunk: the kernel walks the C2C-window tiles
-  // INTERNALLY and pipelines tile t+1's transfer with tile t's reduce.
-  // A super-chunk only caps the per-launch element count to int range
-  // (kernel params are int, device size_t is 32-bit); ordinary sizes take
-  // exactly ONE launch. g_seq advances by the tile count so stamps and the
-  // pingpong parity stay continuous across launches AND host calls (every
-  // rank calls with the same count sequence, so the scratch layout and seq
-  // advance identically everywhere).
   long maxPerLaunch = (0x7fffffffL / tileElems) * tileElems;
   for (long off = 0; off < (long)count; off += maxPerLaunch) {
     long n = (long)count - off;
@@ -502,28 +350,11 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
         state, (int)n, tileArg, (int)g_seq);
     g_seq += ntiles;
   }
-  // Ensure the kernel's in-place result has landed in buf BEFORE the caller's
-  // post-kernel readback copy (recvbuff<-regBuff). On P800 the caller's copy is
-  // a CUDA-compat cudaMemcpyAsync that does NOT serialize against our XPU-native
-  // <<<>>> launch on the same stream handle, so without this wait the readback
-  // races and captures buf's PRE-kernel contents.
   xpu_wait(cs);
 
   return flagcxSuccess;
 }
 
-// ----------------------------------------------------------------------------
-// SINGLE-LAUNCH all_to_all, ported from xshmem_all_to_all_1launch.xpu.
-//
-// The tile loop lives INSIDE the kernel, so the WHOLE all_to_all is one launch
-// for any `count`. Two ping-pong stage halves overlap the put of tile ti+1 with
-// the copy-out of tile ti (cross-PE WAR: a launch boundary is PE-local and does
-// NOT order peers). The stage is ONE symmetric allocation of 2*stride*npes
-// floats back-to-back; `seq` is a globally-monotonic tile id (signal value =
-// seq+1, ping-pong slot = seq&1) advanced across calls. The copy-out uses a
-// PRIVATE per-core LM scratch (not get_xshmemi_local_buf), because it overlaps
-// the next tile's in-flight cluster put which stages through that shared buffer.
-// ----------------------------------------------------------------------------
 __global__ void
 flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
                                   float *recv_stage, uint64_t *signal, int count,
@@ -541,7 +372,6 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
   int sub_clusternum = clusternum / nRanks;
   int sub_clusterid = clusterid % sub_clusternum;
   int dst_pe = clusterid / sub_clusternum;
-  // Only this dst_pe's sub-clusters target it.
   XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(sub_clusternum);
 
   DeviceAPI::Comm comm;
@@ -566,10 +396,8 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
   world.rank = rank;
   world.stride = 1;
 
-  // PRIVATE per-core LM scratch (see header note).
   __local__ __simd__ char copy_lm[XSHMEMI_LOCAL_BUF_LEN];
 
-  // FIXED per-source slot stride (stage reused across tiles of different tlen).
   int stride = min(tile_elems, count);
 
   __global_ptr__ float *stage_ping = recv_stage;
@@ -581,7 +409,6 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
   srcWin.allocSize = (size_t)nRanks * (size_t)count * sizeof(float);
   dstWin.allocSize = (size_t)nRanks * (size_t)stride * sizeof(float);
 
-  // Prologue: kick off tile 0's put into the ping buffer (non-blocking).
   {
     int tlen0 = min(tile_elems, count);
     int s0, e0;
@@ -602,8 +429,6 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
     int seq = seq_base + ti;
     __global_ptr__ float *cur_stage = (ti & 1) ? stage_pong : stage_ping;
 
-    // Complete tile ti's put + mirror handshake: cur_stage now holds dst_pe's
-    // slice for me.
     net.flush(coop, flagcxDeviceMemoryOrderAcqRel);
 
     int sigBase = (seq & 1) * sub_clusternum * nRanks + sub_clusterid * nRanks;
@@ -618,8 +443,6 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
                    flagcxDeviceMemoryOrderRelaxed);
     coop.sync();
 
-    // Prefetch tile ti+1 into the OTHER stage (non-blocking) so its C2C
-    // transfer overlaps the copy below.
     int nt0 = t0 + tile_elems;
     if (nt0 < count) {
       int ntlen = min(tile_elems, count - nt0);
@@ -638,7 +461,6 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
               flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
     }
 
-    // Copy tile ti out (overlaps tile ti+1's in-flight C2C transfer).
     int start, end;
     partition(sub_clusterid, sub_clusternum, tlen, 1024 / sizeof(float), &start,
               &end);
@@ -659,13 +481,10 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
 }
 
 namespace {
-// Separate scratch for all_to_all: recv_stage (symmetric C2C put target) +
-// signal (AMO). recv_stage holds 2*tileElems*npes floats (two ping-pong halves
-// back-to-back for the single-launch tile loop), reused.
 struct XshmemA2AScratch {
   float *stage = nullptr;
   uint64_t *signal = nullptr;
-  long stageElems = 0; // per-pe per-half element capacity of `stage`
+  long stageElems = 0;
   int clusternum = 0;
   int npes = 0;
 };
@@ -698,13 +517,8 @@ static int ensureA2AScratch(long tileElems, int npes, int clusternum) {
   g_a2a.npes = npes;
   return 0;
 }
-} // namespace
+}
 
-// ----------------------------------------------------------------------------
-// device_api.h L21-24: inter-node one-sided AlltoAll (SUM-free data movement).
-// send/recv are the FlagCX registered buffers (plain DRAM to the kernel); each
-// holds npes segments of `count` floats. Uses native xshmem C2C put + signal.
-// ----------------------------------------------------------------------------
 flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
                                                flagcxDevMem_t recvMem,
                                                size_t count,
@@ -741,9 +555,6 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
   if (ensureA2AScratch(firstTile, npes, clusternum) != 0)
     return flagcxSystemError;
 
-  // SINGLE launch: the tile loop lives INSIDE the kernel. `seq` is a
-  // globally-monotonic tile id (signal value / ping-pong slot); advance it by
-  // the number of tiles so every tile of every call gets a fresh value.
   flagcxXshmemAlltoall1launchKernel<<<clusternum, corenum, cs>>>(
       send, recv, g_a2a.stage, g_a2a.signal, (int)count, (int)tileElems,
       (int)g_a2a_seq, state);
