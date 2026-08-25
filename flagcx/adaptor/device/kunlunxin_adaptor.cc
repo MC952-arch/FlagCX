@@ -91,7 +91,8 @@ flagcxResult_t kunlunAdaptorSetDevice(int dev) {
   // native xshmem device state is created on the intended card.
   int xret = xpu_set_device(dev);
   if (xret != 0) {
-    WARN("kunlunAdaptorSetDevice: xpu_set_device(%d) failed with %d", dev, xret);
+    WARN("kunlunAdaptorSetDevice: xpu_set_device(%d) failed with %d", dev,
+         xret);
     return flagcxUnhandledDeviceError;
   }
   return flagcxSuccess;

@@ -22,8 +22,8 @@
 #define FLAGCX_COMM_TRAITS_SHMEM
 #define USE_NVIDIA_ADAPTOR
 #include "device_api/comm_traits.h"
-#include "shmem_adaptor.h"
 #include "global_comm.h"
+#include "shmem_adaptor.h"
 
 using DC = CommTraits<NvshmemBackend>;
 

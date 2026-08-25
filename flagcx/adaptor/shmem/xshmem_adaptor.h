@@ -8,9 +8,8 @@
 #ifndef FLAGCX_XSHMEM_ADAPTOR_H_
 #define FLAGCX_XSHMEM_ADAPTOR_H_
 
-#include <xshmem/xshmem.h>
 #include <stdint.h>
-
+#include <xshmem/xshmem.h>
 
 struct flagcxShmemCommInternal {
   int rank, nRanks;
@@ -25,8 +24,7 @@ struct flagcxShmemCommInternal {
   int counterCount;
   uint64_t *shadowBuffer;
 
-  uint64_t
-      *gridSyncState;
+  uint64_t *gridSyncState;
 };
 
 #endif

@@ -19,7 +19,6 @@
 #include <xshmem/xshmem.h>
 #include <xshmem/xshmemx.h>
 
-
 // ============================================================
 // Lifecycle: reference-counted init/finalize
 // ============================================================
@@ -74,10 +73,10 @@ static flagcxResult_t xshmemAdaptorFree(void *ptr) {
 // ============================================================
 static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm);
 
-  static flagcxResult_t
-  xshmemAdaptorDevCommCreate(flagcxComm_t comm,
-                            const struct flagcxDevCommRequirements *reqs,
-                            flagcxShmemComm_t *shmemComm) {
+static flagcxResult_t
+xshmemAdaptorDevCommCreate(flagcxComm_t comm,
+                           const struct flagcxDevCommRequirements *reqs,
+                           flagcxShmemComm_t *shmemComm) {
   auto *sc = new flagcxShmemCommInternal();
   memset(sc, 0, sizeof(*sc));
   sc->intraTeam = XSHMEM_TEAM_INVALID;
@@ -123,10 +122,9 @@ static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm);
   // Validate topology
   {
     if (sc->intraSize > 0 && sc->nRanks % sc->intraSize != 0) {
-      WARN(
-          "xshmem devCommCreate: nRanks (%d) not divisible by intraSize (%d); "
-          "non-uniform topologies are not supported",
-          sc->nRanks, sc->intraSize);
+      WARN("xshmem devCommCreate: nRanks (%d) not divisible by intraSize (%d); "
+           "non-uniform topologies are not supported",
+           sc->nRanks, sc->intraSize);
       goto fail;
     }
     int interSize = (sc->intraSize > 0) ? sc->nRanks / sc->intraSize : 1;
@@ -159,8 +157,7 @@ fail:
 // ============================================================
 // Device Comm Destroy
 // ============================================================
-static flagcxResult_t
-xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
+static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
   if (shmemComm == nullptr)
     return flagcxSuccess;
 

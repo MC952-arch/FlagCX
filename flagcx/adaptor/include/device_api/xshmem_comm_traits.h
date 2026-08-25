@@ -6,7 +6,8 @@
 #include <cstdint>
 
 #ifndef __xpu__
-#error "xshmem_comm_traits.h requires the XPU toolchain: compile with xpu-clang --xpu-arch=xpu3 (host pass included)"
+#error                                                                         \
+    "xshmem_comm_traits.h requires the XPU toolchain: compile with xpu-clang --xpu-arch=xpu3 (host pass included)"
 #endif
 #include "xpu/kernel/xtdk.h"
 #include "xshmem/xshmem.h"
@@ -85,7 +86,7 @@ struct CommTraits<XshmemBackend> {
 
     XSHMEM_FGP uint64_t *gridSyncState;
 
-    XSHMEM_FGP void *devStateHandle; 
+    XSHMEM_FGP void *devStateHandle;
 
     XSHMEM_DEVICE_INLINE int getIntraRank() const { return 0; }
     XSHMEM_DEVICE_INLINE int getIntraSize() const { return 0; }
@@ -190,15 +191,15 @@ struct CommTraits<XshmemBackend> {
 
     // ---- One-sided: putValue ----
     template <typename T, typename RA, typename Coop, typename Desc>
-    XSHMEM_DEVICE_INLINE void
-    putValue(Team, int, Window, size_t, T, RA, Coop, Desc, flagcxDeviceScope_t,
-             flagcxDeviceScope_t) const {}
+    XSHMEM_DEVICE_INLINE void putValue(Team, int, Window, size_t, T, RA, Coop,
+                                       Desc, flagcxDeviceScope_t,
+                                       flagcxDeviceScope_t) const {}
 
     // ---- One-sided: signal ----
     template <typename RA, typename Coop, typename Desc>
-    XSHMEM_DEVICE_INLINE void
-    signal(Team team, int peer, RA ra, Coop coop, Desc desc,
-           flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
+    XSHMEM_DEVICE_INLINE void signal(Team team, int peer, RA ra, Coop coop,
+                                     Desc desc, flagcxDeviceScope_t ar,
+                                     flagcxDeviceScope_t es) const {
       (void)desc;
       (void)ar;
       (void)es;
@@ -209,8 +210,8 @@ struct CommTraits<XshmemBackend> {
 
     // ---- Ordering: flush ----
     template <typename Coop>
-    XSHMEM_DEVICE_INLINE void
-    flush(Coop coop, flagcxDeviceMemoryOrder_t order) const {
+    XSHMEM_DEVICE_INLINE void flush(Coop coop,
+                                    flagcxDeviceMemoryOrder_t order) const {
       if (order == flagcxDeviceMemoryOrderAcqRel) {
         coop.sync();
         for (int pe = 0; pe < _dc.nRanks; ++pe)
@@ -251,11 +252,11 @@ struct CommTraits<XshmemBackend> {
       return nullptr;
     }
 
-    XSHMEM_DEVICE_INLINE void
-    increaseSignalShadow(flagcxDevNetSignal_t, uint64_t) const {}
+    XSHMEM_DEVICE_INLINE void increaseSignalShadow(flagcxDevNetSignal_t,
+                                                   uint64_t) const {}
 
-    XSHMEM_DEVICE_INLINE uint64_t
-    readSignal(flagcxDevNetSignal_t, int, flagcxDeviceMemoryOrder_t) const {
+    XSHMEM_DEVICE_INLINE uint64_t readSignal(flagcxDevNetSignal_t, int,
+                                             flagcxDeviceMemoryOrder_t) const {
       return 0;
     }
 
@@ -266,12 +267,12 @@ struct CommTraits<XshmemBackend> {
 
     // ---- Counter interfaces ----
     template <typename Coop>
-    XSHMEM_DEVICE_INLINE void
-    waitCounter(Coop, flagcxDevNetCounter_t, uint64_t, int,
-                flagcxDeviceMemoryOrder_t) const {}
+    XSHMEM_DEVICE_INLINE void waitCounter(Coop, flagcxDevNetCounter_t, uint64_t,
+                                          int,
+                                          flagcxDeviceMemoryOrder_t) const {}
 
-    XSHMEM_DEVICE_INLINE uint64_t
-    readCounter(flagcxDevNetCounter_t, int, flagcxDeviceMemoryOrder_t) const {
+    XSHMEM_DEVICE_INLINE uint64_t readCounter(flagcxDevNetCounter_t, int,
+                                              flagcxDeviceMemoryOrder_t) const {
       return 0;
     }
 
@@ -282,14 +283,14 @@ struct CommTraits<XshmemBackend> {
 
     // ---- Two-sided: send/recv/term/wait ----
     template <typename Coop>
-    XSHMEM_DEVICE_INLINE flagcxResult_t
-    send(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+    XSHMEM_DEVICE_INLINE flagcxResult_t send(Coop, Window, size_t, size_t,
+                                             flagcxDataType_t, int) const {
       return flagcxSuccess;
     }
 
     template <typename Coop>
-    XSHMEM_DEVICE_INLINE flagcxResult_t
-    recv(Coop, Window, size_t, size_t, flagcxDataType_t, int) const {
+    XSHMEM_DEVICE_INLINE flagcxResult_t recv(Coop, Window, size_t, size_t,
+                                             flagcxDataType_t, int) const {
       return flagcxSuccess;
     }
 
@@ -305,14 +306,14 @@ struct CommTraits<XshmemBackend> {
 
     // ---- One-sided: get ----
     template <typename Coop>
-    XSHMEM_DEVICE_INLINE void
-    get(Team, int, Window, size_t, Window, size_t, size_t, Coop) const {}
+    XSHMEM_DEVICE_INLINE void get(Team, int, Window, size_t, Window, size_t,
+                                  size_t, Coop) const {}
 
   private:
     // ---- Cooperative data put (all cores issue; single non-blocking call;
-    static XSHMEM_DEVICE_INLINE void
-    putData(XSHMEM_FGP float *dst, XSHMEM_FGP float *src, size_t bytes,
-            int pe) {
+    static XSHMEM_DEVICE_INLINE void putData(XSHMEM_FGP float *dst,
+                                             XSHMEM_FGP float *src,
+                                             size_t bytes, int pe) {
       xshmemx_float_put_nbi_cluster(dst, src, bytes / sizeof(float), pe);
     }
 
@@ -325,8 +326,8 @@ struct CommTraits<XshmemBackend> {
     }
 
     // ---- signal dispatch ----
-    static XSHMEM_DEVICE_INLINE void
-    signalImpl(const Comm &_dc, int pe, flagcxDevNet_SignalAdd ra) {
+    static XSHMEM_DEVICE_INLINE void signalImpl(const Comm &_dc, int pe,
+                                                flagcxDevNet_SignalAdd ra) {
       if (core_id() == 0) {
         XSHMEM_FGP uint64_t *slot = _dc.signalBuffer + (int)ra.signal;
         xshmemx_signal_op(slot, ra.value, XSHMEM_SIGNAL_SET, pe);
