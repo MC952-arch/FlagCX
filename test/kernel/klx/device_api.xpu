@@ -1,20 +1,19 @@
-
-
 #define FLAGCX_COMM_TRAITS_SHMEM
-
+#include "bkcl.h"
+#include "device_api/comm_traits.h"
+#include "flagcx.h"
 #include "xpu/kernel/xtdk.h"
-#include "xpu/kernel/xtdk_math.h"
 #include "xpu/kernel/xtdk_io.h"
+#include "xpu/kernel/xtdk_math.h"
 #include "xpu/kernel/xtdk_simd.h"
 #include "xpu/runtime.h"
-
-#include "bkcl.h"
 #include "xshmem/xshmem.h"
 #include "xshmem/xshmemx.h"
 
-#include "flagcx.h"
-
-#include "device_api/comm_traits.h"
+__global__ void flagcxXshmemRendezvousKernel(void *xshmemi_device_state_h) {
+  XSHMEM_DEVICE_INIT(xshmemi_device_state_h);
+  xshmem_barrier_all();
+}
 
 typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
@@ -32,19 +31,17 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream);
 
-flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
-                                               flagcxDevMem_t recvMem,
-                                               size_t count,
-                                               flagcxDataType_t datatype,
-                                               flagcxDevComm_t devComm,
-                                               flagcxStream_t stream);
+flagcxResult_t
+launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                                size_t count, flagcxDataType_t datatype,
+                                flagcxDevComm_t devComm, flagcxStream_t stream);
 
 namespace {
 
 static long xshmemTileElems(int npes) {
   const long PUT_WIN_BYTES = 2L * 1024 * 1024 * 1024;
-  long t = (PUT_WIN_BYTES / 2) / ((long)npes * (long)sizeof(float)) -
-           (16L << 20);
+  long t =
+      (PUT_WIN_BYTES / 2) / ((long)npes * (long)sizeof(float)) - (16L << 20);
   if (t < (1L << 20))
     t = (1L << 20);
   return t;
@@ -102,8 +99,16 @@ static int ensureScratch(long tileElems, int npes, int clusternum) {
   return 0;
 }
 
-}
+} // namespace
 
+static __device__ inline void tile_range(int id, int num, int stride, int tlen,
+                                         int *start, int *end) {
+  partition(id, num, stride, 1024 / (int)sizeof(float), start, end);
+  if (*start > tlen)
+    *start = tlen;
+  if (*end > tlen)
+    *end = tlen;
+}
 
 static __device__ inline void
 issueSegPuts(DeviceAPI::Net net, DeviceAPI::Team world,
@@ -111,22 +116,23 @@ issueSegPuts(DeviceAPI::Net net, DeviceAPI::Team world,
              int stride, int rank, int nRanks, int clusterid, int clusternum,
              DeviceAPI::CoopBlock coop) {
   int start, end;
-  partition(clusterid, clusternum, tlen, 1024 / (int)sizeof(float), &start,
-            &end);
+  tile_range(clusterid, clusternum, stride, tlen, &start, &end);
+  if (end <= start)
+    return;
   for (int p = 0; p < nRanks; ++p) {
-    net.put(world, p, workWin,
-            ((size_t)rank * stride + start) * sizeof(float), dataWin,
-            (size_t)start * sizeof(float),
+    net.put(world, p, workWin, ((size_t)rank * stride + start) * sizeof(float),
+            dataWin, (size_t)start * sizeof(float),
             (size_t)(end - start) * sizeof(float), flagcxDevNet_None{},
             flagcxDevNet_None{}, coop, flagcxDevNet_None{},
             flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
   }
 }
 
-static __device__ inline void
-finishSegPuts(DeviceAPI::Net net, DeviceAPI::Team world, int seq, int rank,
-              int nRanks, int clusterid, int clusternum,
-              DeviceAPI::CoopBlock coop) {
+static __device__ inline void finishSegPuts(DeviceAPI::Net net,
+                                            DeviceAPI::Team world, int seq,
+                                            int rank, int nRanks, int clusterid,
+                                            int clusternum,
+                                            DeviceAPI::CoopBlock coop) {
   net.flush(coop, flagcxDeviceMemoryOrderAcqRel);
 
   uint64_t stamp = (uint64_t)seq + 1;
@@ -151,8 +157,9 @@ reduceSeg(__global_ptr__ float *io_tile, __global_ptr__ float *work_buf,
           int tlen, int stride, int nRanks, int clusterid, int clusternum,
           int cid, int corenum, float *local_buf, int local_buf_bytes) {
   int start, end;
-  partition(clusterid, clusternum, tlen, 1024 / (int)sizeof(float), &start,
-            &end);
+  tile_range(clusterid, clusternum, stride, tlen, &start, &end);
+  if (end <= start)
+    return;
 
   int local_buf_len = local_buf_bytes / 2 / (int)sizeof(float);
   int half_buf_len = local_buf_bytes / 4 / (int)sizeof(float);
@@ -260,8 +267,8 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
 
   int ti = 0;
   for (long t0 = 0; t0 < num_elems; t0 += tile_elems, ++ti) {
-    int tlen = (int)((num_elems - t0 < tile_elems) ? (num_elems - t0)
-                                                   : tile_elems);
+    int tlen =
+        (int)((num_elems - t0 < tile_elems) ? (num_elems - t0) : tile_elems);
     int seq = seq_base + ti;
     __global_ptr__ float *cur_buf = (seq & 1) ? work_pong : work_ping;
 
@@ -313,8 +320,16 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 
   long tileElems = xshmemTileElems(npes);
   long slotElems = ((long)count < tileElems) ? (long)count : tileElems;
+  bool arAllocated =
+      (g_scratch.workPing == nullptr) || (g_scratch.signal == nullptr) ||
+      (npes != g_scratch.npes) || (slotElems > g_scratch.workElems) ||
+      (clusternum != g_scratch.clusternum);
   if (ensureScratch(slotElems, npes, clusternum) != 0)
     return flagcxSystemError;
+  if (arAllocated) {
+    flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
+    xpu_wait(cs);
+  }
 
   {
     const unsigned long long C2C_WIN = 2ULL * 1024 * 1024 * 1024;
@@ -355,11 +370,9 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
   return flagcxSuccess;
 }
 
-__global__ void
-flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
-                                  float *recv_stage, uint64_t *signal, int count,
-                                  int tile_elems, int seq_base,
-                                  void *xshmemi_device_state_h) {
+__global__ void flagcxXshmemAlltoall1launchKernel(
+    float *send_data, float *recv_data, float *recv_stage, uint64_t *signal,
+    int count, int tile_elems, int seq_base, void *xshmemi_device_state_h) {
   int clusterid = cluster_id();
   int clusternum = cluster_num();
   int cid = core_id();
@@ -412,22 +425,26 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
   {
     int tlen0 = min(tile_elems, count);
     int s0, e0;
-    partition(sub_clusterid, sub_clusternum, tlen0, 1024 / sizeof(float), &s0,
-              &e0);
-    dstWin.symBase = stage_ping;
-    dstWin.rawPtr = stage_ping;
-    net.put(world, dst_pe, dstWin, ((size_t)rank * stride + s0) * sizeof(float),
-            srcWin, ((size_t)dst_pe * count + s0) * sizeof(float),
-            (size_t)(e0 - s0) * sizeof(float), flagcxDevNet_None{},
-            flagcxDevNet_None{}, coop, flagcxDevNet_None{},
-            flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+    tile_range(sub_clusterid, sub_clusternum, stride, tlen0, &s0, &e0);
+    __global_ptr__ float *first_stage =
+        (seq_base & 1) ? stage_pong : stage_ping;
+    dstWin.symBase = first_stage;
+    dstWin.rawPtr = first_stage;
+    if (e0 > s0) {
+      net.put(world, dst_pe, dstWin,
+              ((size_t)rank * stride + s0) * sizeof(float), srcWin,
+              ((size_t)dst_pe * count + s0) * sizeof(float),
+              (size_t)(e0 - s0) * sizeof(float), flagcxDevNet_None{},
+              flagcxDevNet_None{}, coop, flagcxDevNet_None{},
+              flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+    }
   }
 
   int ti = 0;
   for (int t0 = 0; t0 < count; t0 += tile_elems, ++ti) {
     int tlen = min(tile_elems, count - t0);
     int seq = seq_base + ti;
-    __global_ptr__ float *cur_stage = (ti & 1) ? stage_pong : stage_ping;
+    __global_ptr__ float *cur_stage = (seq & 1) ? stage_pong : stage_ping;
 
     net.flush(coop, flagcxDeviceMemoryOrderAcqRel);
 
@@ -447,34 +464,36 @@ flagcxXshmemAlltoall1launchKernel(float *send_data, float *recv_data,
     if (nt0 < count) {
       int ntlen = min(tile_elems, count - nt0);
       int ns, ne;
-      partition(sub_clusterid, sub_clusternum, ntlen, 1024 / sizeof(float), &ns,
-                &ne);
+      tile_range(sub_clusterid, sub_clusternum, stride, ntlen, &ns, &ne);
       __global_ptr__ float *next_stage =
-          ((ti + 1) & 1) ? stage_pong : stage_ping;
+          ((seq + 1) & 1) ? stage_pong : stage_ping;
       dstWin.symBase = next_stage;
       dstWin.rawPtr = next_stage;
-      net.put(world, dst_pe, dstWin,
-              ((size_t)rank * stride + ns) * sizeof(float),
-              srcWin, ((size_t)dst_pe * count + nt0 + ns) * sizeof(float),
-              (size_t)(ne - ns) * sizeof(float), flagcxDevNet_None{},
-              flagcxDevNet_None{}, coop, flagcxDevNet_None{},
-              flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+      if (ne > ns) {
+        net.put(world, dst_pe, dstWin,
+                ((size_t)rank * stride + ns) * sizeof(float), srcWin,
+                ((size_t)dst_pe * count + nt0 + ns) * sizeof(float),
+                (size_t)(ne - ns) * sizeof(float), flagcxDevNet_None{},
+                flagcxDevNet_None{}, coop, flagcxDevNet_None{},
+                flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+      }
     }
 
     int start, end;
-    partition(sub_clusterid, sub_clusternum, tlen, 1024 / sizeof(float), &start,
-              &end);
-    int buf_len = XSHMEMI_LOCAL_BUF_LEN / 2 / (int)sizeof(float);
-    int r_core_start, r_core_end;
-    partition(cid, corenum, end - start, 64, &r_core_start, &r_core_end);
-    r_core_start += start;
-    r_core_end += start;
-    for (int i = r_core_start; i < r_core_end; i += buf_len) {
-      int len = min(buf_len, r_core_end - i);
-      GM2LM(cur_stage + dst_pe * stride + i, (float *)copy_lm,
-            len * sizeof(float));
-      LM2GM((float *)copy_lm, recv_data + (long)dst_pe * count + t0 + i,
-            len * sizeof(float));
+    tile_range(sub_clusterid, sub_clusternum, stride, tlen, &start, &end);
+    if (end > start) {
+      int buf_len = XSHMEMI_LOCAL_BUF_LEN / 2 / (int)sizeof(float);
+      int r_core_start, r_core_end;
+      partition(cid, corenum, end - start, 64, &r_core_start, &r_core_end);
+      r_core_start += start;
+      r_core_end += start;
+      for (int i = r_core_start; i < r_core_end; i += buf_len) {
+        int len = min(buf_len, r_core_end - i);
+        GM2LM(cur_stage + dst_pe * stride + i, (float *)copy_lm,
+              len * sizeof(float));
+        LM2GM((float *)copy_lm, recv_data + (long)dst_pe * count + t0 + i,
+              len * sizeof(float));
+      }
     }
   }
   return;
@@ -508,8 +527,8 @@ static int ensureA2AScratch(long tileElems, int npes, int clusternum) {
   if (needSig) {
     if (g_a2a.signal)
       xshmem_free(g_a2a.signal);
-    g_a2a.signal = (uint64_t *)xshmem_calloc((size_t)2 * clusternum * npes,
-                                             sizeof(uint64_t), sizeof(uint64_t));
+    g_a2a.signal = (uint64_t *)xshmem_calloc(
+        (size_t)2 * clusternum * npes, sizeof(uint64_t), sizeof(uint64_t));
     if (!g_a2a.signal)
       return 1;
     g_a2a.clusternum = clusternum;
@@ -517,14 +536,11 @@ static int ensureA2AScratch(long tileElems, int npes, int clusternum) {
   g_a2a.npes = npes;
   return 0;
 }
-}
+} // namespace
 
-flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
-                                               flagcxDevMem_t recvMem,
-                                               size_t count,
-                                               flagcxDataType_t datatype,
-                                               flagcxDevComm_t devComm,
-                                               flagcxStream_t stream) {
+flagcxResult_t launchKernelNetOneSidedAlltoAll(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream) {
   if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr)
     return flagcxInternalError;
   if (datatype != flagcxFloat32)
@@ -552,8 +568,15 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
 
   long tileElems = xshmemTileElems1launch(npes);
   long firstTile = ((long)count < tileElems) ? (long)count : tileElems;
+  bool allocated = (g_a2a.stage == nullptr) || (g_a2a.signal == nullptr) ||
+                   (npes != g_a2a.npes) || (firstTile > g_a2a.stageElems) ||
+                   (clusternum != g_a2a.clusternum);
   if (ensureA2AScratch(firstTile, npes, clusternum) != 0)
     return flagcxSystemError;
+  if (allocated) {
+    flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
+    xpu_wait(cs);
+  }
 
   flagcxXshmemAlltoall1launchKernel<<<clusternum, corenum, cs>>>(
       send, recv, g_a2a.stage, g_a2a.signal, (int)count, (int)tileElems,
@@ -563,4 +586,3 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
 
   return flagcxSuccess;
 }
-
