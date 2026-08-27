@@ -18,7 +18,8 @@ struct flagcxNetMrInfo;
 
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
-  size_t regionSize; // size of the registered memory region (bytes)
+  size_t regionSize;   // local rank's registered region size (bytes)
+  size_t *regionSizes; // [nRanks], registered region size for each rank
   uint32_t *rkeys;
   uint32_t *lkeys;
   struct flagcxNetMrInfo *mrInfos; // [nRanks], including per-NIC keys

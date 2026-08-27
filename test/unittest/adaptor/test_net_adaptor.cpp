@@ -11,6 +11,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "adaptor.h"
@@ -25,6 +26,12 @@ constexpr size_t kBufferSize = 4096;
 constexpr int kLocalRank = 0;
 constexpr int kRemoteRank = 1;
 constexpr auto kTimeout = std::chrono::seconds(30);
+
+#define SKIP_IF_NET_CALLBACK_NULL(net, callback)                               \
+  do {                                                                         \
+    if ((net)->callback == nullptr)                                            \
+      GTEST_SKIP() << "Selected net adaptor does not implement " #callback;    \
+  } while (0)
 
 flagcxResult_t waitRequest(struct flagcxNetAdaptor *net, void *request,
                            int *size = nullptr) {
@@ -43,6 +50,7 @@ flagcxResult_t waitRequest(struct flagcxNetAdaptor *net, void *request,
 struct TestWindow {
   struct flagcxOneSideHandleInfo info = {};
   uintptr_t baseVas[2] = {};
+  size_t regionSizes[2] = {};
   uint32_t rkeys[2] = {};
   uint32_t lkeys[2] = {};
   struct flagcxNetMrInfo mrInfos[2] = {};
@@ -56,10 +64,12 @@ struct TestWindow {
     if (result != flagcxSuccess)
       return result;
     baseVas[rank] = reinterpret_cast<uintptr_t>(buffer);
+    regionSizes[rank] = size;
     rkeys[rank] = mrInfos[rank].rkeys[0];
     lkeys[rank] = mrInfos[rank].lkeys[0];
     info.baseVas = baseVas;
     info.regionSize = size;
+    info.regionSizes = regionSizes;
     info.rkeys = rkeys;
     info.lkeys = lkeys;
     info.mrInfos = mrInfos;
@@ -76,6 +86,14 @@ protected:
   void SetUp() override {
     net_ = getUnifiedNetAdaptor(IBRC);
     ASSERT_NE(net_, nullptr);
+    SKIP_IF_NET_CALLBACK_NULL(net_, init);
+    SKIP_IF_NET_CALLBACK_NULL(net_, devices);
+    SKIP_IF_NET_CALLBACK_NULL(net_, listen);
+    SKIP_IF_NET_CALLBACK_NULL(net_, connect);
+    SKIP_IF_NET_CALLBACK_NULL(net_, accept);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeSend);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeRecv);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeListen);
     ASSERT_EQ(net_->init(), flagcxSuccess);
     ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
     ASSERT_GT(nDevs_, 0);
@@ -102,19 +120,20 @@ protected:
   void TearDown() override {
     if (net_ == nullptr)
       return;
-    if (sendComm_ != nullptr) {
+    if (sendComm_ != nullptr && net_->closeSend != nullptr) {
       EXPECT_EQ(net_->closeSend(sendComm_), flagcxSuccess);
     }
-    if (recvComm_ != nullptr) {
+    if (recvComm_ != nullptr && net_->closeRecv != nullptr) {
       EXPECT_EQ(net_->closeRecv(recvComm_), flagcxSuccess);
     }
-    if (listenComm_ != nullptr) {
+    if (listenComm_ != nullptr && net_->closeListen != nullptr) {
       EXPECT_EQ(net_->closeListen(listenComm_), flagcxSuccess);
     }
   }
 
   void registerMr(void *comm, void *buffer, size_t size, int type,
                   void **mrHandle) {
+    ASSERT_NE(net_->regMr, nullptr);
     ASSERT_EQ(net_->regMr(comm, buffer, size, type, FLAGCX_NET_MR_FLAG_NONE,
                           mrHandle),
               flagcxSuccess);
@@ -122,6 +141,7 @@ protected:
   }
 
   void deregisterMr(void *comm, void *mrHandle) {
+    ASSERT_NE(net_->deregMr, nullptr);
     ASSERT_EQ(net_->deregMr(comm, mrHandle), flagcxSuccess);
   }
 
@@ -138,39 +158,19 @@ class NetAdaptorTwoSided : public NetAdaptorLoopback {};
 class NetAdaptorOneSided : public NetAdaptorLoopback {};
 class NetAdaptorBatch : public NetAdaptorLoopback {};
 
-TEST(NetAdaptorInterface, AllCallbacksArePublished) {
+TEST(NetAdaptorInterface, AdaptorIsAvailable) {
   struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
   ASSERT_NE(net, nullptr);
   EXPECT_NE(net->name, nullptr);
-  EXPECT_NE(net->init, nullptr);
-  EXPECT_NE(net->devices, nullptr);
-  EXPECT_NE(net->getProperties, nullptr);
-  EXPECT_NE(net->listen, nullptr);
-  EXPECT_NE(net->connect, nullptr);
-  EXPECT_NE(net->accept, nullptr);
-  EXPECT_NE(net->closeSend, nullptr);
-  EXPECT_NE(net->closeRecv, nullptr);
-  EXPECT_NE(net->closeListen, nullptr);
-  EXPECT_NE(net->regMr, nullptr);
-  EXPECT_NE(net->regMrDmaBuf, nullptr);
-  EXPECT_NE(net->deregMr, nullptr);
-  EXPECT_NE(net->isend, nullptr);
-  EXPECT_NE(net->irecv, nullptr);
-  EXPECT_NE(net->iflush, nullptr);
-  EXPECT_NE(net->test, nullptr);
-  EXPECT_NE(net->iput, nullptr);
-  EXPECT_NE(net->iget, nullptr);
-  EXPECT_NE(net->iputSignal, nullptr);
-  EXPECT_NE(net->getDevFromName, nullptr);
-  EXPECT_NE(net->iputBatch, nullptr);
-  EXPECT_NE(net->testBatch, nullptr);
-  EXPECT_NE(net->igetBatch, nullptr);
-  EXPECT_NE(net->getMrInfo, nullptr);
 }
 
 TEST(NetAdaptorInterface, InitDevicesPropertiesAndLookup) {
   struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
   ASSERT_NE(net, nullptr);
+  SKIP_IF_NET_CALLBACK_NULL(net, init);
+  SKIP_IF_NET_CALLBACK_NULL(net, devices);
+  SKIP_IF_NET_CALLBACK_NULL(net, getProperties);
+  SKIP_IF_NET_CALLBACK_NULL(net, getDevFromName);
   ASSERT_EQ(net->init(), flagcxSuccess);
   int ndev = 0;
   ASSERT_EQ(net->devices(&ndev), flagcxSuccess);
@@ -187,6 +187,9 @@ TEST(NetAdaptorInterface, InitDevicesPropertiesAndLookup) {
 }
 
 TEST_F(NetAdaptorMemory, RegisterHostMrAndExportMetadata) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
   std::vector<uint8_t> buffer(kBufferSize);
   void *mrHandle = nullptr;
   registerMr(sendComm_, buffer.data(), buffer.size(), FLAGCX_PTR_HOST,
@@ -201,6 +204,10 @@ TEST_F(NetAdaptorMemory, RegisterHostMrAndExportMetadata) {
 }
 
 TEST_F(NetAdaptorMemory, RegisterGpuMr) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, getProperties);
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
   flagcxNetProperties_t properties = {};
   ASSERT_EQ(net_->getProperties(0, &properties), flagcxSuccess);
   if ((properties.ptrSupport & FLAGCX_PTR_CUDA) == 0)
@@ -228,17 +235,46 @@ TEST_F(NetAdaptorMemory, RegisterGpuMr) {
   EXPECT_EQ(flagcxDeviceHandleFree(device), flagcxSuccess);
 }
 
-TEST_F(NetAdaptorMemory, RegMrDmaBufReturnsNotSupported) {
-  std::vector<uint8_t> buffer(kBufferSize);
-  void *mrHandle = reinterpret_cast<void *>(1);
-  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer.data(), buffer.size(),
-                              FLAGCX_PTR_CUDA, 0, -1, FLAGCX_NET_MR_FLAG_NONE,
-                              &mrHandle),
-            flagcxNotSupported);
-  EXPECT_EQ(mrHandle, nullptr);
+TEST_F(NetAdaptorMemory, RegMrDmaBufRegistration) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMrDmaBuf);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->setDevice, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
+  ASSERT_NE(deviceAdaptor->getHandleForAddressRange, nullptr);
+  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+
+  void *buffer = nullptr;
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&buffer, kBufferSize, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(buffer, nullptr);
+  int dmaBufFd = -1;
+  ASSERT_EQ(deviceAdaptor->getHandleForAddressRange(&dmaBufFd, buffer,
+                                                    kBufferSize, 0),
+            flagcxSuccess);
+  ASSERT_GE(dmaBufFd, 0);
+
+  void *mrHandle = nullptr;
+  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_DMABUF,
+                              0, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE, &mrHandle),
+            flagcxSuccess);
+  EXPECT_NE(mrHandle, nullptr);
+  if (mrHandle != nullptr) {
+    EXPECT_EQ(net_->deregMr(sendComm_, mrHandle), flagcxSuccess);
+  }
+  close(dmaBufFd);
+  EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
 }
 
 TEST_F(NetAdaptorTwoSided, SendRecvFlushAndTest) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, isend);
+  SKIP_IF_NET_CALLBACK_NULL(net_, irecv);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iflush);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
   std::vector<uint8_t> source(kBufferSize, 0x5a);
   std::vector<uint8_t> destination(kBufferSize, 0);
   void *sourceMr = nullptr;
@@ -296,6 +332,12 @@ TEST_F(NetAdaptorTwoSided, SendRecvFlushAndTest) {
 }
 
 TEST_F(NetAdaptorOneSided, IputAndIget) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iput);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iget);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
   std::vector<uint8_t> putSource(kBufferSize, 0xa5);
   std::vector<uint8_t> remoteBuffer(kBufferSize, 0);
   std::vector<uint8_t> getDestination(kBufferSize, 0);
@@ -346,15 +388,247 @@ TEST_F(NetAdaptorOneSided, IputAndIget) {
   deregisterMr(sendComm_, getDestinationMr);
 }
 
-TEST_F(NetAdaptorOneSided, IputSignalReturnsNotSupported) {
+TEST_F(NetAdaptorOneSided, RequestPoolBackpressureAndRecovery) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iput);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iget);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
+
+  std::vector<uint8_t> source(kBufferSize, 0x6d);
+  std::vector<uint8_t> remote(kBufferSize, 0);
+  std::vector<uint8_t> destination(kBufferSize, 0);
+  void *sourceMr = nullptr;
+  void *remoteMr = nullptr;
+  void *destinationMr = nullptr;
+  registerMr(sendComm_, source.data(), source.size(), FLAGCX_PTR_HOST,
+             &sourceMr);
+  registerMr(recvComm_, remote.data(), remote.size(), FLAGCX_PTR_HOST,
+             &remoteMr);
+  registerMr(sendComm_, destination.data(), destination.size(), FLAGCX_PTR_HOST,
+             &destinationMr);
+
+  TestWindow sourceWindow;
+  TestWindow remoteWindow;
+  TestWindow destinationWindow;
+  ASSERT_EQ(sourceWindow.init(net_, source.data(), source.size(), kLocalRank,
+                              sourceMr),
+            flagcxSuccess);
+  ASSERT_EQ(remoteWindow.init(net_, remote.data(), remote.size(), kRemoteRank,
+                              remoteMr),
+            flagcxSuccess);
+  ASSERT_EQ(destinationWindow.init(net_, destination.data(), destination.size(),
+                                   kLocalRank, destinationMr),
+            flagcxSuccess);
+
+  // BAREX and IB both expose 256 request slots per send comm. Completion alone
+  // does not recycle a slot; test() must retire each request first.
+  constexpr int requestPoolSize = 256;
+  std::vector<void *> requests(requestPoolSize, nullptr);
+  for (int i = 0; i < requestPoolSize; ++i) {
+    ASSERT_EQ(net_->iput(sendComm_, 0, 0, 1, kLocalRank, kRemoteRank,
+                         sourceWindow.opaque(), remoteWindow.opaque(),
+                         &requests[i]),
+              flagcxSuccess);
+    ASSERT_NE(requests[i], nullptr) << "request slot " << i;
+  }
+
   void *request = reinterpret_cast<void *>(1);
-  EXPECT_EQ(net_->iputSignal(sendComm_, 0, 0, 0, kLocalRank, kRemoteRank,
-                             nullptr, nullptr, 0, nullptr, 1, &request),
-            flagcxNotSupported);
+  EXPECT_EQ(net_->iput(sendComm_, 0, 0, 1, kLocalRank, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxInternalError);
   EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, 0, 0, 1, kRemoteRank, kLocalRank,
+                       remoteWindow.opaque(), destinationWindow.opaque(),
+                       &request),
+            flagcxInternalError);
+  EXPECT_EQ(request, nullptr);
+
+  if (net_->igetBatch != nullptr) {
+    const uint64_t offsets[1] = {0};
+    const size_t sizes[1] = {1};
+    request = reinterpret_cast<void *>(1);
+    EXPECT_EQ(net_->igetBatch(sendComm_, 1, offsets, offsets, sizes,
+                              kRemoteRank, kLocalRank, remoteWindow.opaque(),
+                              destinationWindow.opaque(), &request),
+              flagcxInternalError);
+    EXPECT_EQ(request, nullptr);
+  }
+
+  for (void *pending : requests)
+    ASSERT_EQ(waitRequest(net_, pending), flagcxSuccess);
+
+  request = nullptr;
+  ASSERT_EQ(net_->iput(sendComm_, 0, 0, 1, kLocalRank, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  EXPECT_EQ(remote[0], source[0]);
+
+  deregisterMr(sendComm_, sourceMr);
+  deregisterMr(recvComm_, remoteMr);
+  deregisterMr(sendComm_, destinationMr);
+}
+
+TEST_F(NetAdaptorOneSided, PerRankRegionBounds) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iput);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iget);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
+  if (net_->name == nullptr || strcmp(net_->name, "BAREX") != 0)
+    GTEST_SKIP() << "Per-rank bounds validation is implemented by BAREX";
+
+  std::vector<uint8_t> source(1024);
+  std::vector<uint8_t> remote(4096, 0);
+  std::vector<uint8_t> destination(2048, 0);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>(i);
+
+  void *sourceMr = nullptr;
+  void *remoteMr = nullptr;
+  void *destinationMr = nullptr;
+  registerMr(sendComm_, source.data(), source.size(), FLAGCX_PTR_HOST,
+             &sourceMr);
+  registerMr(recvComm_, remote.data(), remote.size(), FLAGCX_PTR_HOST,
+             &remoteMr);
+  registerMr(sendComm_, destination.data(), destination.size(), FLAGCX_PTR_HOST,
+             &destinationMr);
+
+  TestWindow sourceWindow;
+  TestWindow remoteWindow;
+  TestWindow destinationWindow;
+  ASSERT_EQ(sourceWindow.init(net_, source.data(), source.size(), kLocalRank,
+                              sourceMr),
+            flagcxSuccess);
+  ASSERT_EQ(remoteWindow.init(net_, remote.data(), remote.size(), kRemoteRank,
+                              remoteMr),
+            flagcxSuccess);
+  ASSERT_EQ(destinationWindow.init(net_, destination.data(), destination.size(),
+                                   kLocalRank, destinationMr),
+            flagcxSuccess);
+
+  void *request = nullptr;
+  ASSERT_EQ(net_->iput(sendComm_, 512, 3500, 512, kLocalRank, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  EXPECT_EQ(memcmp(source.data() + 512, remote.data() + 3500, 512), 0);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iput(sendComm_, 800, 0, 512, kLocalRank, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iput(sendComm_, 0, 3800, 512, kLocalRank, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = nullptr;
+  ASSERT_EQ(net_->iput(sendComm_, source.size(), remote.size(), 0, kLocalRank,
+                       kRemoteRank, sourceWindow.opaque(),
+                       remoteWindow.opaque(), &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+
+  request = nullptr;
+  ASSERT_EQ(net_->iget(sendComm_, 3000, 1000, 512, kRemoteRank, kLocalRank,
+                       remoteWindow.opaque(), destinationWindow.opaque(),
+                       &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  EXPECT_EQ(memcmp(remote.data() + 3000, destination.data() + 1000, 512), 0);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, 3800, 0, 512, kRemoteRank, kLocalRank,
+                       remoteWindow.opaque(), destinationWindow.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, 0, 1800, 512, kRemoteRank, kLocalRank,
+                       remoteWindow.opaque(), destinationWindow.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  deregisterMr(sendComm_, sourceMr);
+  deregisterMr(recvComm_, remoteMr);
+  deregisterMr(sendComm_, destinationMr);
+}
+
+TEST_F(NetAdaptorOneSided, IputSignal) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iputSignal);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
+
+  std::vector<uint8_t> source(kBufferSize, 0x3c);
+  std::vector<uint8_t> remote(kBufferSize, 0);
+  uint64_t signal = 0;
+  void *sourceMr = nullptr;
+  void *remoteMr = nullptr;
+  void *signalMr = nullptr;
+  registerMr(sendComm_, source.data(), source.size(), FLAGCX_PTR_HOST,
+             &sourceMr);
+  registerMr(recvComm_, remote.data(), remote.size(), FLAGCX_PTR_HOST,
+             &remoteMr);
+  ASSERT_EQ(net_->regMr(recvComm_, &signal, sizeof(signal), FLAGCX_PTR_HOST,
+                        FLAGCX_NET_MR_FLAG_FORCE_SO, &signalMr),
+            flagcxSuccess);
+  ASSERT_NE(signalMr, nullptr);
+
+  TestWindow sourceWindow;
+  TestWindow remoteWindow;
+  TestWindow signalWindow;
+  ASSERT_EQ(sourceWindow.init(net_, source.data(), source.size(), kLocalRank,
+                              sourceMr),
+            flagcxSuccess);
+  ASSERT_EQ(remoteWindow.init(net_, remote.data(), remote.size(), kRemoteRank,
+                              remoteMr),
+            flagcxSuccess);
+  ASSERT_EQ(
+      signalWindow.init(net_, &signal, sizeof(signal), kRemoteRank, signalMr),
+      flagcxSuccess);
+
+  constexpr uint64_t increment = 7;
+  void *request = nullptr;
+  ASSERT_EQ(net_->iputSignal(sendComm_, 0, 0, source.size(), kLocalRank,
+                             kRemoteRank, sourceWindow.opaque(),
+                             remoteWindow.opaque(), 0, signalWindow.opaque(),
+                             increment, &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  EXPECT_EQ(source, remote);
+  EXPECT_EQ(signal, increment);
+
+  deregisterMr(sendComm_, sourceMr);
+  deregisterMr(recvComm_, remoteMr);
+  deregisterMr(recvComm_, signalMr);
 }
 
 TEST_F(NetAdaptorBatch, IputBatchTestBatchAndIgetBatch) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, regMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
+  SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_NET_CALLBACK_NULL(net_, iputBatch);
+  SKIP_IF_NET_CALLBACK_NULL(net_, testBatch);
+  SKIP_IF_NET_CALLBACK_NULL(net_, igetBatch);
+  SKIP_IF_NET_CALLBACK_NULL(net_, test);
   std::vector<uint8_t> source(kBufferSize);
   std::vector<uint8_t> remote(kBufferSize, 0);
   std::vector<uint8_t> destination(kBufferSize, 0);
@@ -438,5 +712,7 @@ TEST_F(NetAdaptorBatch, IputBatchTestBatchAndIgetBatch) {
   deregisterMr(recvComm_, remoteMr);
   deregisterMr(sendComm_, destinationMr);
 }
+
+#undef SKIP_IF_NET_CALLBACK_NULL
 
 } // namespace

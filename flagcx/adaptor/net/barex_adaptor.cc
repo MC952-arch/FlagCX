@@ -841,22 +841,6 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
   return flagcxSuccess;
 }
 
-/* PPU has no DMA-BUF registration path in ACCL/BAREX. */
-static flagcxResult_t barexRegMrDmaBuf(void *comm, void *data, size_t size,
-                                       int type, uint64_t offset, int fd,
-                                       int mrFlags, void **mhandle) {
-  (void)comm;
-  (void)data;
-  (void)size;
-  (void)type;
-  (void)offset;
-  (void)fd;
-  (void)mrFlags;
-  if (mhandle != nullptr)
-    *mhandle = nullptr;
-  return flagcxNotSupported;
-}
-
 static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
   (void)comm;
   auto *mr = static_cast<BarexMr *>(mhandle);
@@ -1078,14 +1062,15 @@ static flagcxResult_t barexPrepareOneSided(
   if (comm == nullptr || localInfo == nullptr || remoteInfo == nullptr ||
       localMem == nullptr || remoteAddr == nullptr || remoteRkey == nullptr ||
       localInfo->baseVas == nullptr || remoteInfo->baseVas == nullptr ||
+      localInfo->regionSizes == nullptr || remoteInfo->regionSizes == nullptr ||
       localInfo->mrInfos == nullptr || remoteInfo->mrInfos == nullptr ||
       localInfo->localMrHandle == nullptr || localRank < 0 || remoteRank < 0 ||
       localRank >= localInfo->nRanks || remoteRank >= remoteInfo->nRanks)
     return flagcxInvalidArgument;
-  if (localOff > localInfo->regionSize ||
-      size > localInfo->regionSize - localOff ||
-      remoteOff > remoteInfo->regionSize ||
-      size > remoteInfo->regionSize - remoteOff)
+  const size_t localSize = localInfo->regionSizes[localRank];
+  const size_t remoteSize = remoteInfo->regionSizes[remoteRank];
+  if (localOff > localSize || size > localSize - localOff ||
+      remoteOff > remoteSize || size > remoteSize - remoteOff)
     return flagcxInvalidArgument;
   if (comm->dead.load(std::memory_order_acquire) || comm->channel == nullptr)
     return flagcxInternalError;
@@ -1133,7 +1118,7 @@ static flagcxResult_t barexIput(void *sendComm, uint64_t srcOff,
 
   BarexRequest *req = comm->allocRequest();
   if (req == nullptr)
-    return flagcxSuccess;
+    return flagcxInternalError;
   req->size = size;
   if (size == 0) {
     req->state.store(BAREX_REQ_DONE, std::memory_order_release);
@@ -1177,7 +1162,7 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
 
   BarexRequest *req = comm->allocRequest();
   if (req == nullptr)
-    return flagcxSuccess;
+    return flagcxInternalError;
   req->size = size;
   if (size == 0) {
     req->state.store(BAREX_REQ_DONE, std::memory_order_release);
@@ -1198,28 +1183,6 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
   }
   *request = req;
   return flagcxSuccess;
-}
-
-static flagcxResult_t barexIputSignal(void *sendComm, uint64_t srcOff,
-                                      uint64_t dstOff, size_t size, int srcRank,
-                                      int dstRank, void **srcHandles,
-                                      void **dstHandles, uint64_t signalOff,
-                                      void **signalHandles,
-                                      uint64_t signalValue, void **request) {
-  (void)sendComm;
-  (void)srcOff;
-  (void)dstOff;
-  (void)size;
-  (void)srcRank;
-  (void)dstRank;
-  (void)srcHandles;
-  (void)dstHandles;
-  (void)signalOff;
-  (void)signalHandles;
-  (void)signalValue;
-  if (request != nullptr)
-    *request = nullptr;
-  return flagcxNotSupported;
 }
 
 static flagcxResult_t
@@ -1339,7 +1302,7 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
       return flagcxInvalidArgument;
     BarexRequest *req = comm->allocRequest();
     if (req == nullptr)
-      return flagcxSuccess;
+      return flagcxInternalError;
     req->state.store(BAREX_REQ_DONE, std::memory_order_release);
     *request = req;
     return flagcxSuccess;
@@ -1375,7 +1338,7 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
 
   BarexRequest *req = comm->allocRequest();
   if (req == nullptr)
-    return flagcxSuccess;
+    return flagcxInternalError;
   req->size = totalSize;
   BarexResult r = comm->channel->ReadBatch(
       data,
@@ -1428,7 +1391,7 @@ struct flagcxNetAdaptor flagcxNetBarex = {
 
     // Memory region functions
     barexnet::barexRegMr,
-    barexnet::barexRegMrDmaBuf,
+    nullptr, // regMrDmaBuf: ACCL/BAREX does not support DMA-BUF registration
     barexnet::barexDeregMr,
 
     // Two-sided functions
@@ -1440,7 +1403,7 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     // One-sided functions
     barexnet::barexIput,
     barexnet::barexIget,
-    barexnet::barexIputSignal,
+    nullptr, // iputSignal: ACCL/BAREX does not expose remote atomic add
 
     // Device name lookup
     barexnet::barexGetDevFromName,
@@ -1471,7 +1434,7 @@ extern "C" __attribute__((visibility(
     barexnet::barexCloseRecv,
     barexnet::barexCloseListen,
     barexnet::barexRegMr,
-    barexnet::barexRegMrDmaBuf,
+    NULL, // regMrDmaBuf
     barexnet::barexDeregMr,
     barexnet::barexIsend,
     barexnet::barexIrecv,
@@ -1479,7 +1442,7 @@ extern "C" __attribute__((visibility(
     barexnet::barexTest,
     NULL, // iput
     NULL, // iget
-    barexnet::barexIputSignal,
+    NULL, // iputSignal
     barexnet::barexGetDevFromName,
 };
 
