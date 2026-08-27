@@ -23,39 +23,28 @@
 
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
+#include "global_comm.h"
+#include "kunlunxin_adaptor.h"
 #include "shmem_adaptor.h"
-#include "xshmem_adaptor.h" // flagcxShmemCommInternal (sc->signalBuffer, ...)
+#include "xshmem_adaptor.h"
 
 #include <cstdio>
 #include <pthread.h>
-#include <xpu/runtime.h> // XPUStream/XPUEvent, xpu_event_*, xpu_stream_wait_event
-#include <xshmem/xshmem.h> // xshmem_calloc / xshmem_free
+#include <xpu/runtime.h>
+#include <xshmem/xshmem.h>
 
-// ==========================================================================
-// Kernel scratch owned by the DevComm
-// ==========================================================================
-// The native kernels need symmetric buffers the registered FlagCX buffer does
-// not provide: a remotely-written C2C put target plus a signal (AMO) array.
-// Those, the monotonic tile stamp and the completion event are
-// per-(DevComm, stream) state with the DevComm's lifetime, so they belong HERE
-// rather than in the kernel translation unit: this is the layer that has a
-// destroy hook (xshmemDevApiCommDestroy).
-//
-// Only the registry is shared, so only the registry is locked. A context body
-// needs no lock: one (DevComm, stream) pair is driven by its own caller, and
-// reuse of its scratch is ordered on the DEVICE via `event`.
 namespace {
 
 struct XshmemArScratch {
-  float *workPing = nullptr;  // symmetric C2C put targets, workElems * npes
-  float *workPong = nullptr;  // floats EACH (pingpong across tiles)
-  uint64_t *signal = nullptr; // 2 * clusternum * npes slots
+  float *workPing = nullptr;
+  float *workPong = nullptr;
+  uint64_t *signal = nullptr;
   long workElems = 0;
 };
 
 struct XshmemA2AScratch {
-  float *stage = nullptr;     // 2 halves x stageElems x npes floats
-  uint64_t *signal = nullptr; // 2 * clusternum * npes slots
+  float *stage = nullptr;
+  uint64_t *signal = nullptr;
   long stageElems = 0;
 };
 
@@ -169,9 +158,11 @@ xshmemDevApiCommCreate(flagcxComm_t comm,
     return flagcxInternalError;
   }
 
-  // Initialize xshmem against the BKCL context (reference-counted). This is
-  // what makes xshmem_get_xshmemi_device_state_h() valid on the device side.
-  flagcxResult_t ret = shmemAdaptor->init(comm);
+  if (comm->homoComm == nullptr) {
+    return flagcxInternalError;
+  }
+  flagcxResult_t ret = shmemAdaptor->init(comm->rank, comm->nranks,
+                                          (void *)comm->homoComm->base);
   if (ret != flagcxSuccess) {
     return ret;
   }
@@ -193,7 +184,6 @@ xshmemDevApiCommCreate(flagcxComm_t comm,
   devComm->signalCount = shmemComm->signalCount;
   devComm->counterCount = shmemComm->counterCount;
   devComm->contextCount = 1;
-  // Single-node intra path only (no inter-node relay); see xshmem_adaptor.cc.
   devComm->nInterPeers = 0;
 
   return flagcxSuccess;
@@ -222,9 +212,6 @@ static flagcxResult_t xshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   (void)comm;
   (void)size;
   (void)win;
-  // rawPtr is already set by flagcxDevMemCreate. The native xshmem kernel
-  // reads rawPtr directly and does its own symmetric-heap scratch management,
-  // so no window / peer-pointer layer is needed here.
   devMem->window = nullptr;
   devMem->hasWindow = false;
   devMem->isSymmetric = false;
@@ -247,9 +234,6 @@ static flagcxResult_t xshmemDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                                    void **devPtr) {
   (void)devComm;
   (void)devPtr;
-  // Native xshmem kernels launch with raw pointers; they never consume a
-  // device-resident flagcxDevComm value. Trait-based materialization would
-  // require CommTraits, which this backend intentionally avoids.
   return flagcxNotSupported;
 }
 
@@ -316,7 +300,7 @@ int flagcxXshmemAcquireArScratch(flagcxDevComm_t devComm, void *stream,
                    (clusternum != ctx->arClusternum) ||
                    (slotElems > ctx->ar.workElems);
   if (needAlloc) {
-    drainEvent(&ctx->arEvent); // previous kernel may still read these buffers
+    drainEvent(&ctx->arEvent);
     freeArScratch(&ctx->ar);
     ctx->ar.workPing =
         (float *)xshmem_calloc((size_t)slotElems * npes, sizeof(float), 1024);
@@ -331,11 +315,8 @@ int flagcxXshmemAcquireArScratch(flagcxDevComm_t devComm, void *stream,
     ctx->ar.workElems = slotElems;
     ctx->arNpes = npes;
     ctx->arClusternum = clusternum;
-    // Fresh, zeroed signal array => stamps restart. Every rank reallocs at the
-    // same points (same count sequence), so the reset is collective.
     ctx->arSeq = 0;
   } else if (ctx->arEvent != nullptr) {
-    // Reuse: device-side dependency on the previous launch, host not blocked.
     xpu_stream_wait_event(cs, ctx->arEvent);
   }
 

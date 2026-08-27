@@ -19,7 +19,7 @@
 #define USE_NVIDIA_ADAPTOR
 #include "device_api/comm_traits.h"
 #include "shmem_adaptor.h"
-#include "global_comm.h"
+#include "global_comm.h" // struct flagcxComm (init now takes flagcxComm_t)
 
 using DC = CommTraits<NvshmemBackend>;
 
@@ -117,7 +117,7 @@ static void test_put() {
 // Test: signal operation (PE 0 signals PE 1)
 // ============================================================
 __global__ void kernel_test_signal(DC::Net *net, int peer,
-                                   flagcxDevSignal_t sigId) {
+                                   flagcxDevNetSignal_t sigId) {
   DC::Team team = {net->_dc.nRanks, net->_dc.rank, 1};
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
   flagcxDevNet_SignalInc ra = {sigId};
@@ -127,10 +127,10 @@ __global__ void kernel_test_signal(DC::Net *net, int peer,
 }
 
 __global__ void kernel_test_wait_signal(DC::Net *net,
-                                        flagcxDevSignal_t sigId,
+                                        flagcxDevNetSignal_t sigId,
                                         uint64_t expected) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcquire);
+  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcqRel);
 }
 
 static void test_signal_and_wait() {
@@ -216,11 +216,10 @@ __global__ void kernel_inc_counter(uint64_t *counterBuf, int idx) {
 }
 
 __global__ void kernel_wait_counter(DC::Net *net,
-                                    flagcxDevCounter_t counterId,
+                                    flagcxDevNetCounter_t counterId,
                                     uint64_t least) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitCounter(coop, counterId, least, 64,
-                   flagcxDeviceMemoryOrderAcquire);
+  net->waitCounter(coop, counterId, least, 64, flagcxDeviceMemoryOrderAcqRel);
 }
 
 static void test_counter_wait() {
@@ -328,12 +327,8 @@ static void test_barrier_world() {
 // ============================================================
 static void test_host_adaptor_lifecycle() {
   // Test init (idempotent/ref-counted)
-  flagcxComm_t fakeComm = new flagcxComm();
-  fakeComm->rank = g_pe;
-  fakeComm->nranks = g_npes;
-
-  flagcxResult_t r1 = shmemAdaptor->init(fakeComm);
-  flagcxResult_t r2 = shmemAdaptor->init(fakeComm);
+  flagcxResult_t r1 = shmemAdaptor->init(g_pe, g_npes, nullptr);
+  flagcxResult_t r2 = shmemAdaptor->init(g_pe, g_npes, nullptr);
   bool initOk = (r1 == flagcxSuccess && r2 == flagcxSuccess);
 
   // Test malloc/free
@@ -346,8 +341,6 @@ static void test_host_adaptor_lifecycle() {
   // Finalize (matches double init)
   shmemAdaptor->finalize();
   shmemAdaptor->finalize();
-
-  delete fakeComm;
 
   if (g_pe == 0)
     printf("[%s] test_host_adaptor_lifecycle\n",

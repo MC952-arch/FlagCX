@@ -27,11 +27,13 @@
 // ============================================================
 static int shmemInitRefCount = 0;
 
-static flagcxResult_t nvshmemAdaptorInit(flagcxComm_t comm) {
+static flagcxResult_t nvshmemAdaptorInit(int rank, int nranks, void *handle) {
+  // NVSHMEM is initialized by its launcher and needs no external context.
+  (void)handle;
   nvshmem_init();
   if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED)
     return flagcxInternalError;
-  if (nvshmem_my_pe() != comm->rank || nvshmem_n_pes() != comm->nranks) {
+  if (nvshmem_my_pe() != rank || nvshmem_n_pes() != nranks) {
     nvshmem_finalize();
     return flagcxInternalError;
   }
@@ -83,40 +85,34 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
 
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
-  int contextCount =
-      (reqs->interContextCount > 0) ? reqs->interContextCount : 1;
 
-  // Signal buffer (symmetric heap, remote-writable), partitioned by logical
-  // context as [contextCount][signalCount].
+  // Signal buffer (symmetric heap, remote-writable)
   if (sc->signalCount > 0) {
-    size_t signalEntries = (size_t)contextCount * (size_t)sc->signalCount;
-    size_t signalBytes = signalEntries * sizeof(uint64_t);
-    sc->signalBuffer = (uint64_t *)nvshmem_malloc(signalBytes);
+    sc->signalBuffer =
+        (uint64_t *)nvshmem_malloc(sc->signalCount * sizeof(uint64_t));
     if (!sc->signalBuffer) {
       delete sc;
       return flagcxSystemError;
     }
-    cudaMemset(sc->signalBuffer, 0, signalBytes);
+    cudaMemset(sc->signalBuffer, 0, sc->signalCount * sizeof(uint64_t));
   }
 
-  // Counter buffer (local device memory), partitioned by logical context.
+  // Counter buffer (local device memory)
   if (sc->counterCount > 0) {
-    size_t counterEntries = (size_t)contextCount * (size_t)sc->counterCount;
-    size_t counterBytes = counterEntries * sizeof(uint64_t);
-    if (cudaMalloc(&sc->counterBuffer, counterBytes) != cudaSuccess) {
+    if (cudaMalloc(&sc->counterBuffer, sc->counterCount * sizeof(uint64_t)) !=
+        cudaSuccess) {
       goto fail;
     }
-    cudaMemset(sc->counterBuffer, 0, counterBytes);
+    cudaMemset(sc->counterBuffer, 0, sc->counterCount * sizeof(uint64_t));
   }
 
-  // Shadow buffer (local device memory), partitioned by logical context.
+  // Shadow buffer (local device memory)
   if (sc->signalCount > 0) {
-    size_t shadowEntries = (size_t)contextCount * (size_t)sc->signalCount;
-    size_t shadowBytes = shadowEntries * sizeof(uint64_t);
-    if (cudaMalloc(&sc->shadowBuffer, shadowBytes) != cudaSuccess) {
+    if (cudaMalloc(&sc->shadowBuffer, sc->signalCount * sizeof(uint64_t)) !=
+        cudaSuccess) {
       goto fail;
     }
-    cudaMemset(sc->shadowBuffer, 0, shadowBytes);
+    cudaMemset(sc->shadowBuffer, 0, sc->signalCount * sizeof(uint64_t));
   }
 
   // Validate topology

@@ -11,7 +11,7 @@
 
 #include "flagcx_kernel_internal.h"
 #include "global_comm.h"
-#include "kunlunxin_adaptor.h" // flagcxInnerComm::base (BKCLContext_t)
+#include "kunlunxin_adaptor.h"
 
 #include <cstdio>
 #include <cstring>
@@ -27,50 +27,30 @@
 // ============================================================
 // Lifecycle
 // ============================================================
-// xccl xshmem has NO xshmem_finalize() and no init-status query: once
-// xshmem_init(ctx) succeeds, the runtime and its symmetric heap live for the
-// whole process. (`destroy_heap()` exists but is not a finalize: it would
-// invalidate every symmetric pointer still held by live devComms/kernels, and
-// there is no supported re-init path afterwards.)
-//
-// So this adaptor deliberately implements ONE PROCESS-LIFETIME init:
-//   - xshmem_init() is called exactly once, under a lock, by the first caller;
-//   - later callers only validate that they describe the SAME world and bump a
-//     use count;
-//   - finalize() drops the use count and, by design, tears nothing down.
-// The use count is therefore diagnostic, not a destruction trigger -- it must
-// not pretend otherwise. This keeps repeated devComm create/destroy cycles
-// (e.g. test_multi_fifo) safe instead of re-entering xshmem_init every time.
 namespace {
 
 std::mutex g_shmemInitLock;
-int g_shmemUseCount = 0;      // live users (does NOT drive teardown)
-bool g_shmemInitDone = false; // xshmem_init(ctx) has been attempted+succeeded
+int g_shmemUseCount = 0;
+bool g_shmemInitDone = false;
 #ifdef USE_KUNLUNXIN_ADAPTOR
-BKCLContext_t g_shmemInitCtx = nullptr; // ctx the runtime was initialized with
+BKCLContext_t g_shmemInitCtx = nullptr;
 #endif
 int g_shmemMyPe = -1;
 int g_shmemNPes = -1;
 
 } // namespace
 
-static flagcxResult_t xshmemAdaptorInit(flagcxComm_t comm) {
+static flagcxResult_t xshmemAdaptorInit(int rank, int nranks, void *handle) {
 #ifdef USE_KUNLUNXIN_ADAPTOR
-  if (comm == nullptr || comm->homoComm == nullptr)
-    return flagcxInternalError;
-
-  // xccl xshmem initializes against the BKCL context created by
-  // bkcl_init_rank (stored in flagcxInnerComm::base). There is no no-arg
-  // xshmem_init(), so this is the only way to obtain the context.
-  BKCLContext_t ctx = comm->homoComm->base;
+  if (handle == nullptr)
+    return flagcxInvalidArgument;
+  BKCLContext_t ctx = (BKCLContext_t)handle;
 
   std::lock_guard<std::mutex> lock(g_shmemInitLock);
 
   if (!g_shmemInitDone) {
     if (xshmem_init(ctx) != 0)
-      return flagcxInternalError; // nothing was claimed; state untouched
-    // The runtime cannot be un-initialized, so record it even if the checks
-    // below reject THIS comm -- otherwise a later call would init twice.
+      return flagcxInternalError;
     g_shmemInitDone = true;
     g_shmemInitCtx = ctx;
     g_shmemMyPe = xshmem_my_pe();
@@ -81,21 +61,20 @@ static flagcxResult_t xshmemAdaptorInit(flagcxComm_t comm) {
     return flagcxInvalidUsage;
   }
 
-  // Reject a comm that does not describe the initialized world. No cleanup is
-  // possible (nor needed): we claim no use count and leave the runtime as the
-  // first successful init left it.
-  if (g_shmemMyPe != comm->rank || g_shmemNPes != comm->nranks) {
-    WARN("xshmem init: comm (rank %d/%d) does not match the initialized xshmem "
-         "world (pe %d/%d)",
-         comm->rank, comm->nranks, g_shmemMyPe, g_shmemNPes);
+  if (g_shmemMyPe != rank || g_shmemNPes != nranks) {
+    WARN("xshmem init: caller (rank %d/%d) does not match the initialized "
+         "xshmem world (pe %d/%d)",
+         rank, nranks, g_shmemMyPe, g_shmemNPes);
     return flagcxInvalidUsage;
   }
 
   ++g_shmemUseCount;
   return flagcxSuccess;
 #else
-  (void)comm;
-  return flagcxInternalError; // xshmem requires the Kunlunxin BKCL context
+  (void)rank;
+  (void)nranks;
+  (void)handle;
+  return flagcxInternalError;
 #endif
 }
 
@@ -103,7 +82,6 @@ static flagcxResult_t xshmemAdaptorFinalize() {
   std::lock_guard<std::mutex> lock(g_shmemInitLock);
   if (g_shmemUseCount > 0)
     --g_shmemUseCount;
-  // Intentionally no teardown on the last reference: see the note above.
   return flagcxSuccess;
 }
 
@@ -184,24 +162,15 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
     }
     int interSize = (sc->intraSize > 0) ? sc->nRanks / sc->intraSize : 1;
 
-    // Grid sync state for multi-block barrier coordination
-    // 3 barriers x (arrive[CTA_COUNT] + release[CTA_COUNT]) = 6*CTA_COUNT
     size_t gridSyncSize = 6 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
     if (cudaMalloc(&sc->gridSyncState, gridSyncSize) != cudaSuccess) {
       goto fail;
     }
     cudaMemset(sc->gridSyncState, 0, gridSyncSize);
 
-    // Team assignment.
-    // xccl xshmem provides no dynamic team creation (no team_split_strided);
-    // only 4 fixed teams exist (WORLD/SHARED/NODE/SAME_MYPE_NODE, see
-    // xshmem_common.h). Map intra-node to the built-in XSHMEMX_TEAM_NODE.
     (void)interSize;
     sc->intraTeam = XSHMEMX_TEAM_NODE;
 
-    // No inter-node sub-team is available in xshmem, and device-side barrier
-    // only supports XSHMEM_TEAM_WORLD (see non_abi/.../coll/barrier.h). Leave
-    // interTeam invalid; cross-node collectives must go through WORLD.
     sc->interTeam = XSHMEM_TEAM_INVALID;
 
     sc->worldTeam = XSHMEM_TEAM_WORLD;
@@ -222,19 +191,15 @@ static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
   if (shmemComm == nullptr)
     return flagcxSuccess;
 
-  // Free symmetric heap allocations
   if (shmemComm->signalBuffer)
     xshmem_free(shmemComm->signalBuffer);
 
-  // Free local device allocations
   if (shmemComm->counterBuffer)
     cudaFree(shmemComm->counterBuffer);
   if (shmemComm->shadowBuffer)
     cudaFree(shmemComm->shadowBuffer);
   if (shmemComm->gridSyncState)
     cudaFree(shmemComm->gridSyncState);
-
-  // Teams are fixed built-ins in xccl xshmem; there is no xshmem_team_destroy.
 
   delete shmemComm;
   return flagcxSuccess;
