@@ -26,7 +26,6 @@ struct flagcxShmemAdaptor {
 
   // Lifecycle (reference-counted). handle is an optional, borrowed
   // backend-specific initialization context; the adaptor must not release it.
-  // xshmem needs the BKCLContext_t here; NVSHMEM does not need a handle.
   flagcxResult_t (*init)(int rank, int nranks, void *handle);
   flagcxResult_t (*finalize)();
 
