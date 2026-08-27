@@ -38,10 +38,13 @@ $(OBJDIR)/device_api.o: device_api.xpu
 	@echo "Compiling device_api.xpu (KLX / native xshmem)"
 	@$(XPU_CLANG) $(XPU_CFLAGS) $(EXTRA_XPU_FLAGS) $(ALL_INCLUDES) $(XPU_DEVLINK) -c -o $@ $<
 
-# The native xshmem path performs its own device-link inline (above), so the
-# generic SHMEM/IR/device-link forward targets are no-ops here.
+# The native xshmem path device-links inline (above), so there is no separate
+# device-link object here. Fail LOUDLY instead of pretending to succeed: a
+# silent no-op used to leave the caller linking a file that was never created.
+# Consumers must filter these targets out on KLX (see test/unittest/device_api).
 device_ir.o dlink.o dlink_api.o dlink_ir.o:
-	@echo "KLX: no separate device-link step (xshmem device-linked in device_api.o)"
+	@echo "KLX: '$@' is not available (device_ir has no .xpu counterpart; xshmem is device-linked into device_api.o). Filter this target out for KLX." >&2
+	@false
 
 clean:
 	@rm -rf $(BUILDDIR)

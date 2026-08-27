@@ -11,8 +11,13 @@ COMMON_SRCS := $(TOOLS_SRC)
 # Shared device kernel object (built in test/kernel/[platform]/)
 DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 
-# Device-link object (only needed for NVSHMEM)
-ifeq ($(USE_SHMEM), 1)
+# Device-link object (only needed for NVSHMEM). KLX selects xccl xshmem with the
+# same USE_SHMEM switch, but its device code is linked into device_api.o and it
+# needs no nvshmem_state_sync.o (device state is passed as a kernel argument).
+ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1klx)
+DLINK_OBJ :=
+SHMEM_SYNC_OBJ :=
+else ifeq ($(USE_SHMEM), 1)
 DLINK_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
 SHMEM_ADAPTOR_DIR := $(PROJECT_ROOT)/test/unittest/shmem_adaptor
 SHMEM_SYNC_OBJ := $(OBJDIR)/nvshmem_state_sync.o
@@ -28,6 +33,10 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
+# Kunlunxin: device_api.o (native xshmem kernel) references xshmem host symbols
+# that live in libbkcl, and the XRE runtime libs. libflagcx.so imports (not
+# exports) these, so the executable must link them explicitly. Add rpaths so the
+# binary finds libbkcl / libxpurt* at runtime.
 ifeq ($(USE_KUNLUNXIN), 1)
 ALL_LINK += -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) $(CCL_LINK) \
             -Wl,-rpath,$(DEVICE_LIB)
@@ -41,7 +50,7 @@ all: $(BINS)
 
 # Build kernel objects via dispatcher
 KERNEL_TARGETS := device_api.o
-ifeq ($(USE_SHMEM), 1)
+ifneq ($(DLINK_OBJ),)
 KERNEL_TARGETS += dlink_api.o
 endif
 

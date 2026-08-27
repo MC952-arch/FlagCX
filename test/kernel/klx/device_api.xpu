@@ -1,7 +1,6 @@
 #define FLAGCX_COMM_TRAITS_SHMEM
+
 #include "bkcl.h"
-#include "device_api/comm_traits.h"
-#include "flagcx.h"
 #include "xpu/kernel/xtdk.h"
 #include "xpu/kernel/xtdk_io.h"
 #include "xpu/kernel/xtdk_math.h"
@@ -9,6 +8,12 @@
 #include "xpu/runtime.h"
 #include "xshmem/xshmem.h"
 #include "xshmem/xshmemx.h"
+
+#include <stdio.h>
+
+#include "flagcx.h"
+
+#include "device_api/comm_traits.h"
 
 __global__ void flagcxXshmemRendezvousKernel(void *xshmemi_device_state_h) {
   XSHMEM_DEVICE_INIT(xshmemi_device_state_h);
@@ -38,6 +43,25 @@ launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
 
 namespace {
 
+static int klxCorenum() {
+  const char *e = getenv("FLAGCX_KLX_CORENUM");
+  int cn = e ? atoi(e) : 16;
+  if (cn < 1)
+    cn = 1;
+  if (cn > 16)
+    cn = 16;
+  return cn;
+}
+
+static flagcxResult_t klxWait(XPUStream cs, const char *where) {
+  int ret = xpu_wait(cs);
+  if (ret != XPU_SUCCESS) {
+    fprintf(stderr, "FlagCX KLX: xpu_wait failed at %s, code=%d\n", where, ret);
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
+}
+
 static long xshmemTileElems(int npes) {
   const long PUT_WIN_BYTES = 2L * 1024 * 1024 * 1024;
   long t =
@@ -55,51 +79,23 @@ static long xshmemTileElems1launch(int npes) {
   return t;
 }
 
-struct XshmemScratch {
-  float *workPing = nullptr;
-  float *workPong = nullptr;
-  uint64_t *signal = nullptr;
-  long workElems = 0;
-  int clusternum = 0;
-  int npes = 0;
-};
-
-static XshmemScratch g_scratch;
-static long g_seq = 0;
-
-static int ensureScratch(long tileElems, int npes, int clusternum) {
-  bool needWork = (g_scratch.workPing == nullptr) || (npes != g_scratch.npes) ||
-                  (tileElems > g_scratch.workElems);
-  bool needSig = (g_scratch.signal == nullptr) || (npes != g_scratch.npes) ||
-                 (clusternum != g_scratch.clusternum);
-
-  if (needWork) {
-    if (g_scratch.workPing)
-      xshmem_free(g_scratch.workPing);
-    if (g_scratch.workPong)
-      xshmem_free(g_scratch.workPong);
-    g_scratch.workPing =
-        (float *)xshmem_calloc((size_t)tileElems * npes, sizeof(float), 1024);
-    g_scratch.workPong =
-        (float *)xshmem_calloc((size_t)tileElems * npes, sizeof(float), 1024);
-    if (!g_scratch.workPing || !g_scratch.workPong)
-      return 1;
-    g_scratch.workElems = tileElems;
-  }
-  if (needSig) {
-    if (g_scratch.signal)
-      xshmem_free(g_scratch.signal);
-    g_scratch.signal = (uint64_t *)xshmem_calloc(
-        (size_t)2 * clusternum * npes, sizeof(uint64_t), sizeof(uint64_t));
-    if (!g_scratch.signal)
-      return 1;
-    g_scratch.clusternum = clusternum;
-  }
-  g_scratch.npes = npes;
-  return 0;
-}
-
 } // namespace
+
+extern "C" {
+int flagcxXshmemAcquireArScratch(flagcxDevComm_t devComm, void *stream,
+                                 int npes, int clusternum, long slotElems,
+                                 float **workPing, float **workPong,
+                                 uint64_t **signal, long *seqBase,
+                                 int *needRendezvous);
+int flagcxXshmemCommitArScratch(flagcxDevComm_t devComm, void *stream,
+                                long ntiles);
+int flagcxXshmemAcquireA2AScratch(flagcxDevComm_t devComm, void *stream,
+                                  int npes, int clusternum, long tileElems,
+                                  float **stage, uint64_t **signal,
+                                  long *seqBase, int *needRendezvous);
+int flagcxXshmemCommitA2AScratch(flagcxDevComm_t devComm, void *stream,
+                                 long ntiles);
+}
 
 static __device__ inline void tile_range(int id, int num, int stride, int tlen,
                                          int *start, int *end) {
@@ -137,6 +133,7 @@ static __device__ inline void finishSegPuts(DeviceAPI::Net net,
 
   uint64_t stamp = (uint64_t)seq + 1;
   int sigBase = (seq & 1) * clusternum * nRanks + clusterid * nRanks;
+
   for (int p = 0; p < nRanks; ++p) {
     flagcxDevNet_SignalAdd arrive;
     arrive.signal = (flagcxDevNetSignal_t)(sigBase + rank);
@@ -145,6 +142,7 @@ static __device__ inline void finishSegPuts(DeviceAPI::Net net,
                flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
   }
   coop.sync();
+
   for (int s = 0; s < nRanks; ++s) {
     net.waitSignal(coop, (flagcxDevNetSignal_t)(sigBase + s), stamp, 64,
                    flagcxDeviceMemoryOrderRelaxed);
@@ -220,6 +218,7 @@ __global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
   XSHMEM_DEVICE_INIT(state_h);
   int rank = xshmem_my_pe();
   int nRanks = xshmem_n_pes();
+
   XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(clusternum);
 
   __local__ __simd__ char reduce_lm[XSHMEMI_LOCAL_BUF_LEN];
@@ -299,6 +298,7 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxStream_t stream) {
   if (devComm == nullptr || devMem == nullptr)
     return flagcxInternalError;
+
   if (datatype != flagcxFloat32)
     return flagcxInvalidArgument;
   if (count == 0)
@@ -313,46 +313,56 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
     return flagcxInternalError;
 
   int clusternum = 12;
-  int corenum = 16;
+  int corenum = klxCorenum();
 
   XPUStream cs = (XPUStream)(*(void **)stream);
   void *state = xshmem_get_xshmemi_device_state_h();
 
   long tileElems = xshmemTileElems(npes);
   long slotElems = ((long)count < tileElems) ? (long)count : tileElems;
-  bool arAllocated =
-      (g_scratch.workPing == nullptr) || (g_scratch.signal == nullptr) ||
-      (npes != g_scratch.npes) || (slotElems > g_scratch.workElems) ||
-      (clusternum != g_scratch.clusternum);
-  if (ensureScratch(slotElems, npes, clusternum) != 0)
+
+  float *workPing = nullptr;
+  float *workPong = nullptr;
+  uint64_t *signal = nullptr;
+  long seqBase = 0;
+  int needRendezvous = 0;
+  if (flagcxXshmemAcquireArScratch(devComm, (void *)cs, npes, clusternum,
+                                   slotElems, &workPing, &workPong, &signal,
+                                   &seqBase, &needRendezvous) != 0)
     return flagcxSystemError;
-  if (arAllocated) {
+
+  if (needRendezvous) {
+
     flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
-    xpu_wait(cs);
+    flagcxResult_t r = klxWait(cs, "all_reduce rendezvous");
+    if (r != flagcxSuccess)
+      return r;
   }
 
   {
     const unsigned long long C2C_WIN = 2ULL * 1024 * 1024 * 1024;
     char *base = (char *)buf;
-    if ((char *)g_scratch.workPing < base)
-      base = (char *)g_scratch.workPing;
-    if ((char *)g_scratch.workPong < base)
-      base = (char *)g_scratch.workPong;
-    if ((char *)g_scratch.signal < base)
-      base = (char *)g_scratch.signal;
+    if ((char *)workPing < base)
+      base = (char *)workPing;
+    if ((char *)workPong < base)
+      base = (char *)workPong;
+    if ((char *)signal < base)
+      base = (char *)signal;
     unsigned long long workBytes =
-        (unsigned long long)g_scratch.workElems * npes * sizeof(float);
+        (unsigned long long)slotElems * npes * sizeof(float);
     unsigned long long endPing =
-        (unsigned long long)((char *)g_scratch.workPing - base) + workBytes;
+        (unsigned long long)((char *)workPing - base) + workBytes;
     unsigned long long endPong =
-        (unsigned long long)((char *)g_scratch.workPong - base) + workBytes;
+        (unsigned long long)((char *)workPong - base) + workBytes;
     unsigned long long endSig =
-        (unsigned long long)((char *)g_scratch.signal - base) +
+        (unsigned long long)((char *)signal - base) +
         (unsigned long long)2 * clusternum * npes * sizeof(uint64_t);
     if (endPing > C2C_WIN || endPong > C2C_WIN || endSig > C2C_WIN)
       return flagcxSystemError;
   }
 
+  long seq = seqBase;
+  long totalTiles = 0;
   long maxPerLaunch = (0x7fffffffL / tileElems) * tileElems;
   for (long off = 0; off < (long)count; off += maxPerLaunch) {
     long n = (long)count - off;
@@ -361,13 +371,16 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
     long ntiles = (n + tileElems - 1) / tileElems;
     int tileArg = (int)((n < tileElems) ? n : tileElems);
     flagcxXshmemInplace1kKernel<<<clusternum, corenum, cs>>>(
-        buf + off, g_scratch.workPing, g_scratch.workPong, g_scratch.signal,
-        state, (int)n, tileArg, (int)g_seq);
-    g_seq += ntiles;
+        buf + off, workPing, workPong, signal, state, (int)n, tileArg,
+        (int)seq);
+    seq += ntiles;
+    totalTiles += ntiles;
   }
-  xpu_wait(cs);
 
-  return flagcxSuccess;
+  if (flagcxXshmemCommitArScratch(devComm, (void *)cs, totalTiles) != 0)
+    return flagcxUnhandledDeviceError;
+
+  return klxWait(cs, "all_reduce kernel");
 }
 
 __global__ void flagcxXshmemAlltoall1launchKernel(
@@ -385,6 +398,7 @@ __global__ void flagcxXshmemAlltoall1launchKernel(
   int sub_clusternum = clusternum / nRanks;
   int sub_clusterid = clusterid % sub_clusternum;
   int dst_pe = clusterid / sub_clusternum;
+
   XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(sub_clusternum);
 
   DeviceAPI::Comm comm;
@@ -499,45 +513,6 @@ __global__ void flagcxXshmemAlltoall1launchKernel(
   return;
 }
 
-namespace {
-struct XshmemA2AScratch {
-  float *stage = nullptr;
-  uint64_t *signal = nullptr;
-  long stageElems = 0;
-  int clusternum = 0;
-  int npes = 0;
-};
-static XshmemA2AScratch g_a2a;
-static long g_a2a_seq = 0;
-
-static int ensureA2AScratch(long tileElems, int npes, int clusternum) {
-  bool needStage = (g_a2a.stage == nullptr) || (npes != g_a2a.npes) ||
-                   (tileElems > g_a2a.stageElems);
-  bool needSig = (g_a2a.signal == nullptr) || (npes != g_a2a.npes) ||
-                 (clusternum != g_a2a.clusternum);
-  if (needStage) {
-    if (g_a2a.stage)
-      xshmem_free(g_a2a.stage);
-    g_a2a.stage = (float *)xshmem_calloc((size_t)2 * tileElems * npes,
-                                         sizeof(float), 1024);
-    if (!g_a2a.stage)
-      return 1;
-    g_a2a.stageElems = tileElems;
-  }
-  if (needSig) {
-    if (g_a2a.signal)
-      xshmem_free(g_a2a.signal);
-    g_a2a.signal = (uint64_t *)xshmem_calloc(
-        (size_t)2 * clusternum * npes, sizeof(uint64_t), sizeof(uint64_t));
-    if (!g_a2a.signal)
-      return 1;
-    g_a2a.clusternum = clusternum;
-  }
-  g_a2a.npes = npes;
-  return 0;
-}
-} // namespace
-
 flagcxResult_t launchKernelNetOneSidedAlltoAll(
     flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
     flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream) {
@@ -557,32 +532,300 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(
   if (npes <= 0)
     return flagcxInternalError;
 
+  const long INT_MAX_L = 0x7fffffffL;
+  if (count > (size_t)INT_MAX_L)
+    return flagcxInvalidArgument;
+  if ((size_t)npes * count > (size_t)(INT_MAX_L / (long)sizeof(float)))
+    return flagcxInvalidArgument;
+
   int sub = 12 / npes;
   if (sub < 1)
     sub = 1;
   int clusternum = sub * npes;
-  int corenum = 16;
+  int corenum = klxCorenum();
 
   XPUStream cs = (XPUStream)(*(void **)stream);
   void *state = xshmem_get_xshmemi_device_state_h();
 
   long tileElems = xshmemTileElems1launch(npes);
+  if (tileElems > INT_MAX_L)
+    return flagcxInvalidArgument;
   long firstTile = ((long)count < tileElems) ? (long)count : tileElems;
-  bool allocated = (g_a2a.stage == nullptr) || (g_a2a.signal == nullptr) ||
-                   (npes != g_a2a.npes) || (firstTile > g_a2a.stageElems) ||
-                   (clusternum != g_a2a.clusternum);
-  if (ensureA2AScratch(firstTile, npes, clusternum) != 0)
+
+  float *stage = nullptr;
+  uint64_t *signal = nullptr;
+  long seqBase = 0;
+  int needRendezvous = 0;
+  if (flagcxXshmemAcquireA2AScratch(devComm, (void *)cs, npes, clusternum,
+                                    firstTile, &stage, &signal, &seqBase,
+                                    &needRendezvous) != 0)
     return flagcxSystemError;
-  if (allocated) {
+
+  if (needRendezvous) {
+
     flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
-    xpu_wait(cs);
+    flagcxResult_t r = klxWait(cs, "all_to_all rendezvous");
+    if (r != flagcxSuccess)
+      return r;
   }
 
-  flagcxXshmemAlltoall1launchKernel<<<clusternum, corenum, cs>>>(
-      send, recv, g_a2a.stage, g_a2a.signal, (int)count, (int)tileElems,
-      (int)g_a2a_seq, state);
   long ntiles = ((long)count + tileElems - 1) / tileElems;
-  g_a2a_seq += ntiles;
+  flagcxXshmemAlltoall1launchKernel<<<clusternum, corenum, cs>>>(
+      send, recv, stage, signal, (int)count, (int)tileElems, (int)seqBase,
+      state);
 
+  if (flagcxXshmemCommitA2AScratch(devComm, (void *)cs, ntiles) != 0)
+    return flagcxUnhandledDeviceError;
   return flagcxSuccess;
 }
+
+#define STUB_UNUSED(x) ((void)(x))
+
+flagcxResult_t launchKernelNetTwoSidedAlltoAll(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+launchKernelNetCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                               size_t count, flagcxDataType_t datatype,
+                               flagcxDevComm_t devComm, flagcxStream_t stream,
+                               uint64_t *resultBuf) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  STUB_UNUSED(resultBuf);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
+                                       flagcxDevComm_t devComm,
+                                       flagcxStream_t stream,
+                                       size_t putValBase) {
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  STUB_UNUSED(putValBase);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
+                                     flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+launchKernelNetFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
+                             size_t count, flagcxDataType_t datatype,
+                             flagcxDevComm_t devComm, flagcxStream_t stream) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetFollowShadow(flagcxDevComm_t devComm,
+                                           flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetMeetShadow(flagcxDevComm_t devComm,
+                                         flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetReset(flagcxDevComm_t devComm,
+                                    flagcxStream_t stream,
+                                    uint64_t *resultBuf) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  STUB_UNUSED(resultBuf);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetGet(flagcxDevMem_t sendMem,
+                                  flagcxDevMem_t recvMem, size_t count,
+                                  flagcxDataType_t datatype,
+                                  flagcxDevComm_t devComm,
+                                  flagcxStream_t stream) {
+  STUB_UNUSED(sendMem);
+  STUB_UNUSED(recvMem);
+  STUB_UNUSED(count);
+  STUB_UNUSED(datatype);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelLocalPointer(flagcxDevMem_t devMem, void *rawPtr,
+                                        int *results, flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(rawPtr);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
+                                        flagcxDevComm_t devComm, float *output,
+                                        size_t count, flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(output);
+  STUB_UNUSED(count);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
+                                       flagcxDevComm_t devComm, float *output,
+                                       size_t count, flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(output);
+  STUB_UNUSED(count);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
+                                            flagcxDevComm_t devComm,
+                                            float *output, size_t count,
+                                            flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(output);
+  STUB_UNUSED(count);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
+                                                  flagcxDevComm_t devComm,
+                                                  float *output, size_t count,
+                                                  flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(output);
+  STUB_UNUSED(count);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelIntraSymPtr(flagcxDevMem_t devMem,
+                                       flagcxDevComm_t devComm, int *results,
+                                       flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
+                                       flagcxDevComm_t devComm, int *results,
+                                       flagcxStream_t stream) {
+  STUB_UNUSED(devMem);
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelCoopGroups(int *results, flagcxStream_t stream) {
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelTeam(flagcxDevComm_t devComm, int *results,
+                                flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
+                                          flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
+                                              flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelInterBarrier(flagcxDevComm_t devComm, int *results,
+                                        int nIters, flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(nIters);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+flagcxResult_t launchKernelWorldBarrier(flagcxDevComm_t devComm, int *results,
+                                        flagcxStream_t stream) {
+  STUB_UNUSED(devComm);
+  STUB_UNUSED(results);
+  STUB_UNUSED(stream);
+  return flagcxNotSupported;
+}
+
+#undef STUB_UNUSED
+
+extern "C" void flagcxNvshmemSyncDeviceState() {}
+extern "C" void flagcxNvshmemFinalizeDeviceState() {}
