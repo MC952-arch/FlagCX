@@ -27,6 +27,7 @@
 #include "flagcx_net_adaptor.h"
 #include "net.h"
 #include "onesided.h"
+#include "p2p_transport.h"
 #include "param.h"
 #include "socket.h"
 
@@ -110,6 +111,9 @@ static flagcxResult_t barexResult(BarexResult r) {
     return flagcxSuccess;
   if (r == accl::barex::BAREX_ERR_ARG || r == accl::barex::BAREX_ERR_NPE)
     return flagcxInvalidArgument;
+  if (r == accl::barex::BAREX_ERR_QUEUE_FULL ||
+      r == accl::barex::BAREX_ERR_RATE_LIMITED)
+    return flagcxInProgress;
   return flagcxInternalError;
 }
 
@@ -1372,7 +1376,144 @@ static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
   return flagcxSystemError;
 }
 
+/* ------------------------------------------------------------------ */
+/*  P2P Engine transport submission interface                         */
+/* ------------------------------------------------------------------ */
+
+static flagcxResult_t barexGetRegistrationDevice(int netDev,
+                                                 int *registrationDev) {
+  if (registrationDev == nullptr || netDev < 0)
+    return flagcxInvalidArgument;
+  // BAREX registration is process-global and ignores the comm/device context.
+  *registrationDev = 0;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+barexGetTransportCaps(void *, struct flagcxP2pTransportCaps *caps) {
+  if (caps == nullptr)
+    return flagcxInvalidArgument;
+  caps->maxBatchSize = kMaxRequests;
+  caps->maxInflightBatches = kMaxRequests;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+barexSubmitTransportBatch(void *sendComm,
+                          const struct flagcxP2pTransportSlice *slices,
+                          int count, void **request) {
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  if (comm == nullptr || slices == nullptr || request == nullptr ||
+      count <= 0 || count > kMaxRequests || comm->channel == nullptr ||
+      comm->dead.load(std::memory_order_acquire))
+    return flagcxInvalidArgument;
+  *request = nullptr;
+
+  const uint8_t opcode = slices[0].opcode;
+  if (opcode != FLAGCX_P2P_TRANSPORT_WRITE &&
+      opcode != FLAGCX_P2P_TRANSPORT_READ)
+    return flagcxInvalidArgument;
+
+  const int localNic = comm->channel->GetLocalNicId();
+  const int peerNic = comm->channel->GetPeerNicId();
+  if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
+      peerNic >= kMaxNics)
+    return flagcxInvalidArgument;
+
+  auto data = std::make_shared<std::vector<rw_memp_t>>();
+  data->reserve(count);
+  size_t totalSize = 0;
+  for (int i = 0; i < count; i++) {
+    const struct flagcxP2pTransportSlice &planned = slices[i];
+    if (planned.opcode != opcode || planned.length == 0 ||
+        planned.localMrHandle == nullptr ||
+        (uint32_t)peerNic >= planned.remoteMrInfo.nKeys) {
+      return flagcxInvalidArgument;
+    }
+
+    auto *mr = static_cast<BarexMr *>(planned.localMrHandle);
+    auto mrIt = mr->mem.mrs.find(localNic);
+    if (mrIt == mr->mem.mrs.end() || mrIt->second == nullptr)
+      return flagcxInvalidArgument;
+
+    memp_t localMem = mr->mem;
+    localMem.buf = reinterpret_cast<char *>(planned.localVa);
+    localMem.buf_len = planned.length;
+    localMem.mr = mrIt->second;
+
+    rw_memp_t rw;
+    rw.data = localMem;
+    rw.r_addr = planned.remoteVa;
+    rw.r_key = planned.remoteMrInfo.rkeys[peerNic];
+    rw.r_ttl_ms = UINT64_MAX;
+    rw.sg.addr = planned.localVa;
+    rw.sg.length = planned.length;
+    rw.sg.lkey = localMem.mr->lkey;
+    data->push_back(rw);
+    totalSize += planned.length;
+  }
+
+  BarexRequest *req = comm->allocRequest();
+  if (req == nullptr)
+    return flagcxInProgress;
+  req->size = totalSize;
+
+  auto completion = [req, data](Status status) {
+    (void)data;
+    req->state.store(status.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR,
+                     std::memory_order_release);
+  };
+  BarexResult result =
+      opcode == FLAGCX_P2P_TRANSPORT_WRITE
+          ? comm->channel->WriteBatch(data, completion, /*done_inline=*/true)
+          : comm->channel->ReadBatch(data, completion, /*done_inline=*/true);
+  if (result != accl::barex::BAREX_SUCCESS) {
+    req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(result);
+  }
+
+  *request = req;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t barexProgressTransport(void *) {
+  // ACCL drives completions from its own callback threads.
+  return flagcxSuccess;
+}
+
+static flagcxResult_t barexTestTransport(void *request, int *done,
+                                         int *failed) {
+  if (done == nullptr || failed == nullptr)
+    return flagcxInvalidArgument;
+  *done = 0;
+  *failed = 0;
+  if (request == nullptr) {
+    *done = 1;
+    return flagcxSuccess;
+  }
+
+  auto *req = static_cast<BarexRequest *>(request);
+  const int state = req->state.load(std::memory_order_acquire);
+  if (state == BAREX_REQ_PENDING)
+    return flagcxSuccess;
+  if (state != BAREX_REQ_DONE && state != BAREX_REQ_ERROR)
+    return flagcxInternalError;
+
+  *done = 1;
+  *failed = state == BAREX_REQ_ERROR ? 1 : 0;
+  req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+  return flagcxSuccess;
+}
+
 } // namespace barexnet
+
+const struct flagcxP2pTransportOps flagcxP2pBarexTransportOps = {
+    "BAREX",
+    barexnet::barexGetRegistrationDevice,
+    barexnet::barexGetTransportCaps,
+    barexnet::barexSubmitTransportBatch,
+    barexnet::barexProgressTransport,
+    barexnet::barexTestTransport};
 
 struct flagcxNetAdaptor flagcxNetBarex = {
     // Basic functions

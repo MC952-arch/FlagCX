@@ -11,6 +11,7 @@
 
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "onesided.h"
 
 // The P2P adaptor struct is non-static in ibrc_p2p_adaptor.cc
 extern struct flagcxNetAdaptor flagcxNetIbP2p;
@@ -79,6 +80,7 @@ TEST(P2pAdaptorStruct, AllFunctionPointersSet) {
   EXPECT_NE(flagcxNetIbP2p.iput, nullptr);
   EXPECT_NE(flagcxNetIbP2p.iget, nullptr);
   EXPECT_NE(flagcxNetIbP2p.iputSignal, nullptr);
+  EXPECT_NE(flagcxNetIbP2p.getMrInfo, nullptr);
 
   // Device lookup
   EXPECT_NE(flagcxNetIbP2p.getDevFromName, nullptr);
@@ -288,10 +290,36 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
                                  mrFlags, &dstMr),
             flagcxSuccess);
 
+  uintptr_t srcBase = reinterpret_cast<uintptr_t>(srcBuf);
+  uintptr_t dstBase = reinterpret_cast<uintptr_t>(dstBuf);
+  size_t srcRegionSize = bufSize;
+  size_t dstRegionSize = bufSize;
+  flagcxNetMrInfo srcMrInfo = {};
+  flagcxNetMrInfo dstMrInfo = {};
+  ASSERT_EQ(flagcxNetIbP2p.getMrInfo(srcMr, &srcMrInfo), flagcxSuccess);
+  ASSERT_EQ(flagcxNetIbP2p.getMrInfo(dstMr, &dstMrInfo), flagcxSuccess);
+
+  flagcxOneSideHandleInfo srcInfo = {};
+  srcInfo.baseVas = &srcBase;
+  srcInfo.regionSize = bufSize;
+  srcInfo.regionSizes = &srcRegionSize;
+  srcInfo.mrInfos = &srcMrInfo;
+  srcInfo.localMrHandle = srcMr;
+  srcInfo.nRanks = 1;
+
+  flagcxOneSideHandleInfo dstInfo = {};
+  dstInfo.baseVas = &dstBase;
+  dstInfo.regionSize = bufSize;
+  dstInfo.regionSizes = &dstRegionSize;
+  dstInfo.mrInfos = &dstMrInfo;
+  dstInfo.localMrHandle = dstMr;
+  dstInfo.nRanks = 1;
+
   // Iput: write srcBuf -> dstBuf via RDMA
   void *request = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.iput(sendComm, 0, 0, bufSize, 0, 0, (void **)srcMr,
-                                (void **)dstMr, &request),
+  ASSERT_EQ(flagcxNetIbP2p.iput(sendComm, 0, 0, bufSize, 0, 0,
+                                reinterpret_cast<void **>(&srcInfo),
+                                reinterpret_cast<void **>(&dstInfo), &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 

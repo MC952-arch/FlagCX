@@ -7,11 +7,42 @@
 #include <gtest/gtest.h>
 #include <infiniband/verbs.h>
 #include <thread>
+#include <vector>
 
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "onesided.h"
 
 extern struct flagcxNetAdaptor flagcxNetIbP2p;
+
+namespace {
+
+struct P2pTestWindow {
+  struct flagcxOneSideHandleInfo info = {};
+  uintptr_t baseVa = 0;
+  size_t regionSize = 0;
+  struct flagcxNetMrInfo mrInfo = {};
+
+  flagcxResult_t init(void *buffer, size_t size, void *mrHandle) {
+    flagcxResult_t result = flagcxNetIbP2p.getMrInfo(mrHandle, &mrInfo);
+    if (result != flagcxSuccess)
+      return result;
+    baseVa = reinterpret_cast<uintptr_t>(buffer);
+    regionSize = size;
+    info.baseVas = &baseVa;
+    info.regionSize = size;
+    info.regionSizes = &regionSize;
+    info.mrInfos = &mrInfo;
+    info.localMrHandle = mrHandle;
+    info.nRanks = 1;
+    info.signalIpcSlot = -1;
+    return flagcxSuccess;
+  }
+
+  void **opaque() { return reinterpret_cast<void **>(&info); }
+};
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Fixture: establishes a loopback connection for batch operation testing
@@ -139,11 +170,15 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
   ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &dstMr),
             flagcxSuccess);
+  P2pTestWindow srcWindow, dstWindow;
+  ASSERT_EQ(srcWindow.init(srcBuf, bufSize, srcMr), flagcxSuccess);
+  ASSERT_EQ(dstWindow.init(dstBuf, bufSize, dstMr), flagcxSuccess);
 
   // Issue iput
   void *request = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.iput(sendComm_, 0, 0, bufSize, 0, 0, (void **)srcMr,
-                                (void **)dstMr, &request),
+  ASSERT_EQ(flagcxNetIbP2p.iput(sendComm_, 0, 0, bufSize, 0, 0,
+                                srcWindow.opaque(), dstWindow.opaque(),
+                                &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -181,6 +216,7 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
   const size_t bufSize = 1024;
   void *srcBufs[numOps], *dstBufs[numOps];
   void *srcMrs[numOps], *dstMrs[numOps];
+  P2pTestWindow srcWindows[numOps], dstWindows[numOps];
   void *requests[numOps];
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
 
@@ -198,10 +234,14 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
     ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBufs[i], bufSize,
                                    FLAGCX_PTR_HOST, mrFlags, &dstMrs[i]),
               flagcxSuccess);
+    ASSERT_EQ(srcWindows[i].init(srcBufs[i], bufSize, srcMrs[i]),
+              flagcxSuccess);
+    ASSERT_EQ(dstWindows[i].init(dstBufs[i], bufSize, dstMrs[i]),
+              flagcxSuccess);
 
     ASSERT_EQ(flagcxNetIbP2p.iput(sendComm_, 0, 0, bufSize, 0, 0,
-                                  (void **)srcMrs[i], (void **)dstMrs[i],
-                                  &requests[i]),
+                                  srcWindows[i].opaque(),
+                                  dstWindows[i].opaque(), &requests[i]),
               flagcxSuccess);
     ASSERT_NE(requests[i], nullptr);
   }
@@ -252,17 +292,19 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
   ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, localBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &localMr),
             flagcxSuccess);
+  P2pTestWindow remoteWindow, localWindow;
+  ASSERT_EQ(remoteWindow.init(remoteBuf, bufSize, remoteMr), flagcxSuccess);
+  ASSERT_EQ(localWindow.init(localBuf, bufSize, localMr), flagcxSuccess);
 
   // Issue batch read of 1 region
   uint64_t srcOffs[1] = {0};
   uint64_t dstOffs[1] = {0};
   size_t sizes[1] = {bufSize};
-  void *srcHandles[1] = {remoteMr};
-  void *dstHandles[1] = {localMr};
   void *request = nullptr;
 
   ASSERT_EQ(flagcxNetIbP2p.igetBatch(sendComm_, 1, srcOffs, dstOffs, sizes, 0,
-                                     0, srcHandles, dstHandles, &request),
+                                     0, remoteWindow.opaque(),
+                                     localWindow.opaque(), &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -296,33 +338,33 @@ TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
 
   const int count = 3;
   const size_t sizes[3] = {512, 1024, 2048};
-  void *srcBufs[count], *dstBufs[count];
-  void *srcMrs[count], *dstMrs[count];
-  uint64_t srcOffs[count] = {0, 0, 0};
-  uint64_t dstOffs[count] = {0, 0, 0};
+  const uint64_t srcOffs[count] = {0, 512, 1536};
+  const uint64_t dstOffs[count] = {0, 512, 1536};
+  const size_t totalSize = 3584;
+  std::vector<unsigned char> srcBuf(totalSize);
+  std::vector<unsigned char> dstBuf(totalSize, 0);
+  void *srcMr = nullptr;
+  void *dstMr = nullptr;
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
 
   for (int i = 0; i < count; i++) {
-    srcBufs[i] = malloc(sizes[i]);
-    dstBufs[i] = malloc(sizes[i]);
-    ASSERT_NE(srcBufs[i], nullptr);
-    ASSERT_NE(dstBufs[i], nullptr);
-    memset(srcBufs[i], 0x30 + i, sizes[i]);
-    memset(dstBufs[i], 0, sizes[i]);
-
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, srcBufs[i], sizes[i],
-                                   FLAGCX_PTR_HOST, mrFlags, &srcMrs[i]),
-              flagcxSuccess);
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBufs[i], sizes[i],
-                                   FLAGCX_PTR_HOST, mrFlags, &dstMrs[i]),
-              flagcxSuccess);
+    memset(srcBuf.data() + srcOffs[i], 0x30 + i, sizes[i]);
   }
+  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, srcBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &srcMr),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &dstMr),
+            flagcxSuccess);
+  P2pTestWindow srcWindow, dstWindow;
+  ASSERT_EQ(srcWindow.init(srcBuf.data(), totalSize, srcMr), flagcxSuccess);
+  ASSERT_EQ(dstWindow.init(dstBuf.data(), totalSize, dstMr), flagcxSuccess);
 
   // Issue batch read
   void *request = nullptr;
   ASSERT_EQ(flagcxNetIbP2p.igetBatch(sendComm_, count, srcOffs, dstOffs, sizes,
-                                     0, 0, (void *const *)srcMrs,
-                                     (void *const *)dstMrs, &request),
+                                     0, 0, srcWindow.opaque(),
+                                     dstWindow.opaque(), &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -341,13 +383,13 @@ TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
 
   // Verify each region
   for (int i = 0; i < count; i++) {
-    EXPECT_EQ(memcmp(srcBufs[i], dstBufs[i], sizes[i]), 0)
+    EXPECT_EQ(memcmp(srcBuf.data() + srcOffs[i], dstBuf.data() + dstOffs[i],
+                     sizes[i]),
+              0)
         << "igetBatch region " << i << " data mismatch";
-    flagcxNetIbP2p.deregMr(sendComm_, srcMrs[i]);
-    flagcxNetIbP2p.deregMr(sendComm_, dstMrs[i]);
-    free(srcBufs[i]);
-    free(dstBufs[i]);
   }
+  flagcxNetIbP2p.deregMr(sendComm_, srcMr);
+  flagcxNetIbP2p.deregMr(sendComm_, dstMr);
 }
 
 // ---------------------------------------------------------------------------
