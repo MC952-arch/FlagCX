@@ -439,6 +439,27 @@ private:
 };
 
 TEST_F(FlagcxP2pEngineReadTest,
+       EngineDestroyDeregistersOutstandingTransportMemoryChunks) {
+  ScopedEnvVar chunkSize("FLAGCX_ACCL_MAX_MR_MB", "1");
+  constexpr size_t bytes = 2 * 1024 * 1024 + 64 * 1024;
+
+  ScopedAllocation buffer;
+  ASSERT_EQ(allocGpuBufferOnDevice(&buffer, bytes, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+
+  FlagcxP2pMr mr = 0;
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(buffer.get()), bytes,
+                               mr),
+            0);
+
+  // Leave the logical MR outstanding: engine teardown owns releasing every
+  // underlying adaptor MR (one for IBRC, multiple chunks for BAREX).
+  flagcxP2pEngineDestroy(serverEngine);
+  serverEngine = nullptr;
+}
+
+TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 

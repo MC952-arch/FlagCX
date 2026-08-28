@@ -2174,10 +2174,8 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
       /* Legacy: deregister all from hash maps */
       std::lock_guard<std::mutex> lock(gMemMutex);
       for (auto it = gMemRegInfo.begin(); it != gMemRegInfo.end(); ++it) {
-        struct {
-          int ibDevN;
-        } devCtx = {it->second.ibDevN};
-        engine->adaptor->deregMr(&devCtx, it->second.mhandle);
+        deregisterP2pMemory(engine, static_cast<FlagcxP2pRegisteredMemory *>(
+                                        it->second.mhandle));
       }
       gMemRegInfo.clear();
       gMrToBaseAddr.clear();
@@ -2187,7 +2185,6 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
 
       /* Phase 1: collect P2P mhandle info under read lock */
       struct P2pDeregInfo {
-        int ibDevN;
         void *mhandle;
         uintptr_t baseAddr;
       };
@@ -2202,7 +2199,6 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
             if (!(entries[i].ownerMask & FLAGCX_MR_OWNER_P2P))
               continue;
             P2pDeregInfo info;
-            info.ibDevN = entries[i].ibDevN;
             info.mhandle = entries[i].mhandles[FLAGCX_MR_OWNER_IDX_P2P];
             info.baseAddr = entries[i].baseAddr;
             deregList.push_back(info);
@@ -2220,14 +2216,12 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
         }
       }
 
-      /* Phase 3: call adaptor deregMr */
+      /* Phase 3: release every physical transport MR in the logical MR. */
       for (const P2pDeregInfo &info : deregList) {
         if (info.mhandle == NULL)
           continue;
-        struct {
-          int ibDevN;
-        } devCtx = {info.ibDevN};
-        engine->adaptor->deregMr(&devCtx, info.mhandle);
+        deregisterP2pMemory(
+            engine, static_cast<FlagcxP2pRegisteredMemory *>(info.mhandle));
       }
 
       pthread_mutex_unlock(&gMrLifecycleMutex);

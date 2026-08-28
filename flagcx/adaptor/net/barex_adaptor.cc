@@ -63,6 +63,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -100,6 +101,7 @@ FLAGCX_PARAM(BarexSpeed, "BAREX_SPEED", 100000); /* Mbps, for topo costing */
 constexpr int kMaxNics = 8;       /* matches ACCL per-NIC rkey fan-out */
 constexpr int kMaxRequests = 256; /* proxy keeps <=16 in flight; roomy */
 constexpr uint32_t kImmSlotMask = 0x00FFFFFFu; /* imm_data carries 24 bits */
+constexpr uintptr_t kCompletedRequest = 1;
 
 static const char *bxstr(BarexResult r) {
   auto it = BarexResultStrings.find(r);
@@ -245,7 +247,10 @@ struct BarexConnectState {
 };
 
 struct PendingAccept {
-  XChannel *channel = nullptr; /* set once HELLO with commId arrives */
+  /* A FlagCX listen handle is reusable. Multiple connectors can therefore
+     complete their HELLO before the engine drains accept(), and must retain
+     FIFO association with that handle. */
+  std::deque<XChannel *> channels;
 };
 
 class BarexNetCallback; /* fwd */
@@ -289,14 +294,20 @@ public:
     if (type == BAREX_MSG_HELLO && len >= sizeof(BarexHelloMsg)) {
       BarexHelloMsg hello;
       memcpy(&hello, buf, sizeof(hello));
-      std::lock_guard<std::mutex> lk(engine_->mu);
-      auto it = engine_->pendingAccepts.find(hello.commId);
-      if (it == engine_->pendingAccepts.end()) {
+      bool rejectChannel = false;
+      {
+        std::lock_guard<std::mutex> lk(engine_->mu);
+        auto it = engine_->pendingAccepts.find(hello.commId);
+        if (it == engine_->pendingAccepts.end())
+          rejectChannel = true;
+        else
+          it->second.channels.push_back(channel);
+      }
+      if (rejectChannel) {
         WARN("NET/BAREX : HELLO for unknown commId 0x%llx",
              (unsigned long long)hello.commId);
-        return;
+        channel->Destroy();
       }
-      it->second.channel = channel;
       return;
     }
 
@@ -689,6 +700,8 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
 
 /* Non-blocking: ready once the connector's HELLO bound a channel. */
 static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
+  if (recvComm == nullptr)
+    return flagcxInvalidArgument;
   *recvComm = nullptr;
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
@@ -701,7 +714,10 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
     auto it = e->pendingAccepts.find(lc->commId);
     if (it == e->pendingAccepts.end())
       return flagcxInternalError;
-    ch = it->second.channel;
+    if (!it->second.channels.empty()) {
+      ch = it->second.channels.front();
+      it->second.channels.pop_front();
+    }
   }
   if (ch == nullptr)
     return flagcxSuccess; /* no HELLO yet — call again */
@@ -714,7 +730,6 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
   {
     std::lock_guard<std::mutex> lk(e->mu);
     e->channelComm[ch] = comm;
-    e->pendingAccepts.erase(lc->commId);
   }
   *recvComm = comm;
   INFO(FLAGCX_NET, "NET/BAREX : recvComm up (commId 0x%llx)",
@@ -755,10 +770,18 @@ static flagcxResult_t barexCloseListen(void *listenComm) {
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
     return flagcxSuccess;
+  std::deque<XChannel *> pendingChannels;
   {
     std::lock_guard<std::mutex> lk(lc->engine->mu);
-    lc->engine->pendingAccepts.erase(lc->commId);
+    auto it = lc->engine->pendingAccepts.find(lc->commId);
+    if (it != lc->engine->pendingAccepts.end()) {
+      pendingChannels.swap(it->second.channels);
+      lc->engine->pendingAccepts.erase(it);
+    }
   }
+  for (XChannel *channel : pendingChannels)
+    if (channel != nullptr)
+      channel->Destroy();
   delete lc;
   return flagcxSuccess;
 }
@@ -1029,7 +1052,9 @@ static flagcxResult_t barexIflush(void *recvComm, int n, void **data,
   (void)data;
   (void)sizes;
   (void)mhandles;
-  *request = (void *)0x1;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
+  *request = reinterpret_cast<void *>(kCompletedRequest);
   return flagcxSuccess;
 }
 
@@ -1037,11 +1062,14 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
   if (done == nullptr)
     return flagcxInvalidArgument;
   *done = 0;
-  auto *req = static_cast<BarexRequest *>(request);
-  if (req == nullptr) {
+  if (request == nullptr ||
+      reinterpret_cast<uintptr_t>(request) == kCompletedRequest) {
+    if (sizes != nullptr)
+      sizes[0] = 0;
     *done = 1;
     return flagcxSuccess;
   }
+  auto *req = static_cast<BarexRequest *>(request);
   const int st = req->state.load(std::memory_order_acquire);
   if (st == BAREX_REQ_PENDING)
     return flagcxSuccess;

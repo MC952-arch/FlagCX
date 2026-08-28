@@ -158,6 +158,47 @@ class NetAdaptorTwoSided : public NetAdaptorLoopback {};
 class NetAdaptorOneSided : public NetAdaptorLoopback {};
 class NetAdaptorBatch : public NetAdaptorLoopback {};
 
+class NetAdaptorReusableListener : public ::testing::Test {
+protected:
+  void SetUp() override {
+    net_ = getUnifiedNetAdaptor(IBRC);
+    ASSERT_NE(net_, nullptr);
+    SKIP_IF_NET_CALLBACK_NULL(net_, init);
+    SKIP_IF_NET_CALLBACK_NULL(net_, devices);
+    SKIP_IF_NET_CALLBACK_NULL(net_, listen);
+    SKIP_IF_NET_CALLBACK_NULL(net_, connect);
+    SKIP_IF_NET_CALLBACK_NULL(net_, accept);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeSend);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeRecv);
+    SKIP_IF_NET_CALLBACK_NULL(net_, closeListen);
+    ASSERT_EQ(net_->init(), flagcxSuccess);
+    int nDevs = 0;
+    ASSERT_EQ(net_->devices(&nDevs), flagcxSuccess);
+    ASSERT_GT(nDevs, 0);
+    ASSERT_EQ(net_->listen(0, listenHandle_, &listenComm_), flagcxSuccess);
+    ASSERT_NE(listenComm_, nullptr);
+  }
+
+  void TearDown() override {
+    if (net_ == nullptr)
+      return;
+    for (void *comm : sendComms_)
+      if (comm != nullptr && net_->closeSend != nullptr)
+        EXPECT_EQ(net_->closeSend(comm), flagcxSuccess);
+    for (void *comm : recvComms_)
+      if (comm != nullptr && net_->closeRecv != nullptr)
+        EXPECT_EQ(net_->closeRecv(comm), flagcxSuccess);
+    if (listenComm_ != nullptr && net_->closeListen != nullptr)
+      EXPECT_EQ(net_->closeListen(listenComm_), flagcxSuccess);
+  }
+
+  struct flagcxNetAdaptor *net_ = nullptr;
+  char listenHandle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
+  void *listenComm_ = nullptr;
+  std::vector<void *> sendComms_;
+  std::vector<void *> recvComms_;
+};
+
 TEST(NetAdaptorInterface, AdaptorIsAvailable) {
   struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
   ASSERT_NE(net, nullptr);
@@ -218,6 +259,68 @@ TEST(NetAdaptorInterface, GetDevFromName) {
     int foundDev = -1;
     EXPECT_EQ(net->getDevFromName(properties.name, &foundDev), flagcxSuccess);
     EXPECT_EQ(foundDev, dev);
+  }
+}
+
+TEST_F(NetAdaptorReusableListener, AcceptsSequentialConnections) {
+  for (int connection = 0; connection < 2; ++connection) {
+    char connectHandle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
+    memcpy(connectHandle, listenHandle_, sizeof(connectHandle));
+    void *sendComm = nullptr;
+    void *recvComm = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while ((sendComm == nullptr || recvComm == nullptr) &&
+           std::chrono::steady_clock::now() < deadline) {
+      if (sendComm == nullptr)
+        ASSERT_EQ(net_->connect(0, connectHandle, &sendComm), flagcxSuccess);
+      if (recvComm == nullptr)
+        ASSERT_EQ(net_->accept(listenComm_, &recvComm), flagcxSuccess);
+      if (sendComm == nullptr || recvComm == nullptr)
+        std::this_thread::yield();
+    }
+    ASSERT_NE(sendComm, nullptr)
+        << "connect timed out at iteration " << connection;
+    ASSERT_NE(recvComm, nullptr)
+        << "accept timed out at iteration " << connection;
+    sendComms_.push_back(sendComm);
+    recvComms_.push_back(recvComm);
+  }
+}
+
+TEST_F(NetAdaptorReusableListener, QueuesBarexConnectionsBeforeAccept) {
+  if (net_->name == nullptr || strcmp(net_->name, "BAREX") != 0)
+    GTEST_SKIP() << "Pending-accept FIFO is specific to the BAREX adaptor";
+
+  char connectHandles[2][FLAGCX_NET_HANDLE_MAXSIZE] = {};
+  void *sendComms[2] = {nullptr, nullptr};
+  void *recvComms[2] = {nullptr, nullptr};
+  for (int i = 0; i < 2; ++i)
+    memcpy(connectHandles[i], listenHandle_, sizeof(connectHandles[i]));
+
+  const auto connectDeadline = std::chrono::steady_clock::now() + kTimeout;
+  while ((sendComms[0] == nullptr || sendComms[1] == nullptr) &&
+         std::chrono::steady_clock::now() < connectDeadline) {
+    for (int i = 0; i < 2; ++i)
+      if (sendComms[i] == nullptr)
+        ASSERT_EQ(net_->connect(0, connectHandles[i], &sendComms[i]),
+                  flagcxSuccess);
+    if (sendComms[0] == nullptr || sendComms[1] == nullptr)
+      std::this_thread::yield();
+  }
+  ASSERT_NE(sendComms[0], nullptr) << "first connect timed out";
+  ASSERT_NE(sendComms[1], nullptr) << "second connect timed out";
+  sendComms_.assign(sendComms, sendComms + 2);
+
+  const auto acceptDeadline = std::chrono::steady_clock::now() + kTimeout;
+  for (int i = 0; i < 2; ++i) {
+    while (recvComms[i] == nullptr &&
+           std::chrono::steady_clock::now() < acceptDeadline) {
+      ASSERT_EQ(net_->accept(listenComm_, &recvComms[i]), flagcxSuccess);
+      if (recvComms[i] == nullptr)
+        std::this_thread::yield();
+    }
+    ASSERT_NE(recvComms[i], nullptr) << "accept timed out at iteration " << i;
+    recvComms_.push_back(recvComms[i]);
   }
 }
 
@@ -380,7 +483,7 @@ TEST_F(NetAdaptorTwoSided, Flush) {
   ASSERT_EQ(
       net_->iflush(recvComm_, 1, recvData, flushSizes, recvMrs, &flushRequest),
       flagcxSuccess);
-  if (flushRequest != nullptr && flushRequest != reinterpret_cast<void *>(1)) {
+  if (flushRequest != nullptr) {
     EXPECT_EQ(waitRequest(net_, flushRequest), flagcxSuccess);
   }
 
