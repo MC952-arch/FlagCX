@@ -174,8 +174,13 @@ static inline int flagcxP2pGetIbDevN(void *comm) { return *(int *)comm; }
 static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
                                            int type, uint64_t offset, int fd,
                                            int mrFlags, void **mhandle) {
-  assert(size > 0);
-  assert(comm != NULL);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
+  if (comm == NULL || data == NULL || size == 0 ||
+      (type != FLAGCX_PTR_HOST && type != FLAGCX_PTR_CUDA &&
+       type != FLAGCX_PTR_DMABUF))
+    return flagcxInvalidArgument;
 
   int ibDevN = flagcxP2pGetIbDevN(comm);
   struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
@@ -194,8 +199,12 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
   }
 
   ibv_mr *mr = NULL;
-  FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(&devBase, data, size, type, offset,
-                                          fd, mrFlags, &mr));
+  flagcxResult_t regResult = flagcxIbRegMrDmaBufInternal(
+      &devBase, data, size, type, offset, fd, mrFlags, &mr);
+  if (regResult != flagcxSuccess) {
+    free(handle);
+    return regResult;
+  }
 
   handle->baseVa = (uintptr_t)data;
   handle->lkey = mr->lkey;
@@ -214,7 +223,10 @@ static flagcxResult_t flagcxP2pRegMr(void *comm, void *data, size_t size,
 }
 
 static flagcxResult_t flagcxP2pDeregMr(void *comm, void *mhandle) {
+  (void)comm;
   struct flagcxP2pMrHandle *handle = (struct flagcxP2pMrHandle *)mhandle;
+  if (handle == NULL)
+    return flagcxSuccess;
 
   // Build a temporary devBase for the internal deregistration call
   struct flagcxIbNetCommDevBase devBase;

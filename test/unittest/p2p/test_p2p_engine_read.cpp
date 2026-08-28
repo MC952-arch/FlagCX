@@ -460,6 +460,59 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest,
+       EngineDestroyDoesNotRemoveAnotherEnginesLogicalMr) {
+  constexpr size_t bytes = 4096;
+  ScopedAllocation sharedHostBuffer;
+  ASSERT_EQ(
+      allocHostBuffer(&sharedHostBuffer, bytes, kClientGpuIdx, clientStream),
+      flagcxSuccess);
+
+  FlagcxP2pMr serverMr = 0;
+  FlagcxP2pMr clientMr = 0;
+  ASSERT_EQ(
+      flagcxP2pEngineRegEx(serverEngine,
+                           reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
+                           bytes, FLAGCX_PTR_HOST, serverMr),
+      0);
+  ASSERT_EQ(
+      flagcxP2pEngineRegEx(clientEngine,
+                           reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
+                           bytes, FLAGCX_PTR_HOST, clientMr),
+      0);
+
+  flagcxP2pEngineDestroy(serverEngine);
+  serverEngine = nullptr;
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  EXPECT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, clientMr,
+                                       sharedHostBuffer.get(), bytes, descBuf),
+            0);
+  flagcxP2pEngineMrDestroy(clientEngine, clientMr);
+}
+
+TEST_F(FlagcxP2pEngineReadTest, DeviceAdaptorClassifiesPointerType) {
+  if (deviceAdaptor == nullptr || deviceAdaptor->getPointerType == nullptr)
+    GTEST_SKIP() << "Selected device adaptor does not expose pointer typing";
+
+  constexpr size_t bytes = 4096;
+  ScopedAllocation deviceBuffer;
+  ScopedAllocation hostBuffer;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&deviceBuffer, bytes, kClientGpuIdx, clientStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostBuffer, bytes, kClientGpuIdx, clientStream),
+            flagcxSuccess);
+
+  int ptrType = -1;
+  ASSERT_EQ(deviceAdaptor->getPointerType(deviceBuffer.get(), &ptrType),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  ASSERT_EQ(deviceAdaptor->getPointerType(hostBuffer.get(), &ptrType),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
+}
+
+TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
@@ -649,6 +702,54 @@ TEST_F(FlagcxP2pEngineReadTest,
   for (size_t i = kDstOffsetElems + kReadElems; i < kDestElems; ++i) {
     EXPECT_EQ(actualDestination[i], expectedDestination[i]);
   }
+}
+
+TEST_F(FlagcxP2pEngineReadTest, ConnectionDestroyQuiescesScheduledRead) {
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  constexpr size_t bytes = 4 * 1024 * 1024;
+  ScopedAllocation remoteSource;
+  ScopedAllocation localDestination;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&remoteSource, bytes, kClientGpuIdx, clientStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocGpuBufferOnDevice(&localDestination, bytes, kServerGpuIdx,
+                                   serverStream),
+            flagcxSuccess);
+
+  FlagcxP2pMr remoteMr = 0;
+  FlagcxP2pMr localMr = 0;
+  ASSERT_EQ(flagcxP2pEngineReg(clientEngine,
+                               reinterpret_cast<uintptr_t>(remoteSource.get()),
+                               bytes, remoteMr),
+            0);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(serverEngine,
+                         reinterpret_cast<uintptr_t>(localDestination.get()),
+                         bytes, localMr),
+      0);
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr,
+                                       remoteSource.get(), bytes, descBuf),
+            0);
+  FlagcxP2pRdmaDesc remoteDesc;
+  flagcxP2pDeserializeRdmaDesc(descBuf, &remoteDesc);
+
+  uint64_t transferId = 0;
+  ASSERT_EQ(flagcxP2pEngineRead(serverConn, localMr, localDestination.get(),
+                                bytes, remoteDesc, &transferId),
+            0);
+
+  // ConnDestroy must wait until workers have stopped touching the transport
+  // comm. Under ASan/TSan this regresses the former close/delete-versus-poll
+  // race even when the transfer has not yet reached the first CQ poll.
+  flagcxP2pEngineConnDestroy(serverConn);
+  serverConn = nullptr;
+
+  flagcxP2pEngineMrDestroy(serverEngine, localMr);
+  // The peer connection has just observed a disconnect, so leave its MR to
+  // clientEngine teardown rather than requiring a removal ACK.
 }
 
 TEST_F(FlagcxP2pEngineReadTest, ReadsAcrossTransportMemoryRegistrationChunks) {

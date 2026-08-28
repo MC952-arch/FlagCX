@@ -648,6 +648,28 @@ flagcxResult_t ppucudaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ppucudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+  cudaPointerAttributes attrs;
+  cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+  if (err != cudaSuccess) {
+    cudaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType = (attrs.type == cudaMemoryTypeDevice ||
+              attrs.type == cudaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = attrs.memoryType == cudaMemoryTypeDevice ? FLAGCX_PTR_CUDA
+                                                      : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ppucudaAdaptor {
   "PPU_CUDA",
       // Basic functions
@@ -696,6 +718,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymMulticastBind, ppucudaAdaptorSymMulticastTeardown,
       ppucudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
+      ppucudaAdaptorGetPointerType,
 };
 
 #endif // USE_PPU_ADAPTOR

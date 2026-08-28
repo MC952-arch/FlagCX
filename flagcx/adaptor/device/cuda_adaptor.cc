@@ -935,6 +935,28 @@ flagcxResult_t cudaAdaptorGetLastError() {
   return err == cudaSuccess ? flagcxSuccess : flagcxSystemError;
 }
 
+flagcxResult_t cudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+  cudaPointerAttributes attrs;
+  cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+  if (err != cudaSuccess) {
+    cudaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType = (attrs.type == cudaMemoryTypeDevice ||
+              attrs.type == cudaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = attrs.memoryType == cudaMemoryTypeDevice ? FLAGCX_PTR_CUDA
+                                                      : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -1001,7 +1023,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
-      cudaAdaptorGetLastError,
+      cudaAdaptorGetLastError, cudaAdaptorGetPointerType,
 };
 
 #endif // USE_NVIDIA_ADAPTOR
