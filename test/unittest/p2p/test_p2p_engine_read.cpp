@@ -470,14 +470,14 @@ TEST_F(FlagcxP2pEngineReadTest,
   FlagcxP2pMr serverMr = 0;
   FlagcxP2pMr clientMr = 0;
   ASSERT_EQ(
-      flagcxP2pEngineRegEx(serverEngine,
-                           reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
-                           bytes, FLAGCX_PTR_HOST, serverMr),
+      flagcxP2pEngineReg(serverEngine,
+                         reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
+                         bytes, serverMr),
       0);
   ASSERT_EQ(
-      flagcxP2pEngineRegEx(clientEngine,
-                           reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
-                           bytes, FLAGCX_PTR_HOST, clientMr),
+      flagcxP2pEngineReg(clientEngine,
+                         reinterpret_cast<uintptr_t>(sharedHostBuffer.get()),
+                         bytes, clientMr),
       0);
 
   flagcxP2pEngineDestroy(serverEngine);

@@ -8,7 +8,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <future>
 #include <gtest/gtest.h>
 #include <thread>
 #include <unistd.h>
@@ -45,6 +47,82 @@ flagcxResult_t waitRequest(struct flagcxNetAdaptor *net, void *request,
       std::this_thread::yield();
   }
   return done ? flagcxSuccess : flagcxSystemError;
+}
+
+struct LoopbackConnectionResult {
+  flagcxResult_t connectResult = flagcxSystemError;
+  flagcxResult_t acceptResult = flagcxSystemError;
+  void *sendComm = nullptr;
+  void *recvComm = nullptr;
+};
+
+LoopbackConnectionResult
+establishLoopbackConnection(struct flagcxNetAdaptor *net, int dev,
+                            const char *listenHandle, void *listenComm) {
+  LoopbackConnectionResult result;
+  if (net == nullptr || net->connect == nullptr || net->accept == nullptr ||
+      listenHandle == nullptr || listenComm == nullptr) {
+    result.connectResult = flagcxInvalidArgument;
+    result.acceptResult = flagcxInvalidArgument;
+    return result;
+  }
+
+  char connectHandle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
+  memcpy(connectHandle, listenHandle, sizeof(connectHandle));
+
+  auto acceptFuture = std::async(std::launch::async, [=]() {
+    std::pair<flagcxResult_t, void *> endpoint(flagcxSuccess, nullptr);
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (endpoint.second == nullptr &&
+           std::chrono::steady_clock::now() < deadline) {
+      endpoint.first = net->accept(listenComm, &endpoint.second);
+      if (endpoint.first != flagcxSuccess)
+        return endpoint;
+      if (endpoint.second == nullptr)
+        std::this_thread::yield();
+    }
+    if (endpoint.second == nullptr)
+      endpoint.first = flagcxSystemError;
+    return endpoint;
+  });
+
+  auto connectFuture = std::async(std::launch::async, [&]() {
+    std::pair<flagcxResult_t, void *> endpoint(flagcxSuccess, nullptr);
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (endpoint.second == nullptr &&
+           std::chrono::steady_clock::now() < deadline) {
+      endpoint.first = net->connect(dev, connectHandle, &endpoint.second);
+      if (endpoint.first != flagcxSuccess)
+        return endpoint;
+      if (endpoint.second == nullptr)
+        std::this_thread::yield();
+    }
+    if (endpoint.second == nullptr)
+      endpoint.first = flagcxSystemError;
+    return endpoint;
+  });
+
+  /* Some adaptors (notably UCX) perform blocking control-message receives
+     inside connect/accept, so the deadline around the outer polling loop
+     cannot cancel a callback that is already running. The public net adaptor
+     API has no in-progress-handshake abort operation. Fail the test process
+     promptly instead of destroying a non-ready future, whose destructor would
+     wait forever and hang the entire CI job. */
+  if (connectFuture.wait_for(kTimeout) != std::future_status::ready) {
+    fprintf(stderr, "net adaptor connect handshake timed out\n");
+    std::abort();
+  }
+  const auto connectEndpoint = connectFuture.get();
+  if (acceptFuture.wait_for(kTimeout) != std::future_status::ready) {
+    fprintf(stderr, "net adaptor accept handshake timed out\n");
+    std::abort();
+  }
+  const auto acceptEndpoint = acceptFuture.get();
+  result.connectResult = connectEndpoint.first;
+  result.acceptResult = acceptEndpoint.first;
+  result.sendComm = connectEndpoint.second;
+  result.recvComm = acceptEndpoint.second;
+  return result;
 }
 
 struct TestWindow {
@@ -101,18 +179,12 @@ protected:
     ASSERT_EQ(net_->listen(0, handle_, &listenComm_), flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
 
-    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-    while ((sendComm_ == nullptr || recvComm_ == nullptr) &&
-           std::chrono::steady_clock::now() < deadline) {
-      if (sendComm_ == nullptr) {
-        ASSERT_EQ(net_->connect(0, handle_, &sendComm_), flagcxSuccess);
-      }
-      if (recvComm_ == nullptr) {
-        ASSERT_EQ(net_->accept(listenComm_, &recvComm_), flagcxSuccess);
-      }
-      if (sendComm_ == nullptr || recvComm_ == nullptr)
-        std::this_thread::yield();
-    }
+    const LoopbackConnectionResult connection =
+        establishLoopbackConnection(net_, 0, handle_, listenComm_);
+    sendComm_ = connection.sendComm;
+    recvComm_ = connection.recvComm;
+    ASSERT_EQ(connection.connectResult, flagcxSuccess);
+    ASSERT_EQ(connection.acceptResult, flagcxSuccess);
     ASSERT_NE(sendComm_, nullptr) << "connect timed out";
     ASSERT_NE(recvComm_, nullptr) << "accept timed out";
   }
@@ -182,14 +254,19 @@ protected:
   void TearDown() override {
     if (net_ == nullptr)
       return;
-    for (void *comm : sendComms_)
-      if (comm != nullptr && net_->closeSend != nullptr)
+    for (void *comm : sendComms_) {
+      if (comm != nullptr && net_->closeSend != nullptr) {
         EXPECT_EQ(net_->closeSend(comm), flagcxSuccess);
-    for (void *comm : recvComms_)
-      if (comm != nullptr && net_->closeRecv != nullptr)
+      }
+    }
+    for (void *comm : recvComms_) {
+      if (comm != nullptr && net_->closeRecv != nullptr) {
         EXPECT_EQ(net_->closeRecv(comm), flagcxSuccess);
-    if (listenComm_ != nullptr && net_->closeListen != nullptr)
+      }
+    }
+    if (listenComm_ != nullptr && net_->closeListen != nullptr) {
       EXPECT_EQ(net_->closeListen(listenComm_), flagcxSuccess);
+    }
   }
 
   struct flagcxNetAdaptor *net_ = nullptr;
@@ -264,26 +341,18 @@ TEST(NetAdaptorInterface, GetDevFromName) {
 
 TEST_F(NetAdaptorReusableListener, AcceptsSequentialConnections) {
   for (int connection = 0; connection < 2; ++connection) {
-    char connectHandle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
-    memcpy(connectHandle, listenHandle_, sizeof(connectHandle));
-    void *sendComm = nullptr;
-    void *recvComm = nullptr;
-    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-    while ((sendComm == nullptr || recvComm == nullptr) &&
-           std::chrono::steady_clock::now() < deadline) {
-      if (sendComm == nullptr)
-        ASSERT_EQ(net_->connect(0, connectHandle, &sendComm), flagcxSuccess);
-      if (recvComm == nullptr)
-        ASSERT_EQ(net_->accept(listenComm_, &recvComm), flagcxSuccess);
-      if (sendComm == nullptr || recvComm == nullptr)
-        std::this_thread::yield();
-    }
-    ASSERT_NE(sendComm, nullptr)
+    const LoopbackConnectionResult result =
+        establishLoopbackConnection(net_, 0, listenHandle_, listenComm_);
+    sendComms_.push_back(result.sendComm);
+    recvComms_.push_back(result.recvComm);
+    ASSERT_EQ(result.connectResult, flagcxSuccess)
+        << "connect failed at iteration " << connection;
+    ASSERT_EQ(result.acceptResult, flagcxSuccess)
+        << "accept failed at iteration " << connection;
+    ASSERT_NE(result.sendComm, nullptr)
         << "connect timed out at iteration " << connection;
-    ASSERT_NE(recvComm, nullptr)
+    ASSERT_NE(result.recvComm, nullptr)
         << "accept timed out at iteration " << connection;
-    sendComms_.push_back(sendComm);
-    recvComms_.push_back(recvComm);
   }
 }
 
@@ -300,10 +369,12 @@ TEST_F(NetAdaptorReusableListener, QueuesBarexConnectionsBeforeAccept) {
   const auto connectDeadline = std::chrono::steady_clock::now() + kTimeout;
   while ((sendComms[0] == nullptr || sendComms[1] == nullptr) &&
          std::chrono::steady_clock::now() < connectDeadline) {
-    for (int i = 0; i < 2; ++i)
-      if (sendComms[i] == nullptr)
+    for (int i = 0; i < 2; ++i) {
+      if (sendComms[i] == nullptr) {
         ASSERT_EQ(net_->connect(0, connectHandles[i], &sendComms[i]),
                   flagcxSuccess);
+      }
+    }
     if (sendComms[0] == nullptr || sendComms[1] == nullptr)
       std::this_thread::yield();
   }
