@@ -117,6 +117,15 @@ enum FlagcxSliceOp : uint8_t {
 };
 
 struct FlagcxSlice {
+  FlagcxSlice() = default;
+
+  FlagcxSlice(uint64_t src, uint64_t dst, uint32_t len, uint32_t localKey = 0,
+              uint32_t remoteKey = 0, uint8_t op = FLAGCX_SLICE_OP_WRITE,
+              FlagcxTransferTask *owner = nullptr,
+              volatile int *depth = nullptr)
+      : srcVa(src), dstVa(dst), length(len), lkey(localKey), rkey(remoteKey),
+        opcode(op), task(owner), qpDepth(depth) {}
+
   // WRITE: local source VA; READ: local destination VA.
   uint64_t srcVa = 0;
   // WRITE: remote destination VA; READ: remote source VA.

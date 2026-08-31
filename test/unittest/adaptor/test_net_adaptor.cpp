@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <future>
 #include <gtest/gtest.h>
 #include <thread>
 #include <unistd.h>
@@ -69,59 +68,28 @@ establishLoopbackConnection(struct flagcxNetAdaptor *net, int dev,
 
   char connectHandle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   memcpy(connectHandle, listenHandle, sizeof(connectHandle));
-
-  auto acceptFuture = std::async(std::launch::async, [=]() {
-    std::pair<flagcxResult_t, void *> endpoint(flagcxSuccess, nullptr);
-    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-    while (endpoint.second == nullptr &&
-           std::chrono::steady_clock::now() < deadline) {
-      endpoint.first = net->accept(listenComm, &endpoint.second);
-      if (endpoint.first != flagcxSuccess)
-        return endpoint;
-      if (endpoint.second == nullptr)
-        std::this_thread::yield();
+  result.connectResult = flagcxSuccess;
+  result.acceptResult = flagcxSuccess;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while ((result.sendComm == nullptr || result.recvComm == nullptr) &&
+         std::chrono::steady_clock::now() < deadline) {
+    if (result.sendComm == nullptr) {
+      result.connectResult = net->connect(dev, connectHandle, &result.sendComm);
+      if (result.connectResult != flagcxSuccess)
+        return result;
     }
-    if (endpoint.second == nullptr)
-      endpoint.first = flagcxSystemError;
-    return endpoint;
-  });
-
-  auto connectFuture = std::async(std::launch::async, [&]() {
-    std::pair<flagcxResult_t, void *> endpoint(flagcxSuccess, nullptr);
-    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-    while (endpoint.second == nullptr &&
-           std::chrono::steady_clock::now() < deadline) {
-      endpoint.first = net->connect(dev, connectHandle, &endpoint.second);
-      if (endpoint.first != flagcxSuccess)
-        return endpoint;
-      if (endpoint.second == nullptr)
-        std::this_thread::yield();
+    if (result.recvComm == nullptr) {
+      result.acceptResult = net->accept(listenComm, &result.recvComm);
+      if (result.acceptResult != flagcxSuccess)
+        return result;
     }
-    if (endpoint.second == nullptr)
-      endpoint.first = flagcxSystemError;
-    return endpoint;
-  });
-
-  /* Some adaptors (notably UCX) perform blocking control-message receives
-     inside connect/accept, so the deadline around the outer polling loop
-     cannot cancel a callback that is already running. The public net adaptor
-     API has no in-progress-handshake abort operation. Fail the test process
-     promptly instead of destroying a non-ready future, whose destructor would
-     wait forever and hang the entire CI job. */
-  if (connectFuture.wait_for(kTimeout) != std::future_status::ready) {
-    fprintf(stderr, "net adaptor connect handshake timed out\n");
-    std::abort();
+    if (result.sendComm == nullptr || result.recvComm == nullptr)
+      std::this_thread::yield();
   }
-  const auto connectEndpoint = connectFuture.get();
-  if (acceptFuture.wait_for(kTimeout) != std::future_status::ready) {
-    fprintf(stderr, "net adaptor accept handshake timed out\n");
-    std::abort();
-  }
-  const auto acceptEndpoint = acceptFuture.get();
-  result.connectResult = connectEndpoint.first;
-  result.acceptResult = acceptEndpoint.first;
-  result.sendComm = connectEndpoint.second;
-  result.recvComm = acceptEndpoint.second;
+  if (result.sendComm == nullptr)
+    result.connectResult = flagcxSystemError;
+  if (result.recvComm == nullptr)
+    result.acceptResult = flagcxSystemError;
   return result;
 }
 
@@ -484,15 +452,29 @@ TEST_F(NetAdaptorMemory, RegisterGpuMr) {
 }
 
 TEST_F(NetAdaptorMemory, RegMrDmaBufRegistration) {
+  SKIP_IF_NET_CALLBACK_NULL(net_, getProperties);
   SKIP_IF_NET_CALLBACK_NULL(net_, regMrDmaBuf);
   SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
 
+  flagcxNetProperties_t properties = {};
+  ASSERT_EQ(net_->getProperties(0, &properties), flagcxSuccess);
+  if ((properties.ptrSupport & FLAGCX_PTR_DMABUF) == 0)
+    GTEST_SKIP() << "Selected net adaptor does not advertise DMA-BUF support";
+
   ASSERT_NE(deviceAdaptor, nullptr);
   ASSERT_NE(deviceAdaptor->setDevice, nullptr);
-  ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
-  ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
-  ASSERT_NE(deviceAdaptor->getHandleForAddressRange, nullptr);
+  if (deviceAdaptor->dmaSupport == nullptr ||
+      deviceAdaptor->gdrMemAlloc == nullptr ||
+      deviceAdaptor->gdrMemFree == nullptr ||
+      deviceAdaptor->getHandleForAddressRange == nullptr) {
+    GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
+  }
   ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+
+  bool dmaBufferSupport = false;
+  ASSERT_EQ(deviceAdaptor->dmaSupport(&dmaBufferSupport), flagcxSuccess);
+  if (!dmaBufferSupport)
+    GTEST_SKIP() << "Selected device does not support DMA-BUF export";
 
   void *buffer = nullptr;
   ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&buffer, kBufferSize, nullptr),

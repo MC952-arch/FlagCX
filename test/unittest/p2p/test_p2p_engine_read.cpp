@@ -828,4 +828,54 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsAcrossTransportMemoryRegistrationChunks) {
     ASSERT_EQ(actual[i], expected[i]) << "Mismatch at index " << i;
 }
 
+TEST_F(FlagcxP2pEngineReadTest,
+       DescriptorDoesNotCrossAdjacentLogicalMemoryRegistrations) {
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  constexpr size_t halfBytes = 4096;
+  constexpr size_t totalBytes = 2 * halfBytes;
+  ScopedAllocation remoteBuffer;
+  ASSERT_EQ(
+      allocHostBuffer(&remoteBuffer, totalBytes, kClientGpuIdx, clientStream),
+      flagcxSuccess);
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(remoteBuffer.get());
+  FlagcxP2pMr firstMr = 0;
+  FlagcxP2pMr secondMr = 0;
+  ScopedMr firstMrGuard;
+  ScopedMr secondMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(clientEngine, base, halfBytes, firstMr), 0);
+  firstMrGuard.set(clientEngine, firstMr);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(clientEngine, base + halfBytes, halfBytes, secondMr),
+      0);
+  secondMrGuard.set(clientEngine, secondMr);
+
+  FlagcxP2pRdmaDesc desc = {};
+  EXPECT_EQ(flagcxP2pEngineMakeDesc(serverConn, base, halfBytes, &desc), 0);
+  EXPECT_EQ(desc.idx, firstMr);
+
+  ScopedAllocation localBuffer;
+  ASSERT_EQ(allocHostBuffer(&localBuffer, 2, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+  FlagcxP2pMr localMr = 0;
+  ScopedMr localMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(localBuffer.get()),
+                               2, localMr),
+            0);
+  localMrGuard.set(serverEngine, localMr);
+
+  ASSERT_EQ(flagcxP2pEngineUpdateDesc(desc, base + halfBytes - 1, 2), 0);
+  uint64_t transferId = 0;
+  EXPECT_NE(flagcxP2pEngineRead(serverConn, localMr, localBuffer.get(), 2, desc,
+                                &transferId),
+            0);
+
+  EXPECT_EQ(
+      flagcxP2pEngineMakeDesc(serverConn, base + halfBytes, halfBytes, &desc),
+      0);
+  EXPECT_NE(flagcxP2pEngineMakeDesc(serverConn, base, totalBytes, &desc), 0);
+}
+
 } // namespace

@@ -16,6 +16,11 @@ jobs:
       image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
       options: --user root
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
       - name: Checkout Code
         uses: actions/checkout@v7
         with:
@@ -25,7 +30,6 @@ jobs:
 
       - name: Install format dependencies
         run: |
-          apt-get update
           apt-get install -y clang-format
           /root/miniconda3/bin/python -m pip install pre-commit
 

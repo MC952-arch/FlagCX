@@ -1186,6 +1186,10 @@ flagcxResult_t flagcxIbAccept(void *listenComm, void **recvComm) {
   *recvComm = NULL;
   // Pre-declare variables because of goto
   struct ibv_srq *srq = NULL;
+  bool deviceDmaBufSupported = false;
+  bool gdrSupported = false;
+  bool dmaBufSupported = false;
+  flagcxResult_t dmaSupportResult = flagcxSuccess;
 
   if (stage->state == flagcxIbCommStateAccept)
     goto ib_accept_check;
@@ -1342,7 +1346,16 @@ ib_recv:
     FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
   }
 
-  rComm->flushEnabled = 1;
+  if (deviceAdaptor != NULL && deviceAdaptor->dmaSupport != NULL) {
+    dmaSupportResult = deviceAdaptor->dmaSupport(&deviceDmaBufSupported);
+    if (dmaSupportResult != flagcxSuccess)
+      deviceDmaBufSupported = false;
+  }
+  gdrSupported = flagcxIbGdrSupport() == flagcxSuccess;
+  dmaBufSupported = deviceDmaBufSupported &&
+                    flagcxIbDmaBufSupport(lComm->dev) == flagcxSuccess;
+  rComm->flushEnabled =
+      (gdrSupported || dmaBufSupported) && flagcxParamIbGdrFlushDisable() == 0;
 
   for (int i = 0; i < mergedDev->ndevs; i++) {
     rCommDev = rComm->devs + i;
@@ -2476,6 +2489,9 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
@@ -2640,6 +2656,9 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
@@ -2698,6 +2717,9 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   void **dstHandles, uint64_t signalOff,
                                   void **signalHandles, uint64_t signalValue,
                                   void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;

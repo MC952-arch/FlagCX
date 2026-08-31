@@ -413,7 +413,7 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
             comm, descs, batchCount, sendComm, requests, &posted);
         if (posted == 0) {
           if (res != flagcxSuccess && res != flagcxSystemError &&
-              res != flagcxInternalError) {
+              res != flagcxInternalError && res != flagcxInProgress) {
             WARN("flagcxRmaProxyPollNonPersistDesc: batch op failed peer=%d "
                  "res=%d",
                  peer, (int)res);
@@ -438,8 +438,9 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
 
     desc->request = NULL;
     flagcxResult_t res = flagcxRmaProxyPostOp(comm, desc, sendComm);
-    if (res == flagcxInternalError) {
-      // Request pool exhausted; retry this slot next round (cis unchanged).
+    if (res == flagcxInternalError || res == flagcxInProgress) {
+      // Request pool exhaustion and transport queue pressure are transient;
+      // retry this slot next round without advancing cis.
       break;
     }
     if (res != flagcxSuccess) {

@@ -165,8 +165,23 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   INFO(FLAGCX_INIT,
        "[gdrMemAlloc] memGran=%zu handleSize=%zu gpuDirectRDMACapable=%d",
        memGran, handleSize, (int)memprop.allocFlags.gpuDirectRDMACapable);
-  /* Allocate the physical memory on the device */
-  DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+  /* Fabric handles may be advertised even when the process has no IMEX
+     channel. Retry with the POSIX file-descriptor handle required by DMA-BUF
+     instead of rejecting an otherwise valid GDR allocation. */
+  if (requestedHandleTypes & CU_MEM_HANDLE_TYPE_FABRIC) {
+    cuRes = cuMemCreate(&handle, handleSize, &memprop, 0);
+    if (cuRes == CUDA_ERROR_NOT_PERMITTED ||
+        cuRes == CUDA_ERROR_NOT_SUPPORTED) {
+      requestedHandleTypes &= ~CU_MEM_HANDLE_TYPE_FABRIC;
+      memprop.requestedHandleTypes =
+          (CUmemAllocationHandleType)requestedHandleTypes;
+      DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+    } else if (cuRes != CUDA_SUCCESS) {
+      DEVCHECK(cuRes);
+    }
+  } else {
+    DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+  }
   /* Reserve a virtual address range */
   cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
   if (cuRes != CUDA_SUCCESS) {

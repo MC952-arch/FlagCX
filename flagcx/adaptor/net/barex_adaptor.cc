@@ -928,11 +928,13 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
                                  void **request) {
   (void)tag; /* always 0 on the proxy path */
   (void)phandle;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
   *request = nullptr;
   auto *comm = static_cast<BarexComm *>(sendComm);
   auto *mr = static_cast<BarexMr *>(mhandle);
-  if (comm == nullptr || mr == nullptr)
-    return flagcxInternalError;
+  if (comm == nullptr || (data == nullptr && size != 0) || mr == nullptr)
+    return flagcxInvalidArgument;
   if (comm->dead.load(std::memory_order_acquire))
     return flagcxInternalError;
 
@@ -993,14 +995,16 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
                                  void **phandles, void **request) {
   (void)tags;
   (void)phandles;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
   *request = nullptr;
   auto *comm = static_cast<BarexComm *>(recvComm);
   if (comm == nullptr || n != 1 || data == nullptr || sizes == nullptr ||
-      mhandles == nullptr)
-    return flagcxInternalError;
+      mhandles == nullptr || (data[0] == nullptr && sizes[0] != 0))
+    return flagcxInvalidArgument;
   auto *mr = static_cast<BarexMr *>(mhandles[0]);
   if (mr == nullptr)
-    return flagcxInternalError;
+    return flagcxInvalidArgument;
   if (comm->dead.load(std::memory_order_acquire))
     return flagcxInternalError;
   BarexEngine *e = comm->engine;
