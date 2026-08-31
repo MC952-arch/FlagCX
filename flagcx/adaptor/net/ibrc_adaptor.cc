@@ -1659,11 +1659,19 @@ flagcxIbGetNetCommDevBase(flagcxIbNetCommBase *base, int devIndex) {
   }
 }
 
+flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
+                                       ibv_mr *mhandle);
+
 /* DMA-BUF support */
 flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
                                    int type, uint64_t offset, int fd,
                                    int mrFlags, void **mhandle) {
-  assert(size > 0);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
+  if (comm == NULL || data == NULL || size == 0)
+    return flagcxInvalidArgument;
+
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
   struct flagcxIbMrHandle *mhandleWrapper =
       (struct flagcxIbMrHandle *)calloc(1, sizeof(struct flagcxIbMrHandle));
@@ -1673,9 +1681,23 @@ flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset,
-                                            fd, mrFlags,
-                                            mhandleWrapper->mrs + i));
+    flagcxResult_t result =
+        flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset, fd,
+                                    mrFlags, mhandleWrapper->mrs + i);
+    if (result != flagcxSuccess) {
+      for (int j = i - 1; j >= 0; --j) {
+        struct flagcxIbNetCommDevBase *registeredDev =
+            flagcxIbGetNetCommDevBase(base, j);
+        flagcxResult_t cleanupResult =
+            flagcxIbDeregMrInternal(registeredDev, mhandleWrapper->mrs[j]);
+        if (cleanupResult != flagcxSuccess) {
+          WARN("NET/IB: failed to roll back MR registration on device %d: %d",
+               j, cleanupResult);
+        }
+      }
+      free(mhandleWrapper);
+      return result;
+    }
   }
   *mhandle = (void *)mhandleWrapper;
   return flagcxSuccess;
@@ -1717,16 +1739,26 @@ returning:
 }
 
 flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
+  if (comm == NULL || mhandle == NULL)
+    return flagcxInvalidArgument;
+
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
+  flagcxResult_t result = flagcxSuccess;
   for (int i = 0; i < base->ndevs; i++) {
+    if (mhandleWrapper->mrs[i] == NULL)
+      continue;
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]));
+    flagcxResult_t current =
+        flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]);
+    if (result == flagcxSuccess && current != flagcxSuccess)
+      result = current;
+    mhandleWrapper->mrs[i] = NULL;
   }
   free(mhandleWrapper);
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
