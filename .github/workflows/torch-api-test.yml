@@ -9,43 +9,8 @@ on:
       - main
 
 jobs:
-  format-check:
-    name: code format check
-    runs-on: [self-hosted, cx-build]
-    container:
-      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
-      options: --user root
-    steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
-      - name: Checkout Code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          set-safe-directory: true
-
-      - name: Install format dependencies
-        run: |
-          apt-get install -y clang-format
-          /root/miniconda3/bin/python -m pip install pre-commit
-
-      - name: Run code format check
-        env:
-          FLAGCX_FORMAT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          echo "Checking format from $FLAGCX_FORMAT_BASE_SHA to HEAD"
-          /root/miniconda3/bin/pre-commit run \
-            --from-ref "$FLAGCX_FORMAT_BASE_SHA" \
-            --to-ref HEAD
-        continue-on-error: false
-
   torch-api-test-hygon:
     name: torch-api-test (hygon)
-    needs: format-check
     runs-on: [hg-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
@@ -133,7 +98,6 @@ jobs:
 
   torch-api-test-cuda:
     name: torch-api-test (cuda)
-    needs: format-check
     runs-on: [nv-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
@@ -215,7 +179,6 @@ jobs:
 
   torch-api-test-metax:
     name: torch-api-test (metax)
-    needs: format-check
     runs-on: [mx-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev

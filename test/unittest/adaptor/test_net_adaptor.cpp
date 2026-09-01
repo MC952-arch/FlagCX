@@ -6,11 +6,15 @@
  * these tests exercise the same vtable used by the FlagCX runtime.
  ************************************************************************/
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -68,28 +72,77 @@ establishLoopbackConnection(struct flagcxNetAdaptor *net, int dev,
 
   char connectHandle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   memcpy(connectHandle, listenHandle, sizeof(connectHandle));
-  result.connectResult = flagcxSuccess;
-  result.acceptResult = flagcxSuccess;
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while ((result.sendComm == nullptr || result.recvComm == nullptr) &&
-         std::chrono::steady_clock::now() < deadline) {
-    if (result.sendComm == nullptr) {
+
+  /* IBRC and BAREX advance the two sides of the handshake independently.
+     Running connect and accept serially makes progress depend on scheduler and
+     TCP timing: one side may need the peer to advance before it can return a
+     completed comm.  Keep one thread per endpoint, just like the real proxy
+     paths, and never call the same endpoint concurrently from two threads. */
+  std::atomic<bool> cancelled(false);
+  std::mutex completionMutex;
+  std::condition_variable completionCv;
+  int completedEndpoints = 0;
+  const auto markEndpointComplete = [&]() {
+    {
+      std::lock_guard<std::mutex> lock(completionMutex);
+      ++completedEndpoints;
+    }
+    completionCv.notify_one();
+  };
+
+  std::thread connectThread([&]() {
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    result.connectResult = flagcxSuccess;
+    while (result.sendComm == nullptr && !cancelled.load() &&
+           std::chrono::steady_clock::now() < deadline) {
       result.connectResult = net->connect(dev, connectHandle, &result.sendComm);
-      if (result.connectResult != flagcxSuccess)
-        return result;
+      if (result.connectResult != flagcxSuccess) {
+        cancelled.store(true);
+        break;
+      }
+      if (result.sendComm == nullptr)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (result.recvComm == nullptr) {
+    if (result.sendComm == nullptr && result.connectResult == flagcxSuccess) {
+      result.connectResult = flagcxSystemError;
+      cancelled.store(true);
+    }
+    markEndpointComplete();
+  });
+
+  std::thread acceptThread([&]() {
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    result.acceptResult = flagcxSuccess;
+    while (result.recvComm == nullptr && !cancelled.load() &&
+           std::chrono::steady_clock::now() < deadline) {
       result.acceptResult = net->accept(listenComm, &result.recvComm);
-      if (result.acceptResult != flagcxSuccess)
-        return result;
+      if (result.acceptResult != flagcxSuccess) {
+        cancelled.store(true);
+        break;
+      }
+      if (result.recvComm == nullptr)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (result.sendComm == nullptr || result.recvComm == nullptr)
-      std::this_thread::yield();
+    if (result.recvComm == nullptr && result.acceptResult == flagcxSuccess) {
+      result.acceptResult = flagcxSystemError;
+      cancelled.store(true);
+    }
+    markEndpointComplete();
+  });
+
+  /* A callback that is already blocked cannot observe cancelled.  Bound the
+     whole helper externally so a broken transport handshake fails the test
+     process instead of hanging the CI runner indefinitely. */
+  {
+    std::unique_lock<std::mutex> lock(completionMutex);
+    if (!completionCv.wait_for(lock, kTimeout + std::chrono::seconds(1),
+                               [&]() { return completedEndpoints == 2; })) {
+      fprintf(stderr, "net adaptor loopback handshake timed out\n");
+      std::abort();
+    }
   }
-  if (result.sendComm == nullptr)
-    result.connectResult = flagcxSystemError;
-  if (result.recvComm == nullptr)
-    result.acceptResult = flagcxSystemError;
+  connectThread.join();
+  acceptThread.join();
   return result;
 }
 
