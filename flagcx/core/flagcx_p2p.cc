@@ -47,10 +47,10 @@
 #endif
 #include <unistd.h>
 
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
-extern flagcxResult_t flagcxNetIbP2pAbortListen(void *listenComm);
+extern struct flagcxNetAdaptor flagcxP2pNetIb;
+extern flagcxResult_t flagcxP2pNetIbAbortListen(void *listenComm);
 #ifdef USE_ACCL_BAREX
-extern struct flagcxNetAdaptor flagcxNetBarex;
+extern struct flagcxNetAdaptor flagcxP2pNetBarex;
 #endif
 
 namespace {
@@ -264,9 +264,9 @@ enum FlagcxP2pNotifType : uint32_t {
 
 static struct flagcxNetAdaptor *getP2pNetAdaptor() {
 #ifdef USE_ACCL_BAREX
-  return &flagcxNetBarex;
+  return &flagcxP2pNetBarex;
 #else
-  return &flagcxNetIbP2p;
+  return &flagcxP2pNetIb;
 #endif
 }
 
@@ -476,16 +476,16 @@ static std::mutex gP2pEngineDirectoryMutex;
 static std::unordered_map<uint64_t, FlagcxP2pEngine *> gP2pEngineDirectory;
 
 static bool usesIbP2pAdaptor(const FlagcxP2pEngine *engine) {
-  return engine != NULL && engine->adaptor == &flagcxNetIbP2p;
+  return engine != NULL && engine->adaptor == &flagcxP2pNetIb;
 }
 
 static const struct flagcxP2pTransportOps *
 getP2pTransportOps(const struct flagcxNetAdaptor *adaptor) {
 #ifdef USE_ACCL_BAREX
-  if (adaptor == &flagcxNetBarex)
+  if (adaptor == &flagcxP2pNetBarex)
     return &flagcxP2pBarexTransportOps;
 #endif
-  return adaptor == &flagcxNetIbP2p ? &flagcxP2pIbrcTransportOps : NULL;
+  return adaptor == &flagcxP2pNetIb ? &flagcxP2pIbrcTransportOps : NULL;
 }
 
 struct FlagcxP2pConn {
@@ -526,7 +526,7 @@ struct FlagcxP2pMemRegEntry {
 
 static size_t p2pMrChunkBytes(const FlagcxP2pEngine *engine, size_t size) {
 #ifdef USE_ACCL_BAREX
-  if (engine != NULL && engine->adaptor == &flagcxNetBarex) {
+  if (engine != NULL && engine->adaptor == &flagcxP2pNetBarex) {
     size_t chunkBytes = 64ull << 20;
     const char *value = flagcxGetEnv("FLAGCX_ACCL_MAX_MR_MB");
     if (value != NULL) {
@@ -2581,7 +2581,7 @@ void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine) {
   if (usesIbP2pAdaptor(engine)) {
     for (int d = 0; d < engine->nDevs; d++) {
       if (engine->listeners[d].listenComm) {
-        flagcxNetIbP2pAbortListen(engine->listeners[d].listenComm);
+        flagcxP2pNetIbAbortListen(engine->listeners[d].listenComm);
       }
     }
   }

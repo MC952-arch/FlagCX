@@ -1214,7 +1214,7 @@ static flagcxResult_t flagcxP2pCloseRecv(void *recvComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxNetIbP2pAbortListen(void *listenComm) {
+flagcxResult_t flagcxP2pNetIbAbortListen(void *listenComm) {
   struct flagcxP2pListenComm *comm = (struct flagcxP2pListenComm *)listenComm;
   if (comm) {
     __atomic_store_n(&comm->abortFlag, 1, __ATOMIC_RELEASE);
@@ -1226,7 +1226,7 @@ flagcxResult_t flagcxNetIbP2pAbortListen(void *listenComm) {
 static flagcxResult_t flagcxP2pCloseListen(void *listenComm) {
   struct flagcxP2pListenComm *comm = (struct flagcxP2pListenComm *)listenComm;
   if (comm) {
-    FLAGCXCHECK(flagcxNetIbP2pAbortListen(comm));
+    FLAGCXCHECK(flagcxP2pNetIbAbortListen(comm));
     free(comm);
   }
   return flagcxSuccess;
@@ -1273,7 +1273,7 @@ static flagcxResult_t flagcxP2pGetDevFromName(char *name, int *dev) {
 /*  Adaptor struct                                                     */
 /* ------------------------------------------------------------------ */
 
-struct flagcxNetAdaptor flagcxNetIbP2p = {
+struct flagcxNetAdaptor flagcxP2pNetIb = {
     // Basic functions
     "IB_P2P",
     flagcxP2pInit,

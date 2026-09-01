@@ -714,7 +714,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
           if (dmaBufferSupport &&
               deviceAdaptor->getHandleForAddressRange != NULL &&
               resources->netAdaptor->regMrDmaBuf != NULL &&
-              resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+              resources->netAdaptor == getNetAdaptor(RDMA)) {
             INFO(FLAGCX_PROXY,
                  "Registering memory region with DMA-BUF support");
             int dmabuf_fd;
@@ -727,11 +727,11 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
                 &resources->mhandles[0]));
             (void)close(dmabuf_fd);
           } else {
-            if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+            if (resources->netAdaptor == getNetAdaptor(RDMA)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netSendComm, resources->buffers[0],
                   resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
-            } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+            } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netSendComm, resources->buffers[0],
                   resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
@@ -768,11 +768,11 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
                 &resources->mhandles[0]));
             (void)close(dmabuf_fd);
           } else {
-            if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+            if (resources->netAdaptor == getNetAdaptor(RDMA)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netRecvComm, resources->buffers[0],
                   resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
-            } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+            } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netRecvComm, resources->buffers[0],
                   resources->buffSizes[0], 1, 0, &resources->mhandles[0]));

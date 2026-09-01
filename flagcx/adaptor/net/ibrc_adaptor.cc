@@ -2485,6 +2485,22 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->netDeviceVersion = FLAGCX_NET_DEVICE_INVALID_VERSION;
   return flagcxSuccess;
 }
+
+static flagcxResult_t
+flagcxIbValidateOneSidedRegion(const struct flagcxOneSideHandleInfo *info,
+                               int rank, uint64_t offset, size_t size,
+                               bool useLocalKey) {
+  if (info == NULL || info->baseVas == NULL || info->regionSizes == NULL ||
+      (useLocalKey ? info->lkeys == NULL : info->rkeys == NULL) || rank < 0 ||
+      rank >= info->nRanks)
+    return flagcxInvalidArgument;
+
+  const size_t regionSize = info->regionSizes[rank];
+  if (size > UINT32_MAX || offset > regionSize || size > regionSize - offset)
+    return flagcxInvalidArgument;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
@@ -2497,6 +2513,12 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, true));
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, false));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
@@ -2509,6 +2531,10 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   req->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++) {
     req->devBases[i] = &comm->devs[i].base;
+  }
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2551,10 +2577,12 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
   if (posted == NULL || requests == NULL)
     return flagcxInvalidArgument;
   *posted = 0;
-  if (count <= 0)
-    return flagcxSuccess;
-  if (count > MAX_REQUESTS)
+  if (count < 0 || count > MAX_REQUESTS)
     return flagcxInvalidArgument;
+  for (int i = 0; i < count; i++)
+    requests[i] = NULL;
+  if (count == 0)
+    return flagcxSuccess;
 
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
@@ -2564,6 +2592,14 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
   if (comm == NULL || srcInfo == NULL || dstInfo == NULL || srcOffs == NULL ||
       dstOffs == NULL || sizes == NULL) {
     return flagcxInvalidArgument;
+  }
+  for (int i = 0; i < count; i++) {
+    FLAGCXCHECK(flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOffs[i],
+                                               sizes[i], true));
+    FLAGCXCHECK(flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOffs[i],
+                                               sizes[i], false));
+    if (sizes[i] > UINT32_MAX)
+      return flagcxInvalidArgument;
   }
 
   int qpIdx = comm->base.qpIndex;
@@ -2664,6 +2700,12 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, false));
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, true));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   // For RDMA READ: remote_addr is the source (remote peer), sge is the local
@@ -2678,6 +2720,10 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   req->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++) {
     req->devBases[i] = &comm->devs[i].base;
+  }
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2727,10 +2773,16 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
       (struct flagcxOneSideHandleInfo *)dstHandles;
   struct flagcxOneSideHandleInfo *signalInfo =
       (struct flagcxOneSideHandleInfo *)signalHandles;
-  if (signalInfo == NULL || signalInfo->baseVas == NULL) {
-    WARN("flagcxIbIputSignal: signalHandles is NULL or uninitialized");
-    return flagcxInternalError;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (size > 0) {
+    FLAGCXCHECK(
+        flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, true));
+    FLAGCXCHECK(
+        flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, false));
   }
+  FLAGCXCHECK(flagcxIbValidateOneSidedRegion(signalInfo, dstRank, signalOff,
+                                             sizeof(uint64_t), false));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   int devIndex = qp->devIndex;

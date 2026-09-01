@@ -168,7 +168,7 @@ protected:
   int acceptedRemoteGpuIdx = -1;
 
   static bool hasP2pNetDevices() {
-    struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+    struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
     int nDevs = 0;
     return net != nullptr && net->init != nullptr && net->devices != nullptr &&
            net->init() == flagcxSuccess &&

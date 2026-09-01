@@ -30,10 +30,9 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
-    p2p)
-      # The MetaX CI RoCE environment cannot establish IB_P2P QPs reliably yet.
-      # Keep structure/bootstrap/slice tests enabled and skip real IB_P2P paths.
-      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*:P2pLoopbackTest.*:P2pBatchTest.*:P2pEngineRpcIbTest.*"
+    adaptor|p2p)
+      export FLAGCX_DEBUG=TRACE
+      export FLAGCX_DEBUG_SUBSYS=ALL
       ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
@@ -48,30 +47,6 @@ flagcx_ci_prepare() {
   echo "Preparing MetaX environment for unit-test suite: $suite"
   command -v mpirun
   command -v mxcc
-
-  # Both suites establish real loopback RDMA connections.  Pin them to the
-  # bonded RoCE device instead of depending on IB/socket discovery order.
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
-    if compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
-      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
-    fi
-
-    if [[ -d /sys/class/net/bond0 ]]; then
-      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
-    fi
-
-    export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
-    export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,ENV}
-
-    echo "MetaX RDMA diagnostics:"
-    echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
-    echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
-    echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
-    ls /dev/infiniband 2>/dev/null || true
-    ibv_devices 2>/dev/null || true
-    ibv_devinfo 2>/dev/null || true
-    ip -o addr show 2>/dev/null || true
-  fi
 }
 
 flagcx_ci_build_suite_override() {

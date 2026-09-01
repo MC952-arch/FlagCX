@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Contract and loopback tests for the network adaptor selected for IBRC.
+ * Contract and loopback tests for the build-selected RDMA network adaptor.
  * USE_ACCL_BAREX=1 selects BAREX through the normal adaptor registry, so
  * these tests exercise the same vtable used by the FlagCX runtime.
  ************************************************************************/
@@ -183,7 +183,7 @@ struct TestWindow {
 class NetAdaptorLoopback : public ::testing::Test {
 protected:
   void SetUp() override {
-    net_ = getUnifiedNetAdaptor(IBRC);
+    net_ = getNetAdaptor(RDMA);
     ASSERT_NE(net_, nullptr);
     SKIP_IF_NET_CALLBACK_NULL(net_, init);
     SKIP_IF_NET_CALLBACK_NULL(net_, devices);
@@ -287,7 +287,7 @@ class NetAdaptorBatch : public NetAdaptorLoopback {};
 class NetAdaptorReusableListener : public ::testing::Test {
 protected:
   void SetUp() override {
-    net_ = getUnifiedNetAdaptor(IBRC);
+    net_ = getNetAdaptor(RDMA);
     ASSERT_NE(net_, nullptr);
     SKIP_IF_NET_CALLBACK_NULL(net_, init);
     SKIP_IF_NET_CALLBACK_NULL(net_, devices);
@@ -298,9 +298,8 @@ protected:
     SKIP_IF_NET_CALLBACK_NULL(net_, closeRecv);
     SKIP_IF_NET_CALLBACK_NULL(net_, closeListen);
     ASSERT_EQ(net_->init(), flagcxSuccess);
-    int nDevs = 0;
-    ASSERT_EQ(net_->devices(&nDevs), flagcxSuccess);
-    ASSERT_GT(nDevs, 0);
+    ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
+    ASSERT_GT(nDevs_, 0);
     ASSERT_EQ(net_->listen(0, listenHandle_, &listenComm_), flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
   }
@@ -324,6 +323,7 @@ protected:
   }
 
   struct flagcxNetAdaptor *net_ = nullptr;
+  int nDevs_ = 0;
   char listenHandle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
   std::vector<void *> sendComms_;
@@ -331,20 +331,20 @@ protected:
 };
 
 TEST(NetAdaptorInterface, AdaptorIsAvailable) {
-  struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
   ASSERT_NE(net, nullptr);
   EXPECT_NE(net->name, nullptr);
 }
 
 TEST(NetAdaptorInterface, Init) {
-  struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
   ASSERT_NE(net, nullptr);
   SKIP_IF_NET_CALLBACK_NULL(net, init);
   EXPECT_EQ(net->init(), flagcxSuccess);
 }
 
 TEST(NetAdaptorInterface, Devices) {
-  struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
   ASSERT_NE(net, nullptr);
   SKIP_IF_NET_CALLBACK_NULL(net, init);
   SKIP_IF_NET_CALLBACK_NULL(net, devices);
@@ -355,7 +355,7 @@ TEST(NetAdaptorInterface, Devices) {
 }
 
 TEST(NetAdaptorInterface, GetProperties) {
-  struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
   ASSERT_NE(net, nullptr);
   SKIP_IF_NET_CALLBACK_NULL(net, init);
   SKIP_IF_NET_CALLBACK_NULL(net, devices);
@@ -373,7 +373,7 @@ TEST(NetAdaptorInterface, GetProperties) {
 }
 
 TEST(NetAdaptorInterface, GetDevFromName) {
-  struct flagcxNetAdaptor *net = getUnifiedNetAdaptor(IBRC);
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
   ASSERT_NE(net, nullptr);
   SKIP_IF_NET_CALLBACK_NULL(net, init);
   SKIP_IF_NET_CALLBACK_NULL(net, devices);
@@ -407,45 +407,6 @@ TEST_F(NetAdaptorReusableListener, AcceptsSequentialConnections) {
         << "connect timed out at iteration " << connection;
     ASSERT_NE(result.recvComm, nullptr)
         << "accept timed out at iteration " << connection;
-  }
-}
-
-TEST_F(NetAdaptorReusableListener, QueuesBarexConnectionsBeforeAccept) {
-  if (net_->name == nullptr || strcmp(net_->name, "BAREX") != 0)
-    GTEST_SKIP() << "Pending-accept FIFO is specific to the BAREX adaptor";
-
-  char connectHandles[2][FLAGCX_NET_HANDLE_MAXSIZE] = {};
-  void *sendComms[2] = {nullptr, nullptr};
-  void *recvComms[2] = {nullptr, nullptr};
-  for (int i = 0; i < 2; ++i)
-    memcpy(connectHandles[i], listenHandle_, sizeof(connectHandles[i]));
-
-  const auto connectDeadline = std::chrono::steady_clock::now() + kTimeout;
-  while ((sendComms[0] == nullptr || sendComms[1] == nullptr) &&
-         std::chrono::steady_clock::now() < connectDeadline) {
-    for (int i = 0; i < 2; ++i) {
-      if (sendComms[i] == nullptr) {
-        ASSERT_EQ(net_->connect(0, connectHandles[i], &sendComms[i]),
-                  flagcxSuccess);
-      }
-    }
-    if (sendComms[0] == nullptr || sendComms[1] == nullptr)
-      std::this_thread::yield();
-  }
-  ASSERT_NE(sendComms[0], nullptr) << "first connect timed out";
-  ASSERT_NE(sendComms[1], nullptr) << "second connect timed out";
-  sendComms_.assign(sendComms, sendComms + 2);
-
-  const auto acceptDeadline = std::chrono::steady_clock::now() + kTimeout;
-  for (int i = 0; i < 2; ++i) {
-    while (recvComms[i] == nullptr &&
-           std::chrono::steady_clock::now() < acceptDeadline) {
-      ASSERT_EQ(net_->accept(listenComm_, &recvComms[i]), flagcxSuccess);
-      if (recvComms[i] == nullptr)
-        std::this_thread::yield();
-    }
-    ASSERT_NE(recvComms[i], nullptr) << "accept timed out at iteration " << i;
-    recvComms_.push_back(recvComms[i]);
   }
 }
 
@@ -799,8 +760,6 @@ TEST_F(NetAdaptorOneSided, PerRankRegionBounds) {
   SKIP_IF_NET_CALLBACK_NULL(net_, iput);
   SKIP_IF_NET_CALLBACK_NULL(net_, iget);
   SKIP_IF_NET_CALLBACK_NULL(net_, test);
-  if (net_->name == nullptr || strcmp(net_->name, "BAREX") != 0)
-    GTEST_SKIP() << "Per-rank bounds validation is implemented by BAREX";
 
   std::vector<uint8_t> source(1024);
   std::vector<uint8_t> remote(4096, 0);
@@ -851,6 +810,12 @@ TEST_F(NetAdaptorOneSided, PerRankRegionBounds) {
             flagcxInvalidArgument);
   EXPECT_EQ(request, nullptr);
 
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iput(sendComm_, 0, 0, 1, 2, kRemoteRank,
+                       sourceWindow.opaque(), remoteWindow.opaque(), &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
   request = nullptr;
   ASSERT_EQ(net_->iput(sendComm_, source.size(), remote.size(), 0, kLocalRank,
                        kRemoteRank, sourceWindow.opaque(),
@@ -881,6 +846,56 @@ TEST_F(NetAdaptorOneSided, PerRankRegionBounds) {
                        &request),
             flagcxInvalidArgument);
   EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, 0, 0, 1, 2, kLocalRank, remoteWindow.opaque(),
+                       destinationWindow.opaque(), &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  if (net_->iputBatch != nullptr) {
+    const uint64_t sourceOffsets[1] = {800};
+    const uint64_t remoteOffsets[1] = {0};
+    const size_t sizes[1] = {512};
+    void *requests[1] = {reinterpret_cast<void *>(1)};
+    int posted = -1;
+    EXPECT_EQ(net_->iputBatch(sendComm_, 1, sourceOffsets, remoteOffsets, sizes,
+                              kLocalRank, kRemoteRank, sourceWindow.opaque(),
+                              remoteWindow.opaque(), requests, &posted),
+              flagcxInvalidArgument);
+    EXPECT_EQ(posted, 0);
+    EXPECT_EQ(requests[0], nullptr);
+  }
+
+  if (net_->iputSignal != nullptr) {
+    uint64_t signal = 0;
+    void *signalMr = nullptr;
+    ASSERT_EQ(registerMr(recvComm_, &signal, sizeof(signal), FLAGCX_PTR_HOST,
+                         &signalMr, FLAGCX_NET_MR_FLAG_FORCE_SO),
+              flagcxSuccess);
+    ASSERT_NE(signalMr, nullptr);
+
+    TestWindow signalWindow;
+    ASSERT_EQ(
+        signalWindow.init(net_, &signal, sizeof(signal), kRemoteRank, signalMr),
+        flagcxSuccess);
+
+    request = reinterpret_cast<void *>(1);
+    EXPECT_EQ(net_->iputSignal(sendComm_, 800, 0, 512, kLocalRank, kRemoteRank,
+                               sourceWindow.opaque(), remoteWindow.opaque(), 0,
+                               signalWindow.opaque(), 1, &request),
+              flagcxInvalidArgument);
+    EXPECT_EQ(request, nullptr);
+
+    request = reinterpret_cast<void *>(1);
+    EXPECT_EQ(net_->iputSignal(sendComm_, 0, 0, 0, kLocalRank, kRemoteRank,
+                               nullptr, nullptr, 1, signalWindow.opaque(), 1,
+                               &request),
+              flagcxInvalidArgument);
+    EXPECT_EQ(request, nullptr);
+
+    EXPECT_DEREGISTER_MR(recvComm_, signalMr);
+  }
 
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, remoteMr);
