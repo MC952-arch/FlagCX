@@ -7,7 +7,12 @@
 
 #include "flagcx.h"
 
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+#if !defined(USE_ASCEND_ADAPTOR) && !defined(USE_ENFLAME_ADAPTOR)
+#error "The FlagOS torch backend supports only Ascend and Enflame"
+#endif
+#include <flagos.h>
+#elif USE_NVIDIA_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/impl/CUDAGuardImpl.h>
@@ -91,7 +96,10 @@ public:
   explicit flagcxStreamGuard() = delete;
   explicit flagcxStreamGuard(flagcxStream_t stream, const int deviceId)
       : originalStream_(stream), currentStream_(nullptr), deviceId_(deviceId),
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+        guard_(*reinterpret_cast<Stream_t *>(stream)),
+        previous_(GetCurrentStreamForDevice(deviceId)), previousDevice_(0)
+#elif USE_NVIDIA_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
 #elif USE_ILUVATAR_COREX_ADAPTOR
@@ -131,11 +139,21 @@ public:
         guard_(torchpt::get_stream_from_pool(deviceId, /*prio=*/0))
 #endif
   {
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    GetDevice(&previousDevice_);
+    SetDevice(deviceId_);
+    SetCurrentStreamForDevice(deviceId_, guard_);
+#endif
 #ifdef USE_SUNRISE_ADAPTOR
     torchpt::set_current_stream(guard_.unwrap());
 #endif
   }
-#ifdef USE_SUNRISE_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  ~flagcxStreamGuard() {
+    SetCurrentStreamForDevice(deviceId_, previous_);
+    SetDevice(previousDevice_);
+  }
+#elif USE_SUNRISE_ADAPTOR
   // torchpt::PTPUStream is a value type, not an RAII guard, so we have
   // to restore the previous current stream by hand on destruction.
   ~flagcxStreamGuard() {
@@ -154,7 +172,10 @@ public:
   flagcxStreamGuard &operator=(flagcxStreamGuard &&) = delete;
 
   void reset_stream(flagcxStream_t stream) {
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    guard_ = *reinterpret_cast<Stream_t *>(stream);
+    SetCurrentStreamForDevice(deviceId_, guard_);
+#elif USE_NVIDIA_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
 #elif USE_ILUVATAR_COREX_ADAPTOR
@@ -201,7 +222,11 @@ private:
   flagcxStream_t originalStream_;
   flagcxStream_t currentStream_;
   int deviceId_;
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  Stream_t guard_;
+  Stream_t previous_;
+  int previousDevice_;
+#elif USE_NVIDIA_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ILUVATAR_COREX_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
