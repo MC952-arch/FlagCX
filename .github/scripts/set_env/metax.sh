@@ -47,6 +47,38 @@ flagcx_ci_prepare() {
   echo "Preparing MetaX environment for unit-test suite: $suite"
   command -v mpirun
   command -v mxcc
+
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+    if compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
+      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
+    elif compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null; then
+      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-$(printf '%s\n' /sys/class/infiniband/bnxt_roce* | xargs -n1 basename | paste -sd, -)}
+    fi
+
+    if [[ -d /sys/class/net/bond0 ]]; then
+      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
+    elif [[ -d /sys/class/net/eth0 ]]; then
+      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-eth0}
+    else
+      local fallback_ifname
+      fallback_ifname=$(ip -o link show 2>/dev/null | awk -F': ' '$2 != "lo" {print $2; exit}')
+      if [[ -n "$fallback_ifname" ]]; then
+        export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-$fallback_ifname}
+      fi
+    fi
+
+    echo "MetaX network diagnostics:"
+    echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
+    echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
+    echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
+    echo "net interfaces:"
+    ls /sys/class/net 2>/dev/null || true
+    echo "infiniband devices:"
+    ls /dev/infiniband 2>/dev/null || true
+    ibv_devices 2>/dev/null || true
+    ibv_devinfo 2>/dev/null || true
+    ip -o addr show 2>/dev/null || true
+  fi
 }
 
 flagcx_ci_build_suite_override() {

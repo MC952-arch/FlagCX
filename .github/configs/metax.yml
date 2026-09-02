@@ -11,6 +11,7 @@ container_volumes:
   - /opt/mxdriver:/opt/mxdriver:ro
 
 container_options: >-
+  --network=host
   --hostname=te-cicd
   --ipc=host
   --privileged=true
@@ -21,7 +22,6 @@ container_options: >-
   --group-add video
   -e PLATFORM=metax
   -e TORCH_DISTRIBUTED_BACKEND=mccl
-  -e FLAGCX_IB_HCA=bnxt_roce
   -e FLAGCX_IB_GID_INDEX=3
   -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
 
