@@ -7,15 +7,15 @@
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <string>
 #include <thread>
 
 #include <gtest/gtest.h>
 
+#include "adaptor.h"
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
-
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 namespace {
 
@@ -167,10 +167,12 @@ protected:
   std::string acceptedIp;
   int acceptedRemoteGpuIdx = -1;
 
-  static bool hasIbDevices() {
+  static bool hasP2pNetDevices() {
+    struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
     int nDevs = 0;
-    return flagcxNetIbP2p.init() == flagcxSuccess &&
-           flagcxNetIbP2p.devices(&nDevs) == flagcxSuccess && nDevs > 0;
+    return net != nullptr && net->init != nullptr && net->devices != nullptr &&
+           net->init() == flagcxSuccess &&
+           net->devices(&nDevs) == flagcxSuccess && nDevs > 0;
   }
 };
 
@@ -178,9 +180,8 @@ class P2pEngineRpcIbTest : public P2pEngineRpcTest {
 protected:
   void SetUp() override {
     P2pEngineRpcTest::SetUp();
-    if (!hasIbDevices()) {
-      GTEST_SKIP()
-          << "No IB devices available, skipping P2P RPC connection test";
+    if (!hasP2pNetDevices()) {
+      GTEST_SKIP() << "No selected P2P network devices available";
     }
   }
 };
@@ -271,7 +272,8 @@ TEST_F(P2pEngineRpcIbTest, ConnectAcceptExchangesGpuIdx) {
 
 TEST_F(P2pEngineRpcIbTest, ConnectAcceptIsLocalSameHost) {
   ASSERT_TRUE(connectViaBsPort());
-  // Single-host test — both sides should detect local connection
+  // Locality is established by the common bootstrap handshake and is
+  // independent of the selected network adaptor.
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(serverConn));
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(clientConn));
 }
