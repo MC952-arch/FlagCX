@@ -91,14 +91,6 @@ flagcx_ci_prepare() {
   if command -v ibv_devinfo >/dev/null 2>&1; then
     IBV_SHOW_WARNINGS=1 ibv_devinfo || true
   fi
-
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
-    if ! compgen -G "/sys/class/infiniband/*" >/dev/null ||
-      ! compgen -G "/dev/infiniband/uverbs*" >/dev/null; then
-      echo "Hygon $suite tests require RDMA devices, but the runner did not expose /sys/class/infiniband and /dev/infiniband/uverbs* to the test container." >&2
-      return 1
-    fi
-  fi
 }
 
 flagcx_ci_build_suite_override() {
