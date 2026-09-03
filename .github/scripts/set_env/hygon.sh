@@ -71,6 +71,21 @@ flagcx_ci_prepare() {
   mpirun --version
   nvcc --version
   hy-smi --showproductname || true
+
+  echo "Network interfaces visible inside the CI container:"
+  if command -v ip >/dev/null 2>&1; then
+    ip -o link show | grep -E 'bond[0-3](:|@)' || true
+    ip -o addr show | grep -E 'bond[0-3](:|@)' || true
+  else
+    echo "ip command is unavailable in the CI image"
+  fi
+
+  echo "RDMA devices visible inside the CI container:"
+  if command -v ibv_devices >/dev/null 2>&1; then
+    ibv_devices || true
+  else
+    ls -l /dev/infiniband 2>/dev/null || true
+  fi
 }
 
 flagcx_ci_build_suite_override() {

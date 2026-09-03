@@ -7,11 +7,42 @@
 #include <gtest/gtest.h>
 #include <infiniband/verbs.h>
 #include <thread>
+#include <vector>
 
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "onesided.h"
 
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
+extern struct flagcxNetAdaptor flagcxP2pNetIb;
+
+namespace {
+
+struct P2pTestWindow {
+  struct flagcxOneSideHandleInfo info = {};
+  uintptr_t baseVa = 0;
+  size_t regionSize = 0;
+  struct flagcxNetMrInfo mrInfo = {};
+
+  flagcxResult_t init(void *buffer, size_t size, void *mrHandle) {
+    flagcxResult_t result = flagcxP2pNetIb.getMrInfo(mrHandle, &mrInfo);
+    if (result != flagcxSuccess)
+      return result;
+    baseVa = reinterpret_cast<uintptr_t>(buffer);
+    regionSize = size;
+    info.baseVas = &baseVa;
+    info.regionSize = size;
+    info.regionSizes = &regionSize;
+    info.mrInfos = &mrInfo;
+    info.localMrHandle = mrHandle;
+    info.nRanks = 1;
+    info.signalIpcSlot = -1;
+    return flagcxSuccess;
+  }
+
+  void **opaque() { return reinterpret_cast<void **>(&info); }
+};
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Fixture: establishes a loopback connection for batch operation testing
@@ -19,9 +50,9 @@ extern struct flagcxNetAdaptor flagcxNetIbP2p;
 class P2pBatchTest : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
-    initResult_ = flagcxNetIbP2p.init();
+    initResult_ = flagcxP2pNetIb.init();
     if (initResult_ == flagcxSuccess)
-      flagcxNetIbP2p.devices(&nDevs_);
+      flagcxP2pNetIb.devices(&nDevs_);
   }
 
   void SetUp() override {
@@ -29,16 +60,16 @@ protected:
       GTEST_SKIP() << "No IB devices available, skipping batch tests";
 
     // Establish loopback connection
-    ASSERT_EQ(flagcxNetIbP2p.listen(0, handle_, &listenComm_), flagcxSuccess);
+    ASSERT_EQ(flagcxP2pNetIb.listen(0, handle_, &listenComm_), flagcxSuccess);
 
     auto acceptFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
-      flagcxNetIbP2p.accept(listenComm_, &comm);
+      flagcxP2pNetIb.accept(listenComm_, &comm);
       return comm;
     });
     auto connectFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
-      flagcxNetIbP2p.connect(0, handle_, &comm);
+      flagcxP2pNetIb.connect(0, handle_, &comm);
       return comm;
     });
 
@@ -55,11 +86,11 @@ protected:
 
   void TearDown() override {
     if (sendComm_)
-      flagcxNetIbP2p.closeSend(sendComm_);
+      flagcxP2pNetIb.closeSend(sendComm_);
     if (recvComm_)
-      flagcxNetIbP2p.closeRecv(recvComm_);
+      flagcxP2pNetIb.closeRecv(recvComm_);
     if (listenComm_)
-      flagcxNetIbP2p.closeListen(listenComm_);
+      flagcxP2pNetIb.closeListen(listenComm_);
   }
 
   static flagcxResult_t initResult_;
@@ -79,26 +110,26 @@ int P2pBatchTest::nDevs_ = 0;
 // ---------------------------------------------------------------------------
 TEST(P2pBatchStruct, TestBatchFunctionExists) {
   // testBatch is optional but should be non-NULL in the optimized adaptor
-  EXPECT_NE(flagcxNetIbP2p.testBatch, nullptr);
+  EXPECT_NE(flagcxP2pNetIb.testBatch, nullptr);
 }
 
 TEST(P2pBatchStruct, IgetBatchFunctionExists) {
   // igetBatch is optional but should be non-NULL in the optimized adaptor
-  EXPECT_NE(flagcxNetIbP2p.igetBatch, nullptr);
+  EXPECT_NE(flagcxP2pNetIb.igetBatch, nullptr);
 }
 
 // ---------------------------------------------------------------------------
 // testBatch with NULL requests reports all done
 // ---------------------------------------------------------------------------
 TEST(P2pBatchStruct, TestBatchNullRequestsAllDone) {
-  if (flagcxNetIbP2p.testBatch == nullptr)
+  if (flagcxP2pNetIb.testBatch == nullptr)
     GTEST_SKIP() << "testBatch not implemented";
 
   void *requests[3] = {nullptr, nullptr, nullptr};
   int doneFlags[3] = {0, 0, 0};
   int doneCount = 0;
 
-  EXPECT_EQ(flagcxNetIbP2p.testBatch(requests, 3, doneFlags, &doneCount),
+  EXPECT_EQ(flagcxP2pNetIb.testBatch(requests, 3, doneFlags, &doneCount),
             flagcxSuccess);
   EXPECT_EQ(doneCount, 3);
   for (int i = 0; i < 3; i++)
@@ -106,11 +137,11 @@ TEST(P2pBatchStruct, TestBatchNullRequestsAllDone) {
 }
 
 TEST(P2pBatchStruct, TestBatchZeroRequests) {
-  if (flagcxNetIbP2p.testBatch == nullptr)
+  if (flagcxP2pNetIb.testBatch == nullptr)
     GTEST_SKIP() << "testBatch not implemented";
 
   int doneCount = -1;
-  EXPECT_EQ(flagcxNetIbP2p.testBatch(nullptr, 0, nullptr, &doneCount),
+  EXPECT_EQ(flagcxP2pNetIb.testBatch(nullptr, 0, nullptr, &doneCount),
             flagcxSuccess);
   EXPECT_EQ(doneCount, 0);
 }
@@ -119,7 +150,7 @@ TEST(P2pBatchStruct, TestBatchZeroRequests) {
 // Single iput followed by testBatch (batch of 1)
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IputThenTestBatch) {
-  if (flagcxNetIbP2p.testBatch == nullptr)
+  if (flagcxP2pNetIb.testBatch == nullptr)
     GTEST_SKIP() << "testBatch not implemented";
 
   const size_t bufSize = 4096;
@@ -133,17 +164,21 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
   void *srcMr = nullptr;
   void *dstMr = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, srcBuf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, srcBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &srcMr),
             flagcxSuccess);
-  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBuf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, dstBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &dstMr),
             flagcxSuccess);
+  P2pTestWindow srcWindow, dstWindow;
+  ASSERT_EQ(srcWindow.init(srcBuf, bufSize, srcMr), flagcxSuccess);
+  ASSERT_EQ(dstWindow.init(dstBuf, bufSize, dstMr), flagcxSuccess);
 
   // Issue iput
   void *request = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.iput(sendComm_, 0, 0, bufSize, 0, 0, (void **)srcMr,
-                                (void **)dstMr, &request),
+  ASSERT_EQ(flagcxP2pNetIb.iput(sendComm_, 0, 0, bufSize, 0, 0,
+                                srcWindow.opaque(), dstWindow.opaque(),
+                                &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -153,7 +188,7 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
   int doneCount = 0;
   int polls = 0;
   while (doneFlags[0] == 0 && polls < 1000000) {
-    ASSERT_EQ(flagcxNetIbP2p.testBatch(requests, 1, doneFlags, &doneCount),
+    ASSERT_EQ(flagcxP2pNetIb.testBatch(requests, 1, doneFlags, &doneCount),
               flagcxSuccess);
     polls++;
   }
@@ -164,8 +199,8 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
   EXPECT_EQ(memcmp(srcBuf, dstBuf, bufSize), 0)
       << "RDMA write via testBatch poll did not transfer correctly";
 
-  flagcxNetIbP2p.deregMr(sendComm_, srcMr);
-  flagcxNetIbP2p.deregMr(sendComm_, dstMr);
+  flagcxP2pNetIb.deregMr(sendComm_, srcMr);
+  flagcxP2pNetIb.deregMr(sendComm_, dstMr);
   free(srcBuf);
   free(dstBuf);
 }
@@ -174,13 +209,14 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
 // Multiple iputs followed by testBatch (batch of N)
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
-  if (flagcxNetIbP2p.testBatch == nullptr)
+  if (flagcxP2pNetIb.testBatch == nullptr)
     GTEST_SKIP() << "testBatch not implemented";
 
   const int numOps = 4;
   const size_t bufSize = 1024;
   void *srcBufs[numOps], *dstBufs[numOps];
   void *srcMrs[numOps], *dstMrs[numOps];
+  P2pTestWindow srcWindows[numOps], dstWindows[numOps];
   void *requests[numOps];
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
 
@@ -192,16 +228,20 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
     memset(srcBufs[i], 0x10 + i, bufSize);
     memset(dstBufs[i], 0, bufSize);
 
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, srcBufs[i], bufSize,
+    ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, srcBufs[i], bufSize,
                                    FLAGCX_PTR_HOST, mrFlags, &srcMrs[i]),
               flagcxSuccess);
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBufs[i], bufSize,
+    ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, dstBufs[i], bufSize,
                                    FLAGCX_PTR_HOST, mrFlags, &dstMrs[i]),
               flagcxSuccess);
+    ASSERT_EQ(srcWindows[i].init(srcBufs[i], bufSize, srcMrs[i]),
+              flagcxSuccess);
+    ASSERT_EQ(dstWindows[i].init(dstBufs[i], bufSize, dstMrs[i]),
+              flagcxSuccess);
 
-    ASSERT_EQ(flagcxNetIbP2p.iput(sendComm_, 0, 0, bufSize, 0, 0,
-                                  (void **)srcMrs[i], (void **)dstMrs[i],
-                                  &requests[i]),
+    ASSERT_EQ(flagcxP2pNetIb.iput(sendComm_, 0, 0, bufSize, 0, 0,
+                                  srcWindows[i].opaque(),
+                                  dstWindows[i].opaque(), &requests[i]),
               flagcxSuccess);
     ASSERT_NE(requests[i], nullptr);
   }
@@ -211,7 +251,7 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
   int doneCount = 0;
   int polls = 0;
   while (doneCount < numOps && polls < 2000000) {
-    ASSERT_EQ(flagcxNetIbP2p.testBatch(requests, numOps, doneFlags, &doneCount),
+    ASSERT_EQ(flagcxP2pNetIb.testBatch(requests, numOps, doneFlags, &doneCount),
               flagcxSuccess);
     polls++;
   }
@@ -221,8 +261,8 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
   for (int i = 0; i < numOps; i++) {
     EXPECT_EQ(memcmp(srcBufs[i], dstBufs[i], bufSize), 0)
         << "Transfer " << i << " data mismatch";
-    flagcxNetIbP2p.deregMr(sendComm_, srcMrs[i]);
-    flagcxNetIbP2p.deregMr(sendComm_, dstMrs[i]);
+    flagcxP2pNetIb.deregMr(sendComm_, srcMrs[i]);
+    flagcxP2pNetIb.deregMr(sendComm_, dstMrs[i]);
     free(srcBufs[i]);
     free(dstBufs[i]);
   }
@@ -232,7 +272,7 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
 // igetBatch: batch READ of multiple regions
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
-  if (flagcxNetIbP2p.igetBatch == nullptr)
+  if (flagcxP2pNetIb.igetBatch == nullptr)
     GTEST_SKIP() << "igetBatch not implemented";
 
   const size_t bufSize = 4096;
@@ -246,23 +286,25 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
   void *remoteMr = nullptr;
   void *localMr = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, remoteBuf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, remoteBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &remoteMr),
             flagcxSuccess);
-  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, localBuf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, localBuf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &localMr),
             flagcxSuccess);
+  P2pTestWindow remoteWindow, localWindow;
+  ASSERT_EQ(remoteWindow.init(remoteBuf, bufSize, remoteMr), flagcxSuccess);
+  ASSERT_EQ(localWindow.init(localBuf, bufSize, localMr), flagcxSuccess);
 
   // Issue batch read of 1 region
   uint64_t srcOffs[1] = {0};
   uint64_t dstOffs[1] = {0};
   size_t sizes[1] = {bufSize};
-  void *srcHandles[1] = {remoteMr};
-  void *dstHandles[1] = {localMr};
   void *request = nullptr;
 
-  ASSERT_EQ(flagcxNetIbP2p.igetBatch(sendComm_, 1, srcOffs, dstOffs, sizes, 0,
-                                     0, srcHandles, dstHandles, &request),
+  ASSERT_EQ(flagcxP2pNetIb.igetBatch(sendComm_, 1, srcOffs, dstOffs, sizes, 0,
+                                     0, remoteWindow.opaque(),
+                                     localWindow.opaque(), &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -270,7 +312,7 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
   int done = 0;
   int polls = 0;
   while (!done && polls < 1000000) {
-    ASSERT_EQ(flagcxNetIbP2p.test(request, &done, nullptr), flagcxSuccess);
+    ASSERT_EQ(flagcxP2pNetIb.test(request, &done, nullptr), flagcxSuccess);
     polls++;
   }
   EXPECT_TRUE(done) << "igetBatch did not complete within poll limit";
@@ -279,8 +321,8 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
   EXPECT_EQ(memcmp(remoteBuf, localBuf, bufSize), 0)
       << "igetBatch READ did not transfer data correctly";
 
-  flagcxNetIbP2p.deregMr(sendComm_, remoteMr);
-  flagcxNetIbP2p.deregMr(sendComm_, localMr);
+  flagcxP2pNetIb.deregMr(sendComm_, remoteMr);
+  flagcxP2pNetIb.deregMr(sendComm_, localMr);
   free(remoteBuf);
   free(localBuf);
 }
@@ -289,40 +331,40 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
 // igetBatch: batch READ of multiple regions with testBatch polling
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
-  if (flagcxNetIbP2p.igetBatch == nullptr)
+  if (flagcxP2pNetIb.igetBatch == nullptr)
     GTEST_SKIP() << "igetBatch not implemented";
-  if (flagcxNetIbP2p.testBatch == nullptr)
+  if (flagcxP2pNetIb.testBatch == nullptr)
     GTEST_SKIP() << "testBatch not implemented";
 
   const int count = 3;
   const size_t sizes[3] = {512, 1024, 2048};
-  void *srcBufs[count], *dstBufs[count];
-  void *srcMrs[count], *dstMrs[count];
-  uint64_t srcOffs[count] = {0, 0, 0};
-  uint64_t dstOffs[count] = {0, 0, 0};
+  const uint64_t srcOffs[count] = {0, 512, 1536};
+  const uint64_t dstOffs[count] = {0, 512, 1536};
+  const size_t totalSize = 3584;
+  std::vector<unsigned char> srcBuf(totalSize);
+  std::vector<unsigned char> dstBuf(totalSize, 0);
+  void *srcMr = nullptr;
+  void *dstMr = nullptr;
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
 
   for (int i = 0; i < count; i++) {
-    srcBufs[i] = malloc(sizes[i]);
-    dstBufs[i] = malloc(sizes[i]);
-    ASSERT_NE(srcBufs[i], nullptr);
-    ASSERT_NE(dstBufs[i], nullptr);
-    memset(srcBufs[i], 0x30 + i, sizes[i]);
-    memset(dstBufs[i], 0, sizes[i]);
-
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, srcBufs[i], sizes[i],
-                                   FLAGCX_PTR_HOST, mrFlags, &srcMrs[i]),
-              flagcxSuccess);
-    ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm_, dstBufs[i], sizes[i],
-                                   FLAGCX_PTR_HOST, mrFlags, &dstMrs[i]),
-              flagcxSuccess);
+    memset(srcBuf.data() + srcOffs[i], 0x30 + i, sizes[i]);
   }
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, srcBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &srcMr),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, dstBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &dstMr),
+            flagcxSuccess);
+  P2pTestWindow srcWindow, dstWindow;
+  ASSERT_EQ(srcWindow.init(srcBuf.data(), totalSize, srcMr), flagcxSuccess);
+  ASSERT_EQ(dstWindow.init(dstBuf.data(), totalSize, dstMr), flagcxSuccess);
 
   // Issue batch read
   void *request = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.igetBatch(sendComm_, count, srcOffs, dstOffs, sizes,
-                                     0, 0, (void *const *)srcMrs,
-                                     (void *const *)dstMrs, &request),
+  ASSERT_EQ(flagcxP2pNetIb.igetBatch(sendComm_, count, srcOffs, dstOffs, sizes,
+                                     0, 0, srcWindow.opaque(),
+                                     dstWindow.opaque(), &request),
             flagcxSuccess);
   ASSERT_NE(request, nullptr);
 
@@ -333,7 +375,7 @@ TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
   int polls = 0;
   while (doneFlags[0] == 0 && polls < 1000000) {
     flagcxResult_t rc =
-        flagcxNetIbP2p.testBatch(requests, 1, doneFlags, &doneCount);
+        flagcxP2pNetIb.testBatch(requests, 1, doneFlags, &doneCount);
     ASSERT_EQ(rc, flagcxSuccess);
     polls++;
   }
@@ -341,30 +383,30 @@ TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
 
   // Verify each region
   for (int i = 0; i < count; i++) {
-    EXPECT_EQ(memcmp(srcBufs[i], dstBufs[i], sizes[i]), 0)
+    EXPECT_EQ(memcmp(srcBuf.data() + srcOffs[i], dstBuf.data() + dstOffs[i],
+                     sizes[i]),
+              0)
         << "igetBatch region " << i << " data mismatch";
-    flagcxNetIbP2p.deregMr(sendComm_, srcMrs[i]);
-    flagcxNetIbP2p.deregMr(sendComm_, dstMrs[i]);
-    free(srcBufs[i]);
-    free(dstBufs[i]);
   }
+  flagcxP2pNetIb.deregMr(sendComm_, srcMr);
+  flagcxP2pNetIb.deregMr(sendComm_, dstMr);
 }
 
 // ---------------------------------------------------------------------------
 // igetBatch: invalid arguments return error
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchInvalidCountReturnsError) {
-  if (flagcxNetIbP2p.igetBatch == nullptr)
+  if (flagcxP2pNetIb.igetBatch == nullptr)
     GTEST_SKIP() << "igetBatch not implemented";
 
   void *request = nullptr;
   // count=0 should be handled gracefully (either success with NULL req or
   // error)
-  (void)flagcxNetIbP2p.igetBatch(sendComm_, 0, nullptr, nullptr, nullptr, 0, 0,
+  (void)flagcxP2pNetIb.igetBatch(sendComm_, 0, nullptr, nullptr, nullptr, 0, 0,
                                  nullptr, nullptr, &request);
   // Negative count should fail
   flagcxResult_t rcNeg =
-      flagcxNetIbP2p.igetBatch(sendComm_, -1, nullptr, nullptr, nullptr, 0, 0,
+      flagcxP2pNetIb.igetBatch(sendComm_, -1, nullptr, nullptr, nullptr, 0, 0,
                                nullptr, nullptr, &request);
   EXPECT_NE(rcNeg, flagcxSuccess);
 }
