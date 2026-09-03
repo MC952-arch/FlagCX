@@ -11,8 +11,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hygon_unit_tests:
-    name: Hygon DCU unit tests
-    uses: ./.github/workflows/unit_tests_platform_common.yml
-    with:
-      platform: hygon
+  checkout_and_config:
+    name: Load platform configuration
+    runs-on: ubuntu-latest
+    outputs:
+      display_name: ${{ steps.config.outputs.display_name }}
+      ci_image: ${{ steps.config.outputs.ci_image }}
+      runs_on: ${{ steps.config.outputs.runs_on }}
+      set_env: ${{ steps.config.outputs.set_env }}
+      unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Load platform configuration
+        id: config
+        env:
+          FLAGCX_CI_PLATFORM: hygon
+        run: ruby .github/scripts/ci/load_platform_config.rb "$FLAGCX_CI_PLATFORM"
+
+  unit_tests:
+    name: ${{ needs.checkout_and_config.outputs.display_name }} / ${{ matrix.suite }}
+    needs: checkout_and_config
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.checkout_and_config.outputs.unit_test_suites) }}
+    runs-on: ${{ fromJSON(needs.checkout_and_config.outputs.runs_on) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          submodules: false
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Run unit-test suite
+        env:
+          FLAGCX_CI_IMAGE: ${{ needs.checkout_and_config.outputs.ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.checkout_and_config.outputs.set_env }}
+          FLAGCX_CI_SUITE: ${{ matrix.suite }}
+        run: bash .github/scripts/ci/run_hygon_unit_tests.sh "$FLAGCX_CI_IMAGE" "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"
