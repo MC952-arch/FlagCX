@@ -73,6 +73,7 @@ flagcx_ci_prepare() {
   hy-smi --showproductname || true
 
   echo "Network interfaces visible inside the CI container:"
+  ls -la /sys/class/net 2>/dev/null || true
   if command -v ip >/dev/null 2>&1; then
     ip -o link show | grep -E 'bond[0-3](:|@)' || true
     ip -o addr show | grep -E 'bond[0-3](:|@)' || true
@@ -81,10 +82,14 @@ flagcx_ci_prepare() {
   fi
 
   echo "RDMA devices visible inside the CI container:"
+  ls -la /sys/class/infiniband 2>/dev/null || true
+  ls -la /sys/class/infiniband_verbs 2>/dev/null || true
+  ls -la /dev/infiniband 2>/dev/null || true
   if command -v ibv_devices >/dev/null 2>&1; then
-    ibv_devices || true
-  else
-    ls -l /dev/infiniband 2>/dev/null || true
+    IBV_SHOW_WARNINGS=1 ibv_devices || true
+  fi
+  if command -v ibv_devinfo >/dev/null 2>&1; then
+    IBV_SHOW_WARNINGS=1 ibv_devinfo || true
   fi
 }
 

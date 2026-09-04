@@ -21,6 +21,9 @@ docker_options:
   - --device=/dev/kfd
   - --device=/dev/dri
   - --device=/dev/shca-ioctl
+  - --mount=type=bind,src=/dev/infiniband,dst=/dev/infiniband
+  - --mount=type=bind,src=/sys/class/infiniband,dst=/sys/class/infiniband,readonly
+  - --mount=type=bind,src=/sys/class/infiniband_verbs,dst=/sys/class/infiniband_verbs,readonly
   - --group-add=video
   - --env=PLATFORM=hygon
   - --env=FLAGCX_ADAPTOR=du
