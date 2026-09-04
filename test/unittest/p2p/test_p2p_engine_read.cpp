@@ -96,6 +96,33 @@ public:
     return allocRes;
   }
 
+  flagcxResult_t allocGdr(flagcxDeviceHandle_t devHandleArg, int deviceIdxArg,
+                          size_t sizeArg) {
+    reset();
+    if (devHandleArg == nullptr || deviceIdxArg < 0)
+      return flagcxInvalidArgument;
+    if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemAlloc == nullptr ||
+        deviceAdaptor->gdrMemFree == nullptr)
+      return flagcxNotSupported;
+
+    devHandle = devHandleArg;
+    deviceIdx = deviceIdxArg;
+    allocKind = AllocKind::GdrMalloc;
+    const flagcxResult_t setRes = devHandle->setDevice(deviceIdx);
+    if (setRes != flagcxSuccess) {
+      allocKind = AllocKind::None;
+      return setRes;
+    }
+
+    const flagcxResult_t allocRes =
+        deviceAdaptor->gdrMemAlloc(&ptr, sizeArg, nullptr);
+    if (allocRes == flagcxSuccess && ptr == nullptr) {
+      allocKind = AllocKind::None;
+      return flagcxUnhandledDeviceError;
+    }
+    return allocRes;
+  }
+
   void *get() const { return ptr; }
 
   template <typename T>
@@ -119,6 +146,9 @@ public:
 
     if (allocKind == AllocKind::DeviceMalloc && devHandle != nullptr) {
       devHandle->deviceFree(ptr, memType, stream);
+    } else if (allocKind == AllocKind::GdrMalloc && deviceAdaptor != nullptr &&
+               deviceAdaptor->gdrMemFree != nullptr) {
+      deviceAdaptor->gdrMemFree(ptr, nullptr);
     }
 
     ptr = nullptr;
@@ -133,6 +163,7 @@ private:
   enum class AllocKind {
     None,
     DeviceMalloc,
+    GdrMalloc,
   };
 
   void *ptr = nullptr;
@@ -339,11 +370,10 @@ protected:
                                         int deviceIdx, flagcxStream_t stream) {
     if (buffer == nullptr || devHandle == nullptr || stream == nullptr)
       return flagcxInvalidArgument;
-    // ACCL/BAREX registers ordinary cudaMalloc-compatible GPU memory. Avoid
-    // flagcxMemAlloc here: in a standalone hetero test it may dispatch to a
-    // CCL allocator or VMM path that is not available/registerable on PPU.
-    return buffer->allocDevice(devHandle, deviceIdx, bytes, flagcxMemDevice,
-                               nullptr);
+    // P2P Engine registers GPU buffers for direct RDMA. Use the device
+    // adaptor's GDR path so each platform applies its required allocation and
+    // memory-visibility semantics.
+    return buffer->allocGdr(devHandle, deviceIdx, bytes);
   }
 
   flagcxResult_t allocHostBuffer(ScopedAllocation *buffer, size_t bytes,

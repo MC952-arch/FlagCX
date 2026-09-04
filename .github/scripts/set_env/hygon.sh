@@ -70,6 +70,7 @@ flagcx_ci_configure_suite() {
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing Hygon DCU environment for unit-test suite: $suite"
+  echo "FLAGCX_IB_PCI_RELAXED_ORDERING=${FLAGCX_IB_PCI_RELAXED_ORDERING:-<unset>}"
   command -v mpirun
   command -v nvcc
   mpirun --version
@@ -93,7 +94,7 @@ flagcx_ci_prepare() {
     IBV_SHOW_WARNINGS=1 ibv_devices || true
   fi
   if command -v ibv_devinfo >/dev/null 2>&1; then
-    IBV_SHOW_WARNINGS=1 ibv_devinfo || true
+    IBV_SHOW_WARNINGS=1 ibv_devinfo -v || true
   fi
 }
 

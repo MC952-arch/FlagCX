@@ -21,7 +21,6 @@ docker_options:
   - --group-add=video
   - --env=PLATFORM=metax
   - --env=TORCH_DISTRIBUTED_BACKEND=mccl
-  - --env=FLAGCX_IB_GID_INDEX=3
 
 set_env: .github/scripts/set_env/metax.sh
 

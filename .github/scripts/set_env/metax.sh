@@ -49,9 +49,18 @@ flagcx_ci_prepare() {
   command -v mxcc
 
   if compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null; then
-    export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-$(printf '%s\n' /sys/class/infiniband/bnxt_roce* | xargs -n1 basename | paste -sd, -)}
-  elif compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
-    export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
+    local detected_hcas
+    detected_hcas=$(printf '%s\n' /sys/class/infiniband/bnxt_roce* | xargs -n1 basename | paste -sd, -)
+    if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+      export FLAGCX_IB_HCA=$detected_hcas
+    else
+      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-$detected_hcas}
+    fi
+  elif [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+    echo "MetaX $suite tests require bnxt_roce*, but none was found." >&2
+    echo "RDMA devices visible in /sys/class/infiniband:" >&2
+    ls -la /sys/class/infiniband >&2 || true
+    return 1
   fi
 
   if [[ -d /sys/class/net/bond0 ]]; then
