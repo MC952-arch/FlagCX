@@ -1,6 +1,6 @@
 // Unit tests for the IB P2P net adaptor batch APIs (testBatch, igetBatch).
 // These tests require IB hardware and use loopback connections.
-// Tests skip gracefully via GTEST_SKIP() when no IB devices are available.
+// Missing IB devices or required batch callbacks are test failures.
 
 #include <cstring>
 #include <future>
@@ -56,8 +56,8 @@ protected:
   }
 
   void SetUp() override {
-    if (initResult_ != flagcxSuccess || nDevs_ <= 0)
-      GTEST_SKIP() << "No IB devices available, skipping batch tests";
+    ASSERT_EQ(initResult_, flagcxSuccess) << "P2P net adaptor init failed";
+    ASSERT_GT(nDevs_, 0) << "No IB devices available";
 
     // Establish loopback connection
     ASSERT_EQ(flagcxP2pNetIb.listen(0, handle_, &listenComm_), flagcxSuccess);
@@ -122,8 +122,7 @@ TEST(P2pBatchStruct, IgetBatchFunctionExists) {
 // testBatch with NULL requests reports all done
 // ---------------------------------------------------------------------------
 TEST(P2pBatchStruct, TestBatchNullRequestsAllDone) {
-  if (flagcxP2pNetIb.testBatch == nullptr)
-    GTEST_SKIP() << "testBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
 
   void *requests[3] = {nullptr, nullptr, nullptr};
   int doneFlags[3] = {0, 0, 0};
@@ -137,8 +136,7 @@ TEST(P2pBatchStruct, TestBatchNullRequestsAllDone) {
 }
 
 TEST(P2pBatchStruct, TestBatchZeroRequests) {
-  if (flagcxP2pNetIb.testBatch == nullptr)
-    GTEST_SKIP() << "testBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
 
   int doneCount = -1;
   EXPECT_EQ(flagcxP2pNetIb.testBatch(nullptr, 0, nullptr, &doneCount),
@@ -150,8 +148,7 @@ TEST(P2pBatchStruct, TestBatchZeroRequests) {
 // Single iput followed by testBatch (batch of 1)
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IputThenTestBatch) {
-  if (flagcxP2pNetIb.testBatch == nullptr)
-    GTEST_SKIP() << "testBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
 
   const size_t bufSize = 4096;
   void *srcBuf = malloc(bufSize);
@@ -209,8 +206,7 @@ TEST_F(P2pBatchTest, IputThenTestBatch) {
 // Multiple iputs followed by testBatch (batch of N)
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
-  if (flagcxP2pNetIb.testBatch == nullptr)
-    GTEST_SKIP() << "testBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
 
   const int numOps = 4;
   const size_t bufSize = 1024;
@@ -272,8 +268,7 @@ TEST_F(P2pBatchTest, MultipleIputsThenTestBatch) {
 // igetBatch: batch READ of multiple regions
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
-  if (flagcxP2pNetIb.igetBatch == nullptr)
-    GTEST_SKIP() << "igetBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.igetBatch, nullptr);
 
   const size_t bufSize = 4096;
   void *remoteBuf = malloc(bufSize); // "remote" side, source for READ
@@ -331,10 +326,8 @@ TEST_F(P2pBatchTest, IgetBatchSingleRegion) {
 // igetBatch: batch READ of multiple regions with testBatch polling
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
-  if (flagcxP2pNetIb.igetBatch == nullptr)
-    GTEST_SKIP() << "igetBatch not implemented";
-  if (flagcxP2pNetIb.testBatch == nullptr)
-    GTEST_SKIP() << "testBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.igetBatch, nullptr);
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
 
   const int count = 3;
   const size_t sizes[3] = {512, 1024, 2048};
@@ -396,8 +389,7 @@ TEST_F(P2pBatchTest, IgetBatchMultipleRegions) {
 // igetBatch: invalid arguments return error
 // ---------------------------------------------------------------------------
 TEST_F(P2pBatchTest, IgetBatchInvalidCountReturnsError) {
-  if (flagcxP2pNetIb.igetBatch == nullptr)
-    GTEST_SKIP() << "igetBatch not implemented";
+  ASSERT_NE(flagcxP2pNetIb.igetBatch, nullptr);
 
   void *request = nullptr;
   // count=0 should be handled gracefully (either success with NULL req or

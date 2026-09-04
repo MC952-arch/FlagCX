@@ -243,25 +243,17 @@ protected:
   static constexpr int kServerGpuIdx = 1;
 
   void SetUp() override {
-    if (!hasP2pNetDevices()) {
-      GTEST_SKIP() << "No selected P2P network devices available";
-    }
+    ASSERT_TRUE(hasP2pNetDevices())
+        << "No selected P2P network devices available";
 
     ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
     ASSERT_NE(devHandle, nullptr);
 
     int numDevices = 0;
     flagcxResult_t countRes = devHandle->getDeviceCount(&numDevices);
-    if (countRes != flagcxSuccess) {
-      flagcxDeviceHandleFree(devHandle);
-      devHandle = nullptr;
-      GTEST_SKIP() << "GPU device enumeration failed, skipping P2P read tests";
-    }
-    if (numDevices <= kServerGpuIdx) {
-      flagcxDeviceHandleFree(devHandle);
-      devHandle = nullptr;
-      GTEST_SKIP() << "At least 2 GPU devices are required";
-    }
+    ASSERT_EQ(countRes, flagcxSuccess) << "GPU device enumeration failed";
+    ASSERT_GT(numDevices, kServerGpuIdx)
+        << "At least 2 GPU devices are required";
 
     ASSERT_EQ(devHandle->setDevice(kServerGpuIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->streamCreate(&serverStream), flagcxSuccess);
@@ -269,31 +261,10 @@ protected:
     ASSERT_EQ(devHandle->setDevice(kClientGpuIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->streamCreate(&clientStream), flagcxSuccess);
     clientEngine = flagcxP2pEngineCreate();
-    if (serverEngine == nullptr || clientEngine == nullptr ||
-        serverStream == nullptr || clientStream == nullptr) {
-      if (serverEngine != nullptr) {
-        flagcxP2pEngineDestroy(serverEngine);
-        serverEngine = nullptr;
-      }
-      if (clientEngine != nullptr) {
-        flagcxP2pEngineDestroy(clientEngine);
-        clientEngine = nullptr;
-      }
-      if (serverStream != nullptr) {
-        devHandle->setDevice(kServerGpuIdx);
-        devHandle->streamDestroy(serverStream);
-        serverStream = nullptr;
-      }
-      if (clientStream != nullptr) {
-        devHandle->setDevice(kClientGpuIdx);
-        devHandle->streamDestroy(clientStream);
-        clientStream = nullptr;
-      }
-      flagcxDeviceHandleFree(devHandle);
-      devHandle = nullptr;
-      GTEST_SKIP()
-          << "Unable to create FlagCX P2P engines; likely no IB-capable device";
-    }
+    ASSERT_NE(serverStream, nullptr) << "Unable to create server stream";
+    ASSERT_NE(clientStream, nullptr) << "Unable to create client stream";
+    ASSERT_NE(serverEngine, nullptr) << "Unable to create server P2P engine";
+    ASSERT_NE(clientEngine, nullptr) << "Unable to create client P2P engine";
   }
 
   void TearDown() override {
@@ -491,8 +462,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, DeviceAdaptorClassifiesPointerType) {
-  if (deviceAdaptor == nullptr || deviceAdaptor->getPointerType == nullptr)
-    GTEST_SKIP() << "Selected device adaptor does not expose pointer typing";
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->getPointerType, nullptr)
+      << "Selected device adaptor does not expose pointer typing";
 
   constexpr size_t bytes = 4096;
   ScopedAllocation deviceBuffer;

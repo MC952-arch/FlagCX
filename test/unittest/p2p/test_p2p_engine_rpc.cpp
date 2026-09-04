@@ -2,7 +2,7 @@
 // Tests engine lifecycle, metadata exchange, connect/accept handshake,
 // RPC server, and descriptor table exchange.
 //
-// Hardware-dependent tests skip gracefully via GTEST_SKIP().
+// Hardware-dependent tests fail when their required devices are unavailable.
 
 #include <chrono>
 #include <cstring>
@@ -75,7 +75,7 @@ protected:
         flagcxP2pEngineDestroy(clientEngine);
         clientEngine = nullptr;
       }
-      GTEST_SKIP() << "Unable to create P2P engines (no IB hardware)";
+      FAIL() << "Unable to create P2P engines (no IB hardware)";
     }
   }
 
@@ -180,9 +180,10 @@ class P2pEngineRpcIbTest : public P2pEngineRpcTest {
 protected:
   void SetUp() override {
     P2pEngineRpcTest::SetUp();
-    if (!hasP2pNetDevices()) {
-      GTEST_SKIP() << "No selected P2P network devices available";
-    }
+    if (HasFatalFailure())
+      return;
+    ASSERT_TRUE(hasP2pNetDevices())
+        << "No selected P2P network devices available";
   }
 };
 

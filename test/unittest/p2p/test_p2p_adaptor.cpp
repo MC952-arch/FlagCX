@@ -1,6 +1,6 @@
 // Unit tests for the IB P2P net adaptor.
 // Tests that don't require IB hardware always run.
-// Tests that need real IB devices skip gracefully via GTEST_SKIP().
+// Tests that need real IB devices fail when the devices are unavailable.
 // Links against libflagcx.
 
 #include <cstring>
@@ -29,13 +29,8 @@ protected:
   }
 
   void SetUp() override {
-    if (!hasIbDevices()) {
-      GTEST_SKIP() << "No IB devices available, skipping";
-    }
-  }
-
-  static bool hasIbDevices() {
-    return initResult == flagcxSuccess && nDevs > 0;
+    ASSERT_EQ(initResult, flagcxSuccess) << "P2P net adaptor init failed";
+    ASSERT_GT(nDevs, 0) << "No IB devices available";
   }
 
   static flagcxResult_t initResult;
