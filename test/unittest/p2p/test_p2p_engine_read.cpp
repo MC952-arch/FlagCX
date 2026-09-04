@@ -20,7 +20,6 @@
 
 #include "adaptor.h"
 #include "flagcx.h"
-#include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
 
 namespace {
@@ -243,9 +242,6 @@ protected:
   static constexpr int kServerGpuIdx = 1;
 
   void SetUp() override {
-    ASSERT_TRUE(hasP2pNetDevices())
-        << "No selected P2P network devices available";
-
     ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
     ASSERT_NE(devHandle, nullptr);
 
@@ -398,15 +394,6 @@ protected:
   FlagcxP2pEngine *clientEngine = nullptr;
   FlagcxP2pConn *serverConn = nullptr;
   FlagcxP2pConn *clientConn = nullptr;
-
-private:
-  static bool hasP2pNetDevices() {
-    struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
-    int nDevs = 0;
-    return net != nullptr && net->init != nullptr && net->devices != nullptr &&
-           net->init() == flagcxSuccess &&
-           net->devices(&nDevs) == flagcxSuccess && nDevs > 0;
-  }
 };
 
 TEST_F(FlagcxP2pEngineReadTest,
@@ -459,29 +446,6 @@ TEST_F(FlagcxP2pEngineReadTest,
                                        sharedHostBuffer.get(), bytes, descBuf),
             0);
   flagcxP2pEngineMrDestroy(clientEngine, clientMr);
-}
-
-TEST_F(FlagcxP2pEngineReadTest, DeviceAdaptorClassifiesPointerType) {
-  ASSERT_NE(deviceAdaptor, nullptr);
-  ASSERT_NE(deviceAdaptor->getPointerType, nullptr)
-      << "Selected device adaptor does not expose pointer typing";
-
-  constexpr size_t bytes = 4096;
-  ScopedAllocation deviceBuffer;
-  ScopedAllocation hostBuffer;
-  ASSERT_EQ(
-      allocGpuBufferOnDevice(&deviceBuffer, bytes, kClientGpuIdx, clientStream),
-      flagcxSuccess);
-  ASSERT_EQ(allocHostBuffer(&hostBuffer, bytes, kClientGpuIdx, clientStream),
-            flagcxSuccess);
-
-  int ptrType = -1;
-  ASSERT_EQ(deviceAdaptor->getPointerType(deviceBuffer.get(), &ptrType),
-            flagcxSuccess);
-  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
-  ASSERT_EQ(deviceAdaptor->getPointerType(hostBuffer.get(), &ptrType),
-            flagcxSuccess);
-  EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
 }
 
 TEST_F(FlagcxP2pEngineReadTest,
@@ -548,6 +512,11 @@ TEST_F(FlagcxP2pEngineReadTest,
   flagcxP2pDeserializeRdmaDesc(descBuf, &remoteDesc);
 
   uint64_t transferId = 0;
+  EXPECT_NE(flagcxP2pEngineRead(serverConn, UINT64_MAX, localDestination.get(),
+                                bytes, remoteDesc, &transferId),
+            0)
+      << "Read must reject a local buffer that is not owned by the supplied "
+         "MR handle";
   ASSERT_EQ(flagcxP2pEngineRead(serverConn, localMr, localDestination.get(),
                                 bytes, remoteDesc, &transferId),
             0);
@@ -848,6 +817,349 @@ TEST_F(FlagcxP2pEngineReadTest,
       flagcxP2pEngineMakeDesc(serverConn, base + halfBytes, halfBytes, &desc),
       0);
   EXPECT_NE(flagcxP2pEngineMakeDesc(serverConn, base, totalBytes, &desc), 0);
+}
+
+TEST_F(FlagcxP2pEngineReadTest, ReadsMultipleNonContiguousVectors) {
+  constexpr size_t kElemCount = 128;
+  constexpr size_t kIovCount = 3;
+  const size_t bytes = kElemCount * sizeof(uint32_t);
+  const size_t srcOffsets[kIovCount] = {3, 31, 79};
+  const size_t dstOffsets[kIovCount] = {7, 43, 91};
+  const size_t elemCounts[kIovCount] = {5, 11, 17};
+  constexpr uint32_t kSentinel = 0xA5A5A5A5u;
+
+  ScopedAllocation remoteSource;
+  ScopedAllocation localDestination;
+  ScopedAllocation hostSource;
+  ScopedAllocation hostInitialDestination;
+  ScopedAllocation hostActual;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&remoteSource, bytes, kClientGpuIdx, clientStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocGpuBufferOnDevice(&localDestination, bytes, kServerGpuIdx,
+                                   serverStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostSource, bytes, kClientGpuIdx, clientStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostInitialDestination, bytes, kServerGpuIdx,
+                            serverStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostActual, bytes, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+
+  std::vector<uint32_t> expected(kElemCount, kSentinel);
+  for (size_t i = 0; i < kElemCount; ++i) {
+    hostSource.as<uint32_t>()[i] = static_cast<uint32_t>(0x1000 + i);
+    hostInitialDestination.as<uint32_t>()[i] = kSentinel;
+  }
+  for (size_t iov = 0; iov < kIovCount; ++iov) {
+    for (size_t i = 0; i < elemCounts[iov]; ++i) {
+      expected[dstOffsets[iov] + i] =
+          hostSource.as<uint32_t>()[srcOffsets[iov] + i];
+    }
+  }
+  ASSERT_EQ(copyHostToDevice(kClientGpuIdx, clientStream, remoteSource.get(),
+                             hostSource.get(), bytes),
+            flagcxSuccess);
+  ASSERT_EQ(copyHostToDevice(kServerGpuIdx, serverStream,
+                             localDestination.get(),
+                             hostInitialDestination.get(), bytes),
+            flagcxSuccess);
+
+  FlagcxP2pMr remoteMr = 0;
+  FlagcxP2pMr localMr = 0;
+  ScopedMr remoteMrGuard;
+  ScopedMr localMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(clientEngine,
+                               reinterpret_cast<uintptr_t>(remoteSource.get()),
+                               bytes, remoteMr),
+            0);
+  remoteMrGuard.set(clientEngine, remoteMr);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(serverEngine,
+                         reinterpret_cast<uintptr_t>(localDestination.get()),
+                         bytes, localMr),
+      0);
+  localMrGuard.set(serverEngine, localMr);
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr,
+                                       remoteSource.get(), bytes, descBuf),
+            0);
+  FlagcxP2pRdmaDesc baseDesc;
+  flagcxP2pDeserializeRdmaDesc(descBuf, &baseDesc);
+
+  std::vector<FlagcxP2pMr> mrIds(kIovCount, localMr);
+  std::vector<void *> dstVec;
+  std::vector<size_t> sizeVec;
+  std::vector<FlagcxP2pRdmaDesc> descs;
+  for (size_t iov = 0; iov < kIovCount; ++iov) {
+    dstVec.push_back(localDestination.as<uint32_t>() + dstOffsets[iov]);
+    sizeVec.push_back(elemCounts[iov] * sizeof(uint32_t));
+    FlagcxP2pRdmaDesc desc = baseDesc;
+    ASSERT_EQ(flagcxP2pEngineUpdateDesc(
+                  desc,
+                  reinterpret_cast<uint64_t>(remoteSource.as<uint32_t>() +
+                                             srcOffsets[iov]),
+                  static_cast<uint32_t>(sizeVec.back())),
+              0);
+    descs.push_back(desc);
+  }
+
+  uint64_t transferId = 0;
+  const std::vector<FlagcxP2pMr> invalidMrIds(kIovCount, UINT64_MAX);
+  EXPECT_NE(flagcxP2pEngineReadVector(serverConn, invalidMrIds, dstVec, sizeVec,
+                                      descs, static_cast<int>(kIovCount),
+                                      &transferId),
+            0);
+  ASSERT_EQ(flagcxP2pEngineReadVector(serverConn, mrIds, dstVec, sizeVec, descs,
+                                      static_cast<int>(kIovCount), &transferId),
+            0);
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, transferId, std::chrono::seconds(10)));
+  ASSERT_EQ(copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
+                             localDestination.get(), bytes),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i)
+    EXPECT_EQ(hostActual.as<uint32_t>()[i], expected[i])
+        << "Mismatch at index " << i;
+}
+
+TEST_F(FlagcxP2pEngineReadTest, WritesWholeRegisteredGpuBuffer) {
+  constexpr size_t kElemCount = 1024;
+  const size_t bytes = kElemCount * sizeof(uint32_t);
+  ScopedAllocation localSource;
+  ScopedAllocation remoteDestination;
+  ScopedAllocation hostExpected;
+  ScopedAllocation hostActual;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&localSource, bytes, kServerGpuIdx, serverStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocGpuBufferOnDevice(&remoteDestination, bytes, kClientGpuIdx,
+                                   clientStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostExpected, bytes, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostActual, bytes, kClientGpuIdx, clientStream),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i) {
+    hostExpected.as<uint32_t>()[i] = static_cast<uint32_t>(0x2000 + i);
+    hostActual.as<uint32_t>()[i] = 0;
+  }
+  ASSERT_EQ(copyHostToDevice(kServerGpuIdx, serverStream, localSource.get(),
+                             hostExpected.get(), bytes),
+            flagcxSuccess);
+  ASSERT_EQ(copyHostToDevice(kClientGpuIdx, clientStream,
+                             remoteDestination.get(), hostActual.get(), bytes),
+            flagcxSuccess);
+
+  FlagcxP2pMr localMr = 0;
+  FlagcxP2pMr remoteMr = 0;
+  ScopedMr localMrGuard;
+  ScopedMr remoteMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(localSource.get()),
+                               bytes, localMr),
+            0);
+  localMrGuard.set(serverEngine, localMr);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(clientEngine,
+                         reinterpret_cast<uintptr_t>(remoteDestination.get()),
+                         bytes, remoteMr),
+      0);
+  remoteMrGuard.set(clientEngine, remoteMr);
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  FlagcxP2pRdmaDesc remoteDesc = {};
+  ASSERT_EQ(flagcxP2pEngineMakeDesc(
+                serverConn, reinterpret_cast<uint64_t>(remoteDestination.get()),
+                static_cast<uint32_t>(bytes), &remoteDesc),
+            0);
+  uint64_t transferId = 0;
+  EXPECT_NE(flagcxP2pEngineWrite(serverConn, UINT64_MAX, localSource.get(),
+                                 bytes, remoteDesc, &transferId),
+            0)
+      << "Write must reject a local buffer that is not owned by the supplied "
+         "MR handle";
+  ASSERT_EQ(flagcxP2pEngineWrite(serverConn, localMr, localSource.get(), bytes,
+                                 remoteDesc, &transferId),
+            0);
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, transferId, std::chrono::seconds(10)));
+  ASSERT_EQ(copyDeviceToHost(kClientGpuIdx, clientStream, hostActual.get(),
+                             remoteDestination.get(), bytes),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i)
+    EXPECT_EQ(hostActual.as<uint32_t>()[i], hostExpected.as<uint32_t>()[i])
+        << "Mismatch at index " << i;
+}
+
+TEST_F(FlagcxP2pEngineReadTest, WritesMultipleNonContiguousVectors) {
+  constexpr size_t kElemCount = 128;
+  constexpr size_t kIovCount = 3;
+  const size_t bytes = kElemCount * sizeof(uint32_t);
+  const size_t srcOffsets[kIovCount] = {2, 37, 83};
+  const size_t dstOffsets[kIovCount] = {11, 49, 97};
+  const size_t elemCounts[kIovCount] = {7, 13, 19};
+  constexpr uint32_t kSentinel = 0x5A5A5A5Au;
+
+  ScopedAllocation localSource;
+  ScopedAllocation remoteDestination;
+  ScopedAllocation hostSource;
+  ScopedAllocation hostInitialDestination;
+  ScopedAllocation hostActual;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&localSource, bytes, kServerGpuIdx, serverStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocGpuBufferOnDevice(&remoteDestination, bytes, kClientGpuIdx,
+                                   clientStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostSource, bytes, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostInitialDestination, bytes, kClientGpuIdx,
+                            clientStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostActual, bytes, kClientGpuIdx, clientStream),
+            flagcxSuccess);
+
+  std::vector<uint32_t> expected(kElemCount, kSentinel);
+  for (size_t i = 0; i < kElemCount; ++i) {
+    hostSource.as<uint32_t>()[i] = static_cast<uint32_t>(0x3000 + i);
+    hostInitialDestination.as<uint32_t>()[i] = kSentinel;
+  }
+  for (size_t iov = 0; iov < kIovCount; ++iov) {
+    for (size_t i = 0; i < elemCounts[iov]; ++i) {
+      expected[dstOffsets[iov] + i] =
+          hostSource.as<uint32_t>()[srcOffsets[iov] + i];
+    }
+  }
+  ASSERT_EQ(copyHostToDevice(kServerGpuIdx, serverStream, localSource.get(),
+                             hostSource.get(), bytes),
+            flagcxSuccess);
+  ASSERT_EQ(copyHostToDevice(kClientGpuIdx, clientStream,
+                             remoteDestination.get(),
+                             hostInitialDestination.get(), bytes),
+            flagcxSuccess);
+
+  FlagcxP2pMr localMr = 0;
+  FlagcxP2pMr remoteMr = 0;
+  ScopedMr localMrGuard;
+  ScopedMr remoteMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(localSource.get()),
+                               bytes, localMr),
+            0);
+  localMrGuard.set(serverEngine, localMr);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(clientEngine,
+                         reinterpret_cast<uintptr_t>(remoteDestination.get()),
+                         bytes, remoteMr),
+      0);
+  remoteMrGuard.set(clientEngine, remoteMr);
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  std::vector<FlagcxP2pMr> mrIds(kIovCount, localMr);
+  std::vector<void *> srcVec;
+  std::vector<size_t> sizeVec;
+  std::vector<FlagcxP2pRdmaDesc> descs;
+  for (size_t iov = 0; iov < kIovCount; ++iov) {
+    srcVec.push_back(localSource.as<uint32_t>() + srcOffsets[iov]);
+    sizeVec.push_back(elemCounts[iov] * sizeof(uint32_t));
+    FlagcxP2pRdmaDesc desc = {};
+    ASSERT_EQ(flagcxP2pEngineMakeDesc(
+                  serverConn,
+                  reinterpret_cast<uint64_t>(remoteDestination.as<uint32_t>() +
+                                             dstOffsets[iov]),
+                  static_cast<uint32_t>(sizeVec.back()), &desc),
+              0);
+    descs.push_back(desc);
+  }
+
+  uint64_t transferId = 0;
+  const std::vector<FlagcxP2pMr> invalidMrIds(kIovCount, UINT64_MAX);
+  EXPECT_NE(flagcxP2pEngineWriteVector(
+                serverConn, invalidMrIds, srcVec, sizeVec, descs,
+                static_cast<int>(kIovCount), &transferId),
+            0);
+  ASSERT_EQ(flagcxP2pEngineWriteVector(serverConn, mrIds, srcVec, sizeVec,
+                                       descs, static_cast<int>(kIovCount),
+                                       &transferId),
+            0);
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, transferId, std::chrono::seconds(10)));
+  ASSERT_EQ(copyDeviceToHost(kClientGpuIdx, clientStream, hostActual.get(),
+                             remoteDestination.get(), bytes),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i)
+    EXPECT_EQ(hostActual.as<uint32_t>()[i], expected[i])
+        << "Mismatch at index " << i;
+}
+
+TEST_F(FlagcxP2pEngineReadTest, WriteVectorSyncCompletesBeforeReturn) {
+  constexpr size_t kElemCount = 64;
+  const size_t bytes = kElemCount * sizeof(uint32_t);
+  ScopedAllocation localSource;
+  ScopedAllocation remoteDestination;
+  ScopedAllocation hostExpected;
+  ScopedAllocation hostActual;
+  ASSERT_EQ(
+      allocGpuBufferOnDevice(&localSource, bytes, kServerGpuIdx, serverStream),
+      flagcxSuccess);
+  ASSERT_EQ(allocGpuBufferOnDevice(&remoteDestination, bytes, kClientGpuIdx,
+                                   clientStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostExpected, bytes, kServerGpuIdx, serverStream),
+            flagcxSuccess);
+  ASSERT_EQ(allocHostBuffer(&hostActual, bytes, kClientGpuIdx, clientStream),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i) {
+    hostExpected.as<uint32_t>()[i] = static_cast<uint32_t>(0x4000 + i);
+    hostActual.as<uint32_t>()[i] = 0;
+  }
+  ASSERT_EQ(copyHostToDevice(kServerGpuIdx, serverStream, localSource.get(),
+                             hostExpected.get(), bytes),
+            flagcxSuccess);
+  ASSERT_EQ(copyHostToDevice(kClientGpuIdx, clientStream,
+                             remoteDestination.get(), hostActual.get(), bytes),
+            flagcxSuccess);
+
+  FlagcxP2pMr localMr = 0;
+  FlagcxP2pMr remoteMr = 0;
+  ScopedMr localMrGuard;
+  ScopedMr remoteMrGuard;
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(localSource.get()),
+                               bytes, localMr),
+            0);
+  localMrGuard.set(serverEngine, localMr);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(clientEngine,
+                         reinterpret_cast<uintptr_t>(remoteDestination.get()),
+                         bytes, remoteMr),
+      0);
+  remoteMrGuard.set(clientEngine, remoteMr);
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  FlagcxP2pRdmaDesc desc = {};
+  ASSERT_EQ(flagcxP2pEngineMakeDesc(
+                serverConn, reinterpret_cast<uint64_t>(remoteDestination.get()),
+                static_cast<uint32_t>(bytes), &desc),
+            0);
+  const std::vector<FlagcxP2pMr> mrIds(1, localMr);
+  const std::vector<void *> srcVec(1, localSource.get());
+  const std::vector<size_t> sizeVec(1, bytes);
+  const std::vector<FlagcxP2pRdmaDesc> descs(1, desc);
+  ASSERT_EQ(
+      flagcxP2pEngineWriteVectorSync(serverConn, mrIds, srcVec, sizeVec, descs),
+      0);
+
+  ASSERT_EQ(copyDeviceToHost(kClientGpuIdx, clientStream, hostActual.get(),
+                             remoteDestination.get(), bytes),
+            flagcxSuccess);
+  for (size_t i = 0; i < kElemCount; ++i)
+    EXPECT_EQ(hostActual.as<uint32_t>()[i], hostExpected.as<uint32_t>()[i])
+        << "Mismatch at index " << i;
 }
 
 } // namespace

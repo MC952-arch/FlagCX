@@ -1,11 +1,11 @@
-// Unit tests for the IB P2P net adaptor batch APIs (testBatch, igetBatch).
+// Adaptor unit tests for the IB P2P batch APIs (iputBatch, testBatch,
+// igetBatch).
 // These tests require IB hardware and use loopback connections.
 // Missing IB devices or required batch callbacks are test failures.
 
 #include <cstring>
 #include <future>
 #include <gtest/gtest.h>
-#include <infiniband/verbs.h>
 #include <thread>
 #include <vector>
 
@@ -113,6 +113,10 @@ TEST(P2pBatchStruct, TestBatchFunctionExists) {
   EXPECT_NE(flagcxP2pNetIb.testBatch, nullptr);
 }
 
+TEST(P2pBatchStruct, IputBatchFunctionExists) {
+  EXPECT_NE(flagcxP2pNetIb.iputBatch, nullptr);
+}
+
 TEST(P2pBatchStruct, IgetBatchFunctionExists) {
   // igetBatch is optional but should be non-NULL in the optimized adaptor
   EXPECT_NE(flagcxP2pNetIb.igetBatch, nullptr);
@@ -142,6 +146,85 @@ TEST(P2pBatchStruct, TestBatchZeroRequests) {
   EXPECT_EQ(flagcxP2pNetIb.testBatch(nullptr, 0, nullptr, &doneCount),
             flagcxSuccess);
   EXPECT_EQ(doneCount, 0);
+}
+
+TEST(P2pBatchStruct, IputBatchZeroOperations) {
+  ASSERT_NE(flagcxP2pNetIb.iputBatch, nullptr);
+
+  void *requests[1] = {nullptr};
+  int posted = -1;
+  EXPECT_EQ(flagcxP2pNetIb.iputBatch(nullptr, 0, nullptr, nullptr, nullptr, 0,
+                                     0, nullptr, nullptr, requests, &posted),
+            flagcxSuccess);
+  EXPECT_EQ(posted, 0);
+}
+
+// ---------------------------------------------------------------------------
+// iputBatch: chained prefix submission with an independent request per WRITE
+// ---------------------------------------------------------------------------
+TEST_F(P2pBatchTest, IputBatchTransfersMultipleRegions) {
+  ASSERT_NE(flagcxP2pNetIb.iputBatch, nullptr);
+  ASSERT_NE(flagcxP2pNetIb.testBatch, nullptr);
+
+  constexpr int count = 3;
+  constexpr size_t totalSize = 4096;
+  const uint64_t srcOffs[count] = {0, 640, 2048};
+  const uint64_t dstOffs[count] = {128, 1280, 3072};
+  const size_t sizes[count] = {257, 513, 777};
+  std::vector<unsigned char> srcBuf(totalSize, 0);
+  std::vector<unsigned char> dstBuf(totalSize, 0);
+  for (int i = 0; i < count; i++)
+    memset(srcBuf.data() + srcOffs[i], 0x40 + i, sizes[i]);
+
+  int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
+  void *srcMr = nullptr;
+  void *dstMr = nullptr;
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, srcBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &srcMr),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxP2pNetIb.regMr(sendComm_, dstBuf.data(), totalSize,
+                                 FLAGCX_PTR_HOST, mrFlags, &dstMr),
+            flagcxSuccess);
+  P2pTestWindow srcWindow, dstWindow;
+  ASSERT_EQ(srcWindow.init(srcBuf.data(), totalSize, srcMr), flagcxSuccess);
+  ASSERT_EQ(dstWindow.init(dstBuf.data(), totalSize, dstMr), flagcxSuccess);
+
+  int submitted = 0;
+  while (submitted < count) {
+    void *requests[count] = {};
+    int posted = 0;
+    ASSERT_EQ(flagcxP2pNetIb.iputBatch(
+                  sendComm_, count - submitted, srcOffs + submitted,
+                  dstOffs + submitted, sizes + submitted, 0, 0,
+                  srcWindow.opaque(), dstWindow.opaque(), requests, &posted),
+              flagcxSuccess);
+    ASSERT_GT(posted, 0);
+    ASSERT_LE(posted, count - submitted);
+    for (int i = 0; i < posted; i++)
+      ASSERT_NE(requests[i], nullptr);
+
+    int doneFlags[count] = {};
+    int doneCount = 0;
+    int polls = 0;
+    while (doneCount < posted && polls < 1000000) {
+      ASSERT_EQ(
+          flagcxP2pNetIb.testBatch(requests, posted, doneFlags, &doneCount),
+          flagcxSuccess);
+      polls++;
+    }
+    ASSERT_EQ(doneCount, posted) << "iputBatch prefix did not complete";
+    submitted += posted;
+  }
+  ASSERT_EQ(submitted, count);
+  for (int i = 0; i < count; i++) {
+    EXPECT_EQ(memcmp(srcBuf.data() + srcOffs[i], dstBuf.data() + dstOffs[i],
+                     sizes[i]),
+              0)
+        << "iputBatch region " << i << " data mismatch";
+  }
+
+  flagcxP2pNetIb.deregMr(sendComm_, srcMr);
+  flagcxP2pNetIb.deregMr(sendComm_, dstMr);
 }
 
 // ---------------------------------------------------------------------------

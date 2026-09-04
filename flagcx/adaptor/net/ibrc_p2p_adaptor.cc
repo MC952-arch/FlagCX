@@ -664,8 +664,9 @@ accept_cleanup:
 /* ------------------------------------------------------------------ */
 
 // Slice request ownership model:
-//   Allocation:  iput/iget/igetBatch allocate a flagcxP2pSliceReq (and, for
-//                batch paths, additional FlagcxSlice objects).
+//   Allocation:  iput/iget/iputBatch/igetBatch allocate one or more
+//                flagcxP2pSliceReq objects (and, for aggregate batch paths,
+//                additional FlagcxSlice objects).
 //   Submission:  The adaptor selects a QP, applies its depth gate, and posts
 //                the request. The common P2P Engine owns worker scheduling.
 //   Polling:     The caller polls via test() or testBatch(). Once
@@ -760,6 +761,112 @@ static flagcxResult_t flagcxP2pIput(void *sendComm, uint64_t srcOff,
                                        &rkey));
   return flagcxP2pBuildSingleSliceReq(comm, localVa, remoteVa, size, lkey, rkey,
                                       FLAGCX_SLICE_OP_WRITE, request);
+}
+
+static flagcxResult_t
+flagcxP2pIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
+                   const uint64_t *dstOffs, const size_t *sizes, int srcRank,
+                   int dstRank, void **srcHandles, void **dstHandles,
+                   void **requests, int *posted) {
+  if (requests == NULL || posted == NULL)
+    return flagcxInvalidArgument;
+  *posted = 0;
+
+  const int maxWrPerPost = (int)flagcxP2pGlobalConfig().maxWrPerPost;
+  if (count < 0)
+    return flagcxInvalidArgument;
+  for (int i = 0; i < count; i++)
+    requests[i] = NULL;
+  if (count == 0)
+    return flagcxSuccess;
+
+  auto *comm = static_cast<struct flagcxP2pComm *>(sendComm);
+  const auto *src =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
+  const auto *dst =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  if (comm == NULL || srcOffs == NULL || dstOffs == NULL || sizes == NULL ||
+      src == NULL || dst == NULL)
+    return flagcxInvalidArgument;
+
+  // iputBatch may consume a prefix of the caller's batch. Limit this post to
+  // what one verbs chain and one QP can accept; the caller advances by
+  // `posted` and retries the remaining descriptors on a later progress pass.
+  const int submitCount =
+      std::min(count, std::min(maxWrPerPost, comm->qpDepthLimit));
+
+  struct PreparedPut {
+    uint64_t localVa;
+    uint64_t remoteVa;
+    uint32_t lkey;
+    uint32_t rkey;
+  };
+  std::vector<PreparedPut> prepared(submitCount);
+  for (int i = 0; i < submitCount; i++) {
+    if (sizes[i] > UINT32_MAX)
+      return flagcxInvalidArgument;
+    FLAGCXCHECK(flagcxP2pPrepareOneSided(
+        comm, src, srcRank, srcOffs[i], dst, dstRank, dstOffs[i], sizes[i],
+        &prepared[i].localVa, &prepared[i].remoteVa, &prepared[i].lkey,
+        &prepared[i].rkey));
+  }
+
+  std::vector<struct flagcxP2pSliceReq *> reqs(submitCount, NULL);
+  std::vector<FlagcxSlice *> slices(submitCount, NULL);
+  for (int i = 0; i < submitCount; i++) {
+    auto *req = new (std::nothrow) flagcxP2pSliceReq;
+    if (req == NULL) {
+      for (auto *allocated : reqs)
+        delete allocated;
+      return flagcxSystemError;
+    }
+    reqs[i] = req;
+    req->comm = comm;
+    req->slice.srcVa = prepared[i].localVa;
+    req->slice.dstVa = prepared[i].remoteVa;
+    req->slice.length = (uint32_t)sizes[i];
+    req->slice.lkey = prepared[i].lkey;
+    req->slice.rkey = prepared[i].rkey;
+    req->slice.opcode = FLAGCX_SLICE_OP_WRITE;
+    req->slice.task = &req->task;
+    req->slice.qpDepth = NULL;
+    req->task.sliceList.push_back(&req->slice);
+    req->task.sliceCount.fetch_add(1, std::memory_order_release);
+    slices[i] = &req->slice;
+  }
+
+  const uint32_t start =
+      comm->nextChannel.fetch_add(1, std::memory_order_relaxed);
+  int qpIndex = -1;
+  for (int attempt = 0; attempt < comm->numQps; attempt++) {
+    const int candidate =
+        (int)((start + (uint32_t)attempt) % (uint32_t)comm->numQps);
+    if (flagcxP2pReserveQpDepth(&comm->qpDepth[candidate], submitCount,
+                                comm->qpDepthLimit)) {
+      qpIndex = candidate;
+      break;
+    }
+  }
+  if (qpIndex < 0) {
+    for (auto *req : reqs)
+      delete req;
+    return flagcxInProgress;
+  }
+
+  for (auto *slice : slices)
+    slice->qpDepth = &comm->qpDepth[qpIndex];
+  int failedCount = 0;
+  flagcxResult_t result =
+      flagcxP2pSliceBatch(comm, comm->qp_list_[qpIndex].qp, submitCount,
+                          slices.data(), &failedCount);
+  const int postedCount =
+      result == flagcxSuccess ? submitCount : submitCount - failedCount;
+  for (int i = 0; i < postedCount; i++)
+    requests[i] = reqs[i];
+  for (int i = postedCount; i < submitCount; i++)
+    delete reqs[i];
+  *posted = postedCount;
+  return result;
 }
 
 static flagcxResult_t flagcxP2pIget(void *sendComm, uint64_t srcOff,
@@ -1308,7 +1415,7 @@ struct flagcxNetAdaptor flagcxP2pNetIb = {
     flagcxP2pGetDevFromName,
 
     // Optional batch operations
-    nullptr,            // iputBatch
+    flagcxP2pIputBatch, // iputBatch
     flagcxP2pTestBatch, // testBatch
     flagcxP2pIgetBatch, // igetBatch
 

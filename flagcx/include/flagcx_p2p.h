@@ -203,7 +203,9 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
                                       int remotePort, bool sameProcess = false);
 
 /**
- * Start the listener/notification thread for a connection.
+ * Compatibility call retained for integrations that explicitly start a
+ * per-connection listener. Notification progress is owned by the engine, so
+ * this call is currently an idempotent no-op.
  * @param conn          Connection handle.
  * @return              0 on success, non-zero on failure.
  */
@@ -412,7 +414,7 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
  *
  * @param conn          Connection handle.
  * @param mrIds         Vector of local memory region handles.
- * @param dstVec        Vector of local source addresses.
+ * @param srcVec        Vector of local source addresses.
  * @param sizeVec       Vector of transfer sizes.
  * @param descs         Vector of remote RDMA descriptors.
  * @param numIovs       Number of IO vectors.
@@ -422,7 +424,7 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
  */
 int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
                                const std::vector<FlagcxP2pMr> &mrIds,
-                               const std::vector<void *> &dstVec,
+                               const std::vector<void *> &srcVec,
                                const std::vector<size_t> &sizeVec,
                                const std::vector<FlagcxP2pRdmaDesc> &descs,
                                int numIovs, uint64_t *transferId,
@@ -451,7 +453,8 @@ int flagcxP2pEngineWriteVectorSync(FlagcxP2pConn *conn,
 /* ================================================================== */
 
 /**
- * Send data to a peer (non-blocking).
+ * Send data to a peer (non-blocking). This two-sided operation is currently
+ * unsupported and returns -1 without submitting a transfer.
  * @param conn          Connection handle.
  * @param mr            Local memory region handle.
  * @param data          Local source address.
@@ -463,7 +466,8 @@ int flagcxP2pEngineSend(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                         size_t size, uint64_t *transferId);
 
 /**
- * Vectored send (non-blocking).
+ * Vectored send (non-blocking). This two-sided operation is currently
+ * unsupported and returns -1 without submitting a transfer.
  * @param conn          Connection handle.
  * @param mrIds         Vector of local memory region handles.
  * @param srcVec        Vector of local source addresses.
@@ -479,7 +483,8 @@ int flagcxP2pEngineSendVector(FlagcxP2pConn *conn,
                               uint64_t *transferId);
 
 /**
- * Receive data from a peer (blocking).
+ * Receive data from a peer (blocking). This two-sided operation is currently
+ * unsupported and returns -1 without receiving data.
  * @param conn          Connection handle.
  * @param mr            Local memory region handle.
  * @param data          Local destination buffer.

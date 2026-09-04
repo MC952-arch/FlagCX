@@ -246,6 +246,48 @@ flagcxResult_t flagcxIbRoceGetVersionNum(const char *deviceName, int portNum,
   return flagcxSuccess;
 }
 
+static uint8_t flagcxIbInferLinkLayer(const struct ibv_device *device,
+                                      int portNum,
+                                      const struct ibv_port_attr *portAttr) {
+  if (portAttr->link_layer != IBV_LINK_LAYER_UNSPECIFIED ||
+      device->transport_type != IBV_TRANSPORT_IB) {
+    return portAttr->link_layer;
+  }
+
+  char linkLayerPath[PATH_MAX];
+  snprintf(linkLayerPath, sizeof(linkLayerPath),
+           "/sys/class/infiniband/%s/ports/%d/link_layer", device->name,
+           portNum);
+  int fd = open(linkLayerPath, O_RDONLY);
+  if (fd != -1) {
+    char linkLayer[32] = {0};
+    ssize_t len = read(fd, linkLayer, sizeof(linkLayer) - 1);
+    close(fd);
+    if (len > 0) {
+      if (strncmp(linkLayer, "InfiniBand", strlen("InfiniBand")) == 0)
+        return IBV_LINK_LAYER_INFINIBAND;
+      if (strncmp(linkLayer, "Ethernet", strlen("Ethernet")) == 0)
+        return IBV_LINK_LAYER_ETHERNET;
+    }
+  }
+
+  // An active native InfiniBand port is assigned a LID by its subnet
+  // manager. RoCE ports use GIDs instead and report a zero LID.
+  if (portAttr->lid != 0)
+    return IBV_LINK_LAYER_INFINIBAND;
+
+  for (int gidIndex = 0; gidIndex < portAttr->gid_tbl_len; gidIndex++) {
+    int roceVersion = 0;
+    if (flagcxIbRoceGetVersionNum(device->name, portNum, gidIndex,
+                                  &roceVersion) == flagcxSuccess &&
+        (roceVersion == 1 || roceVersion == 2)) {
+      return IBV_LINK_LAYER_ETHERNET;
+    }
+  }
+
+  return IBV_LINK_LAYER_UNSPECIFIED;
+}
+
 flagcxResult_t flagcxUpdateGidIndex(struct ibv_context *context,
                                     uint8_t portNum, sa_family_t af,
                                     void *prefix, int prefixlen, int roceVer,
@@ -458,6 +500,20 @@ flagcxResult_t flagcxIbInit() {
           }
           if (portAttr.state != IBV_PORT_ACTIVE)
             continue;
+          uint8_t inferredLinkLayer =
+              flagcxIbInferLinkLayer(devices[d], port_num, &portAttr);
+          if (portAttr.link_layer == IBV_LINK_LAYER_UNSPECIFIED &&
+              inferredLinkLayer != IBV_LINK_LAYER_UNSPECIFIED) {
+            const char *inferredLinkLayerName =
+                inferredLinkLayer == IBV_LINK_LAYER_INFINIBAND ? "InfiniBand"
+                                                               : "Ethernet";
+            INFO(FLAGCX_NET,
+                 "NET/IB: %s port %d reports an unspecified link layer; "
+                 "treating it as %s (LID %u)",
+                 devices[d]->name, port_num, inferredLinkLayerName,
+                 portAttr.lid);
+            portAttr.link_layer = inferredLinkLayer;
+          }
           if (portAttr.link_layer != IBV_LINK_LAYER_INFINIBAND &&
               portAttr.link_layer != IBV_LINK_LAYER_ETHERNET)
             continue;

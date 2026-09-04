@@ -139,7 +139,10 @@ struct flagcxNetAdaptor_latest {
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
-  // Optional one-side batch WRITE.
+  // Optional one-side batch WRITE. An implementation may submit only the
+  // contiguous input prefix [0, posted); requests in that range must be valid,
+  // and the caller retains and retries [posted, count). A transient inability
+  // to submit anything is reported as posted == 0 with flagcxInProgress.
   flagcxResult_t (*iputBatch)(void *sendComm, int count,
                               const uint64_t *srcOffs, const uint64_t *dstOffs,
                               const size_t *sizes, int srcRank, int dstRank,

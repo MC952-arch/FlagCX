@@ -51,6 +51,10 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    adaptor|p2p)
+      export FLAGCX_DEBUG=TRACE
+      export FLAGCX_DEBUG_SUBSYS=ALL
+      ;;
     device_api)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)

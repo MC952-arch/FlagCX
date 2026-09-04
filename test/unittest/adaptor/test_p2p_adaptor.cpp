@@ -1,4 +1,4 @@
-// Unit tests for the IB P2P net adaptor.
+// Adaptor unit tests for the IB P2P net adaptor.
 // Tests that don't require IB hardware always run.
 // Tests that need real IB devices fail when the devices are unavailable.
 // Links against libflagcx.

@@ -3408,13 +3408,17 @@ submitNetTransfer(FlagcxP2pConn *conn,
 int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                         size_t size, FlagcxP2pRdmaDesc desc,
                         uint64_t *transferId) {
-  (void)mr;
   if (conn == NULL || data == NULL || transferId == NULL ||
       conn->engine == NULL)
     return -1;
   FlagcxP2pEngine *engine = conn->engine;
   FlagcxP2pSharedLock lifetimeLock(engine->connectionLifetimeMutex);
   if (conn->closing.load(std::memory_order_acquire))
+    return -1;
+
+  FlagcxP2pMemRegEntry localEntry;
+  if (!findMemRegByMr(engine, mr, &localEntry) ||
+      !memRegContains(localEntry, reinterpret_cast<uintptr_t>(data), size))
     return -1;
 
   if (selectP2pDataPath(conn, false) == FLAGCX_P2P_PATH_LOCAL_DIRECT) {
@@ -3425,10 +3429,6 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
     return startLocalTransfer(conn, localVec, sizeVec, descs, 1, transferId,
                               ipcBufs, false);
   }
-
-  FlagcxP2pMemRegEntry localEntry;
-  if (!findMemReg(conn->engine, (uintptr_t)data, &localEntry))
-    return -1;
 
   std::vector<struct flagcxP2pTransportSlice> planned;
   if (planNetTransfer(conn, localEntry, const_cast<void *>(data), size, desc,
@@ -3468,17 +3468,6 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
     return -1;
   }
 
-  if (selectP2pDataPath(conn, !ipcBufs.empty()) != FLAGCX_P2P_PATH_NET) {
-    fprintf(stderr,
-            "[FlagCX P2P] ReadVector taking local transfer path: numIovs=%d\n",
-            numIovs);
-    int rc = startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs,
-                                transferId, ipcBufs, false);
-    fprintf(stderr, "[FlagCX P2P] ReadVector local transfer returned: rc=%d\n",
-            rc);
-    return rc;
-  }
-
   if (mrIds.size() < static_cast<size_t>(numIovs)) {
     fprintf(stderr,
             "[FlagCX P2P] ReadVector early exit: mrIds length mismatch "
@@ -3506,6 +3495,17 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
     }
   }
 
+  if (selectP2pDataPath(conn, !ipcBufs.empty()) != FLAGCX_P2P_PATH_NET) {
+    fprintf(stderr,
+            "[FlagCX P2P] ReadVector taking local transfer path: numIovs=%d\n",
+            numIovs);
+    int rc = startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs,
+                                transferId, ipcBufs, false);
+    fprintf(stderr, "[FlagCX P2P] ReadVector local transfer returned: rc=%d\n",
+            rc);
+    return rc;
+  }
+
   std::vector<struct flagcxP2pTransportSlice> planned;
   for (int i = 0; i < numIovs; ++i) {
     if (planNetTransfer(conn, localEntries[i], dstVec[i], sizeVec[i], descs[i],
@@ -3519,13 +3519,17 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
 int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                          size_t size, FlagcxP2pRdmaDesc desc,
                          uint64_t *transferId) {
-  (void)mr;
   if (conn == NULL || data == NULL || transferId == NULL ||
       conn->engine == NULL)
     return -1;
   FlagcxP2pEngine *engine = conn->engine;
   FlagcxP2pSharedLock lifetimeLock(engine->connectionLifetimeMutex);
   if (conn->closing.load(std::memory_order_acquire))
+    return -1;
+
+  FlagcxP2pMemRegEntry localEntry;
+  if (!findMemRegByMr(engine, mr, &localEntry) ||
+      !memRegContains(localEntry, reinterpret_cast<uintptr_t>(data), size))
     return -1;
 
   if (selectP2pDataPath(conn, false) == FLAGCX_P2P_PATH_LOCAL_DIRECT) {
@@ -3537,10 +3541,6 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                               ipcBufs, true);
   }
 
-  FlagcxP2pMemRegEntry localEntry;
-  if (!findMemReg(conn->engine, (uintptr_t)data, &localEntry))
-    return -1;
-
   std::vector<struct flagcxP2pTransportSlice> planned;
   if (planNetTransfer(conn, localEntry, const_cast<void *>(data), size, desc,
                       true, &planned) != flagcxSuccess) {
@@ -3551,7 +3551,7 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
 
 int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
                                const std::vector<FlagcxP2pMr> &mrIds,
-                               const std::vector<void *> &dstVec,
+                               const std::vector<void *> &srcVec,
                                const std::vector<size_t> &sizeVec,
                                const std::vector<FlagcxP2pRdmaDesc> &descs,
                                int numIovs, uint64_t *transferId,
@@ -3564,15 +3564,10 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
   if (conn->closing.load(std::memory_order_acquire))
     return -1;
 
-  if (dstVec.size() < static_cast<size_t>(numIovs) ||
+  if (srcVec.size() < static_cast<size_t>(numIovs) ||
       sizeVec.size() < static_cast<size_t>(numIovs) ||
       descs.size() < static_cast<size_t>(numIovs))
     return -1;
-
-  if (selectP2pDataPath(conn, !ipcBufs.empty()) != FLAGCX_P2P_PATH_NET) {
-    return startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs, transferId,
-                              ipcBufs, true);
-  }
 
   if (mrIds.size() < static_cast<size_t>(numIovs))
     return -1;
@@ -3582,14 +3577,19 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
     if (!findMemRegByMr(conn->engine, mrIds[i], &localEntries[i]))
       return -1;
 
-    if (!memRegContains(localEntries[i], reinterpret_cast<uintptr_t>(dstVec[i]),
+    if (!memRegContains(localEntries[i], reinterpret_cast<uintptr_t>(srcVec[i]),
                         sizeVec[i]))
       return -1;
   }
 
+  if (selectP2pDataPath(conn, !ipcBufs.empty()) != FLAGCX_P2P_PATH_NET) {
+    return startLocalTransfer(conn, srcVec, sizeVec, descs, numIovs, transferId,
+                              ipcBufs, true);
+  }
+
   std::vector<struct flagcxP2pTransportSlice> planned;
   for (int i = 0; i < numIovs; ++i) {
-    if (planNetTransfer(conn, localEntries[i], dstVec[i], sizeVec[i], descs[i],
+    if (planNetTransfer(conn, localEntries[i], srcVec[i], sizeVec[i], descs[i],
                         true, &planned) != flagcxSuccess) {
       return -1;
     }
