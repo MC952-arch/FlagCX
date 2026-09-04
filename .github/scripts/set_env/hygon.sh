@@ -59,11 +59,6 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    rma)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0"
-      )
-      ;;
   esac
 }
 
@@ -100,22 +95,10 @@ flagcx_ci_prepare() {
 
 flagcx_ci_build_suite_override() {
   local suite=$1
-  local suite_dir=${2:-}
-  shift 2 || true
-  local -a args=("$@")
 
   if [[ "$suite" == "device_api" ]]; then
     FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
     echo "Skipping Hygon device_api build: DU test kernels do not provide all launchers required by the current device_api tests."
-    return
-  fi
-
-  if [[ "$suite" == "symmem" ]]; then
-    FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
-    cmake -S "$PROJECT_ROOT/third-party/googletest" \
-      -B "$PROJECT_ROOT/third-party/googletest/build"
-    cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
-    make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
     return
   fi
 
@@ -124,23 +107,10 @@ flagcx_ci_build_suite_override() {
 
 flagcx_ci_run_suite_override() {
   local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
 
   if [[ "$suite" == "device_api" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
     echo "Skipping Hygon device_api tests: DU launcher coverage is incomplete in the current test kernels."
-    return
-  fi
-
-  if [[ "$suite" == "runner" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    make -C "$suite_dir" run-unit "${args[@]}"
-    cd "$suite_dir"
-    mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-      ./build/bin/runner_mpi_tests
-    echo "Skipping Hygon runner hetero-mode MPI variants: current DU path stalls in the single-node hetero simulation."
     return
   fi
 
