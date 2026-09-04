@@ -9,6 +9,7 @@ runner_labels:
 
 docker_volumes:
   - /usr/local/hyhal:/opt/hyhal:ro
+  - /var/log/shca:/var/log/shca
 
 docker_options:
   - --network=host
@@ -19,6 +20,7 @@ docker_options:
   - --ulimit=stack=67108864
   - --device=/dev/kfd
   - --device=/dev/dri
+  - --device=/dev/shca-ioctl
   - --group-add=video
   - --env=PLATFORM=hygon
   - --env=FLAGCX_ADAPTOR=du
