@@ -65,9 +65,13 @@ void FlagCXCollTest::SetUp() {
               flagcxSuccess);
     ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&recvbuff, size, nullptr),
               flagcxSuccess);
-    ASSERT_EQ(flagcxCommRegister(comm, sendbuff, size, &sendRegHandle),
+    // These tests need global registration-pool entries for the P2P/NET
+    // transports. A communicator-bound registration also creates optional
+    // one-sided full-mesh state, which is unrelated to runner collectives and
+    // can block during fixture setup.
+    ASSERT_EQ(flagcxCommRegister(nullptr, sendbuff, size, &sendRegHandle),
               flagcxSuccess);
-    ASSERT_EQ(flagcxCommRegister(comm, recvbuff, size, &recvRegHandle),
+    ASSERT_EQ(flagcxCommRegister(nullptr, recvbuff, size, &recvRegHandle),
               flagcxSuccess);
   } else {
     ASSERT_EQ(devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL),
@@ -95,19 +99,26 @@ void FlagCXCollTest::TearDown() {
   if (devHandle != nullptr && stream != nullptr)
     devHandle->streamSynchronize(stream);
 
-  if (comm != nullptr && useRegisteredBuffers) {
-    if (sendRegHandle != nullptr)
-      EXPECT_EQ(flagcxCommDeregister(comm, sendRegHandle), flagcxSuccess);
-    if (recvRegHandle != nullptr)
-      EXPECT_EQ(flagcxCommDeregister(comm, recvRegHandle), flagcxSuccess);
+  if (comm != nullptr) {
+    // Communicator teardown releases its transport-specific MR handles while
+    // the proxy is alive. The global registration entries are removed below.
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    comm = nullptr;
   }
 
-  if (comm != nullptr)
-    flagcxCommDestroy(comm);
+  if (useRegisteredBuffers) {
+    if (sendRegHandle != nullptr) {
+      EXPECT_EQ(flagcxCommDeregister(nullptr, sendRegHandle), flagcxSuccess);
+      sendRegHandle = nullptr;
+    }
+    if (recvRegHandle != nullptr) {
+      EXPECT_EQ(flagcxCommDeregister(nullptr, recvRegHandle), flagcxSuccess);
+      recvRegHandle = nullptr;
+    }
+  }
 
-  // oneSideHandles retain their MRs until communicator teardown. Keep the
-  // underlying allocations alive until flagcxCommDestroy has deregistered
-  // those MRs.
+  // Transport registrations may retain these allocations until communicator
+  // teardown, so free the underlying memory only after flagcxCommDestroy.
   if (useRegisteredBuffers && deviceAdaptor != nullptr &&
       deviceAdaptor->gdrMemFree != nullptr) {
     if (sendbuff != nullptr)

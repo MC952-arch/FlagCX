@@ -47,6 +47,13 @@ FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=8
 export NP=8
 
+# shca_* currently reports IBV_LINK_LAYER_UNSPECIFIED on the Hygon runner.
+# FlagCX deliberately rejects that link layer, so forcing the runner through
+# NET would only exercise the socket fallback and hang on large messages.
+# Re-enable these cases after the SHCA provider reports a supported link layer.
+export FLAGCX_CI_RUNNER_FORCE_NET_SUPPORTED=0
+export FLAGCX_CI_RUNNER_FORCE_NET_SKIP_REASON="SHCA reports an unsupported link layer"
+
 flagcx_ci_configure_suite() {
   local suite=$1
 

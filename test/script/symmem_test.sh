@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYMMEM_DIR="$PROJECT_ROOT/test/unittest/symmem"
 BUILD_BIN="$SYMMEM_DIR/build/bin"
+MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_mpi_with_timeout.sh"
 
 export MPI_HOME="${MPI_HOME:-/usr/local/mpi}"
 export PATH="$MPI_HOME/bin:$PATH"
@@ -17,7 +18,7 @@ echo "=== Running symmem unit tests (no MPI/GPU) ==="
 
 echo ""
 echo "=== Running symmem MPI tests (np=$NP) ==="
-mpirun -np "$NP" --allow-run-as-root \
+"$MPI_RUNNER" -np "$NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
     -x FLAGCX_MEM_ENABLE=1 \

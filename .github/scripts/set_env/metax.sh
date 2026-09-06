@@ -39,19 +39,26 @@ flagcx_ci_configure_suite() {
 
 flagcx_ci_prepare() {
   local suite=$1
+  local require_roce=0
   echo "Preparing MetaX environment for test suite: $suite"
   command -v mpirun
   command -v mxcc
 
+  case "$suite" in
+    adaptor|p2p|symmem) require_roce=1 ;;
+  esac
+
   if compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null; then
     local detected_hcas
     detected_hcas=$(printf '%s\n' /sys/class/infiniband/bnxt_roce* | xargs -n1 basename | paste -sd, -)
-    if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+    if [[ "$require_roce" == "1" ]]; then
+      # Network-sensitive suites must use the validated MetaX RoCE HCAs even
+      # when the runner or container supplies a different FLAGCX_IB_HCA.
       export FLAGCX_IB_HCA=$detected_hcas
     else
       export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-$detected_hcas}
     fi
-  elif [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+  elif [[ "$require_roce" == "1" ]]; then
     echo "MetaX $suite tests require bnxt_roce*, but none was found." >&2
     echo "RDMA devices visible in /sys/class/infiniband:" >&2
     ls -la /sys/class/infiniband >&2 || true
