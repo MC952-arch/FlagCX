@@ -2317,12 +2317,23 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
     delete engine;
     return NULL;
   }
-  engine->scheduler = new FlagcxP2pScheduler(engine);
+
+  flagcxResult_t devicesRes = engine->adaptor->devices(&engine->nDevs);
+  if (devicesRes != flagcxSuccess || engine->nDevs <= 0 ||
+      engine->nDevs > FLAGCX_P2P_MAX_NET_DEVS) {
+    WARN("P2P/ENGINE : no usable network devices (result=%d, nDevs=%d)",
+         devicesRes, engine->nDevs);
+    if (engine->state->mrRegistry != NULL)
+      flagcxMrRegistryDestroy(engine->state->mrRegistry);
+    delete engine->state;
+    delete engine;
+    return NULL;
+  }
 
   // Initialize bootstrap network context (discovers local NIC)
   bootstrapNetInit();
 
-  engine->adaptor->devices(&engine->nDevs);
+  engine->scheduler = new FlagcxP2pScheduler(engine);
   if (flagcxP2pTopoInit(engine->adaptor, &engine->topoMgr) != flagcxSuccess) {
     engine->topoMgr = NULL;
   }

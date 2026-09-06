@@ -194,8 +194,10 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       int step = args->posted & stepMask;
       int done = 0;
       if (!args->regBufFlag) {
-        if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
-            flagcxSuccess) {
+        flagcxResult_t queryRes =
+            deviceAdaptor->eventQuery(resources->cpEvents[step]);
+        FLAGCXCHECK(queryRes);
+        if (queryRes == flagcxSuccess) {
           args->copied++;
           done = 1;
         }
@@ -352,8 +354,10 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     if (args->copied < args->waitCopy) {
       int step = args->copied & stepMask;
       if (!args->regBufFlag) {
-        if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
-            flagcxSuccess) {
+        flagcxResult_t queryRes =
+            deviceAdaptor->eventQuery(resources->cpEvents[step]);
+        FLAGCXCHECK(queryRes);
+        if (queryRes == flagcxSuccess) {
           args->copied++;
         }
       } else {

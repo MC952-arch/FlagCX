@@ -545,6 +545,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   }
 
   flagcxResult_t res = flagcxSuccess;
+  flagcxResult_t localRegRes = flagcxSuccess;
   void *mrHandle = NULL;
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
@@ -623,24 +624,43 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     }
 
     if (dmaBufFd >= 0) {
-      res = heteroComm->netAdaptor->regMrDmaBuf(
+      localRegRes = heteroComm->netAdaptor->regMrDmaBuf(
           regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
           &mrHandle);
       close(dmaBufFd);
     } else {
-      res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
-                                          FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+      localRegRes = heteroComm->netAdaptor->regMr(
+          regComm, buff, size, type, FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
     }
   }
-  if (res != flagcxSuccess || mrHandle == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
-    res = flagcxNotSupported;
-    goto fail_mesh;
+  if (localRegRes == flagcxSuccess && mrHandle == NULL)
+    localRegRes = flagcxNotSupported;
+  if (localRegRes == flagcxSuccess) {
+    localRegRes =
+        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
   }
 
-  FLAGCXCHECKGOTO(
-      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
-      res, fail_mr);
+  // Registration is local, but everything below is collective. Exchange the
+  // local results before any rank enters the MR metadata allgathers so that a
+  // failure on one rank cannot leave its peers waiting indefinitely.
+  {
+    int nranks = heteroComm->nRanks;
+    std::vector<int> regResults(nranks, (int)flagcxSuccess);
+    regResults[heteroComm->rank] = (int)localRegRes;
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           regResults.data(), sizeof(int)),
+                    res, fail_mr);
+    for (int i = 0; i < nranks; i++) {
+      if (regResults[i] != (int)flagcxSuccess) {
+        res = (flagcxResult_t)regResults[i];
+        INFO(FLAGCX_REG,
+             "flagcxOneSideRegister: rank %d failed local MR registration "
+             "with result %d",
+             i, regResults[i]);
+        goto fail_mr;
+      }
+    }
+  }
 
   // Allgather MR info
   {
@@ -709,7 +729,6 @@ fail_mr:
   }
   if (regComm && mrHandle)
     heteroComm->netAdaptor->deregMr(regComm, mrHandle);
-fail_mesh:
   if (isFirstHandle) {
     // Clean up per-context full-mesh connections on first-handle failure
     for (int ctx = 0; ctx < info->nContexts; ctx++) {

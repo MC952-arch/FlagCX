@@ -263,10 +263,21 @@ run_suite() {
       mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         ./build/bin/runner_mpi_tests
       mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         ./build/bin/runner_mpi_tests
       mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 \
+        ./build/bin/runner_mpi_tests
+      mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_TEST_REGISTER_BUFFERS=1 \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_VMM_ENABLE=0 \
+        ./build/bin/runner_mpi_tests
+      mpirun -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_TEST_REGISTER_BUFFERS=1 \
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
