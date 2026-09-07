@@ -114,6 +114,9 @@ static pthread_mutex_t flagcxP2pInitLock = PTHREAD_MUTEX_INITIALIZER;
 /* ------------------------------------------------------------------ */
 
 static flagcxResult_t flagcxP2pInit() {
+  flagcxResult_t res = flagcxSuccess;
+  int initializedDevs = 0;
+
   pthread_mutex_lock(&flagcxP2pInitLock);
   if (flagcxP2pInitialized) {
     pthread_mutex_unlock(&flagcxP2pInitLock);
@@ -121,7 +124,14 @@ static flagcxResult_t flagcxP2pInit() {
   }
 
   // Reuse IBRC device discovery (idempotent)
-  FLAGCXCHECK(flagcxIbInit());
+  res = flagcxIbInit();
+  if (res != flagcxSuccess)
+    goto exit;
+  if (flagcxNIbDevs <= 0 || flagcxNMergedIbDevs <= 0) {
+    WARN("NET/IB_P2P : IB initialization did not expose a usable device");
+    res = flagcxInternalError;
+    goto exit;
+  }
 
   // Eagerly allocate PD for each physical IB device
   for (int i = 0; i < flagcxNIbDevs; i++) {
@@ -129,27 +139,45 @@ static flagcxResult_t flagcxP2pInit() {
     struct flagcxIbDev *ibDev = flagcxIbDevs + i;
     pthread_mutex_lock(&ibDev->lock);
     if (0 == ibDev->pdRefs++) {
-      flagcxResult_t res;
-      FLAGCXCHECKGOTO(flagcxWrapIbvAllocPd(&ibDev->pd, ibDev->context), res,
-                      pd_fail);
-      if (0) {
-      pd_fail:
+      res = flagcxWrapIbvAllocPd(&ibDev->pd, ibDev->context);
+      if (res != flagcxSuccess) {
         ibDev->pdRefs--;
         pthread_mutex_unlock(&ibDev->lock);
-        pthread_mutex_unlock(&flagcxP2pInitLock);
-        return res;
+        goto rollback;
       }
     }
     flagcxP2pDevCtxs[i].pd = ibDev->pd;
     pthread_mutex_unlock(&ibDev->lock);
+    initializedDevs++;
   }
 
   flagcxP2pInitialized = 1;
   INFO(FLAGCX_INIT | FLAGCX_NET,
        "NET/IB_P2P : P2P adaptor initialized, %d devices, eager PD allocated",
        flagcxNIbDevs);
+  goto exit;
+
+rollback:
+  // Undo only the eager references acquired by this initialization attempt.
+  // Most importantly, all failure paths still release flagcxP2pInitLock so a
+  // later engine initialization cannot deadlock behind the failed attempt.
+  for (int i = initializedDevs - 1; i >= 0; i--) {
+    struct flagcxIbDev *ibDev = flagcxIbDevs + i;
+    pthread_mutex_lock(&ibDev->lock);
+    if (ibDev->pdRefs > 0 && 0 == --ibDev->pdRefs) {
+      flagcxResult_t deallocRes = flagcxWrapIbvDeallocPd(ibDev->pd);
+      if (deallocRes != flagcxSuccess)
+        WARN("NET/IB_P2P : failed to roll back protection domain for device %d",
+             i);
+      ibDev->pd = NULL;
+    }
+    flagcxP2pDevCtxs[i].pd = NULL;
+    pthread_mutex_unlock(&ibDev->lock);
+  }
+
+exit:
   pthread_mutex_unlock(&flagcxP2pInitLock);
-  return flagcxSuccess;
+  return res;
 }
 
 static flagcxResult_t flagcxP2pDevices(int *ndev) {

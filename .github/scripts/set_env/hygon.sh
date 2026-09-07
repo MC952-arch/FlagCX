@@ -100,6 +100,37 @@ flagcx_ci_prepare() {
   fi
 }
 
+flagcx_ci_validate_rdma() {
+  local suite=$1
+  local link_layer_file link_layer
+  local found_link_layer=0
+  local found_supported_link_layer=0
+
+  # Validate the verbs HCAs (shca_*), not their ib0..ib3 network interfaces.
+  # FlagCX obtains link_layer from ibv_query_port on these HCA ports, so the
+  # corresponding sysfs value is the deterministic preflight signal.
+  while IFS= read -r link_layer_file; do
+    [[ -n "$link_layer_file" ]] || continue
+    found_link_layer=1
+    link_layer=$(<"$link_layer_file")
+    echo "Hygon RDMA link layer: $link_layer_file=$link_layer"
+    case "${link_layer,,}" in
+      ethernet|infiniband)
+        found_supported_link_layer=1
+        ;;
+    esac
+  done < <(compgen -G "/sys/class/infiniband/*/ports/*/link_layer" || true)
+
+  if [[ "$found_link_layer" != 1 ]]; then
+    echo "Hygon $suite tests require RDMA, but no HCA port link_layer file is visible in sysfs." >&2
+    return 1
+  fi
+  if [[ "$found_supported_link_layer" != 1 ]]; then
+    echo "Hygon $suite tests require an RDMA port whose link_layer is Ethernet (RoCE) or InfiniBand; the runner reported only unsupported values such as Unspecified." >&2
+    return 1
+  fi
+}
+
 flagcx_ci_build_suite_override() {
   local suite=$1
 

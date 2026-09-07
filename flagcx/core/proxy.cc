@@ -323,7 +323,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             if (op->connection->transport == TRANSPORT_NET) {
               struct sendNetResources *resources =
                   (sendNetResources *)op->connection->transportResources;
-              flagcxProxySend(resources, op->recvbuff, op->nbytes, &op->args);
+              flagcxResult_t res = flagcxProxySend(resources, op->recvbuff,
+                                                   op->nbytes, &op->args);
+              if (res != flagcxSuccess && res != flagcxInProgress)
+                return res;
               if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
                 op->args.semaphore.reset();
                 flagcxIntruQueueDelete(queue, op);
@@ -332,13 +335,17 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
                   (flagcxP2pResources *)op->connection->transportResources;
+              flagcxResult_t res;
               if (op->selfCopy == 0) {
-                flagcxP2pProxySend(resources, op->recvbuff, op->nbytes,
-                                   &op->args);
+                res = flagcxP2pProxySend(resources, op->recvbuff, op->nbytes,
+                                         &op->args);
               } else {
-                flagcxP2pProxySelfCopy(resources, op->sendbuff, op->recvbuff,
-                                       op->nbytes, &op->args);
+                res =
+                    flagcxP2pProxySelfCopy(resources, op->sendbuff,
+                                           op->recvbuff, op->nbytes, &op->args);
               }
+              if (res != flagcxSuccess && res != flagcxInProgress)
+                return res;
               if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
                 op->args.semaphore.reset();
                 flagcxIntruQueueDelete(queue, op);
@@ -353,7 +360,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             if (op->connection->transport == TRANSPORT_NET) {
               struct recvNetResources *resources =
                   (recvNetResources *)op->connection->transportResources;
-              flagcxProxyRecv(resources, op->recvbuff, op->nbytes, &op->args);
+              flagcxResult_t res = flagcxProxyRecv(resources, op->recvbuff,
+                                                   op->nbytes, &op->args);
+              if (res != flagcxSuccess && res != flagcxInProgress)
+                return res;
               if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
                 // update refcount and delete semaphore when refcount = 0
                 op->args.semaphore.reset();
@@ -363,8 +373,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
                   (flagcxP2pResources *)op->connection->transportResources;
-              flagcxP2pProxyRecv(resources, op->recvbuff, op->nbytes,
-                                 &op->args);
+              flagcxResult_t res = flagcxP2pProxyRecv(resources, op->recvbuff,
+                                                      op->nbytes, &op->args);
+              if (res != flagcxSuccess && res != flagcxInProgress)
+                return res;
               if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
                 // update refcount and delete semaphore when refcount = 0
                 op->args.semaphore.reset();
@@ -452,6 +464,19 @@ FLAGCX_PARAM(KernelProxyParallelism, "KERNEL_PROXY_PARALLELISM", 4);
 FLAGCX_PARAM(KernelProxyBackpressureTimeout,
              "KERNEL_PROXY_BACKPRESSURE_TIMEOUT", 30);
 
+flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
+                                           flagcxResult_t res) {
+  if (proxyState == NULL || res == flagcxSuccess || res == flagcxInProgress)
+    return res;
+
+  flagcxResult_t expected = flagcxSuccess;
+  __atomic_compare_exchange_n(&proxyState->asyncResult, &expected, res, false,
+                              __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+  if (proxyState->abortFlag != NULL)
+    __atomic_store_n(proxyState->abortFlag, 1, __ATOMIC_RELEASE);
+  return res;
+}
+
 inline void *flagcxProxyProgress(void *proxyState_) {
   struct flagcxProxyState *proxyState = (flagcxProxyState *)proxyState_;
   // flag indicating if there is any in-operating operation
@@ -470,7 +495,15 @@ inline void *flagcxProxyProgress(void *proxyState_) {
   while (state->stop == 0 || idle == 0) {
     idle = 1;
     // consume the operations in the consumer queue
-    progressOps(proxyState, &idle);
+    flagcxResult_t res = progressOps(proxyState, &idle);
+    if (res != flagcxSuccess && res != flagcxInProgress) {
+      // A hard transport/device error cannot become ready by polling the same
+      // operation again. Preserve the first error, wake abort-aware waiters,
+      // and leave the progress loop instead of flooding the log indefinitely.
+      flagcxProxyRecordAsyncError(proxyState, res);
+      WARN("Proxy progress stopped after hard error %d", (int)res);
+      break;
+    }
 
     if (idle || (++proxyOpAppendCounter == flagcxParamProgressAppendOpFreq())) {
       int added = 0;

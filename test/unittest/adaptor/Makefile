@@ -11,6 +11,7 @@ MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/adaptor_mpi_tests
 MPIRUN     ?= mpirun
 MPI_NP     ?= 8
+MPI_ARGS   ?=
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -53,6 +54,6 @@ run-unit: $(UNIT_TARGET)
 		--gtest_filter=P2pBatchTest.IputBatchTransfersMultipleRegions
 
 run-mpi: $(MPI_TARGET)
-	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_ARGS) $(MPI_TARGET)
 
 run: run-unit run-mpi
