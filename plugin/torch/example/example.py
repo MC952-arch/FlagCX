@@ -60,6 +60,25 @@ def get_args():
                         help='operation to test (default: all)')
     return parser.parse_args()
 
+
+# TODO: Change this temporary skip to a hard failure once every CI image,
+# especially MetaX, exposes its accelerator through torch.cuda. Until then,
+# eager FlagCX initialization would otherwise use an unbound default device.
+def skip_if_accelerator_unavailable():
+    if torch.cuda.is_available():
+        return False
+
+    rank = int(os.environ.get("RANK", 0))
+    if rank == 0:
+        print(
+            "[SKIP] FlagCX PyTorch API tests require an available accelerator, "
+            f"but torch.cuda.is_available() is False "
+            f"(torch={torch.__version__}, device={dev_name}).",
+            flush=True,
+        )
+    return True
+
+
 def init_pg():
     global FLAGCX_GROUP1, FLAGCX_GROUP2, FLAGCX_GROUP3, MY_RANK, WORLD_SIZE, PREV_RANK, NEXT_RANK
 
@@ -67,6 +86,10 @@ def init_pg():
     MY_RANK = int(os.environ["RANK"])
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
+
+    # Heterogeneous FlagCX communicators are initialized eagerly while the
+    # process group is constructed, so bind the local device first.
+    torch.cuda.set_device(local_rank)
 
     # Initialize the default flagcx process group
     dist.init_process_group(f"cpu:gloo,{dev_name}:flagcx", rank=MY_RANK, world_size=WORLD_SIZE)
@@ -89,10 +112,6 @@ def init_pg():
     PREV_RANK = (MY_RANK - 1 + WORLD_SIZE) % WORLD_SIZE
     NEXT_RANK = (MY_RANK + 1) % WORLD_SIZE
     print(f"rank: {MY_RANK}, world_size = {WORLD_SIZE}, prev_rank: {PREV_RANK}, next_rank: {NEXT_RANK}")
-
-    if torch.cuda.is_available():
-        # Set device
-        torch.cuda.set_device(local_rank)
 
 def destroy_pg():
     dist.destroy_process_group()
@@ -373,6 +392,9 @@ dict_op_to_test = {
 }
 
 if __name__ == "__main__":
+    if skip_if_accelerator_unavailable():
+        raise SystemExit(0)
+
     init_pg()
 
     args = get_args()
