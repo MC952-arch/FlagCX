@@ -18,6 +18,11 @@ echo "=== Running symmem unit tests (no MPI/GPU) ==="
 FLAGCX_CI_TEST_LABEL="symmem unit tests" \
   "$TEST_RUNNER" "$BUILD_BIN/symmem_unit_tests"
 
+if [[ "${FLAGCX_CI_SYMMEM_MPI_SUPPORTED:-1}" != "1" ]]; then
+  echo "Skipping symmem MPI tests: ${FLAGCX_CI_SYMMEM_MPI_SKIP_REASON:-unsupported by this platform}"
+  exit 0
+fi
+
 echo ""
 echo "=== Running symmem MPI tests (np=$NP) ==="
 FLAGCX_CI_MPI_LABEL="symmem MPI tests" \

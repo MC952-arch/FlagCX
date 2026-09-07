@@ -265,8 +265,8 @@ run_suite() {
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       # The core P2P FIFO relies on cross-process, cross-GPU writable IPC
-      # mappings. Exercise both normal and GDR allocations before broader
-      # runner/RMA suites so an unsupported mapping fails at its source.
+      # mappings. Exercise device allocations before broader runner/RMA suites
+      # so an unsupported mapping fails at its source.
       FLAGCX_CI_MPI_TIMEOUT="${FLAGCX_CI_ADAPTOR_MPI_TIMEOUT:-5m}" \
         FLAGCX_CI_MPI_LABEL="adaptor cross-GPU IPC tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
@@ -290,6 +290,10 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      if [[ "${FLAGCX_CI_RUNNER_MPI_SUPPORTED:-1}" != "1" ]]; then
+        echo "Skipping runner MPI tests: ${FLAGCX_CI_RUNNER_MPI_SKIP_REASON:-unsupported by this platform}"
+        return
+      fi
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \

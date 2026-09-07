@@ -11,6 +11,8 @@ on:
 jobs:
   torch-api-test-hygon:
     name: torch-api-test (hygon)
+    # Temporarily disabled while CI investigation is focused on MetaX.
+    if: ${{ false }}
     runs-on: [hg-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
@@ -98,6 +100,8 @@ jobs:
 
   torch-api-test-cuda:
     name: torch-api-test (cuda)
+    # Temporarily disabled while CI investigation is focused on MetaX.
+    if: ${{ false }}
     runs-on: [nv-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev

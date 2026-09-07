@@ -714,6 +714,10 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
            "  Rank %d: base_va=0x%lx, size=%zu, rkey=0x%x, lkey=0x%x", i,
            info->baseVas[i], info->regionSizes[i], info->rkeys[i],
            info->lkeys[i]);
+      for (uint32_t key = 0; key < info->mrInfos[i].nKeys; key++) {
+        TRACE(FLAGCX_REG, "  Rank %d MR key %u: rkey=0x%x, lkey=0x%x", i, key,
+              info->mrInfos[i].rkeys[key], info->mrInfos[i].lkeys[key]);
+      }
     }
   }
 

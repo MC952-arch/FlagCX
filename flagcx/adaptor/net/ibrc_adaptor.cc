@@ -2771,6 +2771,12 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   }
   sge.lkey = lkey;
 
+  TRACE(FLAGCX_NET,
+        "NET/IB : posting RMA READ qpDev=%d qpRemDev=%d remoteAddr=%p "
+        "rkey=0x%x localAddr=%p lkey=0x%x size=%zu srcRank=%d dstRank=%d",
+        qp->devIndex, qp->remDevIdx, srcPtr, rkey, dstPtr, lkey, size, srcRank,
+        dstRank);
+
   struct ibv_send_wr *bad_wr;
   FLAGCXCHECK(flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr));
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);

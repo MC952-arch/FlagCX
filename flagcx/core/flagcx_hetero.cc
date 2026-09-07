@@ -144,6 +144,10 @@ static flagcxResult_t flagcxRmaProxyEnqueueDesc(
     struct flagcxRmaProxyState *proxy, int peer, struct flagcxRmaDesc *desc,
     bool streamSyncReady = false, uint64_t *assignedSeq = NULL) {
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+    pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+    return flagcxRemoteError;
+  }
   while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
     if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
       pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -183,7 +187,15 @@ flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
     return flagcxSuccess;
 
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+    pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+    return flagcxRemoteError;
+  }
   for (size_t i = 0; i < count; i++) {
+    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      return flagcxRemoteError;
+    }
     while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
       if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
         pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -461,9 +473,9 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
   return did;
 }
 
-// Drain the peer's ring without posting: dequeue, advance cis, free each
-// desc without bumping doneSeqs/completionCount. Called at shutdown when
-// no sendComm is available and we cannot actually issue the ops.
+// Drain the peer's ring without posting: dequeue, advance cis, free each desc
+// without bumping doneSeqs/completionCount. rmaError wakes waiters and prevents
+// new operations from being enqueued after the transport becomes unusable.
 static void flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
                                     int peer) {
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
@@ -496,21 +508,18 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
       if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
         did = true;
     } else if (!flagcxRmaProxyCircularBufEmpty(proxy, p)) {
-      if (stopping) {
-        // Shutdown with queued-but-unissued descs and no transport.
-        // Drain to let the thread exit; flag the error so waiters fail.
-        WARN("flagcxRmaProxyProgress: stop with queued descs but no "
-             "sendComm peer=%d; draining",
-             p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
-        flagcxRmaProxyDrainRing(proxy, p);
-        did = true;
-      } else {
-        // Pre-registration: caller enqueued an op before the full mesh
-        // is ready. Surface as an error rather than spin forever.
-        WARN("flagcxRmaProxyProgress: no sendComm for peer %d", p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+      // A queued operation cannot make progress without a published transport.
+      // Report this condition only once, fail waiters, and discard the
+      // unpostable descriptors immediately instead of spinning until shutdown.
+      if (__atomic_exchange_n(&proxy->missingSendCommReported, 1,
+                              __ATOMIC_ACQ_REL) == 0) {
+        WARN("flagcxRmaProxyProgress: queued RMA work has no sendComm "
+             "(peer=%d, stopping=%d); failing and draining",
+             p, (int)stopping);
       }
+      __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+      flagcxRmaProxyDrainRing(proxy, p);
+      did = true;
     }
 
     if (!flagcxRmaProxyCircularBufEmpty(proxy, p) ||

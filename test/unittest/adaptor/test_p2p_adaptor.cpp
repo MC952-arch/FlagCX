@@ -6,11 +6,11 @@
 #include <cstring>
 #include <future>
 #include <gtest/gtest.h>
-#include <infiniband/verbs.h>
 #include <thread>
 
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "net_test_utils.h"
 #include "onesided.h"
 
 // The P2P adaptor struct is non-static in ibrc_p2p_adaptor.cc
@@ -24,7 +24,10 @@ protected:
   static void SetUpTestSuite() {
     initResult = flagcxP2pNetIb.init();
     if (initResult == flagcxSuccess) {
-      flagcxP2pNetIb.devices(&nDevs);
+      initResult = flagcxP2pNetIb.devices(&nDevs);
+      if (initResult == flagcxSuccess && nDevs > 0)
+        initResult =
+            flagcx_test::getLocalNetDevice(&flagcxP2pNetIb, nDevs, &netDev);
     }
   }
 
@@ -35,10 +38,12 @@ protected:
 
   static flagcxResult_t initResult;
   static int nDevs;
+  static int netDev;
 };
 
 flagcxResult_t P2pAdaptorTest::initResult = flagcxInternalError;
 int P2pAdaptorTest::nDevs = 0;
+int P2pAdaptorTest::netDev = -1;
 
 // ---------------------------------------------------------------------------
 // 1. Adaptor struct completeness — always runs, no hardware needed
@@ -135,7 +140,7 @@ TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {
   // Listen
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
   void *listenComm = nullptr;
-  ASSERT_EQ(flagcxP2pNetIb.listen(0, handle, &listenComm), flagcxSuccess);
+  ASSERT_EQ(flagcxP2pNetIb.listen(netDev, handle, &listenComm), flagcxSuccess);
   ASSERT_NE(listenComm, nullptr);
 
   // Connect + Accept in parallel using std::async with timeout
@@ -147,7 +152,7 @@ TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {
 
   auto connectFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
-    flagcxResult_t r = flagcxP2pNetIb.connect(0, handle, &comm);
+    flagcxResult_t r = flagcxP2pNetIb.connect(netDev, handle, &comm);
     return std::make_pair(r, comm);
   });
 
@@ -184,7 +189,7 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   // Set up loopback connection
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
   void *listenComm = nullptr;
-  ASSERT_EQ(flagcxP2pNetIb.listen(0, handle, &listenComm), flagcxSuccess);
+  ASSERT_EQ(flagcxP2pNetIb.listen(netDev, handle, &listenComm), flagcxSuccess);
 
   auto acceptFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
@@ -193,7 +198,7 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   });
   auto connectFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
-    flagcxP2pNetIb.connect(0, handle, &comm);
+    flagcxP2pNetIb.connect(netDev, handle, &comm);
     return comm;
   });
 
@@ -244,7 +249,7 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   // Set up loopback connection
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
   void *listenComm = nullptr;
-  ASSERT_EQ(flagcxP2pNetIb.listen(0, handle, &listenComm), flagcxSuccess);
+  ASSERT_EQ(flagcxP2pNetIb.listen(netDev, handle, &listenComm), flagcxSuccess);
 
   auto acceptFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
@@ -253,7 +258,7 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   });
   auto connectFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
-    flagcxP2pNetIb.connect(0, handle, &comm);
+    flagcxP2pNetIb.connect(netDev, handle, &comm);
     return comm;
   });
 

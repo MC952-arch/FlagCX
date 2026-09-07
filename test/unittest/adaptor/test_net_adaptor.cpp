@@ -23,6 +23,7 @@
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "net_test_utils.h"
 #include "onesided.h"
 
 namespace {
@@ -196,12 +197,14 @@ protected:
     ASSERT_EQ(net_->init(), flagcxSuccess);
     ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
     ASSERT_GT(nDevs_, 0);
+    ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_),
+              flagcxSuccess);
 
-    ASSERT_EQ(net_->listen(0, handle_, &listenComm_), flagcxSuccess);
+    ASSERT_EQ(net_->listen(netDev_, handle_, &listenComm_), flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
 
     const LoopbackConnectionResult connection =
-        establishLoopbackConnection(net_, 0, handle_, listenComm_);
+        establishLoopbackConnection(net_, netDev_, handle_, listenComm_);
     sendComm_ = connection.sendComm;
     recvComm_ = connection.recvComm;
     ASSERT_EQ(connection.connectResult, flagcxSuccess);
@@ -258,6 +261,7 @@ protected:
 
   struct flagcxNetAdaptor *net_ = nullptr;
   int nDevs_ = 0;
+  int netDev_ = -1;
   char handle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
   void *sendComm_ = nullptr;
@@ -300,7 +304,10 @@ protected:
     ASSERT_EQ(net_->init(), flagcxSuccess);
     ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
     ASSERT_GT(nDevs_, 0);
-    ASSERT_EQ(net_->listen(0, listenHandle_, &listenComm_), flagcxSuccess);
+    ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_),
+              flagcxSuccess);
+    ASSERT_EQ(net_->listen(netDev_, listenHandle_, &listenComm_),
+              flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
   }
 
@@ -324,6 +331,7 @@ protected:
 
   struct flagcxNetAdaptor *net_ = nullptr;
   int nDevs_ = 0;
+  int netDev_ = -1;
   char listenHandle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
   std::vector<void *> sendComms_;
@@ -396,7 +404,7 @@ TEST(NetAdaptorInterface, GetDevFromName) {
 TEST_F(NetAdaptorReusableListener, AcceptsSequentialConnections) {
   for (int connection = 0; connection < 2; ++connection) {
     const LoopbackConnectionResult result =
-        establishLoopbackConnection(net_, 0, listenHandle_, listenComm_);
+        establishLoopbackConnection(net_, netDev_, listenHandle_, listenComm_);
     sendComms_.push_back(result.sendComm);
     recvComms_.push_back(result.recvComm);
     ASSERT_EQ(result.connectResult, flagcxSuccess)
@@ -444,7 +452,7 @@ TEST_F(NetAdaptorMemory, RegisterGpuMr) {
   SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
   SKIP_IF_NET_CALLBACK_NULL(net_, getMrInfo);
   flagcxNetProperties_t properties = {};
-  ASSERT_EQ(net_->getProperties(0, &properties), flagcxSuccess);
+  ASSERT_EQ(net_->getProperties(netDev_, &properties), flagcxSuccess);
   if ((properties.ptrSupport & FLAGCX_PTR_CUDA) == 0)
     GTEST_SKIP() << "Selected net adaptor does not advertise GPU MR support";
 
@@ -471,7 +479,7 @@ TEST_F(NetAdaptorMemory, RegMrDmaBufRegistration) {
   SKIP_IF_NET_CALLBACK_NULL(net_, deregMr);
 
   flagcxNetProperties_t properties = {};
-  ASSERT_EQ(net_->getProperties(0, &properties), flagcxSuccess);
+  ASSERT_EQ(net_->getProperties(netDev_, &properties), flagcxSuccess);
   if ((properties.ptrSupport & FLAGCX_PTR_DMABUF) == 0)
     GTEST_SKIP() << "Selected net adaptor does not advertise DMA-BUF support";
 

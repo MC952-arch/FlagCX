@@ -11,6 +11,7 @@
 
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "net_test_utils.h"
 #include "onesided.h"
 
 extern struct flagcxNetAdaptor flagcxP2pNetIb;
@@ -51,8 +52,12 @@ class P2pBatchTest : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
     initResult_ = flagcxP2pNetIb.init();
-    if (initResult_ == flagcxSuccess)
-      flagcxP2pNetIb.devices(&nDevs_);
+    if (initResult_ == flagcxSuccess) {
+      initResult_ = flagcxP2pNetIb.devices(&nDevs_);
+      if (initResult_ == flagcxSuccess && nDevs_ > 0)
+        initResult_ =
+            flagcx_test::getLocalNetDevice(&flagcxP2pNetIb, nDevs_, &netDev_);
+    }
   }
 
   void SetUp() override {
@@ -60,7 +65,8 @@ protected:
     ASSERT_GT(nDevs_, 0) << "No IB devices available";
 
     // Establish loopback connection
-    ASSERT_EQ(flagcxP2pNetIb.listen(0, handle_, &listenComm_), flagcxSuccess);
+    ASSERT_EQ(flagcxP2pNetIb.listen(netDev_, handle_, &listenComm_),
+              flagcxSuccess);
 
     auto acceptFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
@@ -69,7 +75,7 @@ protected:
     });
     auto connectFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
-      flagcxP2pNetIb.connect(0, handle_, &comm);
+      flagcxP2pNetIb.connect(netDev_, handle_, &comm);
       return comm;
     });
 
@@ -95,6 +101,7 @@ protected:
 
   static flagcxResult_t initResult_;
   static int nDevs_;
+  static int netDev_;
 
   char handle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
@@ -104,6 +111,7 @@ protected:
 
 flagcxResult_t P2pBatchTest::initResult_ = flagcxInternalError;
 int P2pBatchTest::nDevs_ = 0;
+int P2pBatchTest::netDev_ = -1;
 
 // ---------------------------------------------------------------------------
 // testBatch function pointer exists

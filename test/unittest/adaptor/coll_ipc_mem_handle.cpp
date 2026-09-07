@@ -3,9 +3,13 @@
  ************************************************************************/
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -45,17 +49,33 @@ namespace {
     }                                                                          \
   } while (0)
 
-enum class AllocationKind { Device, Gdr };
 enum class ImportAccess { Read, Write };
+enum class CopyThreading { SameThread, ProxyThreads };
 
 struct IpcCase {
-  AllocationKind allocation;
   ImportAccess access;
   size_t size;
   const char *name;
+  CopyThreading threading = CopyThreading::SameThread;
+  bool metaXOnly = false;
 };
 
-class IpcMemHandleMpiTest : public ::testing::TestWithParam<IpcCase> {
+struct ThreadOperationResult {
+  flagcxResult_t result = flagcxSuccess;
+  const char *operation = nullptr;
+};
+
+static bool runThreadOperation(ThreadOperationResult &threadResult,
+                               const char *operation, flagcxResult_t result) {
+  if (result == flagcxSuccess) {
+    return true;
+  }
+  threadResult.result = result;
+  threadResult.operation = operation;
+  return false;
+}
+
+class IpcMemHandleMpiTestBase : public ::testing::Test {
 protected:
   void SetUp() override {
     ASSERT_MPI_SUCCESS(MPI_Comm_rank(MPI_COMM_WORLD, &rank_));
@@ -85,24 +105,6 @@ protected:
     }
   }
 
-  void allocate(void **ptr, size_t size, AllocationKind allocation) {
-    if (allocation == AllocationKind::Gdr) {
-      ASSERT_FLAGCX_SUCCESS(devHandle_->gdrMemAlloc(ptr, size, nullptr));
-    } else {
-      ASSERT_FLAGCX_SUCCESS(
-          devHandle_->deviceMalloc(ptr, size, flagcxMemDevice, nullptr));
-    }
-  }
-
-  void release(void *ptr, AllocationKind allocation) {
-    if (allocation == AllocationKind::Gdr) {
-      ASSERT_FLAGCX_SUCCESS(devHandle_->gdrMemFree(ptr, nullptr));
-    } else {
-      ASSERT_FLAGCX_SUCCESS(
-          devHandle_->deviceFree(ptr, flagcxMemDevice, nullptr));
-    }
-  }
-
   void copyDeviceToDeviceAndWait(void *dst, void *src, size_t size) {
     flagcxStream_t stream = nullptr;
     flagcxEvent_t event = nullptr;
@@ -123,6 +125,130 @@ protected:
 
     ASSERT_FLAGCX_SUCCESS(devHandle_->eventDestroy(event));
     ASSERT_FLAGCX_SUCCESS(devHandle_->streamDestroy(stream));
+  }
+
+  void copyDeviceToDeviceAcrossProxyThreadsAndWait(void *dst, void *src,
+                                                   size_t size) {
+    struct SharedCompletionResources {
+      std::mutex mutex;
+      std::condition_variable condition;
+      bool ready = false;
+      bool release = false;
+      flagcxStream_t stream = nullptr;
+      flagcxEvent_t event = nullptr;
+      ThreadOperationResult setupResult;
+      ThreadOperationResult cleanupResult;
+    } shared;
+
+    // Match the core P2P lifecycle: the caller has already imported the IPC
+    // mapping, the proxy service thread creates completion objects, and a
+    // separate proxy progress thread performs the D2D transfer.
+    std::thread serviceThread([&]() {
+      bool setupOk =
+          runThreadOperation(shared.setupResult, "setDevice(service thread)",
+                             devHandle_->setDevice(device_));
+      if (setupOk) {
+        setupOk = runThreadOperation(shared.setupResult,
+                                     "streamCreate(service thread)",
+                                     devHandle_->streamCreate(&shared.stream));
+      }
+      if (setupOk) {
+        runThreadOperation(
+            shared.setupResult, "eventCreate(service thread)",
+            devHandle_->eventCreate(&shared.event, flagcxEventDisableTiming));
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        shared.ready = true;
+      }
+      shared.condition.notify_one();
+
+      {
+        std::unique_lock<std::mutex> lock(shared.mutex);
+        shared.condition.wait(lock, [&]() { return shared.release; });
+      }
+
+      if (shared.event != nullptr) {
+        runThreadOperation(shared.cleanupResult, "eventDestroy(service thread)",
+                           devHandle_->eventDestroy(shared.event));
+      }
+      if (shared.stream != nullptr) {
+        runThreadOperation(shared.cleanupResult,
+                           "streamDestroy(service thread)",
+                           devHandle_->streamDestroy(shared.stream));
+      }
+    });
+
+    {
+      std::unique_lock<std::mutex> lock(shared.mutex);
+      shared.condition.wait(lock, [&]() { return shared.ready; });
+    }
+
+    if (shared.setupResult.result != flagcxSuccess) {
+      {
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        shared.release = true;
+      }
+      shared.condition.notify_one();
+      serviceThread.join();
+      ADD_FAILURE() << shared.setupResult.operation << " returned "
+                    << static_cast<int>(shared.setupResult.result);
+      MPI_Abort(MPI_COMM_WORLD, static_cast<int>(shared.setupResult.result));
+      return;
+    }
+
+    ThreadOperationResult progressResult;
+    std::thread progressThread([&]() {
+      bool copyOk =
+          runThreadOperation(progressResult, "setDevice(progress thread)",
+                             devHandle_->setDevice(device_));
+      if (copyOk) {
+        copyOk = runThreadOperation(
+            progressResult, "deviceMemcpy(progress thread)",
+            devHandle_->deviceMemcpy(dst, src, size, flagcxMemcpyDeviceToDevice,
+                                     shared.stream));
+      }
+      if (copyOk) {
+        copyOk = runThreadOperation(
+            progressResult, "eventRecord(progress thread)",
+            devHandle_->eventRecord(shared.event, shared.stream));
+      }
+      if (copyOk) {
+        copyOk = runThreadOperation(progressResult,
+                                    "eventSynchronize(progress thread)",
+                                    devHandle_->eventSynchronize(shared.event));
+      }
+      if (copyOk) {
+        copyOk =
+            runThreadOperation(progressResult, "eventQuery(progress thread)",
+                               devHandle_->eventQuery(shared.event));
+      }
+      if (copyOk) {
+        runThreadOperation(progressResult, "streamSynchronize(progress thread)",
+                           devHandle_->streamSynchronize(shared.stream));
+      }
+    });
+    progressThread.join();
+
+    {
+      std::lock_guard<std::mutex> lock(shared.mutex);
+      shared.release = true;
+    }
+    shared.condition.notify_one();
+    serviceThread.join();
+
+    if (progressResult.result != flagcxSuccess) {
+      ADD_FAILURE() << progressResult.operation << " returned "
+                    << static_cast<int>(progressResult.result);
+      MPI_Abort(MPI_COMM_WORLD, static_cast<int>(progressResult.result));
+      return;
+    }
+    if (shared.cleanupResult.result != flagcxSuccess) {
+      ADD_FAILURE() << shared.cleanupResult.operation << " returned "
+                    << static_cast<int>(shared.cleanupResult.result);
+      MPI_Abort(MPI_COMM_WORLD, static_cast<int>(shared.cleanupResult.result));
+    }
   }
 
   std::vector<uint8_t> makePattern(size_t size) const {
@@ -154,8 +280,23 @@ protected:
   int device_ = -1;
 };
 
+class IpcMemHandleMpiTest : public IpcMemHandleMpiTestBase,
+                            public ::testing::WithParamInterface<IpcCase> {};
+
 TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
   const IpcCase testCase = GetParam();
+
+  if (testCase.metaXOnly) {
+    char vendor[128] = {};
+    ASSERT_FLAGCX_SUCCESS(devHandle_->getVendor(vendor));
+    int localIsMetaX = std::strcmp(vendor, "METAX") == 0;
+    int allAreMetaX = 0;
+    ASSERT_MPI_SUCCESS(MPI_Allreduce(&localIsMetaX, &allAreMetaX, 1, MPI_INT,
+                                     MPI_MIN, MPI_COMM_WORLD));
+    if (!allAreMetaX) {
+      GTEST_SKIP() << "Cross-thread IPC diagnosis is MetaX-specific";
+    }
+  }
 
   int localApisAvailable = devHandle_->ipcMemHandleCreate != nullptr &&
                            devHandle_->ipcMemHandleGet != nullptr &&
@@ -170,10 +311,7 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
                            devHandle_->eventRecord != nullptr &&
                            devHandle_->eventSynchronize != nullptr &&
                            devHandle_->eventQuery != nullptr &&
-                           devHandle_->eventDestroy != nullptr &&
-                           (testCase.allocation == AllocationKind::Device ||
-                            (devHandle_->gdrMemAlloc != nullptr &&
-                             devHandle_->gdrMemFree != nullptr));
+                           devHandle_->eventDestroy != nullptr;
   int allApisAvailable = 0;
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localApisAvailable, &allApisAvailable, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
@@ -203,7 +341,8 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
 
   if (rank_ == 0) {
     void *ownerPtr = nullptr;
-    allocate(&ownerPtr, testCase.size, testCase.allocation);
+    ASSERT_FLAGCX_SUCCESS(devHandle_->deviceMalloc(&ownerPtr, testCase.size,
+                                                   flagcxMemDevice, nullptr));
     ASSERT_MPI_TRUE(ownerPtr != nullptr);
     std::cout << "IPC case=" << testCase.name << " rank=" << rank_
               << " device=" << device_ << " ownerPtr=" << ownerPtr
@@ -240,7 +379,8 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
     }
 
     ASSERT_FLAGCX_SUCCESS(devHandle_->ipcMemHandleFree(handle));
-    release(ownerPtr, testCase.allocation);
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle_->deviceFree(ownerPtr, flagcxMemDevice, nullptr));
   } else {
     size_t receivedHandleSize = 0;
     ASSERT_MPI_SUCCESS(MPI_Recv(&receivedHandleSize, sizeof(receivedHandleSize),
@@ -264,7 +404,12 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
     ASSERT_MPI_TRUE(localPtr != nullptr);
 
     if (testCase.access == ImportAccess::Read) {
-      copyDeviceToDeviceAndWait(localPtr, mappedPtr, testCase.size);
+      if (testCase.threading == CopyThreading::ProxyThreads) {
+        copyDeviceToDeviceAcrossProxyThreadsAndWait(localPtr, mappedPtr,
+                                                    testCase.size);
+      } else {
+        copyDeviceToDeviceAndWait(localPtr, mappedPtr, testCase.size);
+      }
 
       std::vector<uint8_t> actual(testCase.size);
       ASSERT_FLAGCX_SUCCESS(
@@ -277,7 +422,15 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
           devHandle_->deviceMemcpy(localPtr, expected.data(), testCase.size,
                                    flagcxMemcpyHostToDevice, nullptr));
       ASSERT_FLAGCX_SUCCESS(devHandle_->deviceSynchronize());
-      copyDeviceToDeviceAndWait(mappedPtr, localPtr, testCase.size);
+      if (testCase.threading == CopyThreading::ProxyThreads) {
+        std::cout << "MetaX cross-thread IPC write rank=" << rank_
+                  << " device=" << device_ << " mappedPtr=" << mappedPtr
+                  << " size=" << testCase.size << std::endl;
+        copyDeviceToDeviceAcrossProxyThreadsAndWait(mappedPtr, localPtr,
+                                                    testCase.size);
+      } else {
+        copyDeviceToDeviceAndWait(mappedPtr, localPtr, testCase.size);
+      }
     }
 
     ASSERT_FLAGCX_SUCCESS(
@@ -295,22 +448,13 @@ TEST_P(IpcMemHandleMpiTest, ImportedMappingSupportsDeviceCopy) {
 
 INSTANTIATE_TEST_SUITE_P(
     CrossGpuIpc, IpcMemHandleMpiTest,
-    ::testing::Values(IpcCase{AllocationKind::Device, ImportAccess::Read,
-                              4 * 1024, "DeviceRead4KiB"},
-                      IpcCase{AllocationKind::Device, ImportAccess::Write,
-                              4 * 1024, "DeviceWrite4KiB"},
-                      IpcCase{AllocationKind::Gdr, ImportAccess::Read, 4 * 1024,
-                              "GdrRead4KiB"},
-                      IpcCase{AllocationKind::Gdr, ImportAccess::Write,
-                              4 * 1024, "GdrWrite4KiB"},
-                      IpcCase{AllocationKind::Device, ImportAccess::Read,
-                              16 * 1024 * 1024, "DeviceRead16MiB"},
-                      IpcCase{AllocationKind::Device, ImportAccess::Write,
-                              16 * 1024 * 1024, "DeviceWrite16MiB"},
-                      IpcCase{AllocationKind::Gdr, ImportAccess::Read,
-                              16 * 1024 * 1024, "GdrRead16MiB"},
-                      IpcCase{AllocationKind::Gdr, ImportAccess::Write,
-                              16 * 1024 * 1024, "GdrWrite16MiB"}),
+    ::testing::Values(
+        IpcCase{ImportAccess::Read, 4 * 1024, "Read4KiB"},
+        IpcCase{ImportAccess::Write, 4 * 1024, "Write4KiB"},
+        IpcCase{ImportAccess::Read, 16 * 1024 * 1024, "Read16MiB"},
+        IpcCase{ImportAccess::Write, 16 * 1024 * 1024, "Write16MiB"},
+        IpcCase{ImportAccess::Write, 4 * 1024, "MetaXCrossThreadWrite4KiB",
+                CopyThreading::ProxyThreads, true}),
     [](const ::testing::TestParamInfo<IpcCase> &info) {
       return std::string(info.param.name);
     });
