@@ -131,31 +131,31 @@ flagcxTeamRankToIntraS(const void *comm, flagcxTeamKind_t teamKind, int rank);
  * ================================================================ */
 
 /** @brief Get a read-write pointer to a peer's memory region. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerS(const void *mem, size_t offset, const void *comm,
                       flagcxTeamKind_t teamKind, int peer);
 
 /** @brief Get a peer pointer for an explicit access intent. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerWithAccessS(const void *mem, size_t offset,
                                 const void *comm, flagcxTeamKind_t teamKind,
                                 int peer, flagcxDevPeerAccess_t access);
 
 /** @brief Get a pointer to the local memory region at the given offset. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetLocalPointerS(const void *mem, size_t offset);
 
 /** @brief Get a pointer to an intra-node peer's memory region. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerS(const void *mem, size_t offset, int peer);
 
 /** @brief Get an intra-node peer pointer for an explicit access intent. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerWithAccessS(const void *mem, size_t offset, int peer,
                                  flagcxDevPeerAccess_t access);
 
 /** @brief Get a multicast pointer spanning all ranks in the comm. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetMulticastPointerS(const void *mem, size_t offset, const void *comm);
 
 /* ================================================================
@@ -275,7 +275,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxWorldBarrierSyncS(
  * @return      Opaque const pointer to the flagcxDevNet for that context.
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR const void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR const void *
 flagcxDevNetGetFromCommS(const void *comm, int idx);
 
 /* ================================================================

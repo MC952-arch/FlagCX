@@ -144,13 +144,6 @@ struct PlatformTraits<DuPlatform> {
         d[i] = s[i];
     }
 
-    // Volatile 64-bit store to device memory.
-    template <typename Ptr>
-    static FLAGCX_DEVICE_INLINE_DECORATOR void storeVolatile64(Ptr ptr,
-                                                              uint64_t value) {
-      *(volatile uint64_t *)ptr = value;
-    }
-
 #else
     // Host-compiler stubs (allow template instantiation, never called at
     // runtime)
@@ -193,10 +186,6 @@ struct PlatformTraits<DuPlatform> {
     template <typename DstPtr, typename SrcPtr>
     static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
       assert(false && "coopCopyBytes() called on host");
-    }
-    template <typename Ptr>
-    static inline void storeVolatile64(Ptr, uint64_t) {
-      assert(false && "storeVolatile64() called on host");
     }
 #endif // __CUDACC__
   };

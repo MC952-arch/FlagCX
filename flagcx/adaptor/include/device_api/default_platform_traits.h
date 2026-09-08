@@ -63,10 +63,6 @@ struct PlatformTraits<DefaultPlatform> {
     static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
       assert(false && "coopCopyBytes() on DefaultPlatform");
     }
-    template <typename Ptr>
-    static inline void storeVolatile64(Ptr, uint64_t) {
-      assert(false && "storeVolatile64() on DefaultPlatform");
-    }
   };
 
   // ==============================================================

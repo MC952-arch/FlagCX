@@ -37,22 +37,43 @@ flagcxScopedFence(flagcxDevMemoryScope_t scope) {
 }
 
 /* ================================================================
- * Internal helper: cooperative memcpy (P2P path)
- *
- * The copy itself lives in the platform layer: choosing the chunk width needs
- * the platform's alignment rules and its address-space qualifier, neither of
- * which this file can spell portably. The pointer types stay deduced so that a
- * platform whose device pointers carry an address-space tag can pass them
- * through unchanged.
+ * Internal helpers: direct global-memory access (P2P path)
  * ================================================================ */
+
+template <typename Ptr>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
+  *FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile uint64_t, ptr) = value;
+}
+
+// Prefer a platform's optimized cooperative copy when available.
+template <typename Intrin, typename DstPtr, typename SrcPtr>
+static FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxCoopCopyBytesInternal(DstPtr dst, SrcPtr src, size_t bytes, int rank,
+                            int size, int)
+    -> decltype(Intrin::coopCopyBytes(dst, src, bytes, rank, size), void()) {
+  Intrin::coopCopyBytes(dst, src, bytes, rank, size);
+}
+
+// A correct byte-copy baseline for platforms without an optimized method.
+// Address-space spelling is centralized in FLAGCX_DEVICE_GLOBAL_PTR_CAST.
+template <typename Intrin, typename DstPtr, typename SrcPtr>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxCoopCopyBytesInternal(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
+                            int size, long) {
+  auto dst = FLAGCX_DEVICE_GLOBAL_PTR_CAST(unsigned char, dstIn);
+  auto src = FLAGCX_DEVICE_GLOBAL_PTR_CAST(const unsigned char, srcIn);
+  for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
+    dst[i] = src[i];
+}
 
 template <typename DstPtr, typename SrcPtr>
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopMemcpy(flagcxDevCoopKind_t coopKind, DstPtr dst, SrcPtr src,
                  size_t bytes) {
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-  DeviceAPI::Intrin::coopCopyBytes(dst, src, bytes, coop.threadRank(),
-                                   coop.size());
+  flagcxCoopCopyBytesInternal<DeviceAPI::Intrin>(
+      dst, src, bytes, coop.threadRank(), coop.size(), 0);
 }
 
 /* ================================================================
@@ -755,7 +776,7 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
     }
     coop.sync();
   } else {
@@ -797,7 +818,7 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
       flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
@@ -840,7 +861,7 @@ flagcxDevPutValue_RSigAdd(
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
       flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
                          contextId, FLAGCX_COOP_THREAD,

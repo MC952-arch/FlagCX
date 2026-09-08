@@ -27,11 +27,14 @@
 // value. So every pointer that crosses passes (members of by-value kernel
 // parameters, IR signatures that hand device addresses around) carries this
 // tag. It expands to nothing on all other platforms.
-#if defined(__xpu__)
-#define FLAGCX_DEV_VALUE_PTR __global_ptr__
+#if defined(USE_KUNLUNXIN_ADAPTOR) && defined(FLAGCX_DEVICE_COMPILE)
+#define FLAGCX_DEVICE_GLOBAL_PTR __global_ptr__
 #else
-#define FLAGCX_DEV_VALUE_PTR
+#define FLAGCX_DEVICE_GLOBAL_PTR
 #endif
+
+#define FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)                               \
+  ((FLAGCX_DEVICE_GLOBAL_PTR type *)(ptr))
 
 // How an IR entry point gets hold of its flagcxDevNet.
 //
@@ -84,8 +87,10 @@
 // xshmemx_coll_defines.h calls xshmemi_{barrier,sync}_threadgroup from it.
 // barrier.h in turn uses xshmemi_threadfence_system (declared in
 // xshmemi_common_device.h), so that must be included first.
+// clang-format off
 #include "xshmem/non_abi/device/common/xshmemi_common_device.h"
 #include "xshmem/non_abi/device/coll/barrier.h"
+// clang-format on
 #include "xshmem/xshmemx.h"
 #endif
 

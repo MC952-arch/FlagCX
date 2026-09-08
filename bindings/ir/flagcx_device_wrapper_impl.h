@@ -140,7 +140,8 @@ flagcxTeamRankToIntraC(const void *commOpaque, const void *teamOpaque,
  * Category 4: Pointer Access (6)
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerC(const void *memOpaque, size_t offset,
                       const void *teamOpaque, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
@@ -148,7 +149,8 @@ flagcxGetPeerPointerC(const void *memOpaque, size_t offset,
   return flagcxGetPeerPointer(*mem, offset, *team, peer);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerWithAccessC(const void *memOpaque, size_t offset,
                                 const void *teamOpaque, int peer,
                                 flagcxDevPeerAccess_t access) {
@@ -157,26 +159,30 @@ flagcxGetPeerPointerWithAccessC(const void *memOpaque, size_t offset,
   return flagcxGetPeerPointerWithAccess(*mem, offset, *team, peer, access);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetLocalPointerC(const void *memOpaque, size_t offset) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetLocalPointer(*mem, offset);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerC(const void *memOpaque, size_t offset, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetIntraPointer(*mem, offset, peer);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerWithAccessC(const void *memOpaque, size_t offset, int peer,
                                  flagcxDevPeerAccess_t access) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetIntraPointerWithAccess(*mem, offset, peer, access);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetMulticastPointerC(const void *memOpaque, size_t offset,
                            const void *commOpaque) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;

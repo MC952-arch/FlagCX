@@ -55,7 +55,7 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 
 // flagcxDevComm / flagcxDevMem are passed to kernels BY VALUE, so their layout
 // must be identical in the host and the device compilation pass. Every pointer
-// member is tagged with FLAGCX_DEV_VALUE_PTR (defined in device_utils.h) so the
+// member is tagged with FLAGCX_DEVICE_GLOBAL_PTR (defined in device_utils.h) so
 // two passes agree on its width; on non-XPU platforms the tag expands to
 // nothing.
 
@@ -80,11 +80,11 @@ struct flagcxDevComm {
   // Pre-allocated net contexts (one per _contextCount, device memory).
   // Set by flagcxDevCommGetDevicePtr; nullptr when contextCount == 0.
   // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
-  FLAGCX_DEV_VALUE_PTR void *_netContexts;
+  FLAGCX_DEVICE_GLOBAL_PTR void *_netContexts;
 
   // Grid-wide barrier state for NCCL destructor ordering.
   // [0] = arrive counter, [1] = sense. Allocated by NCCL backend only.
-  FLAGCX_DEV_VALUE_PTR unsigned int *_gridBarrierState;
+  FLAGCX_DEVICE_GLOBAL_PTR unsigned int *_gridBarrierState;
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
@@ -147,7 +147,7 @@ struct flagcxDevComm {
 // ============================================================
 struct flagcxDevMem {
   typename DeviceAPI::Window _winBase;
-  FLAGCX_DEV_VALUE_PTR void *_rawPtr;
+  FLAGCX_DEVICE_GLOBAL_PTR void *_rawPtr;
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem() : _winBase(), _rawPtr(nullptr) {}
 
@@ -834,7 +834,7 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 // ============================================================
 struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
-  FLAGCX_DEV_VALUE_PTR unsigned int *_gridBarrierState;
+  FLAGCX_DEVICE_GLOBAL_PTR unsigned int *_gridBarrierState;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
@@ -984,7 +984,7 @@ struct flagcxDevNet : DeviceAPI::Net {
 // platform spellings. Defined after flagcxDevNet because it names it.
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxDevCommNetContexts(const flagcxDevComm &comm) {
-  return (FLAGCX_DEV_VALUE_PTR const flagcxDevNet *)comm._netContexts;
+  return (FLAGCX_DEVICE_GLOBAL_PTR const flagcxDevNet *)comm._netContexts;
 }
 
 // Whether the comm actually carries pre-built contexts. Same condition
