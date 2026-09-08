@@ -180,17 +180,28 @@ flagcxTeamRankToIntraS(const void *commOpaque, flagcxTeamKind_t teamKind,
 }
 
 /* ================================================================
- * Category 4: Pointer Access (scalar team) (4)
+ * Category 4: Pointer Access (scalar team) (6)
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetPeerPointerS(const void *memOpaque, size_t offset,
                       const void *commOpaque, flagcxTeamKind_t teamKind,
-                      int peer, flagcxDevPeerAccess_t access) {
+                      int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
-  return flagcxGetPeerPointer(*mem, offset, team, peer, access);
+  return flagcxGetPeerPointer(*mem, offset, team, peer);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+flagcxGetPeerPointerWithAccessS(const void *memOpaque, size_t offset,
+                                const void *commOpaque,
+                                flagcxTeamKind_t teamKind, int peer,
+                                flagcxDevPeerAccess_t access) {
+  const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
+  return flagcxGetPeerPointerWithAccess(*mem, offset, team, peer, access);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
@@ -203,6 +214,13 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetIntraPointerS(const void *memOpaque, size_t offset, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetIntraPointer(*mem, offset, peer);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+flagcxGetIntraPointerWithAccessS(const void *memOpaque, size_t offset, int peer,
+                                 flagcxDevPeerAccess_t access) {
+  const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
+  return flagcxGetIntraPointerWithAccess(*mem, offset, peer, access);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
@@ -369,9 +387,9 @@ flagcxWorldBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
  * The returned pointer is read-only and safe to use from any thread.
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR const
-    void *
-    flagcxDevNetGetFromCommS(const void *commOpaque, int idx) {
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEV_VALUE_PTR const void *
+flagcxDevNetGetFromCommS(const void *commOpaque, int idx) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   // Return pointer into pre-allocated device array (built by
   // flagcxDevCommGetDevicePtr). Each entry is a fully-constructed

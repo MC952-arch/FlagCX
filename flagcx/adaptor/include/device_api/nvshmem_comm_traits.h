@@ -57,13 +57,18 @@ struct CommTraits<NvshmemBackend> {
     size_t allocSize;
     void *rawPtr;
 
-    // nvshmem_ptr is readable and writable alike, so `access` makes no
-    // difference to the translation.
-    FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getPeerPointer(size_t offset, const Team &team, int peer,
-                   flagcxDevPeerAccess_t access =
-                       flagcxDevPeerAccessReadWrite) const {
-      (void)access;
+    // nvshmem_ptr supports all declared access contracts.
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getPeerPointer(
+        size_t offset, const Team &team, int peer,
+        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          break;
+        default:
+          return nullptr;
+      }
       int myPE = nvshmem_my_pe();
       int base = myPE - team.rank * team.stride;
       int worldPeer = base + peer * team.stride;
@@ -72,11 +77,17 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getIntraPointer(size_t offset, int peer,
-                    flagcxDevPeerAccess_t access =
-                        flagcxDevPeerAccessReadWrite) const {
-      (void)access;
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(
+        size_t offset, int peer,
+        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          break;
+        default:
+          return nullptr;
+      }
       return nvshmem_ptr((char *)symBase + offset, peer);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *

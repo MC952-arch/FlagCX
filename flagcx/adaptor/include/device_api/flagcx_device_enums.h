@@ -112,18 +112,17 @@ typedef flagcxDevCounter_t flagcxDevNetCounter_t;
 /* ================================================================
  * Peer Pointer Access
  *
- * How a translated peer pointer is going to be used. Interconnects that can
- * both read and write peer memory ignore it; on links without remote read
- * (P800 C2C) only the write-only form can be translated at all, and asking for
- * the read-capable form fails loudly rather than handing back an address that
- * would return garbage on load.
- *
- * Read-write is the default, so callers that genuinely need to load from peer
- * memory read as they did before and only store paths name the restriction.
+ * Specifies the operations the caller may perform through a translated peer
+ * pointer. Read-write preserves the legacy behavior; read-only is for load
+ * paths and write-only is for store paths. A backend must reject an access
+ * mode that its peer-memory transport cannot support. Multiple supported modes
+ * may use the same native mapping, but the caller must still obey the requested
+ * access contract.
  * ================================================================ */
 typedef enum {
   flagcxDevPeerAccessReadWrite = 0,
   flagcxDevPeerAccessWriteOnly = 1,
+  flagcxDevPeerAccessReadOnly = 2,
 } flagcxDevPeerAccess_t;
 
 #endif /* FLAGCX_DEVICE_ENUMS_H_ */

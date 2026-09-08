@@ -119,7 +119,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
 flagcxTeamRankToIntraS(const void *comm, flagcxTeamKind_t teamKind, int rank);
 
 /* ================================================================
- * Category 4: Pointer Access (4)
+ * Category 4: Pointer Access (6)
  *
  * Pointer functions that use teamKind instead of team struct.
  *
@@ -130,18 +130,16 @@ flagcxTeamRankToIntraS(const void *comm, flagcxTeamKind_t teamKind, int rank);
  * @param peer      Peer rank within the team (for peer/intra pointer).
  * ================================================================ */
 
-/** @brief Get a pointer to a peer's memory region (team-relative addressing).
- *
- * @param access  How the pointer will be used. Defaults to read-write; pass
- *                flagcxDevPeerAccessWriteOnly for store-only paths, which is
- *                the only form backends without remote read (P800 C2C) can
- *                translate.
- */
+/** @brief Get a read-write pointer to a peer's memory region. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetPeerPointerS(const void *mem, size_t offset, const void *comm,
-                      flagcxTeamKind_t teamKind, int peer,
-                      flagcxDevPeerAccess_t access =
-                          flagcxDevPeerAccessReadWrite);
+                      flagcxTeamKind_t teamKind, int peer);
+
+/** @brief Get a peer pointer for an explicit access intent. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+flagcxGetPeerPointerWithAccessS(const void *mem, size_t offset,
+                                const void *comm, flagcxTeamKind_t teamKind,
+                                int peer, flagcxDevPeerAccess_t access);
 
 /** @brief Get a pointer to the local memory region at the given offset. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
@@ -150,6 +148,11 @@ flagcxGetLocalPointerS(const void *mem, size_t offset);
 /** @brief Get a pointer to an intra-node peer's memory region. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetIntraPointerS(const void *mem, size_t offset, int peer);
+
+/** @brief Get an intra-node peer pointer for an explicit access intent. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
+flagcxGetIntraPointerWithAccessS(const void *mem, size_t offset, int peer,
+                                 flagcxDevPeerAccess_t access);
 
 /** @brief Get a multicast pointer spanning all ranks in the comm. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
