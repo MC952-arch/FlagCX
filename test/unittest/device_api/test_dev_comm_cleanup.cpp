@@ -36,6 +36,49 @@ static_assert(offsetof(flagcxDevCommRequirements, intraScratchBytes) == 40,
 
 namespace {
 
+struct LegacyWindowTeam {};
+
+struct LegacyWindow {
+  void *pointer;
+
+  void *getPeerPointer(size_t, const LegacyWindowTeam &, int) const {
+    return pointer;
+  }
+
+  void *getIntraPointer(size_t, int) const { return pointer; }
+};
+
+TEST(WindowAccessCompatibilityTest, LegacyWindowSupportsReadWriteFallback) {
+  void *expected = reinterpret_cast<void *>(0x1000);
+  LegacyWindow window{expected};
+  LegacyWindowTeam team;
+
+  EXPECT_EQ(flagcxGetPeerPointerWithAccessInternal(
+                window, 0, team, 0, flagcxDevPeerAccessReadWrite, 0),
+            expected);
+  EXPECT_EQ(flagcxGetIntraPointerWithAccessInternal(
+                window, 0, 0, flagcxDevPeerAccessReadWrite, 0),
+            expected);
+}
+
+TEST(WindowAccessCompatibilityTest, LegacyWindowRejectsDirectionalFallback) {
+  LegacyWindow window{reinterpret_cast<void *>(0x1000)};
+  LegacyWindowTeam team;
+
+  EXPECT_EQ(flagcxGetPeerPointerWithAccessInternal(
+                window, 0, team, 0, flagcxDevPeerAccessReadOnly, 0),
+            nullptr);
+  EXPECT_EQ(flagcxGetPeerPointerWithAccessInternal(
+                window, 0, team, 0, flagcxDevPeerAccessWriteOnly, 0),
+            nullptr);
+  EXPECT_EQ(flagcxGetIntraPointerWithAccessInternal(
+                window, 0, 0, flagcxDevPeerAccessReadOnly, 0),
+            nullptr);
+  EXPECT_EQ(flagcxGetIntraPointerWithAccessInternal(
+                window, 0, 0, flagcxDevPeerAccessWriteOnly, 0),
+            nullptr);
+}
+
 std::vector<void *> unregisteredPtrs;
 std::vector<void *> deviceFreedPtrs;
 std::vector<void *> allocatedPtrs;

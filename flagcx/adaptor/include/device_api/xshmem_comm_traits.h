@@ -196,12 +196,19 @@ struct CommTraits<XshmemBackend> {
       return base + peer * team.stride;
     }
 
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
+      int worldPeer = this->resolveWorldPeer(team, peer);
+      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                         worldPeer);
+    }
+
     // This transport has distinct local-read and remote-write mappings. A
     // read-only request for a remote PE returns nullptr for Net fallback;
     // read-write is unsupported and fails through peerPtr.
-    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getPeerPointer(
-        size_t offset, const Team &team, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
+    getPeerPointer(size_t offset, const Team &team, int peer,
+                   flagcxDevPeerAccess_t access) const {
       int worldPeer = this->resolveWorldPeer(team, peer);
       if (access == flagcxDevPeerAccessWriteOnly)
         return flagcxXshmemDevice::peerWritePtr(
@@ -217,9 +224,16 @@ struct CommTraits<XshmemBackend> {
     XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getLocalPointer(size_t offset) const {
       return (XSHMEM_FGP char *)rawPtr + offset;
     }
-    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getIntraPointer(
-        size_t offset, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getIntraPointer(size_t offset,
+                                                          int peer) const {
+      int worldPeer = intraPeMap[peer];
+      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                         worldPeer);
+    }
+
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
+    getIntraPointer(size_t offset, int peer,
+                    flagcxDevPeerAccess_t access) const {
       int worldPeer = intraPeMap[peer];
       if (access == flagcxDevPeerAccessWriteOnly)
         return flagcxXshmemDevice::peerWritePtr(

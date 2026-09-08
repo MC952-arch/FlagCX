@@ -74,37 +74,45 @@ struct CommTraits<NcclBackend> {
     FLAGCX_HOST_DEVICE_INLINE Window() : _impl() {}
 
 #if FLAGCX_CHECK_DEVICE_CC
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
+      return ncclGetPeerPointer(_impl, offset, (ncclTeam_t)team, peer);
+    }
+
     // NCCL window mappings support all declared access contracts.
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getPeerPointer(
-        size_t offset, const Team &team, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer,
+                   flagcxDevPeerAccess_t access) const {
       switch (access) {
         case flagcxDevPeerAccessReadWrite:
         case flagcxDevPeerAccessWriteOnly:
         case flagcxDevPeerAccessReadOnly:
-          break;
+          return getPeerPointer(offset, team, peer);
         default:
           return nullptr;
       }
-      return ncclGetPeerPointer(_impl, offset, (ncclTeam_t)team, peer);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return ncclGetLocalPointer(_impl, offset);
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(
-        size_t offset, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
+                                                         int peer) const {
+      return ncclGetLsaPointer(_impl, offset, peer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getIntraPointer(size_t offset, int peer,
+                    flagcxDevPeerAccess_t access) const {
       switch (access) {
         case flagcxDevPeerAccessReadWrite:
         case flagcxDevPeerAccessWriteOnly:
         case flagcxDevPeerAccessReadOnly:
-          break;
+          return getIntraPointer(offset, peer);
         default:
           return nullptr;
       }
-      return ncclGetLsaPointer(_impl, offset, peer);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *

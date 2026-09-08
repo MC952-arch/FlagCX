@@ -57,38 +57,46 @@ struct CommTraits<NvshmemBackend> {
     size_t allocSize;
     void *rawPtr;
 
-    // nvshmem_ptr supports all declared access contracts.
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getPeerPointer(
-        size_t offset, const Team &team, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
-      switch (access) {
-        case flagcxDevPeerAccessReadWrite:
-        case flagcxDevPeerAccessWriteOnly:
-        case flagcxDevPeerAccessReadOnly:
-          break;
-        default:
-          return nullptr;
-      }
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
       int myPE = nvshmem_my_pe();
       int base = myPE - team.rank * team.stride;
       int worldPeer = base + peer * team.stride;
       return nvshmem_ptr((char *)symBase + offset, worldPeer);
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
-      return (char *)rawPtr + offset;
-    }
-    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(
-        size_t offset, int peer,
-        flagcxDevPeerAccess_t access = flagcxDevPeerAccessReadWrite) const {
+
+    // nvshmem_ptr supports all declared access contracts.
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer,
+                   flagcxDevPeerAccess_t access) const {
       switch (access) {
         case flagcxDevPeerAccessReadWrite:
         case flagcxDevPeerAccessWriteOnly:
         case flagcxDevPeerAccessReadOnly:
-          break;
+          return getPeerPointer(offset, team, peer);
         default:
           return nullptr;
       }
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
+      return (char *)rawPtr + offset;
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
+                                                         int peer) const {
       return nvshmem_ptr((char *)symBase + offset, peer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getIntraPointer(size_t offset, int peer,
+                    flagcxDevPeerAccess_t access) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          return getIntraPointer(offset, peer);
+        default:
+          return nullptr;
+      }
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t, const Multimem &) const {

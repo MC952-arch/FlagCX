@@ -568,18 +568,64 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
 // __global_ptr__ (address-space 1) pointer type instead of forcing a
 // lossy conversion into a generic void* (which is 32-bit on that pass).
 // ============================================================
+// Prefer an access-aware Window overload when the backend provides one. The
+// long-tag fallback preserves the legacy Window contract for downstream
+// backends: only its known read-write mode may use the old overload; narrower
+// modes return a null pointer so unified dispatch can fall back to Net.
+template <typename Window, typename Team>
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetPeerPointerWithAccessInternal(const Window &window, size_t offset,
+                                       const Team &team, int peer,
+                                       flagcxDevPeerAccess_t access, int)
+    -> decltype(window.getPeerPointer(offset, team, peer, access)) {
+  return window.getPeerPointer(offset, team, peer, access);
+}
+
+template <typename Window, typename Team>
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetPeerPointerWithAccessInternal(const Window &window, size_t offset,
+                                       const Team &team, int peer,
+                                       flagcxDevPeerAccess_t access, long)
+    -> decltype(window.getPeerPointer(offset, team, peer)) {
+  using Pointer = decltype(window.getPeerPointer(offset, team, peer));
+  if (access != flagcxDevPeerAccessReadWrite)
+    return Pointer{};
+  return window.getPeerPointer(offset, team, peer);
+}
+
+template <typename Window>
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetIntraPointerWithAccessInternal(const Window &window, size_t offset,
+                                        int peer, flagcxDevPeerAccess_t access,
+                                        int)
+    -> decltype(window.getIntraPointer(offset, peer, access)) {
+  return window.getIntraPointer(offset, peer, access);
+}
+
+template <typename Window>
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetIntraPointerWithAccessInternal(const Window &window, size_t offset,
+                                        int peer, flagcxDevPeerAccess_t access,
+                                        long)
+    -> decltype(window.getIntraPointer(offset, peer)) {
+  using Pointer = decltype(window.getIntraPointer(offset, peer));
+  if (access != flagcxDevPeerAccessReadWrite)
+    return Pointer{};
+  return window.getIntraPointer(offset, peer);
+}
+
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam team,
                      int peer) {
-  return mem._winBase.getPeerPointer(offset, team._teamBase, peer,
-                                     flagcxDevPeerAccessReadWrite);
+  return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset,
                                flagcxTeam team, int peer,
                                flagcxDevPeerAccess_t access) {
-  return mem._winBase.getPeerPointer(offset, team._teamBase, peer, access);
+  return flagcxGetPeerPointerWithAccessInternal(
+      mem._winBase, offset, team._teamBase, peer, access, 0);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
@@ -599,27 +645,27 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   // Without team, treat as intra-node access
-  return mem._winBase.getIntraPointer(offset, peer,
-                                      flagcxDevPeerAccessReadWrite);
+  return mem._winBase.getIntraPointer(offset, peer);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset, int peer,
                                flagcxDevPeerAccess_t access) {
-  return mem._winBase.getIntraPointer(offset, peer, access);
+  return flagcxGetIntraPointerWithAccessInternal(mem._winBase, offset, peer,
+                                                 access, 0);
 }
 
 // Intra-node rank pointer.
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetIntraPointer(const flagcxDevMem &mem, size_t offset, int peer) {
-  return mem._winBase.getIntraPointer(offset, peer,
-                                      flagcxDevPeerAccessReadWrite);
+  return mem._winBase.getIntraPointer(offset, peer);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetIntraPointerWithAccess(const flagcxDevMem &mem, size_t offset,
                                 int peer, flagcxDevPeerAccess_t access) {
-  return mem._winBase.getIntraPointer(offset, peer, access);
+  return flagcxGetIntraPointerWithAccessInternal(mem._winBase, offset, peer,
+                                                 access, 0);
 }
 
 // Multicast pointer with explicit MulticastHandle.
