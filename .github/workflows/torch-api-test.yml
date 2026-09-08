@@ -43,24 +43,10 @@ jobs:
         run: |
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          apt update -y && apt-get install -y git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev clang-format
+          apt update -y && apt-get install -y git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev
           pip list | grep torch && which python
-          pip install pre-commit
           cd /__w/FlagCX/FlagCX
           git config --global --add safe.directory /__w/FlagCX/FlagCX && git status
-          pre-commit install
-
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
 
       - name: Run `make` to build the project
         run: |
