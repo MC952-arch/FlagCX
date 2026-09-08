@@ -423,6 +423,17 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       // DMA buffer
       ptpuAdaptorDmaSupport, ptpuAdaptorGetHandleForAddressRange,
       ptpuAdaptorHostRegister, ptpuAdaptorHostUnregister,
+      // Symmetric memory VMM functions (not supported)
+      NULL, // flagcxResult_t (*symPhysAlloc)(...);
+      NULL, // flagcxResult_t (*symPhysFree)(...);
+      NULL, // flagcxResult_t (*symFlatMap)(...);
+      NULL, // flagcxResult_t (*symFlatUnmap)(...);
+      NULL, // flagcxResult_t (*symMulticastSupported)(...);
+      NULL, // flagcxResult_t (*symMulticastCreate)(...);
+      NULL, // flagcxResult_t (*symMulticastBind)(...);
+      NULL, // flagcxResult_t (*symMulticastTeardown)(...);
+      NULL, // flagcxResult_t (*symMulticastFree)(...);
       NULL, // flagcxResult_t (*getLastError)();
+      flagcxDeviceAdaptorGetPointerTypeNotSupported,
 };
 #endif // USE_SUNRISE_ADAPTOR

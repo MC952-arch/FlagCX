@@ -397,6 +397,7 @@ struct flagcxDeviceAdaptor mluAdaptor {
       mluAdaptorSymMulticastCreate, mluAdaptorSymMulticastBind,
       mluAdaptorSymMulticastTeardown, mluAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
+      flagcxDeviceAdaptorGetPointerTypeNotSupported,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR
