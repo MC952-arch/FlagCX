@@ -12,11 +12,27 @@
 #include "mem_alloc_registry.h"
 #include "onesided.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <vector>
+
+static constexpr size_t kLegacyRequirementsSize =
+    offsetof(flagcxDevCommRequirements, intraScratchBytes);
+static_assert(kLegacyRequirementsSize == 40,
+              "flagcxDevCommRequirements legacy ABI size changed");
+static_assert(offsetof(flagcxDevCommRequirements, intraMulticast) == 0,
+              "flagcxDevCommRequirements legacy ABI offset changed");
+static_assert(offsetof(flagcxDevCommRequirements, barrierCount) == 4,
+              "flagcxDevCommRequirements legacy ABI offset changed");
+static_assert(offsetof(flagcxDevCommRequirements, interForceEnable) == 24,
+              "flagcxDevCommRequirements legacy ABI offset changed");
+static_assert(offsetof(flagcxDevCommRequirements, interCounterCount) == 36,
+              "flagcxDevCommRequirements legacy ABI offset changed");
+static_assert(offsetof(flagcxDevCommRequirements, intraScratchBytes) == 40,
+              "new requirements fields must follow the frozen ABI prefix");
 
 namespace {
 
@@ -349,9 +365,129 @@ int rollbackCallCount = 0;
 flagcxResult_t rollbackResult = flagcxSuccess;
 
 flagcxResult_t failDevCommCreate(flagcxComm_t,
-                                 const flagcxDevCommRequirements *,
+                                 const flagcxDevCommRequirements *, size_t,
                                  flagcxDevComm_t) {
   return flagcxSystemError;
+}
+
+class DevApiBackendGuard {
+public:
+  explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
+      : saved_(devApiBackend) {
+    devApiBackend = replacement;
+  }
+  ~DevApiBackendGuard() { devApiBackend = saved_; }
+
+private:
+  flagcxDevApiBackend *saved_;
+};
+
+size_t capturedRequirementsSize = 0;
+size_t capturedScratchBytes = 0;
+
+flagcxResult_t captureDevCommCreate(flagcxComm_t,
+                                    const flagcxDevCommRequirements *reqs,
+                                    size_t reqsSize, flagcxDevComm_t) {
+  capturedRequirementsSize = reqsSize;
+  capturedScratchBytes = 0;
+  if (reqsSize >= offsetof(flagcxDevCommRequirements, intraScratchBytes) +
+                      sizeof(reqs->intraScratchBytes)) {
+    capturedScratchBytes = reqs->intraScratchBytes;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t captureDevCommDestroy(flagcxComm_t, flagcxDevComm_t) {
+  return flagcxSuccess;
+}
+
+TEST(DevCommRequirementsTest, PublicCallPassesCurrentStructureSize) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-config";
+  captureBackend.devCommCreate = captureDevCommCreate;
+  captureBackend.devCommDestroy = captureDevCommDestroy;
+  DevApiBackendGuard guard(&captureBackend);
+
+  flagcxComm comm = {};
+  comm.rank = 0;
+  comm.nranks = 1;
+  comm.localRank = 0;
+  comm.localRanks = 1;
+
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraScratchBytes = 4096;
+
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(&comm, &reqs, &devComm), flagcxSuccess);
+  ASSERT_NE(devComm, nullptr);
+  EXPECT_EQ(capturedRequirementsSize, sizeof(reqs));
+  EXPECT_EQ(capturedScratchBytes, 4096u);
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
+}
+
+TEST(DevCommRequirementsTest, LegacySymbolReadsOnlyFrozenPrefix) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-config";
+  captureBackend.devCommCreate = captureDevCommCreate;
+  captureBackend.devCommDestroy = captureDevCommDestroy;
+  DevApiBackendGuard guard(&captureBackend);
+
+  flagcxComm comm = {};
+  comm.rank = 0;
+  comm.nranks = 1;
+  comm.localRank = 0;
+  comm.localRanks = 1;
+
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraScratchBytes = 4096;
+
+  auto legacyCreate = &flagcxDevCommCreate;
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(legacyCreate(&comm, &reqs, &devComm), flagcxSuccess);
+  ASSERT_NE(devComm, nullptr);
+  EXPECT_EQ(capturedRequirementsSize, kLegacyRequirementsSize);
+  EXPECT_EQ(capturedScratchBytes, 0u);
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
+}
+
+TEST(DevCommRequirementsTest, RejectsAnIncompleteLegacyPrefix) {
+  flagcxComm comm = {};
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t devComm = reinterpret_cast<flagcxDevComm_t>(0x1);
+
+  EXPECT_EQ(flagcxDevCommCreateSized(&comm, &reqs, kLegacyRequirementsSize - 1,
+                                     &devComm),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devComm, nullptr);
+}
+
+TEST(DevCommRequirementsTest, SizedEntryAcceptsFutureTail) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-config";
+  captureBackend.devCommCreate = captureDevCommCreate;
+  captureBackend.devCommDestroy = captureDevCommDestroy;
+  DevApiBackendGuard guard(&captureBackend);
+
+  flagcxComm comm = {};
+  comm.rank = 0;
+  comm.nranks = 1;
+  comm.localRank = 0;
+  comm.localRanks = 1;
+
+  struct FutureRequirements {
+    flagcxDevCommRequirements current;
+    uint64_t futureField;
+  } reqs = {FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER, 17};
+  reqs.current.intraScratchBytes = 8192;
+
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(
+      flagcxDevCommCreateSized(&comm, &reqs.current, sizeof(reqs), &devComm),
+      flagcxSuccess);
+  ASSERT_NE(devComm, nullptr);
+  EXPECT_EQ(capturedRequirementsSize, sizeof(reqs));
+  EXPECT_EQ(capturedScratchBytes, 8192u);
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
 }
 
 flagcxResult_t recordDevCommRollback(flagcxComm_t, flagcxDevComm_t) {
@@ -403,18 +539,6 @@ flagcxResult_t captureDevMemCreate(flagcxComm_t, void *, size_t, flagcxWindow_t,
 flagcxResult_t captureDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
   return flagcxSuccess;
 }
-
-class DevApiBackendGuard {
-public:
-  explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
-      : saved_(devApiBackend) {
-    devApiBackend = replacement;
-  }
-  ~DevApiBackendGuard() { devApiBackend = saved_; }
-
-private:
-  flagcxDevApiBackend *saved_;
-};
 
 class TrackedAllocationGuard {
 public:

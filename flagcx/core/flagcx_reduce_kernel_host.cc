@@ -1,5 +1,5 @@
 #include "flagcx.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 
 FLAGCX_PARAM(ReduceFifoCapacity, "REDUCE_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 

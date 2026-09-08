@@ -250,9 +250,12 @@ JSON_INCLUDE_DIR ?= $(abspath third-party/json/single_include)
 # Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
 	flagcx/include/flagcx.h \
+	flagcx/include/flagcx_device_api.h \
 	flagcx/include/flagcx_kernel.h \
+	flagcx/include/flagcx_kernel_core.h \
+	flagcx/adaptor/include/device_utils.h \
 	flagcx/include/flagcx_p2p.h
-BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
+BUILD_PUBLIC_HEADERS := $(addprefix $(BUILD_INCDIR)/,$(notdir $(PUBLIC_HEADERS)))
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
@@ -356,6 +359,11 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).
 $(BUILD_INCDIR)/%.h: flagcx/include/%.h
+	@mkdir -p `dirname $@`
+	@echo "Copying   $@"
+	@cp $< $@
+
+$(BUILD_INCDIR)/device_utils.h: flagcx/adaptor/include/device_utils.h
 	@mkdir -p `dirname $@`
 	@echo "Copying   $@"
 	@cp $< $@

@@ -60,7 +60,7 @@ static_assert(offsetof(flagcxShmemCommInternal, scratchBytes) ==
 static flagcxResult_t
 xshmemDevApiCommCreate(flagcxComm_t comm,
                        const struct flagcxDevCommRequirements *reqs,
-                       flagcxDevComm_t devComm) {
+                       size_t reqsSize, flagcxDevComm_t devComm) {
   if (shmemAdaptor == nullptr) {
     return flagcxInternalError;
   }
@@ -84,11 +84,14 @@ xshmemDevApiCommCreate(flagcxComm_t comm,
     return ret;
   }
 
-  flagcxDevCommRequirements shmemReqs = *reqs;
+  flagcxDevCommRequirements shmemReqs =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  size_t copySize = reqsSize < sizeof(shmemReqs) ? reqsSize : sizeof(shmemReqs);
+  memcpy(&shmemReqs, reqs, copySize);
   shmemReqs.interContextCount = devComm->contextCount;
 
   flagcxShmemComm_t shmemComm = nullptr;
-  ret = shmemAdaptor->devCommCreate(comm, &shmemReqs, &shmemComm);
+  ret = shmemAdaptor->devCommCreate(comm, &shmemReqs, copySize, &shmemComm);
   if (ret != flagcxSuccess) {
     shmemAdaptor->finalize();
     return ret;

@@ -37,7 +37,7 @@ static_assert(
 static flagcxResult_t
 nvshmemDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
-                        flagcxDevComm_t devComm) {
+                        size_t reqsSize, flagcxDevComm_t devComm) {
   if (shmemAdaptor == nullptr) {
     return flagcxInternalError;
   }
@@ -53,11 +53,14 @@ nvshmemDevApiCommCreate(flagcxComm_t comm,
   // contexts still require disjoint signal/counter/shadow namespaces.  Pass
   // the context count selected by the common Device API layer to the SHMEM
   // adaptor so its metadata allocation matches the device-visible Net array.
-  flagcxDevCommRequirements shmemReqs = *reqs;
+  flagcxDevCommRequirements shmemReqs =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  size_t copySize = reqsSize < sizeof(shmemReqs) ? reqsSize : sizeof(shmemReqs);
+  memcpy(&shmemReqs, reqs, copySize);
   shmemReqs.interContextCount = devComm->contextCount;
 
   flagcxShmemComm_t shmemComm = nullptr;
-  ret = shmemAdaptor->devCommCreate(comm, &shmemReqs, &shmemComm);
+  ret = shmemAdaptor->devCommCreate(comm, &shmemReqs, copySize, &shmemComm);
   if (ret != flagcxSuccess) {
     shmemAdaptor->finalize();
     return ret;

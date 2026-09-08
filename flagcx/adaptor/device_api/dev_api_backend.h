@@ -16,7 +16,7 @@ struct flagcxDevApiBackend {
   // DevComm lifecycle
   flagcxResult_t (*devCommCreate)(flagcxComm_t comm,
                                   const struct flagcxDevCommRequirements *reqs,
-                                  flagcxDevComm_t devComm);
+                                  size_t reqsSize, flagcxDevComm_t devComm);
   // Must accept a zero-initialized or partially-created devComm: the common
   // lifecycle calls this function to roll back devCommCreate failures.
   flagcxResult_t (*devCommDestroy)(flagcxComm_t comm, flagcxDevComm_t devComm);

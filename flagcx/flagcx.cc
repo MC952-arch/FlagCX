@@ -8,7 +8,7 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "flagcx_hetero.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
 #include "launch_kernel.h"

@@ -1,5 +1,5 @@
 #include "flagcx.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "device_api/comm_traits.h"
 
 #define FULL_MASK 0xffffffff
