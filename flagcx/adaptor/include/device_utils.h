@@ -29,8 +29,10 @@
 // tag. It expands to nothing on all other platforms.
 #if defined(USE_KUNLUNXIN_ADAPTOR) && defined(FLAGCX_DEVICE_COMPILE)
 #define FLAGCX_DEVICE_GLOBAL_PTR __global_ptr__
+#define FLAGCX_DEVICE_REQUIRES_LOCAL_NET_DESCRIPTOR 1
 #else
 #define FLAGCX_DEVICE_GLOBAL_PTR
+#define FLAGCX_DEVICE_REQUIRES_LOCAL_NET_DESCRIPTOR 0
 #endif
 
 #define FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)                               \
@@ -50,7 +52,7 @@
 // The three macros keep that difference out of the IR sources: DECL introduces
 // the variable, REF yields an object to call methods on, ARG yields the opaque
 // pointer the *S entry points take.
-#if defined(__xpu__)
+#if FLAGCX_DEVICE_REQUIRES_LOCAL_NET_DESCRIPTOR
 #define FLAGCX_IR_NET_DECL(var, commOpaque, contextId)                         \
   flagcxDevNet var(*(const flagcxDevComm *)(commOpaque), (int)(contextId))
 #define FLAGCX_IR_NET_REF(var) (var)
