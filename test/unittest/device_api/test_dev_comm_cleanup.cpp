@@ -82,6 +82,10 @@ TEST(WindowAccessCompatibilityTest, LegacyWindowRejectsDirectionalFallback) {
 std::vector<void *> unregisteredPtrs;
 std::vector<void *> deviceFreedPtrs;
 std::vector<void *> allocatedPtrs;
+int deviceMallocCallCount = 0;
+int deviceMemsetCallCount = 0;
+int failDeviceMallocCall = -1;
+int failDeviceMemsetCall = -1;
 
 enum class CleanupEventKind { Deregister, BufferFree };
 
@@ -127,6 +131,17 @@ flagcxResult_t recordDeviceMalloc(void **ptr, size_t size, flagcxMemType_t,
   return allocateTestBuffer(ptr, size);
 }
 
+flagcxResult_t injectDeviceMallocFailure(void **ptr, size_t size,
+                                         flagcxMemType_t type,
+                                         flagcxStream_t stream) {
+  deviceMallocCallCount++;
+  if (deviceMallocCallCount == failDeviceMallocCall) {
+    *ptr = nullptr;
+    return flagcxSystemError;
+  }
+  return recordDeviceMalloc(ptr, size, type, stream);
+}
+
 flagcxResult_t recordGdrMalloc(void **ptr, size_t size, void *) {
   return allocateTestBuffer(ptr, size);
 }
@@ -135,6 +150,15 @@ flagcxResult_t recordDeviceMemset(void *ptr, int value, size_t size,
                                   flagcxMemType_t, flagcxStream_t) {
   memset(ptr, value, size);
   return flagcxSuccess;
+}
+
+flagcxResult_t injectDeviceMemsetFailure(void *ptr, int value, size_t size,
+                                         flagcxMemType_t type,
+                                         flagcxStream_t stream) {
+  deviceMemsetCallCount++;
+  if (deviceMemsetCallCount == failDeviceMemsetCall)
+    return flagcxSystemError;
+  return recordDeviceMemset(ptr, value, size, type, stream);
 }
 
 flagcxResult_t failIpcMemHandleCreate(flagcxIpcMemHandle_t *, size_t *) {
@@ -174,6 +198,33 @@ void freeRegistration(flagcxOneSideHandleInfo *registration) {
   free(registration);
 }
 
+class DevApiBackendGuard {
+public:
+  explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
+      : saved_(devApiBackend) {
+    devApiBackend = replacement;
+  }
+  ~DevApiBackendGuard() { devApiBackend = saved_; }
+
+private:
+  flagcxDevApiBackend *saved_;
+};
+
+flagcxResult_t (*savedDefaultDevCommDestroy)(flagcxComm_t,
+                                             flagcxDevComm_t) = nullptr;
+int observedDestroyCalls = 0;
+bool handleClearedBeforeDestroy = false;
+
+flagcxResult_t observeDefaultDevCommDestroy(flagcxComm_t comm,
+                                            flagcxDevComm_t devComm) {
+  observedDestroyCalls++;
+  handleClearedBeforeDestroy = comm != nullptr && comm->heteroComm != nullptr &&
+                               comm->heteroComm->devCommHandle == nullptr;
+  return savedDefaultDevCommDestroy != nullptr
+             ? savedDefaultDevCommDestroy(comm, devComm)
+             : flagcxInternalError;
+}
+
 class DefaultDevCommCleanupTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -190,6 +241,13 @@ protected:
     deviceFreedPtrs.clear();
     allocatedPtrs.clear();
     cleanupEvents.clear();
+    deviceMallocCallCount = 0;
+    deviceMemsetCallCount = 0;
+    failDeviceMallocCall = -1;
+    failDeviceMemsetCall = -1;
+    savedDefaultDevCommDestroy = nullptr;
+    observedDestroyCalls = 0;
+    handleClearedBeforeDestroy = false;
   }
 
   void TearDown() override {
@@ -203,6 +261,103 @@ protected:
   struct flagcxDeviceAdaptor *savedDeviceAdaptor = nullptr;
   struct flagcxDeviceAdaptor testDeviceAdaptor = {};
 };
+
+TEST_F(DefaultDevCommCleanupTest, DevMemCreateClearsOutputOnInvalidArguments) {
+  flagcxComm comm = {};
+  char buffer = 0;
+  auto sentinel = reinterpret_cast<flagcxDevMem_t>(0x1);
+
+  flagcxDevMem_t devMem = sentinel;
+  EXPECT_EQ(
+      flagcxDevMemCreate(nullptr, &buffer, sizeof(buffer), nullptr, &devMem),
+      flagcxInvalidArgument);
+  EXPECT_EQ(devMem, nullptr);
+
+  devMem = sentinel;
+  EXPECT_EQ(
+      flagcxDevMemCreate(&comm, nullptr, sizeof(buffer), nullptr, &devMem),
+      flagcxInvalidArgument);
+  EXPECT_EQ(devMem, nullptr);
+
+  devMem = sentinel;
+  EXPECT_EQ(flagcxDevMemCreate(&comm, &buffer, 0, nullptr, &devMem),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devMem, nullptr);
+}
+
+TEST_F(DefaultDevCommCleanupTest, EarlyCreateFailureDoesNotPublishHandle) {
+  testDeviceAdaptor.deviceMalloc = injectDeviceMallocFailure;
+  failDeviceMallocCall = 1;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.nRanks = 1;
+  heteroComm.nNodes = 1;
+
+  flagcxComm comm = {};
+  comm.nranks = 1;
+  comm.localRanks = 1;
+  comm.heteroComm = &heteroComm;
+
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t devComm = reinterpret_cast<flagcxDevComm_t>(0x1);
+  EXPECT_EQ(flagcxDevCommCreate(&comm, &reqs, &devComm), flagcxSystemError);
+
+  EXPECT_EQ(deviceMallocCallCount, 1);
+  EXPECT_EQ(devComm, nullptr);
+  EXPECT_EQ(heteroComm.devCommHandle, nullptr);
+  EXPECT_TRUE(allocatedPtrs.empty());
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+}
+
+TEST_F(DefaultDevCommCleanupTest, PartialCreateFailureReleasesOwnedBuffers) {
+  testDeviceAdaptor.deviceMalloc = injectDeviceMallocFailure;
+  testDeviceAdaptor.deviceMemset = injectDeviceMemsetFailure;
+  failDeviceMemsetCall = 1;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.nRanks = 1;
+  heteroComm.nNodes = 1;
+
+  flagcxComm comm = {};
+  comm.nranks = 1;
+  comm.localRanks = 1;
+  comm.heteroComm = &heteroComm;
+
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t devComm = reinterpret_cast<flagcxDevComm_t>(0x1);
+  EXPECT_EQ(flagcxDevCommCreate(&comm, &reqs, &devComm), flagcxSystemError);
+
+  EXPECT_EQ(deviceMemsetCallCount, 1);
+  ASSERT_EQ(allocatedPtrs.size(), 1u);
+  ASSERT_EQ(deviceFreedPtrs.size(), 1u);
+  EXPECT_EQ(deviceFreedPtrs[0], allocatedPtrs[0]);
+  EXPECT_EQ(devComm, nullptr);
+  EXPECT_EQ(heteroComm.devCommHandle, nullptr);
+}
+
+TEST_F(DefaultDevCommCleanupTest, UnpublishesHandleBeforeBackendDestroy) {
+  auto *devComm = static_cast<flagcxDevComm_t>(
+      calloc(1, sizeof(struct flagcxDevCommInternal)));
+  ASSERT_NE(devComm, nullptr);
+  ASSERT_EQ(pthread_mutex_init(&devComm->cachedPtrMutex, nullptr), 0);
+  devComm->barrierIpcIndex = -1;
+  devComm->signalIpcSlot = -1;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.devCommHandle = devComm;
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  flagcxDevApiBackend observedDefaultBackend = *devApiBackend;
+  savedDefaultDevCommDestroy = observedDefaultBackend.devCommDestroy;
+  observedDefaultBackend.devCommDestroy = observeDefaultDevCommDestroy;
+  DevApiBackendGuard backendGuard(&observedDefaultBackend);
+
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
+  EXPECT_EQ(observedDestroyCalls, 1);
+  EXPECT_TRUE(handleClearedBeforeDestroy);
+  EXPECT_EQ(heteroComm.devCommHandle, nullptr);
+}
 
 TEST_F(DefaultDevCommCleanupTest, ShmBarrierAliasesAreNotFreedTwice) {
   flagcxDevCommInternal devComm = {};
@@ -388,10 +543,11 @@ TEST_F(DefaultDevCommCleanupTest,
 
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.interSignalCount = 1;
-  flagcxDevComm_t devComm = nullptr;
+  flagcxDevComm_t devComm = reinterpret_cast<flagcxDevComm_t>(0x1);
   EXPECT_EQ(flagcxDevCommCreate(&comm, &reqs, &devComm), flagcxNotSupported);
 
   EXPECT_EQ(devComm, nullptr);
+  EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
   EXPECT_EQ(heteroComm.stagingHandle, existingStaging);
   EXPECT_EQ(cleanupEvents.size(), allocatedPtrs.size());
@@ -412,18 +568,6 @@ flagcxResult_t failDevCommCreate(flagcxComm_t,
                                  flagcxDevComm_t) {
   return flagcxSystemError;
 }
-
-class DevApiBackendGuard {
-public:
-  explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
-      : saved_(devApiBackend) {
-    devApiBackend = replacement;
-  }
-  ~DevApiBackendGuard() { devApiBackend = saved_; }
-
-private:
-  flagcxDevApiBackend *saved_;
-};
 
 size_t capturedRequirementsSize = 0;
 size_t capturedScratchBytes = 0;

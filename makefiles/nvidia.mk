@@ -27,6 +27,8 @@ endif
 ifeq ($(USE_SHMEM), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
   DEVICE_LINK  += -L$(SHMEM_HOME)/lib -lnvshmem_device -lnvshmem_host
+  # Keep this list explicit because shmem/ contains mutually exclusive
+  # backends. Add future NVIDIA/NVSHMEM sources here deliberately.
   PLATFORM_EXTRA_SRCS := flagcx/adaptor/shmem/nvshmem_adaptor.cc \
                          flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
 else ifeq ($(FORCE_DEFAULT_PATH), 1)

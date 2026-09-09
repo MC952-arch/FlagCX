@@ -149,10 +149,13 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
+  if (devMem == nullptr) {
     return flagcxInvalidArgument;
   }
   *devMem = nullptr;
+  if (comm == nullptr || buff == nullptr || size == 0) {
+    return flagcxInvalidArgument;
+  }
 
   flagcxDevMem_t handle =
       (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
