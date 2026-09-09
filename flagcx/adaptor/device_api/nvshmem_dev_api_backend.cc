@@ -102,7 +102,7 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   (void)comm;
   (void)win;
   if (!devMem->allocationTracked || devMem->allocator != flagcxMemSHMEM ||
-      devMem->allocBackend != flagcxMemAllocBackendSHMEM) {
+      devMem->allocBackend != flagcxMemAllocBackendShmem) {
     WARN("nvshmem Device API memory must be allocated with "
          "flagcxMemAlloc(..., flagcxMemSHMEM)");
     return flagcxInvalidUsage;

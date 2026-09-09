@@ -209,17 +209,28 @@ flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 /* Deprecated: use flagcxDeviceHandleFree instead */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
-/* User buffer registration functions. The actual allocated size might
- * be larger than requested due to granularity requirement. */
+/* Allocation and user-buffer registration. A backend may reserve more memory
+ * than requested to satisfy its granularity, but FlagCX tracks the requested
+ * size as the usable allocation boundary. */
 
-/* Memory allocator backend selection */
+/* Memory allocator selection */
 typedef enum {
   flagcxMemCCL =
-      0, /* CCL-managed (ncclMemAlloc in homo, gdrMemAlloc in hetero) */
-  flagcxMemSHMEM = 1, /* SHMEM symmetric heap (NVSHMEM or XSHMEM). The selected
-                         SHMEM runtime must already be initialized; Device API
-                         users normally keep a flagcxDevComm alive. */
+      0, /* CCL-managed in homogeneous mode; native platform allocation in
+            heterogeneous mode. External CCL user buffers may also be
+            registered without first calling flagcxMemAlloc. */
+  flagcxMemSHMEM =
+      1, /* SHMEM symmetric heap (NVSHMEM or XSHMEM). Buffers used
+            by FlagCX Device API or SHMEM registration must be
+            allocated by flagcxMemAlloc with this allocator. The
+            selected SHMEM runtime must already be initialized;
+            Device API users normally keep a flagcxDevComm alive. */
 } flagcxMemAllocator_t;
+
+/* flagcxMemFree requires the original base pointer and the same allocator that
+ * were passed to flagcxMemAlloc. Pointers obtained directly from a native
+ * allocator remain owned by that allocator and cannot be released through
+ * flagcxMemFree. */
 
 #ifdef __cplusplus
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,

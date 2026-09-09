@@ -134,7 +134,7 @@ static flagcxResult_t xshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                             flagcxDevMem_t devMem) {
   (void)win;
   if (!devMem->allocationTracked || devMem->allocator != flagcxMemSHMEM ||
-      devMem->allocBackend != flagcxMemAllocBackendSHMEM) {
+      devMem->allocBackend != flagcxMemAllocBackendShmem) {
     WARN("xshmem Device API memory must be allocated with "
          "flagcxMemAlloc(..., flagcxMemSHMEM)");
     return flagcxInvalidUsage;

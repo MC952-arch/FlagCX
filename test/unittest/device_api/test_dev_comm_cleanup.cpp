@@ -595,16 +595,11 @@ private:
   void *base_;
 };
 
-TEST(DevMemProvenanceTest, PropagatesCompileTimeSelectedAllocatorAndBackend) {
+TEST(DevMemProvenanceTest, PropagatesNativeAllocationProvenance) {
   void *allocation = malloc(256);
   ASSERT_NE(allocation, nullptr);
-#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
-  const flagcxMemAllocator_t allocator = flagcxMemSHMEM;
-  const flagcxMemAllocBackend backend = flagcxMemAllocBackendSHMEM;
-#else
   const flagcxMemAllocator_t allocator = flagcxMemCCL;
-  const flagcxMemAllocBackend backend = flagcxMemAllocBackendGDR;
-#endif
+  const flagcxMemAllocBackend_t backend = flagcxMemAllocBackendNative;
   TrackedAllocationGuard allocationGuard({allocation, 256, allocator, backend});
 
   flagcxDevApiBackend captureBackend = {};
@@ -634,13 +629,8 @@ TEST(DevMemProvenanceTest, PropagatesCompileTimeSelectedAllocatorAndBackend) {
 TEST(DevMemProvenanceTest, RejectsRangeBeyondTrackedAllocation) {
   void *allocation = malloc(256);
   ASSERT_NE(allocation, nullptr);
-#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
-  const flagcxMemAllocationInfo info = {allocation, 256, flagcxMemSHMEM,
-                                        flagcxMemAllocBackendSHMEM};
-#else
   const flagcxMemAllocationInfo info = {allocation, 256, flagcxMemCCL,
-                                        flagcxMemAllocBackendCCL};
-#endif
+                                        flagcxMemAllocBackendNative};
   TrackedAllocationGuard allocationGuard(info);
 
   flagcxDevApiBackend captureBackend = {};
