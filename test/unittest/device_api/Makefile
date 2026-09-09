@@ -174,13 +174,13 @@ run-mpi-inter: $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter
 
 # Unified Intra suite: INTRA + WORLD teams (single-node)
 run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra
-	@echo "Running unified intra suite tests (INTRA + WORLD, 8-combo)..."
+	@echo "Running unified intra suite tests (INTRA + WORLD, full coop matrices)..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(UNIFIED_COMMON_ENV) \
 		$(BINDIR)/test_device_ir_unified_intra $(UNIFIED_TEST_ARGS)
 
 # Unified Inter suite: INTER + WORLD teams (two logical 4-rank nodes)
 run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
-	@echo "Running unified inter suite tests (INTER + WORLD, 8-combo)..."
+	@echo "Running unified inter suite tests (INTER + WORLD, full coop matrices)..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
 		-n 4 $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS) \
