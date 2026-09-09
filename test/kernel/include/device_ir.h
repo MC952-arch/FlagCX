@@ -18,10 +18,11 @@
 #include "device_api/flagcx_device_enums.h"
 #include "flagcx.h"
 
-// S21-S23 use six fixed (team, cooperation) slots.  Keep the expected set in
-// test-only code so a platform cannot silently turn an unsupported case into a
-// passing one.  NVIDIA expects every slot.  A platform that cannot issue a
-// cross-node THREAD put may opt out of exactly the first two slots without
+// S21-S22 use six fixed (team, cooperation) slots. S23 uses the full 18-slot
+// product of cooperation kind, completion variant, and team. Keep the expected
+// sets in test-only code so a platform cannot silently turn an unsupported
+// case into a passing one. NVIDIA expects every slot. A platform that cannot
+// issue a cross-node THREAD put may opt out of the THREAD slots without
 // changing the public Device API or CommTraits contracts.
 enum flagcxUnifiedIrPutCoopCombo {
   flagcxUnifiedIrPutPrimaryThread = 0,
@@ -35,15 +36,23 @@ enum flagcxUnifiedIrPutCoopCombo {
 
 #define FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK ((uint32_t)0x3f)
 #define FLAGCX_TEST_UNIFIED_PUT_COOP_NO_THREAD_MASK ((uint32_t)0x3c)
+#define FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK ((uint32_t)0x3ffff)
+#define FLAGCX_TEST_UNIFIED_PUT_COUNTER_NO_THREAD_MASK ((uint32_t)0x3ffc0)
 #define FLAGCX_TEST_UNIFIED_INTRA_PUT_COOP_EXPECTED_MASK                       \
   FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK
+#define FLAGCX_TEST_UNIFIED_INTRA_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK
 
 #if defined(FLAGCX_TEST_NO_REMOTE_THREAD_PUT)
 #define FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK                       \
   FLAGCX_TEST_UNIFIED_PUT_COOP_NO_THREAD_MASK
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_NO_THREAD_MASK
 #else
 #define FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK                       \
   FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK
 #endif
 
 // =========================================================================

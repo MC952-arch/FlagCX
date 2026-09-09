@@ -782,6 +782,12 @@ void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
 // variant 0: LCtrInc only, 1: RSigInc + LCtrInc, 2: RSigAdd(3) + LCtrInc.
 // The counter is local, so it must reach exactly 1 per (context, counter).
 // ---------------------------------------------------------------------------
+enum {
+  FLAGCX_UNIFIED_IR_PUT_LCTR_INC = 0,
+  FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC = 1,
+  FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC = 2,
+};
+
 __global__ void kernelDevPutCounterUnifiedS(const flagcxDevComm *gComm,
                                             const flagcxDevMem *gDst,
                                             const flagcxDevMem *gSrc,
@@ -797,13 +803,12 @@ __global__ void kernelDevPutCounterUnifiedS(const flagcxDevComm *gComm,
   const IrPrimaryTeam primary = irPrimaryTeam(comm, useInter);
   bool ok = true;
 
-#define S23_COMBO(slot, teamKind, peer, coopKind)                              \
+#define S23_COMBO(slot, teamKind, peer, coopKind, variant)                     \
   do {                                                                         \
     if (!irPutCoopSupported(useInter, coopKind))                               \
       break;                                                                   \
     const flagcxDevCounter_t ctr = (flagcxDevCounter_t)(slot);                 \
     const flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                   \
-    const int variant = (slot) % 3;                                            \
     if (core_id() == 0) {                                                      \
       flagcxDevResetCounter(&comm, contextId, ctr);                            \
       flagcxDevResetSignal(&comm, contextId, sig);                             \
@@ -860,17 +865,55 @@ __global__ void kernelDevPutCounterUnifiedS(const flagcxDevComm *gComm,
   } while (0)
 
   S23_COMBO(0, primary.kind, (primary.rank + 1) % primary.size,
-            FLAGCX_COOP_THREAD);
+            FLAGCX_COOP_THREAD, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
   S23_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-            FLAGCX_COOP_THREAD);
+            FLAGCX_COOP_THREAD, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
   S23_COMBO(2, primary.kind, (primary.rank + 1) % primary.size,
-            FLAGCX_COOP_WARP);
+            FLAGCX_COOP_THREAD,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
   S23_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-            FLAGCX_COOP_WARP);
+            FLAGCX_COOP_THREAD,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
   S23_COMBO(4, primary.kind, (primary.rank + 1) % primary.size,
-            FLAGCX_COOP_BLOCK);
+            FLAGCX_COOP_THREAD,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
   S23_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
-            FLAGCX_COOP_BLOCK);
+            FLAGCX_COOP_THREAD,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
+
+  S23_COMBO(6, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_WARP, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
+  S23_COMBO(7, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_WARP, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
+  S23_COMBO(8, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_WARP,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
+  S23_COMBO(9, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_WARP,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
+  S23_COMBO(10, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_WARP,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
+  S23_COMBO(11, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_WARP,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
+
+  S23_COMBO(12, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_BLOCK, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
+  S23_COMBO(13, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_BLOCK, FLAGCX_UNIFIED_IR_PUT_LCTR_INC);
+  S23_COMBO(14, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_BLOCK,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
+  S23_COMBO(15, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_BLOCK,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC);
+  S23_COMBO(16, primary.kind, (primary.rank + 1) % primary.size,
+            FLAGCX_COOP_BLOCK,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
+  S23_COMBO(17, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_BLOCK,
+            FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC);
 
 #undef S23_COMBO
 
