@@ -7,6 +7,7 @@
 #include "xshmem/xshmem.h"
 #include "xshmem/xshmemx.h"
 
+#include <limits.h>
 #include <stdio.h>
 
 #include "flagcx.h"
@@ -162,6 +163,8 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
     return flagcxInvalidArgument;
   if (count == 0)
     return flagcxSuccess;
+  if (count > (size_t)INT_MAX)
+    return flagcxInvalidArgument;
   if (devMem->rawPtr == nullptr)
     return flagcxInternalError;
   if (!devMem->hasWindow || !devMem->isSymmetric)
@@ -193,8 +196,9 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
   // generation counter in the symmetric heap, so a launch with more clusters
   // than an earlier one would wait forever on the lagging counters.
   int clusternum = devComm->contextCount < 12 ? devComm->contextCount : 12;
+  int kernelCount = (int)count;
   flagcxXshmemIntraAllReduceKernel<float><<<clusternum, klxCorenum(), cs>>>(
-      deviceMem, deviceComm, count);
+      deviceMem, deviceComm, kernelCount);
   return klxWait(cs, "all_reduce kernel");
 }
 #endif
@@ -243,6 +247,8 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(
     return flagcxInvalidArgument;
   if (count == 0)
     return flagcxSuccess;
+  if (count > (size_t)INT_MAX)
+    return flagcxInvalidArgument;
   if (sendMem->rawPtr == nullptr || recvMem->rawPtr == nullptr)
     return flagcxInternalError;
   if (!sendMem->hasWindow || !recvMem->hasWindow ||
@@ -265,8 +271,9 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(
   int clusternum = devComm->nRanks < 12 ? devComm->nRanks : 12;
   if (clusternum < 1)
     return flagcxInvalidArgument;
+  int kernelCount = (int)count;
   flagcxXshmemOneSidedAlltoAllKernel<<<clusternum, klxCorenum(), cs>>>(
-      deviceSendMem, deviceRecvMem, count, deviceComm);
+      deviceSendMem, deviceRecvMem, kernelCount, deviceComm);
   return klxWait(cs, "all_to_all kernel");
 }
 #endif

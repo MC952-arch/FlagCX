@@ -135,12 +135,19 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
   sc->intraRank = comm->localRank;
   sc->intraSize = comm->localRanks;
 
+  if (sc->nRanks <= 0 || sc->nRanks > FLAGCX_XSHMEM_MAX_PES) {
+    WARN("xshmem devCommCreate: nRanks must be in [1, %d], got %d",
+         FLAGCX_XSHMEM_MAX_PES, sc->nRanks);
+    delete sc;
+    return flagcxInvalidArgument;
+  }
+
   // Declared before any goto so error paths never jump over its
   // initialization.
   int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
   // P800 has no remote atomic, so each (context, signal) is fanned out into
   // one receive slot per source PE, one sent-ticket per destination, and one
-  // local-action slot. See xshmem_state_layout.h.
+  // local-action slot plus a reset baseline. See xshmem_state_layout.h.
   int slotsPerSignal = FLAGCX_XSHMEM_SIGNAL_SLOTS(sc->nRanks);
 
   // FlagCX communicator ranks are not required to be grouped by host. Keep

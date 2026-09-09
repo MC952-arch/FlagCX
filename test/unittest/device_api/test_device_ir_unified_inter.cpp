@@ -375,6 +375,10 @@ int main(int argc, char *argv[]) {
     // =======================================================================
     // S19: DevGet — INTER + WORLD
     // =======================================================================
+#ifdef FLAGCX_TEST_NO_REMOTE_READ
+    RPRINTF("S19 DevGet(INTER+WORLD): SKIP (no remote read on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
@@ -421,6 +425,7 @@ int main(int argc, char *argv[]) {
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // =======================================================================
     // S20: DevSignalStandalone (signal-only: Inc+Add+Wait+Read+Reset)

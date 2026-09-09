@@ -73,9 +73,9 @@ UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
                  -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
 # Device API tests link test/kernel/<platform>/device_api.o. IR tests need a
-# device_ir.<ext> kernel. KLX provides one, but only for the unified INTRA
-# suite, so the remaining IR targets stay skipped there. NVIDIA/DU retain both
-# regular and unified suites.
+# device_ir.<ext> kernel. KLX exercises the backend through the two unified IR
+# suites; its legacy Device API launchers intentionally remain incomplete.
+# NVIDIA/DU retain both regular and unified suites.
 IR_TARGETS  := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
                $(BINDIR)/test_device_ir_unified_intra \
@@ -85,12 +85,13 @@ API_TARGETS := $(BINDIR)/test_device_api_intra \
 
 SKIPPED_TARGETS :=
 ifeq ($(KERNEL_PLATFORM), klx)
-  # The other suites need operations P800 cannot serve (remote reads) or a real
-  # second node; see docs/device_ir_klx_adaptation.md.
-  KLX_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
-  SKIPPED_TARGETS := $(notdir $(filter-out $(KLX_IR_TARGETS),$(IR_TARGETS)))
+  KLX_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra \
+                     $(BINDIR)/test_device_ir_unified_inter
+  SKIPPED_TARGETS := $(notdir $(filter-out $(KLX_IR_TARGETS),\
+                       $(IR_TARGETS) $(API_TARGETS)))
   IR_TARGETS      := $(KLX_IR_TARGETS)
-  # S19 (DevGet) is compiled out of the unified intra suite: reading a peer's
+  API_TARGETS     :=
+  # S19 (DevGet) is compiled out of both unified suites: reading a peer's
   # memory traps on P800, so there is no implementation to exercise.
   CXXFLAGS += -DFLAGCX_TEST_NO_REMOTE_READ
 endif
@@ -102,7 +103,7 @@ MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
 all: unit mpi
 ifneq ($(SKIPPED_TARGETS),)
-	@echo "Skipped on $(KERNEL_PLATFORM) (unsupported by test/kernel/$(KERNEL_PLATFORM)/device_ir.$(DEVICE_FILE_EXTENSION)): $(SKIPPED_TARGETS)"
+	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
 unit: $(UNIT_TARGET)
@@ -194,32 +195,43 @@ INTER_NODE1_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node1 \
                    $(MPI_ENV_FLAG) NCCL_HOSTID=node1
 UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
 
-# Intra-node tests: safe to run on a single node. KLX skips only the missing IR
-# executable and still runs the Device API test.
+# Legacy intra-node tests. Platforms only run targets selected in MPI_TARGETS;
+# this prevents a stale executable from bypassing a platform capability filter.
 run-mpi-intra: $(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)) \
-               $(BINDIR)/test_device_api_intra
+               $(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS))
+
+ifneq ($(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)),)
 	@echo "Running intra-node tests..."
-	@if [ -x $(BINDIR)/test_device_ir_intra ]; then \
-		$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(BINDIR)/test_device_ir_intra || exit 1; \
-	fi
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(BINDIR)/test_device_ir_intra
+endif
+ifneq ($(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
 	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(BINDIR)/test_device_api_intra
+endif
+ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
+	@echo "Skipped legacy intra Device API/IR tests on $(KERNEL_PLATFORM)"
+endif
 
 # Inter-node tests use two logical four-rank nodes. This exercises inter-node
 # discovery even on a single physical host.
 run-mpi-inter: $(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)) \
-               $(BINDIR)/test_device_api_inter
-	@if [ -x $(BINDIR)/test_device_ir_inter ]; then \
-		echo "Running inter-node Device IR tests..."; \
-		$(MPIRUN) $(MPI_ROOT_ARGS) \
-			-n 4 $(HETERO_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
-			: -n 4 $(HETERO_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter || exit 1; \
-	fi
+               $(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS))
+ifneq ($(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)),)
+	@echo "Running inter-node Device IR tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n 4 $(HETERO_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
+		: -n 4 $(HETERO_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
+endif
+ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device API tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
 		-n 4 $(HETERO_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
 		: -n 4 $(HETERO_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
+endif
+ifeq ($(filter $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
+	@echo "Skipped legacy inter Device API/IR tests on $(KERNEL_PLATFORM)"
+endif
 
 ifneq ($(filter $(BINDIR)/test_device_ir_unified_intra,$(MPI_TARGETS)),)
 run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra

@@ -626,10 +626,11 @@ struct CommTraits<XshmemBackend> {
     }
 
     XSHMEM_DEVICE_INLINE void resetSignal(flagcxDevSignal_t signalId) const {
-      int base = this->signalBase(signalId);
-      for (int i = 0; i < FLAGCX_XSHMEM_SIGNAL_SLOTS(_dc.nRanks); ++i)
-        *(XshmemGMWord *)&_dc.signalBuffer[base + i] = (uint64_t)0;
+      *(XshmemGMWord *)this->getSignalResetBaselinePtr(signalId) =
+          this->sumSignalRemote(signalId);
+      *(XshmemGMWord *)this->getSignalLocalPtr(signalId) = (uint64_t)0;
       *(XshmemGMWord *)this->getSignalShadowPtr(signalId) = (uint64_t)0;
+      flagcxXshmemDevice::threadFence();
     }
 
     // ---- Local signal write ----
@@ -661,9 +662,10 @@ struct CommTraits<XshmemBackend> {
     }
 
     XSHMEM_DEVICE_INLINE void resetCounter(flagcxDevCounter_t counterId) const {
-      int base = this->counterBase(counterId);
-      for (int i = 0; i < FLAGCX_XSHMEM_SIGNAL_SLOTS(_dc.nRanks); ++i)
-        *(XshmemGMWord *)&_dc.counterBuffer[base + i] = (uint64_t)0;
+      *(XshmemGMWord *)this->getCounterResetBaselinePtr(counterId) =
+          this->sumCounterRemote(counterId);
+      *(XshmemGMWord *)this->getCounterLocalPtr(counterId) = (uint64_t)0;
+      flagcxXshmemDevice::threadFence();
     }
 
     // ---- Collective: barrierAll ----
@@ -764,22 +766,51 @@ struct CommTraits<XshmemBackend> {
       return &_dc.counterBuffer[this->counterBase(counterId) + 2 * _dc.nRanks];
     }
 
-    // Aggregate value of a signal: every source's ticket plus local actions.
-    XSHMEM_DEVICE_INLINE uint64_t sumSignal(flagcxDevSignal_t signalId) const {
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP uint64_t *
+    getSignalResetBaselinePtr(flagcxDevSignal_t signalId) const {
+      return &_dc.signalBuffer[this->signalBase(signalId) +
+                               FLAGCX_XSHMEM_RESET_BASELINE_INDEX(_dc.nRanks)];
+    }
+
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP uint64_t *
+    getCounterResetBaselinePtr(flagcxDevCounter_t counterId) const {
+      return &_dc.counterBuffer[this->counterBase(counterId) +
+                                FLAGCX_XSHMEM_RESET_BASELINE_INDEX(_dc.nRanks)];
+    }
+
+    // Remote aggregate: every source's monotonic ticket. This is the portion
+    // that a receiver-side reset cannot clear at its source.
+    XSHMEM_DEVICE_INLINE uint64_t
+    sumSignalRemote(flagcxDevSignal_t signalId) const {
       int base = this->signalBase(signalId);
       uint64_t total = 0;
       for (int src = 0; src < _dc.nRanks; ++src)
         total += *(XshmemGMWord *)&_dc.signalBuffer[base + src];
-      return total + *(XshmemGMWord *)this->getSignalLocalPtr(signalId);
+      return total;
     }
 
     XSHMEM_DEVICE_INLINE uint64_t
-    sumCounter(flagcxDevCounter_t counterId) const {
+    sumCounterRemote(flagcxDevCounter_t counterId) const {
       int base = this->counterBase(counterId);
       uint64_t total = 0;
       for (int src = 0; src < _dc.nRanks; ++src)
         total += *(XshmemGMWord *)&_dc.counterBuffer[base + src];
-      return total + *(XshmemGMWord *)this->getCounterLocalPtr(counterId);
+      return total;
+    }
+
+    // Logical values include actions since the most recent local reset.
+    // Sender-side ticket state is excluded from reset and remains monotonic.
+    XSHMEM_DEVICE_INLINE uint64_t sumSignal(flagcxDevSignal_t signalId) const {
+      return this->sumSignalRemote(signalId) -
+             *(XshmemGMWord *)this->getSignalResetBaselinePtr(signalId) +
+             *(XshmemGMWord *)this->getSignalLocalPtr(signalId);
+    }
+
+    XSHMEM_DEVICE_INLINE uint64_t
+    sumCounter(flagcxDevCounter_t counterId) const {
+      return this->sumCounterRemote(counterId) -
+             *(XshmemGMWord *)this->getCounterResetBaselinePtr(counterId) +
+             *(XshmemGMWord *)this->getCounterLocalPtr(counterId);
     }
 
     XSHMEM_DEVICE_INLINE uint64_t spinSignal(flagcxDevSignal_t signalId,
