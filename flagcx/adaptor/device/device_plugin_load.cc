@@ -50,9 +50,10 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
-  // Upgrade v1 plugin to latest: copy v1 fields, zero any fields added beyond
-  // v1 (e.g. hostRegister/hostUnregister). Always required since plugins only
-  // ever export versioned symbols and _latest is an internal-only struct.
+  // Upgrade v1 plugin to latest: copy v1 fields, initialize optional fields
+  // added beyond v1, and install compatibility stubs where available. Always
+  // required since plugins only export versioned symbols and _latest is an
+  // internal-only struct.
   if (flagcxCalloc(&upgradedPluginAdaptor, 1) != flagcxSuccess) {
     WARN("ADAPTOR/Plugin: Failed to allocate upgraded adaptor struct");
     flagcxAdaptorClosePluginLib(devicePluginDlHandle);

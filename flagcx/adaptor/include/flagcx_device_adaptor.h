@@ -245,17 +245,31 @@ struct flagcxDeviceAdaptor_latest {
   flagcxResult_t (*symMulticastFree)(void *mcHandle);
 
   flagcxResult_t (*getLastError)();
+
+  // Classify an address independently from IPC-export capability. Managed
+  // and device allocations report FLAGCX_PTR_CUDA; ordinary/pinned host
+  // allocations report FLAGCX_PTR_HOST. Unsupported backends return
+  // flagcxNotSupported.
+  flagcxResult_t (*getPointerType)(const void *ptr, int *ptrType);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
 
+static inline flagcxResult_t
+flagcxDeviceAdaptorGetPointerTypeNotSupported(const void *ptr, int *ptrType) {
+  (void)ptr;
+  (void)ptrType;
+  return flagcxNotSupported;
+}
+
 // Upgrade a v1 plugin struct to latest in-place into dst.
-// Fields added beyond v1 (hostRegister, hostUnregister) are zeroed (NULL).
+// Fields added beyond v1 are zeroed unless a safe compatibility stub exists.
 static inline void
 flagcxDeviceAdaptorUpgradeV1(const struct flagcxDeviceAdaptor_v1 *src,
                              struct flagcxDeviceAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxDeviceAdaptor_v1));
+  dst->getPointerType = flagcxDeviceAdaptorGetPointerTypeNotSupported;
 }
 
 // Device adaptor plugin API version (independent of CCL/Net versions)

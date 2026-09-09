@@ -693,6 +693,35 @@ flagcxResult_t macaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
+  mcPointerAttribute_t attrs = {};
+  mcError_t err = mcPointerGetAttributes(&attrs, ptr);
+  if (err == mcErrorInvalidValue) {
+    // Ordinary host allocations are not tracked by the MACA runtime.
+    mcGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (err != mcSuccess) {
+    mcGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType =
+      (attrs.type == mcMemoryTypeDevice || attrs.type == mcMemoryTypeManaged)
+          ? FLAGCX_PTR_CUDA
+          : FLAGCX_PTR_HOST;
+#else
+  *ptrType = (attrs.memoryType == mcMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -758,6 +787,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
       macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
+      macaAdaptorGetPointerType,
 };
 
 #endif // USE_METAX_ADAPTOR

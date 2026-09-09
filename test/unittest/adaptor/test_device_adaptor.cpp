@@ -11,6 +11,17 @@
 #include "flagcx.h"
 #include "topo.h"
 
+TEST(DeviceAdaptorCompatibilityTest, V1UpgradeProvidesPointerTypeStub) {
+  flagcxDeviceAdaptor_v1 v1 = {};
+  flagcxDeviceAdaptor_latest latest = {};
+
+  flagcxDeviceAdaptorUpgradeV1(&v1, &latest);
+
+  ASSERT_NE(latest.getPointerType, nullptr);
+  int ptrType = 0;
+  EXPECT_EQ(latest.getPointerType(&v1, &ptrType), flagcxNotSupported);
+}
+
 class DeviceAdaptorTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -94,6 +105,58 @@ TEST_F(DeviceAdaptorTest, HostMemoryAlloc) {
   // Free host memory
   result = devHandle->deviceFree(hostPtr, flagcxMemHost, stream);
   EXPECT_EQ(result, flagcxSuccess);
+}
+
+TEST_F(DeviceAdaptorTest, GetPointerType) {
+  ASSERT_NE(deviceAdaptor->getPointerType, nullptr);
+
+  int ptrType = 0;
+  flagcxResult_t result = deviceAdaptor->getPointerType(nullptr, &ptrType);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(deviceAdaptor->getPointerType(this, nullptr), flagcxNotSupported);
+    return;
+  }
+
+  EXPECT_EQ(result, flagcxInvalidArgument);
+  EXPECT_EQ(deviceAdaptor->getPointerType(this, nullptr),
+            flagcxInvalidArgument);
+
+  void *ordinaryHostPtr = malloc(TEST_SIZE);
+  ASSERT_NE(ordinaryHostPtr, nullptr);
+  EXPECT_EQ(deviceAdaptor->getPointerType(ordinaryHostPtr, &ptrType),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
+  free(ordinaryHostPtr);
+
+  void *hostPtr = nullptr;
+  ASSERT_EQ(
+      devHandle->deviceMalloc(&hostPtr, TEST_SIZE, flagcxMemHost, nullptr),
+      flagcxSuccess);
+  ASSERT_NE(hostPtr, nullptr);
+  EXPECT_EQ(deviceAdaptor->getPointerType(hostPtr, &ptrType), flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
+  EXPECT_EQ(devHandle->deviceFree(hostPtr, flagcxMemHost, nullptr),
+            flagcxSuccess);
+
+  void *devicePtr = nullptr;
+  ASSERT_EQ(
+      devHandle->deviceMalloc(&devicePtr, TEST_SIZE, flagcxMemDevice, nullptr),
+      flagcxSuccess);
+  ASSERT_NE(devicePtr, nullptr);
+  EXPECT_EQ(deviceAdaptor->getPointerType(devicePtr, &ptrType), flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(devHandle->deviceFree(devicePtr, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+
+  void *managedPtr = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&managedPtr, TEST_SIZE, flagcxMemManaged,
+                                    nullptr),
+            flagcxSuccess);
+  ASSERT_NE(managedPtr, nullptr);
+  EXPECT_EQ(deviceAdaptor->getPointerType(managedPtr, &ptrType), flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(devHandle->deviceFree(managedPtr, flagcxMemManaged, nullptr),
+            flagcxSuccess);
 }
 
 // Test: Memory copy Host -> Device -> Host

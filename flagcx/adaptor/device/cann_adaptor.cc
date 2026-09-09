@@ -369,6 +369,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymMulticastCreate, cannAdaptorSymMulticastBind,
       cannAdaptorSymMulticastTeardown, cannAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
+      flagcxDeviceAdaptorGetPointerTypeNotSupported,
 };
 
 #endif // USE_ASCEND_ADAPTOR
