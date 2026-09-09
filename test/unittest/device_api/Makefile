@@ -93,7 +93,11 @@ ifeq ($(KERNEL_PLATFORM), klx)
   API_TARGETS     :=
   # S19 (DevGet) is compiled out of both unified suites: reading a peer's
   # memory traps on P800, so there is no implementation to exercise.
-  CXXFLAGS += -DFLAGCX_TEST_NO_REMOTE_READ
+  # Cross-node data puts additionally require a full XPU cluster.  The unified
+  # inter suite therefore excludes only its two THREAD put slots; WARP and
+  # BLOCK remain required cases.
+  CXXFLAGS += -DFLAGCX_TEST_NO_REMOTE_READ \
+              -DFLAGCX_TEST_NO_REMOTE_THREAD_PUT
 endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)

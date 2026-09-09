@@ -141,10 +141,14 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0) {
     printf("=== Device IR Unified Intra Suite (INTRA + WORLD teams) ===\n");
-    printf("Ranks: %d, IntraSize: %d\n\n", totalProcs, intraSize);
+    printf("Ranks: %d, IntraSize: %d\n", totalProcs, intraSize);
+    printf("S21-S23 expected coop cases: THREAD/WARP/BLOCK x "
+           "INTRA/WORLD\n\n");
   }
 
   bool allPass = true;
+  const uint32_t expectedPutCoopMask =
+      FLAGCX_TEST_UNIFIED_INTRA_PUT_COOP_EXPECTED_MASK;
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
@@ -448,6 +452,8 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
 
       for (int combo = 0; combo < 6 && s21Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
@@ -500,6 +506,8 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
 
       for (int combo = 0; combo < 6 && s22Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
@@ -553,6 +561,8 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
 
       for (int combo = 0; combo < 6 && s23Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;

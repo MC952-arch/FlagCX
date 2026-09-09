@@ -147,8 +147,16 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0) {
     printf("=== Device IR Unified Inter Suite (INTER + WORLD teams) ===\n");
-    printf("Ranks: %d, Nodes: %d, IntraSize: %d\n\n", totalProcs, nNodes,
+    printf("Ranks: %d, Nodes: %d, IntraSize: %d\n", totalProcs, nNodes,
            intraSize);
+    if (FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK ==
+        FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK) {
+      printf("S21-S23 expected coop cases: THREAD/WARP/BLOCK x "
+             "INTER/WORLD\n\n");
+    } else {
+      printf("S21-S23 expected coop cases: WARP/BLOCK x INTER/WORLD\n");
+      printf("S21-S23 unsupported coop cases: THREAD x INTER/WORLD\n\n");
+    }
   }
 
   if (nNodes < 2) {
@@ -161,6 +169,8 @@ int main(int argc, char *argv[]) {
   }
 
   bool allPass = true;
+  const uint32_t expectedPutCoopMask =
+      FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK;
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
@@ -487,6 +497,8 @@ int main(int argc, char *argv[]) {
       int prevNodeBase = prevNode * intraSize + intraRank;
 
       for (int combo = 0; combo < 6 && s21Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -540,6 +552,8 @@ int main(int argc, char *argv[]) {
       int prevNodeBase = prevNode * intraSize + intraRank;
 
       for (int combo = 0; combo < 6 && s22Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -594,6 +608,8 @@ int main(int argc, char *argv[]) {
       int prevNodeBase = prevNode * intraSize + intraRank;
 
       for (int combo = 0; combo < 6 && s23Pass; combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
