@@ -1683,31 +1683,25 @@ void launchKernelDevGetIntraWorldS(const void *devCommPtr, const void *remoteMem
 
 // ---------------------------------------------------------------------------
 // S16: flagcxDevBarrierSync — INTRA + WORLD
-// 6 combos: 3 coop kinds × 2 teams.
+// 2 combos: BLOCK cooperation × 2 teams.
+// Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierIntraWorldS(const void *devCommPtr, int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
-#define S16_SYNC_COMBO(teamKind, coopKind)                                     \
-  do {                                                                         \
-    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      flagcxDevBarrierSync(devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X,           \
-                           contextId, coopKind, flagcxDeviceMemoryOrderAcqRel, \
-                           flagcxDeviceScopeSystem);                           \
-    }                                                                          \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-  } while (0)
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA,
+                       /*index=*/FLAGCX_BLOCK_IDX_X, contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
 
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_THREAD);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_THREAD);
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_WARP);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_WARP);
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_BLOCK);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_BLOCK);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-#undef S16_SYNC_COMBO
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_WORLD,
+                       /*index=*/FLAGCX_BLOCK_IDX_X, contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
 
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
@@ -1720,7 +1714,8 @@ void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
 
 // ---------------------------------------------------------------------------
 // S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTRA + WORLD
-// 6 combos: 3 coop kinds × 2 teams.
+// 2 combos: BLOCK cooperation × 2 teams.
+// Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
                                                       int *result) {
@@ -1729,27 +1724,25 @@ __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
   flagcxDevContext_t contextId =
       nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
-#define S16_ARRIVE_WAIT_COMBO(teamKind, coopKind)                              \
-  do {                                                                         \
-    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      flagcxDevBarrierArrive(                                                  \
-          devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X, contextId, coopKind,       \
-          flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeSystem);            \
-      flagcxDevBarrierWait(                                                    \
-          devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X, contextId, coopKind,       \
-          flagcxDeviceMemoryOrderAcquire, flagcxDeviceScopeSystem);            \
-    }                                                                          \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-  } while (0)
+  flagcxDevBarrierArrive(devCommPtr, FLAGCX_TEAM_INTRA, FLAGCX_BLOCK_IDX_X,
+                         contextId, FLAGCX_COOP_BLOCK,
+                         flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(devCommPtr, FLAGCX_TEAM_INTRA, FLAGCX_BLOCK_IDX_X,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
 
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_THREAD);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_THREAD);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_WARP);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_WARP);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTRA, FLAGCX_COOP_BLOCK);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_BLOCK);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-#undef S16_ARRIVE_WAIT_COMBO
+  flagcxDevBarrierArrive(devCommPtr, FLAGCX_TEAM_WORLD, FLAGCX_BLOCK_IDX_X,
+                         contextId, FLAGCX_COOP_BLOCK,
+                         flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(devCommPtr, FLAGCX_TEAM_WORLD, FLAGCX_BLOCK_IDX_X,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
 
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
@@ -2969,31 +2962,25 @@ void launchKernelDevGetInterWorldS(const void *devCommPtr, const void *remoteMem
 
 // ---------------------------------------------------------------------------
 // S16: flagcxDevBarrierSync — INTER + WORLD
-// 6 combos: 3 coop kinds × 2 teams.
+// 2 combos: BLOCK cooperation × 2 teams.
+// Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierInterWorldS(const void *devCommPtr, int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
-#define S16_SYNC_COMBO(teamKind, coopKind)                                     \
-  do {                                                                         \
-    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      flagcxDevBarrierSync(devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X,           \
-                           contextId, coopKind, flagcxDeviceMemoryOrderAcqRel, \
-                           flagcxDeviceScopeSystem);                           \
-    }                                                                          \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-  } while (0)
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTER,
+                       /*index=*/FLAGCX_BLOCK_IDX_X, contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
 
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_THREAD);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_THREAD);
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_WARP);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_WARP);
-  S16_SYNC_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_BLOCK);
-  S16_SYNC_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_BLOCK);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-#undef S16_SYNC_COMBO
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_WORLD,
+                       /*index=*/FLAGCX_BLOCK_IDX_X, contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
 
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
@@ -3006,7 +2993,8 @@ void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult,
 
 // ---------------------------------------------------------------------------
 // S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTER + WORLD
-// 6 combos: 3 coop kinds × 2 teams.
+// 2 combos: BLOCK cooperation × 2 teams.
+// Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
 __global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
                                                       int *result) {
@@ -3015,27 +3003,25 @@ __global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
   flagcxDevContext_t contextId =
       nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
 
-#define S16_ARRIVE_WAIT_COMBO(teamKind, coopKind)                              \
-  do {                                                                         \
-    if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
-      flagcxDevBarrierArrive(                                                  \
-          devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X, contextId, coopKind,       \
-          flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeSystem);            \
-      flagcxDevBarrierWait(                                                    \
-          devCommPtr, teamKind, FLAGCX_BLOCK_IDX_X, contextId, coopKind,       \
-          flagcxDeviceMemoryOrderAcquire, flagcxDeviceScopeSystem);            \
-    }                                                                          \
-    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
-  } while (0)
+  flagcxDevBarrierArrive(devCommPtr, FLAGCX_TEAM_INTER, FLAGCX_BLOCK_IDX_X,
+                         contextId, FLAGCX_COOP_BLOCK,
+                         flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(devCommPtr, FLAGCX_TEAM_INTER, FLAGCX_BLOCK_IDX_X,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
 
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_THREAD);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_THREAD);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_WARP);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_WARP);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_INTER, FLAGCX_COOP_BLOCK);
-  S16_ARRIVE_WAIT_COMBO(FLAGCX_TEAM_WORLD, FLAGCX_COOP_BLOCK);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
 
-#undef S16_ARRIVE_WAIT_COMBO
+  flagcxDevBarrierArrive(devCommPtr, FLAGCX_TEAM_WORLD, FLAGCX_BLOCK_IDX_X,
+                         contextId, FLAGCX_COOP_BLOCK,
+                         flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(devCommPtr, FLAGCX_TEAM_WORLD, FLAGCX_BLOCK_IDX_X,
+                       contextId, FLAGCX_COOP_BLOCK,
+                       flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
 
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
