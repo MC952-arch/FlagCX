@@ -43,7 +43,8 @@ flagcxScopedFence(flagcxDevMemoryScope_t scope) {
 template <typename Ptr>
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
-  *FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile uint64_t, ptr) = value;
+  auto dst = FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile uint64_t, ptr);
+  *dst = value;
 }
 
 // Prefer a platform's optimized cooperative copy when available.
