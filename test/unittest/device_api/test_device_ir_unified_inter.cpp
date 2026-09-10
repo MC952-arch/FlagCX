@@ -24,6 +24,7 @@
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  ************************************************************************/
 
+#include "check.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"

@@ -24,6 +24,7 @@
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  ************************************************************************/
 
+#include "check.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -103,8 +104,8 @@ int main(int argc, char *argv[]) {
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
 #endif
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
 
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;

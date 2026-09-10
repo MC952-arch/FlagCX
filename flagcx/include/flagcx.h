@@ -542,6 +542,9 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType);
 
+/* Release signal buffer MR resources. */
+flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm);
+
 /* Register a host-pinned staging buffer for one-sided PutValue operations.
  * Must be called after flagcxOneSideSignalRegister.  Collective: ALL ranks
  * in the communicator must call. */

@@ -115,6 +115,16 @@ XSHMEM_DEVICE_INLINE void putFloatCluster(XSHMEM_FGP float *dst,
                                           int pe) {
   xshmemx_float_put_nbi_cluster(dst, src, count, pe);
 }
+// Byte offset of `ptr` within the symmetric heap. The cluster put above
+// translates the destination through a 32-bit symmetric offset on P800, so a
+// destination at or beyond 2 GiB wraps and faults / drops data. Used by put()
+// to fall back to the store-based (64-bit peer pointer) path.
+XSHMEM_DEVICE_INLINE uint64_t symmetricOffset(XSHMEM_FGP void *ptr) {
+  __shared_ptr__ xshmemi_device_host_state_t *state =
+      get_xshmemi_device_state();
+  return (uint64_t)((XSHMEM_FGP char *)ptr -
+                    (XSHMEM_FGP char *)state->heap_base);
+}
 #else
 XSHMEM_DEVICE_INLINE float *localScratch() { return nullptr; }
 XSHMEM_DEVICE_INLINE int localScratchBytes() { return 0; }
@@ -131,6 +141,7 @@ XSHMEM_DEVICE_INLINE void waitUntil(uint64_t *, int, uint64_t) {}
 XSHMEM_DEVICE_INLINE void fence() {}
 XSHMEM_DEVICE_INLINE void barrierAll() {}
 XSHMEM_DEVICE_INLINE void putFloatCluster(float *, float *, size_t, int) {}
+XSHMEM_DEVICE_INLINE uint64_t symmetricOffset(void *) { return 0; }
 #endif
 
 // Drain outstanding operations to `pe` at whatever granularity the caller's
@@ -448,7 +459,15 @@ struct CommTraits<XshmemBackend> {
       // is just a store and works at any cooperative granularity. Pick the
       // collective only when it is actually usable.
       bool aligned = ((dstOff | srcOff | bytes) & (sizeof(uint32_t) - 1)) == 0;
-      if (!aligned || coop.size() != FLAGCX_BLOCK_DIM_X) {
+      // P800's cluster put translates the destination through a 32-bit
+      // symmetric offset, so a destination at or beyond 2 GiB wraps and faults
+      // / drops data. Fall back to the store-based path (64-bit peer pointers).
+      bool overSym32 =
+          aligned &&
+          flagcxXshmemDevice::symmetricOffset(
+              (XSHMEM_FGP void *)((XSHMEM_FGP char *)dst.symBase + dstOff)) >=
+              (uint64_t)0x80000000ULL;
+      if (!aligned || overSym32 || coop.size() != FLAGCX_BLOCK_DIM_X) {
         XSHMEM_FGP char *remote = (XSHMEM_FGP char *)dst.getPeerPointer(
             dstOff, team, peer, flagcxDevPeerAccessWriteOnly);
         XSHMEM_FGP char *local = (XSHMEM_FGP char *)src.getLocalPointer(srcOff);
@@ -470,9 +489,12 @@ struct CommTraits<XshmemBackend> {
         }
         flagcxXshmemDevice::threadFence();
         coop.sync();
+        int pe = resolvePE(_dc, team, peer);
+        // Drain at the cooperative granularity that actually wrote: a
+        // full-block group must use the cluster-scoped quiet, otherwise the
+        // other cores' stores are still in flight when the local action runs.
+        flagcxXshmemDevice::quietForCoop(coop, pe);
         if (coop.threadRank() == 0) {
-          int pe = resolvePE(_dc, team, peer);
-          flagcxXshmemDevice::quietCore(pe);
           this->remoteActionImpl(pe, ra);
           this->localActionImpl(la);
         }

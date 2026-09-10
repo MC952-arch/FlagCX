@@ -39,6 +39,7 @@
  * DevCommRequirements: interSignalCount=3, interCounterCount=1
  ************************************************************************/
 
+#include "check.h"
 #include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"

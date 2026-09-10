@@ -22,6 +22,7 @@
  *   -R 2 recommended (window registration for peer pointer access).
  ************************************************************************/
 
+#include "check.h"
 #include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
