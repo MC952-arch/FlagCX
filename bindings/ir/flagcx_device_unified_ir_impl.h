@@ -37,22 +37,43 @@ flagcxScopedFence(flagcxDevMemoryScope_t scope) {
 }
 
 /* ================================================================
- * Internal helper: cooperative memcpy (P2P path)
- *
- * The copy itself lives in the platform layer: choosing the chunk width needs
- * the platform's alignment rules and its address-space qualifier, neither of
- * which this file can spell portably. The pointer types stay deduced so that a
- * platform whose device pointers carry an address-space tag can pass them
- * through unchanged.
+ * Internal helpers: direct global-memory access (P2P path)
  * ================================================================ */
+
+template <typename Ptr>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
+  *FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile uint64_t, ptr) = value;
+}
+
+// Prefer a platform's optimized cooperative copy when available.
+template <typename Intrin, typename DstPtr, typename SrcPtr>
+static FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxCoopCopyBytesInternal(DstPtr dst, SrcPtr src, size_t bytes, int rank,
+                            int size, int)
+    -> decltype(Intrin::coopCopyBytes(dst, src, bytes, rank, size), void()) {
+  Intrin::coopCopyBytes(dst, src, bytes, rank, size);
+}
+
+// A correct byte-copy baseline for platforms without an optimized method.
+// Address-space spelling is centralized in FLAGCX_DEVICE_GLOBAL_PTR_CAST.
+template <typename Intrin, typename DstPtr, typename SrcPtr>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxCoopCopyBytesInternal(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
+                            int size, long) {
+  auto dst = FLAGCX_DEVICE_GLOBAL_PTR_CAST(unsigned char, dstIn);
+  auto src = FLAGCX_DEVICE_GLOBAL_PTR_CAST(const unsigned char, srcIn);
+  for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
+    dst[i] = src[i];
+}
 
 template <typename DstPtr, typename SrcPtr>
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopMemcpy(flagcxDevCoopKind_t coopKind, DstPtr dst, SrcPtr src,
                  size_t bytes) {
   flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-  DeviceAPI::Intrin::coopCopyBytes(dst, src, bytes, coop.threadRank(),
-                                   coop.size());
+  flagcxCoopCopyBytesInternal<DeviceAPI::Intrin>(
+      dst, src, bytes, coop.threadRank(), coop.size(), 0);
 }
 
 /* ================================================================
@@ -80,7 +101,8 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
     coop.sync();
     if (coop.threadRank() == 0) {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal = FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
+      auto peerSignal =
+          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
       DeviceAPI::Atomic::fetchAdd(peerSignal, (uint64_t)1,
                                   flagcxDeviceMemoryOrderRelease);
     }
@@ -88,8 +110,8 @@ flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   } else {
     // Net FIFO fallback (inter-node or P2P not available)
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer, coopKind,
-                              signal);
+    flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
+                              peer, coopKind, signal);
   }
 }
 
@@ -112,7 +134,8 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
     coop.sync();
     if (coop.threadRank() == 0) {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal = FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
+      auto peerSignal =
+          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
 
       DeviceAPI::Atomic::fetchAdd(peerSignal, value,
                                   flagcxDeviceMemoryOrderRelease);
@@ -121,8 +144,8 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   } else {
     // Net FIFO fallback (inter-node or P2P not available)
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer, coopKind, signal,
-                              value);
+    flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
+                              peer, coopKind, signal, value);
   }
 }
 
@@ -154,7 +177,8 @@ flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
   } else {
     // Net FIFO path for multi-node
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least, bits, order);
+    flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least,
+                            bits, order);
   }
 }
 
@@ -164,7 +188,8 @@ flagcxDevWaitCounter(const void *commOpaque, flagcxDevCounter_t counter,
                      flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-  flagcxDevNetWaitCounterS(FLAGCX_IR_NET_ARG(net), coopKind, counter, least, bits, order);
+  flagcxDevNetWaitCounterS(FLAGCX_IR_NET_ARG(net), coopKind, counter, least,
+                           bits, order);
 }
 
 /* ================================================================
@@ -252,7 +277,8 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
   } else {
     // Net FIFO path for multi-node
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot, bits, order);
+    flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot,
+                                      bits, order);
   }
 }
 
@@ -277,7 +303,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierArrive(
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierArriveS(FLAGCX_IR_NET_ARG(net), coopKind, index, /*multimem=*/false, order,
+      flagcxWorldBarrierArriveS(FLAGCX_IR_NET_ARG(net), coopKind, index,
+                                /*multimem=*/false, order,
                                 flagcxDevNetFenceLevel::Relaxed);
       break;
     }
@@ -302,7 +329,8 @@ flagcxDevBarrierWait(const void *commOpaque, flagcxDevTeamKind_t teamKind,
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierWaitS(FLAGCX_IR_NET_ARG(net), coopKind, index, /*multimem=*/false, order,
+      flagcxWorldBarrierWaitS(FLAGCX_IR_NET_ARG(net), coopKind, index,
+                              /*multimem=*/false, order,
                               flagcxDevNetFenceLevel::Relaxed);
       break;
     }
@@ -327,7 +355,8 @@ flagcxDevBarrierSync(const void *commOpaque, flagcxDevTeamKind_t teamKind,
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierSyncS(FLAGCX_IR_NET_ARG(net), coopKind, index, /*multimem=*/false, order,
+      flagcxWorldBarrierSyncS(FLAGCX_IR_NET_ARG(net), coopKind, index,
+                              /*multimem=*/false, order,
                               flagcxDevNetFenceLevel::Relaxed);
       break;
     }
@@ -400,8 +429,8 @@ flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -414,8 +443,9 @@ flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_None{}, flagcxDevNet_None{}, coop);
+    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
+                               bytes, flagcxDevNet_None{}, flagcxDevNet_None{},
+                               coop);
   }
 }
 
@@ -437,8 +467,8 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -461,8 +491,9 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_SignalInc{remoteSignal}, flagcxDevNet_None{}, coop);
+    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
+                               bytes, flagcxDevNet_SignalInc{remoteSignal},
+                               flagcxDevNet_None{}, coop);
   }
 }
 
@@ -484,8 +515,8 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -508,9 +539,10 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_SignalAdd{remoteSignal, signalValue},
-             flagcxDevNet_None{}, coop);
+    FLAGCX_IR_NET_REF(net).put(
+        team, peer, *dst, dstOffset, *src, srcOffset, bytes,
+        flagcxDevNet_SignalAdd{remoteSignal, signalValue}, flagcxDevNet_None{},
+        coop);
   }
 }
 
@@ -532,8 +564,8 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
@@ -551,14 +583,16 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
     coop.sync();
     if (coop.threadRank() == 0) {
       // Counter is local to sender.
-      DeviceAPI::Atomic::fetchAdd(FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-                                  flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(
+          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
+          flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_None{}, flagcxDevNet_CounterInc{localCounter}, coop);
+    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
+                               bytes, flagcxDevNet_None{},
+                               flagcxDevNet_CounterInc{localCounter}, coop);
   }
 }
 
@@ -582,8 +616,8 @@ flagcxDevPut_RSigInc_LCtrInc(
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
@@ -602,15 +636,16 @@ flagcxDevPut_RSigInc_LCtrInc(
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-                                  flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(
+          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
+          flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_SignalInc{remoteSignal},
-             flagcxDevNet_CounterInc{localCounter}, coop);
+    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
+                               bytes, flagcxDevNet_SignalInc{remoteSignal},
+                               flagcxDevNet_CounterInc{localCounter}, coop);
   }
 }
 
@@ -634,8 +669,8 @@ flagcxDevPut_RSigAdd_LCtrInc(
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   useP2P = peerPtr != nullptr && comm->_commBase.supportsDirectCounterAccess();
@@ -655,15 +690,17 @@ flagcxDevPut_RSigAdd_LCtrInc(
                          contextId, FLAGCX_COOP_THREAD,
                          flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-                                  flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::fetchAdd(
+          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
+          flagcxDeviceMemoryOrderRelease);
     }
     coop.sync();
   } else {
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset, bytes,
-             flagcxDevNet_SignalAdd{remoteSignal, signalValue},
-             flagcxDevNet_CounterInc{localCounter}, coop);
+    FLAGCX_IR_NET_REF(net).put(
+        team, peer, *dst, dstOffset, *src, srcOffset, bytes,
+        flagcxDevNet_SignalAdd{remoteSignal, signalValue},
+        flagcxDevNet_CounterInc{localCounter}, coop);
   }
 }
 
@@ -688,7 +725,9 @@ flagcxDevGet(const void *commOpaque, const void *srcOpaque, size_t srcOffset,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*src, srcOffset, team, peer) : nullptr;
+      useP2P ? flagcxGetPeerPointerWithAccess(*src, srcOffset, team, peer,
+                                              flagcxDevPeerAccessReadOnly)
+             : nullptr;
   useP2P = peerPtr != nullptr;
 
   if (useP2P) {
@@ -700,7 +739,8 @@ flagcxDevGet(const void *commOpaque, const void *srcOpaque, size_t srcOffset,
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).get(team, peer, *src, srcOffset, *dst, dstOffset, bytes, coop);
+    FLAGCX_IR_NET_REF(net).get(team, peer, *src, srcOffset, *dst, dstOffset,
+                               bytes, coop);
   }
 }
 
@@ -724,8 +764,8 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -736,14 +776,14 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
     }
     coop.sync();
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value, flagcxDevNet_None{},
-                  coop);
+    FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value,
+                                    flagcxDevNet_None{}, coop);
   }
 }
 
@@ -766,8 +806,8 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -778,7 +818,7 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
       flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
@@ -788,7 +828,7 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value,
-                  flagcxDevNet_SignalInc{remoteSignal}, coop);
+                                    flagcxDevNet_SignalInc{remoteSignal}, coop);
   }
 }
 
@@ -809,8 +849,8 @@ flagcxDevPutValue_RSigAdd(
   if (shouldReturn)
     return;
   auto peerPtr =
-      useP2P ? flagcxGetPeerPointer(*dst, dstOffset, team, peer,
-                                    flagcxDevPeerAccessWriteOnly)
+      useP2P ? flagcxGetPeerPointerWithAccess(*dst, dstOffset, team, peer,
+                                              flagcxDevPeerAccessWriteOnly)
              : nullptr;
   useP2P = peerPtr != nullptr;
 
@@ -821,7 +861,7 @@ flagcxDevPutValue_RSigAdd(
       if (order == flagcxDeviceMemoryOrderRelease ||
           order == flagcxDeviceMemoryOrderAcqRel)
         flagcxScopedFence(scope);
-      DeviceAPI::Intrin::storeVolatile64(peerPtr, value);
+      flagcxStoreVolatile64Internal(peerPtr, value);
       flagcxScopedFence(flagcxDeviceScopeSystem);
       flagcxDevSignalAdd(commOpaque, teamKind, peer, remoteSignal, signalValue,
                          contextId, FLAGCX_COOP_THREAD,
@@ -831,8 +871,9 @@ flagcxDevPutValue_RSigAdd(
   } else {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value,
-                  flagcxDevNet_SignalAdd{remoteSignal, signalValue}, coop);
+    FLAGCX_IR_NET_REF(net).putValue(
+        team, peer, *dst, dstOffset, value,
+        flagcxDevNet_SignalAdd{remoteSignal, signalValue}, coop);
   }
 }
 

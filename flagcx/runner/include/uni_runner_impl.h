@@ -4,6 +4,7 @@
 #include "device.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
 #include "group.h"
 #include "info.h"

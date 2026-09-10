@@ -145,7 +145,7 @@ NET_ADAPTOR_FLAG =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
-HOST_CXX_STANDARD ?= -std=c++17
+HOST_CXX_STANDARD ?=
 HOST_CXXFLAGS ?=
 ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
@@ -250,9 +250,12 @@ JSON_INCLUDE_DIR ?= $(abspath third-party/json/single_include)
 # Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
 	flagcx/include/flagcx.h \
+	flagcx/include/flagcx_device_api.h \
 	flagcx/include/flagcx_kernel.h \
+	flagcx/include/flagcx_kernel_core.h \
+	flagcx/adaptor/include/device_utils.h \
 	flagcx/include/flagcx_p2p.h
-BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
+BUILD_PUBLIC_HEADERS := $(addprefix $(BUILD_INCDIR)/,$(notdir $(PUBLIC_HEADERS)))
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
@@ -326,19 +329,18 @@ print_var:
 	@echo "USE_IBUC: $(USE_IBUC)"
 	@echo "NET_ADAPTOR_FLAG: $(NET_ADAPTOR_FLAG)"
 	@echo "DEVSRCFILES: $(DEVSRCFILES)"
+	@echo "DEVICE_NEEDS_DLINK: $(DEVICE_NEEDS_DLINK)"
 
 # Platforms whose device compiler has no nvcc-style separate device-link step
 # (e.g. KLX/XTDK clang) set DEVICE_NEEDS_DLINK := 0 in their makefiles/*.mk;
 # their .xpu objects already carry a complete device image.
 DEVICE_NEEDS_DLINK ?= 1
+DEVOBJS :=
 ifeq ($(COMPILE_KERNEL), 1)
+DEVOBJS += $(DEVOBJ)
 ifeq ($(DEVICE_NEEDS_DLINK), 1)
-DEVOBJS = $(DEVOBJ) $(OBJDIR)/kernel_dlink.o
-else
-DEVOBJS = $(DEVOBJ)
+DEVOBJS += $(OBJDIR)/kernel_dlink.o
 endif
-else
-DEVOBJS =
 endif
 
 HOST_LINKER   ?= $(HOST_COMPILER)
@@ -360,14 +362,21 @@ $(BUILD_INCDIR)/%.h: flagcx/include/%.h
 	@echo "Copying   $@"
 	@cp $< $@
 
+$(BUILD_INCDIR)/device_utils.h: flagcx/adaptor/include/device_utils.h
+	@mkdir -p `dirname $@`
+	@echo "Copying   $@"
+	@cp $< $@
+
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
 	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
+ifeq ($(DEVICE_NEEDS_DLINK), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
 	@$(DEVICE_LINKER) -dlink $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
+endif
 
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`

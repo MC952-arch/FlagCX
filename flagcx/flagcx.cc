@@ -8,7 +8,7 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "flagcx_hetero.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
 #include "launch_kernel.h"
@@ -220,22 +220,22 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
 }
 
 static flagcxResult_t flagcxMemFreeByBackend(void *ptr,
-                                             flagcxMemAllocBackend backend) {
+                                             flagcxMemAllocBackend_t backend) {
   switch (backend) {
-    case flagcxMemAllocBackendGDR:
+    case flagcxMemAllocBackendNative:
       if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemFree == nullptr) {
-        WARN("flagcxMemFree: GDR allocator is not available");
+        WARN("flagcxMemFree: native allocator is not available");
         return flagcxInternalError;
       }
       return deviceAdaptor->gdrMemFree(ptr, nullptr);
-    case flagcxMemAllocBackendCCL:
+    case flagcxMemAllocBackendCcl:
       if (cclAdaptors[flagcxCCLAdaptorDevice] == nullptr ||
           cclAdaptors[flagcxCCLAdaptorDevice]->memFree == nullptr) {
         WARN("flagcxMemFree: CCL allocator is not available");
         return flagcxInternalError;
       }
       return cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr);
-    case flagcxMemAllocBackendSHMEM:
+    case flagcxMemAllocBackendShmem:
       if (shmemAdaptor == nullptr || shmemAdaptor->free == nullptr) {
         WARN("flagcxMemFree: SHMEM allocator is not available");
         return flagcxInternalError;
@@ -256,18 +256,18 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
   *ptr = nullptr;
 
   flagcxResult_t res = flagcxSuccess;
-  flagcxMemAllocBackend backend = flagcxMemAllocBackendGDR;
+  flagcxMemAllocBackend_t backend = flagcxMemAllocBackendNative;
   switch (allocator) {
     case flagcxMemCCL:
       if (useHeteroComm()) {
-        backend = flagcxMemAllocBackendGDR;
+        backend = flagcxMemAllocBackendNative;
         if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemAlloc == nullptr) {
-          WARN("flagcxMemAlloc: GDR allocator is not available");
+          WARN("flagcxMemAlloc: native allocator is not available");
           return flagcxInternalError;
         }
         res = deviceAdaptor->gdrMemAlloc(ptr, size, nullptr);
       } else {
-        backend = flagcxMemAllocBackendCCL;
+        backend = flagcxMemAllocBackendCcl;
         if (cclAdaptors[flagcxCCLAdaptorDevice] == nullptr ||
             cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc == nullptr) {
           WARN("flagcxMemAlloc: CCL allocator is not available");
@@ -277,7 +277,7 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
       }
       break;
     case flagcxMemSHMEM:
-      backend = flagcxMemAllocBackendSHMEM;
+      backend = flagcxMemAllocBackendShmem;
       if (shmemAdaptor == nullptr || shmemAdaptor->malloc == nullptr) {
         WARN("flagcxMemAlloc: SHMEM allocator is not available");
         return flagcxInternalError;
@@ -1367,7 +1367,7 @@ flagcxValidateMemoryRange(void *buff, size_t size,
       return flagcxInvalidUsage;
     }
     if (allocator == flagcxMemSHMEM &&
-        info.backend != flagcxMemAllocBackendSHMEM) {
+        info.backend != flagcxMemAllocBackendShmem) {
       WARN("SHMEM registration requires a SHMEM-backed allocation.");
       return flagcxInvalidUsage;
     }

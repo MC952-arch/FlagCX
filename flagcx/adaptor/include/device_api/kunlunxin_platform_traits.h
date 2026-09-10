@@ -97,26 +97,17 @@ struct PlatformTraits<KunlunxinPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR static void
     coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes, int rank, int size) {
       if ((bytes & 3u) == 0) {
-        auto dw = (FLAGCX_DEV_VALUE_PTR uint32_t *)dst;
-        auto sw = (FLAGCX_DEV_VALUE_PTR const uint32_t *)src;
+        auto dw = FLAGCX_DEVICE_GLOBAL_PTR_CAST(uint32_t, dst);
+        auto sw = FLAGCX_DEVICE_GLOBAL_PTR_CAST(const uint32_t, src);
         size_t nwords = bytes / 4;
         for (size_t i = (size_t)rank; i < nwords; i += (size_t)size)
           dw[i] = sw[i];
         return;
       }
-      auto db = (FLAGCX_DEV_VALUE_PTR char *)dst;
-      auto sb = (FLAGCX_DEV_VALUE_PTR const char *)src;
+      auto db = FLAGCX_DEVICE_GLOBAL_PTR_CAST(char, dst);
+      auto sb = FLAGCX_DEVICE_GLOBAL_PTR_CAST(const char, src);
       for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
         db[i] = sb[i];
-    }
-
-    // Volatile 64-bit store to device memory. Kept here because the cast needs
-    // the platform's address-space qualifier, which the shared IR code cannot
-    // spell.
-    template <typename Ptr>
-    FLAGCX_DEVICE_INLINE_DECORATOR static void storeVolatile64(Ptr ptr,
-                                                               uint64_t value) {
-      *(volatile FLAGCX_DEV_VALUE_PTR uint64_t *)ptr = value;
     }
   };
 
@@ -133,58 +124,63 @@ struct PlatformTraits<KunlunxinPlatform> {
   struct Atomic {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    load(FLAGCX_DEV_VALUE_PTR T *ptr, flagcxDeviceMemoryOrder_t) {
-      T value = *(volatile FLAGCX_DEV_VALUE_PTR T *)ptr;
+    load(FLAGCX_DEVICE_GLOBAL_PTR T *ptr, flagcxDeviceMemoryOrder_t) {
+      T value = *(volatile FLAGCX_DEVICE_GLOBAL_PTR T *)ptr;
       FLAGCX_DEVICE_THREAD_FENCE();
       return value;
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static void
-    store(FLAGCX_DEV_VALUE_PTR T *ptr, const T &value,
+    store(FLAGCX_DEVICE_GLOBAL_PTR T *ptr, const T &value,
           flagcxDeviceMemoryOrder_t) {
       FLAGCX_DEVICE_THREAD_FENCE();
-      *(volatile FLAGCX_DEV_VALUE_PTR T *)ptr = value;
+      *(volatile FLAGCX_DEVICE_GLOBAL_PTR T *)ptr = value;
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchAdd(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+    fetchAdd(FLAGCX_DEVICE_GLOBAL_PTR T *, const T &,
+             flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchSub(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+    fetchSub(FLAGCX_DEVICE_GLOBAL_PTR T *, const T &,
+             flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchOr(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+    fetchOr(FLAGCX_DEVICE_GLOBAL_PTR T *, const T &,
+            flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchAnd(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+    fetchAnd(FLAGCX_DEVICE_GLOBAL_PTR T *, const T &,
+             flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    exchange(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+    exchange(FLAGCX_DEVICE_GLOBAL_PTR T *, const T &,
+             flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static bool
-    compareExchange(FLAGCX_DEV_VALUE_PTR T *, T &, const T &,
+    compareExchange(FLAGCX_DEVICE_GLOBAL_PTR T *, T &, const T &,
                     flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return false;

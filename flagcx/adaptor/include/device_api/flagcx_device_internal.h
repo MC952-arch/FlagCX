@@ -146,7 +146,7 @@ struct flagcxDevMemInternal {
   void *allocationBase;
   size_t allocationSize;
   flagcxMemAllocator_t allocator;
-  flagcxMemAllocBackend allocBackend;
+  flagcxMemAllocBackend_t allocBackend;
   bool hasWindow; // true if any window layer is available (basic or symmetric)
   bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
                     // one-sided)

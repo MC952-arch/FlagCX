@@ -10,17 +10,19 @@
 
 #include "flagcx.h"
 
-enum flagcxMemAllocBackend {
-  flagcxMemAllocBackendGDR = 0,
-  flagcxMemAllocBackendCCL = 1,
-  flagcxMemAllocBackendSHMEM = 2,
-};
+typedef enum {
+  // Native platform allocation. This currently maps to the device adaptor's
+  // gdrMemAlloc/gdrMemFree callbacks for heterogeneous communicators.
+  flagcxMemAllocBackendNative = 0,
+  flagcxMemAllocBackendCcl = 1,
+  flagcxMemAllocBackendShmem = 2,
+} flagcxMemAllocBackend_t;
 
 struct flagcxMemAllocationInfo {
   void *base;
   size_t size;
   flagcxMemAllocator_t allocator;
-  flagcxMemAllocBackend backend;
+  flagcxMemAllocBackend_t backend;
 };
 
 #endif // FLAGCX_MEM_ALLOC_PROVENANCE_H_

@@ -70,14 +70,22 @@ XSHMEM_DEVICE_INLINE XSHMEM_FGP void *peerWritePtr(XSHMEM_FGP void *ptr,
   return (XSHMEM_FGP void *)(peerBase + ((XSHMEM_FGP char *)ptr - heapBase));
 }
 XSHMEM_DEVICE_INLINE XSHMEM_FGP void *peerPtr(XSHMEM_FGP void *ptr, int pe) {
-  // Reserved for callers that intend to read through the pointer. kl3 has no
-  // C2C read, so fail loudly at the offending call site instead of returning
-  // nullptr and crashing later at a confusing dereference.
+  // Read-write peer mappings are not available on this transport. Legacy
+  // pointer APIs use this path and therefore fail explicitly.
   assert_device(false && "CommTraits<XshmemBackend>::peerPtr: P800 C2C has no "
-                         "remote read; use peerWritePtr / the put-based path");
+                         "read-write peer mapping");
   (void)ptr;
   (void)pe;
   return nullptr;
+}
+XSHMEM_DEVICE_INLINE XSHMEM_FGP void *peerReadPtr(XSHMEM_FGP void *ptr,
+                                                  int pe) {
+  // A local symmetric address can be read normally. A remote read cannot be
+  // represented by a direct pointer, so return nullptr and let unified
+  // dispatch try its Net path.
+  if (ptr == nullptr)
+    return nullptr;
+  return pe == myPe() ? ptr : nullptr;
 }
 XSHMEM_DEVICE_INLINE void threadFence() { mfence(); }
 // xshmemi_quiet<SCOPE> brackets its fence with xshmemi_threadgroup_sync<SCOPE>,
@@ -113,6 +121,7 @@ XSHMEM_DEVICE_INLINE int localScratchBytes() { return 0; }
 XSHMEM_DEVICE_INLINE int myPe() { return 0; }
 XSHMEM_DEVICE_INLINE void *peerWritePtr(void *, int) { return nullptr; }
 XSHMEM_DEVICE_INLINE void *peerPtr(void *, int) { return nullptr; }
+XSHMEM_DEVICE_INLINE void *peerReadPtr(void *, int) { return nullptr; }
 XSHMEM_DEVICE_INLINE void threadFence() {}
 XSHMEM_DEVICE_INLINE void quietCluster(int) {}
 XSHMEM_DEVICE_INLINE void quietCore(int) {}
@@ -178,7 +187,8 @@ struct CommTraits<XshmemBackend> {
     int intraRank;
     int intraSize;
 
-    XSHMEM_DEVICE_INLINE int resolveWorldPeer(const Team &team, int peer) const {
+    XSHMEM_DEVICE_INLINE int resolveWorldPeer(const Team &team,
+                                              int peer) const {
       if (intraPeMap != nullptr && team.nRanks == intraSize &&
           team.rank == intraRank && team.stride == 1)
         return intraPeMap[peer];
@@ -186,31 +196,55 @@ struct CommTraits<XshmemBackend> {
       return base + peer * team.stride;
     }
 
-    // P800's C2C link cannot read peer memory, so only the write-only form can
-    // be translated at all: peerPtr asserts, peerWritePtr does the arithmetic.
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
+      int worldPeer = this->resolveWorldPeer(team, peer);
+      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                         worldPeer);
+    }
+
+    // This transport has distinct local-read and remote-write mappings. A
+    // read-only request for a remote PE returns nullptr for Net fallback;
+    // read-write is unsupported and fails through peerPtr.
     XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
     getPeerPointer(size_t offset, const Team &team, int peer,
-                   flagcxDevPeerAccess_t access =
-                       flagcxDevPeerAccessReadWrite) const {
+                   flagcxDevPeerAccess_t access) const {
+      int worldPeer = this->resolveWorldPeer(team, peer);
       if (access == flagcxDevPeerAccessWriteOnly)
         return flagcxXshmemDevice::peerWritePtr(
-            (XSHMEM_FGP char *)symBase + offset,
-            this->resolveWorldPeer(team, peer));
-      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
-                                         this->resolveWorldPeer(team, peer));
+            (XSHMEM_FGP char *)symBase + offset, worldPeer);
+      if (access == flagcxDevPeerAccessReadOnly)
+        return flagcxXshmemDevice::peerReadPtr(
+            (XSHMEM_FGP char *)symBase + offset, worldPeer);
+      if (access == flagcxDevPeerAccessReadWrite)
+        return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                           worldPeer);
+      return nullptr;
     }
     XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getLocalPointer(size_t offset) const {
       return (XSHMEM_FGP char *)rawPtr + offset;
     }
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP void *getIntraPointer(size_t offset,
+                                                          int peer) const {
+      int worldPeer = intraPeMap[peer];
+      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                         worldPeer);
+    }
+
     XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
     getIntraPointer(size_t offset, int peer,
-                    flagcxDevPeerAccess_t access =
-                        flagcxDevPeerAccessReadWrite) const {
+                    flagcxDevPeerAccess_t access) const {
+      int worldPeer = intraPeMap[peer];
       if (access == flagcxDevPeerAccessWriteOnly)
         return flagcxXshmemDevice::peerWritePtr(
-            (XSHMEM_FGP char *)symBase + offset, intraPeMap[peer]);
-      return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
-                                         intraPeMap[peer]);
+            (XSHMEM_FGP char *)symBase + offset, worldPeer);
+      if (access == flagcxDevPeerAccessReadOnly)
+        return flagcxXshmemDevice::peerReadPtr(
+            (XSHMEM_FGP char *)symBase + offset, worldPeer);
+      if (access == flagcxDevPeerAccessReadWrite)
+        return flagcxXshmemDevice::peerPtr((XSHMEM_FGP char *)symBase + offset,
+                                           worldPeer);
+      return nullptr;
     }
     XSHMEM_DEVICE_INLINE XSHMEM_FGP void *
     getMulticastPointer(size_t, const Multimem &) const {
@@ -449,10 +483,10 @@ struct CommTraits<XshmemBackend> {
       // The installed aligned put is a cluster collective.
       coop.sync();
       int pe = resolvePE(_dc, team, peer);
-      this->putImpl(_dc,
-                    (XSHMEM_FGP float *)((XSHMEM_FGP char *)dst.symBase + dstOff),
-                    (XSHMEM_FGP float *)((XSHMEM_FGP char *)src.rawPtr + srcOff),
-                    bytes, pe, ra, la);
+      this->putImpl(
+          _dc, (XSHMEM_FGP float *)((XSHMEM_FGP char *)dst.symBase + dstOff),
+          (XSHMEM_FGP float *)((XSHMEM_FGP char *)src.rawPtr + srcOff), bytes,
+          pe, ra, la);
       coop.sync();
     }
 
@@ -586,17 +620,17 @@ struct CommTraits<XshmemBackend> {
       *shadow = *shadow + delta;
     }
 
-    XSHMEM_DEVICE_INLINE uint64_t
-    readSignal(flagcxDevSignal_t signalId, int,
-               flagcxDeviceMemoryOrder_t) const {
+    XSHMEM_DEVICE_INLINE uint64_t readSignal(flagcxDevSignal_t signalId, int,
+                                             flagcxDeviceMemoryOrder_t) const {
       return this->sumSignal(signalId);
     }
 
     XSHMEM_DEVICE_INLINE void resetSignal(flagcxDevSignal_t signalId) const {
-      int base = this->signalBase(signalId);
-      for (int i = 0; i < FLAGCX_XSHMEM_SIGNAL_SLOTS(_dc.nRanks); ++i)
-        *(XshmemGMWord *)&_dc.signalBuffer[base + i] = (uint64_t)0;
+      *(XshmemGMWord *)this->getSignalResetBaselinePtr(signalId) =
+          this->sumSignalRemote(signalId);
+      *(XshmemGMWord *)this->getSignalLocalPtr(signalId) = (uint64_t)0;
       *(XshmemGMWord *)this->getSignalShadowPtr(signalId) = (uint64_t)0;
+      flagcxXshmemDevice::threadFence();
     }
 
     // ---- Local signal write ----
@@ -622,16 +656,16 @@ struct CommTraits<XshmemBackend> {
       coop.sync();
     }
 
-    XSHMEM_DEVICE_INLINE uint64_t
-    readCounter(flagcxDevCounter_t counterId, int,
-                flagcxDeviceMemoryOrder_t) const {
+    XSHMEM_DEVICE_INLINE uint64_t readCounter(flagcxDevCounter_t counterId, int,
+                                              flagcxDeviceMemoryOrder_t) const {
       return this->sumCounter(counterId);
     }
 
     XSHMEM_DEVICE_INLINE void resetCounter(flagcxDevCounter_t counterId) const {
-      int base = this->counterBase(counterId);
-      for (int i = 0; i < FLAGCX_XSHMEM_SIGNAL_SLOTS(_dc.nRanks); ++i)
-        *(XshmemGMWord *)&_dc.counterBuffer[base + i] = (uint64_t)0;
+      *(XshmemGMWord *)this->getCounterResetBaselinePtr(counterId) =
+          this->sumCounterRemote(counterId);
+      *(XshmemGMWord *)this->getCounterLocalPtr(counterId) = (uint64_t)0;
+      flagcxXshmemDevice::threadFence();
     }
 
     // ---- Collective: barrierAll ----
@@ -664,16 +698,16 @@ struct CommTraits<XshmemBackend> {
 
     // ---- One-sided: get ----
     // XCCL's installed XSHMEM versions do not expose one stable collective-get
-    // spelling. Direct peer mappings are still usable, so provide the same
-    // byte-granular path as Window::getPeerPointer and fail loudly when a peer
-    // is not directly addressable.
+    // spelling, and this transport cannot read a remote peer through a direct
+    // pointer. Keep the explicit read-only lookup so this Net boundary reports
+    // the unsupported operation instead of misusing a write-only mapping.
     template <typename Coop>
     XSHMEM_DEVICE_INLINE void get(Team team, int peer, Window src,
                                   size_t srcOff, Window dst, size_t dstOff,
                                   size_t bytes, Coop coop) const {
       coop.sync();
-      XSHMEM_FGP char *remote =
-          (XSHMEM_FGP char *)src.getPeerPointer(srcOff, team, peer);
+      XSHMEM_FGP char *remote = (XSHMEM_FGP char *)src.getPeerPointer(
+          srcOff, team, peer, flagcxDevPeerAccessReadOnly);
       XSHMEM_FGP char *local = (XSHMEM_FGP char *)dst.getLocalPointer(dstOff);
       if (remote == nullptr) {
         if (coop.threadRank() == 0)
@@ -715,7 +749,8 @@ struct CommTraits<XshmemBackend> {
 
     XSHMEM_DEVICE_INLINE XSHMEM_FGP uint64_t *
     getCounterSentPtr(flagcxDevCounter_t counterId, int dst) const {
-      return &_dc.counterBuffer[this->counterBase(counterId) + _dc.nRanks + dst];
+      return &_dc.counterBuffer[this->counterBase(counterId) + _dc.nRanks +
+                                dst];
     }
 
     // Slot for increments published by this PE to itself. Kept apart from the
@@ -731,23 +766,51 @@ struct CommTraits<XshmemBackend> {
       return &_dc.counterBuffer[this->counterBase(counterId) + 2 * _dc.nRanks];
     }
 
-    // Aggregate value of a signal: every source's ticket plus local actions.
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP uint64_t *
+    getSignalResetBaselinePtr(flagcxDevSignal_t signalId) const {
+      return &_dc.signalBuffer[this->signalBase(signalId) +
+                               FLAGCX_XSHMEM_RESET_BASELINE_INDEX(_dc.nRanks)];
+    }
+
+    XSHMEM_DEVICE_INLINE XSHMEM_FGP uint64_t *
+    getCounterResetBaselinePtr(flagcxDevCounter_t counterId) const {
+      return &_dc.counterBuffer[this->counterBase(counterId) +
+                                FLAGCX_XSHMEM_RESET_BASELINE_INDEX(_dc.nRanks)];
+    }
+
+    // Remote aggregate: every source's monotonic ticket. This is the portion
+    // that a receiver-side reset cannot clear at its source.
     XSHMEM_DEVICE_INLINE uint64_t
-    sumSignal(flagcxDevSignal_t signalId) const {
+    sumSignalRemote(flagcxDevSignal_t signalId) const {
       int base = this->signalBase(signalId);
       uint64_t total = 0;
       for (int src = 0; src < _dc.nRanks; ++src)
         total += *(XshmemGMWord *)&_dc.signalBuffer[base + src];
-      return total + *(XshmemGMWord *)this->getSignalLocalPtr(signalId);
+      return total;
     }
 
     XSHMEM_DEVICE_INLINE uint64_t
-    sumCounter(flagcxDevCounter_t counterId) const {
+    sumCounterRemote(flagcxDevCounter_t counterId) const {
       int base = this->counterBase(counterId);
       uint64_t total = 0;
       for (int src = 0; src < _dc.nRanks; ++src)
         total += *(XshmemGMWord *)&_dc.counterBuffer[base + src];
-      return total + *(XshmemGMWord *)this->getCounterLocalPtr(counterId);
+      return total;
+    }
+
+    // Logical values include actions since the most recent local reset.
+    // Sender-side ticket state is excluded from reset and remains monotonic.
+    XSHMEM_DEVICE_INLINE uint64_t sumSignal(flagcxDevSignal_t signalId) const {
+      return this->sumSignalRemote(signalId) -
+             *(XshmemGMWord *)this->getSignalResetBaselinePtr(signalId) +
+             *(XshmemGMWord *)this->getSignalLocalPtr(signalId);
+    }
+
+    XSHMEM_DEVICE_INLINE uint64_t
+    sumCounter(flagcxDevCounter_t counterId) const {
+      return this->sumCounterRemote(counterId) -
+             *(XshmemGMWord *)this->getCounterResetBaselinePtr(counterId) +
+             *(XshmemGMWord *)this->getCounterLocalPtr(counterId);
     }
 
     XSHMEM_DEVICE_INLINE uint64_t spinSignal(flagcxDevSignal_t signalId,
@@ -763,9 +826,8 @@ struct CommTraits<XshmemBackend> {
 
     // Publish an increment of `delta` to `pe`. SET is the only signal op P800
     // implements, so send the running total this PE owes that destination.
-    XSHMEM_DEVICE_INLINE void sendSignalTicket(int pe,
-                                               flagcxDevSignal_t signalId,
-                                               uint64_t delta) const {
+    XSHMEM_DEVICE_INLINE void
+    sendSignalTicket(int pe, flagcxDevSignal_t signalId, uint64_t delta) const {
       XshmemGMWord *sent = (XshmemGMWord *)this->getSignalSentPtr(signalId, pe);
       uint64_t ticket = *sent + delta;
       *sent = ticket;
@@ -949,10 +1011,9 @@ struct XshmemBarrierBase {
   XSHMEM_DEVICE_INLINE XshmemBarrierBase()
       : coop(), state(nullptr), worldBase(0), teamSize(0), teamStride(1),
         teamRank(0), teamPeMap(nullptr) {}
-  XSHMEM_DEVICE_INLINE XshmemBarrierBase(Coop c, XSHMEM_FGP uint64_t *s,
-                                         int base, int size, int stride,
-                                         int rank,
-                                         XSHMEM_FGP const int *peMap = nullptr)
+  XSHMEM_DEVICE_INLINE
+  XshmemBarrierBase(Coop c, XSHMEM_FGP uint64_t *s, int base, int size,
+                    int stride, int rank, XSHMEM_FGP const int *peMap = nullptr)
       : coop(c), state((volatile XSHMEM_FGP uint64_t *)s), worldBase(base),
         teamSize(size), teamStride(stride), teamRank(rank), teamPeMap(peMap) {}
 

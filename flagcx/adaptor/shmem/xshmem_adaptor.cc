@@ -117,8 +117,9 @@ static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm);
 static flagcxResult_t
 xshmemAdaptorDevCommCreate(flagcxComm_t comm,
                            const struct flagcxDevCommRequirements *reqs,
-                           flagcxShmemComm_t *shmemComm) {
-  if (comm == nullptr || reqs == nullptr || shmemComm == nullptr)
+                           size_t reqsSize, flagcxShmemComm_t *shmemComm) {
+  if (comm == nullptr || reqs == nullptr || shmemComm == nullptr ||
+      reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *shmemComm = nullptr;
 
@@ -134,12 +135,19 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
   sc->intraRank = comm->localRank;
   sc->intraSize = comm->localRanks;
 
+  if (sc->nRanks <= 0 || sc->nRanks > FLAGCX_XSHMEM_MAX_PES) {
+    WARN("xshmem devCommCreate: nRanks must be in [1, %d], got %d",
+         FLAGCX_XSHMEM_MAX_PES, sc->nRanks);
+    delete sc;
+    return flagcxInvalidArgument;
+  }
+
   // Declared before any goto so error paths never jump over its
   // initialization.
   int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
   // P800 has no remote atomic, so each (context, signal) is fanned out into
   // one receive slot per source PE, one sent-ticket per destination, and one
-  // local-action slot. See xshmem_state_layout.h.
+  // local-action slot plus a reset baseline. See xshmem_state_layout.h.
   int slotsPerSignal = FLAGCX_XSHMEM_SIGNAL_SLOTS(sc->nRanks);
 
   // FlagCX communicator ranks are not required to be grouped by host. Keep
@@ -212,24 +220,28 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
 
     // Staging area for push-based collectives: P800 cannot read a peer's
     // memory, so a reduction receives its inputs here through put.
-    if (reqs->intraScratchBytes > 0) {
-      sc->scratchBuffer = (uint64_t *)xshmem_malloc(reqs->intraScratchBytes);
+    size_t intraScratchBytes = 0;
+    if (reqsSize >=
+        offsetof(struct flagcxDevCommRequirements, intraScratchBytes) +
+            sizeof(reqs->intraScratchBytes)) {
+      intraScratchBytes = reqs->intraScratchBytes;
+    }
+    if (intraScratchBytes > 0) {
+      sc->scratchBuffer = (uint64_t *)xshmem_malloc(intraScratchBytes);
       if (sc->scratchBuffer == nullptr) {
         WARN("xshmem devCommCreate: cannot allocate %zu bytes of symmetric "
              "scratch",
-             reqs->intraScratchBytes);
+             intraScratchBytes);
         goto fail;
       }
-      if (cudaMemset(sc->scratchBuffer, 0, reqs->intraScratchBytes) !=
-          cudaSuccess)
+      if (cudaMemset(sc->scratchBuffer, 0, intraScratchBytes) != cudaSuccess)
         goto fail;
-      sc->scratchBytes = reqs->intraScratchBytes;
+      sc->scratchBytes = intraScratchBytes;
     }
 
     (void)interSize;
     sc->intraTeam = XSHMEMX_TEAM_NODE;
     sc->interTeam = XSHMEM_TEAM_INVALID;
-
 
     sc->worldTeam = XSHMEM_TEAM_WORLD;
     sc->devStateHandle = xshmem_get_xshmemi_device_state_h();

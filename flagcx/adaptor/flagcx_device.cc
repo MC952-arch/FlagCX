@@ -5,9 +5,10 @@
  * Thin dispatcher: delegates all backend-specific logic via devApiBackend.
  ************************************************************************/
 
+#define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
 #include "comm.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "mem_alloc_registry.h"
 #include "p2p.h"
 #include "proxy.h"
@@ -23,12 +24,13 @@
 // DevComm lifecycle
 // ==========================================================================
 
-extern "C" flagcxResult_t
-flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
-                    flagcxDevComm_t *devComm) {
-  if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
+static flagcxResult_t
+flagcxDevCommCreateInternal(flagcxComm_t comm,
+                            const struct flagcxDevCommRequirements *reqs,
+                            size_t reqsSize, flagcxDevComm_t *devComm) {
+  if (comm == nullptr || reqs == nullptr || devComm == nullptr ||
+      reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
-  }
   *devComm = nullptr;
 
   flagcxDevComm_t handle =
@@ -66,7 +68,8 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
 
   // Backend-specific creation
   {
-    flagcxResult_t ret = devApiBackend->devCommCreate(comm, reqs, handle);
+    flagcxResult_t ret =
+        devApiBackend->devCommCreate(comm, reqs, reqsSize, handle);
     if (ret != flagcxSuccess) {
       WARN("flagcxDevCommCreate: %s backend failed (%d)", devApiBackend->name,
            ret);
@@ -90,6 +93,25 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
   }
 
   return flagcxSuccess;
+}
+
+extern "C" flagcxResult_t
+flagcxDevCommCreate(flagcxComm_t comm,
+                    const struct flagcxDevCommRequirements *reqs,
+                    flagcxDevComm_t *devComm) {
+  if (devComm != nullptr)
+    *devComm = nullptr;
+  return flagcxDevCommCreateInternal(
+      comm, reqs, FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE, devComm);
+}
+
+extern "C" flagcxResult_t
+flagcxDevCommCreateSized(flagcxComm_t comm,
+                         const struct flagcxDevCommRequirements *reqs,
+                         size_t reqsSize, flagcxDevComm_t *devComm) {
+  if (devComm != nullptr)
+    *devComm = nullptr;
+  return flagcxDevCommCreateInternal(comm, reqs, reqsSize, devComm);
 }
 
 extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
@@ -127,10 +149,13 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
+  if (devMem == nullptr) {
     return flagcxInvalidArgument;
   }
   *devMem = nullptr;
+  if (comm == nullptr || buff == nullptr || size == 0) {
+    return flagcxInvalidArgument;
+  }
 
   flagcxDevMem_t handle =
       (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));

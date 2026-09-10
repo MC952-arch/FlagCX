@@ -147,6 +147,30 @@ mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABL
   ./test_device_ir -b 1M -e 4M -f 2 -R 2
 ```
 
+#### SHMEM Device API memory ownership
+
+When FlagCX is built with a SHMEM backend, memory passed to
+`flagcxDevMemCreate`, `flagcxCommRegister`, or `flagcxCommWindowRegister` with
+the `flagcxMemSHMEM` allocator must be allocated and freed through FlagCX:
+
+```cpp
+void *buffer = nullptr;
+flagcxMemAlloc(&buffer, bytes, flagcxMemSHMEM);
+
+flagcxDevMem_t devMem = nullptr;
+flagcxDevMemCreate(comm, buffer, bytes, nullptr, &devMem);
+
+flagcxDevMemDestroy(comm, devMem);
+flagcxMemFree(buffer, flagcxMemSHMEM);
+```
+
+Direct `nvshmem_malloc` or `xshmem_malloc` allocations remain valid for their
+native runtime APIs, but FlagCX does not have their allocation bounds or
+ownership metadata. Passing such a pointer to `flagcxDevMemCreate` is rejected
+with `flagcxInvalidUsage`. Existing code that combines a native SHMEM allocation
+with a FlagCX Device API memory handle should migrate to the allocation flow
+shown above.
+
 ### Torch API Test
 
 Torch API tests verify FlagCX's PyTorch custom process group backend (`flagcx`) by running collective communication operations through `torch.distributed`. Test scripts are maintained in `plugin/torch/example/`.

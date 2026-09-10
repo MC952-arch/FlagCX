@@ -34,6 +34,10 @@
 #include <cstring>
 #include <iostream>
 
+constexpr int kUnifiedIrSignalComboCount = 12;
+constexpr int kUnifiedIrS23ComboCount = 18;
+constexpr int kUnifiedIrInterTeamResolutionComboCount = 9;
+
 // ===========================================================================
 // Main test driver
 // ===========================================================================
@@ -85,21 +89,19 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   // Create DevComm with signal/counter/barrier slots
-  // Inter suite uses 6 combinations (INTER + WORLD) for most tests
-  // S18 uses 8 signal slots (includes extra BLOCK single-leader patterns)
+  // Signal variants use 12 slots; S23 uses 18 signal/counter slots.
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.barrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount =
-      8; // 8 slots for S18 (6 standard + 2 BLOCK single-leader)
-  reqs.interCounterCount = 6; // 6 slots for S23 per-combo counter tracking
+  reqs.interSignalCount = kUnifiedIrS23ComboCount;
+  reqs.interCounterCount = kUnifiedIrS23ComboCount;
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate send/recv buffers (8x for S18's 8-combination regions)
-  size_t bufSize = maxBytes * 8;
+  // Allocate send/recv buffers for S23, the largest combination matrix.
+  size_t bufSize = maxBytes * kUnifiedIrS23ComboCount;
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
@@ -147,8 +149,20 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0) {
     printf("=== Device IR Unified Inter Suite (INTER + WORLD teams) ===\n");
-    printf("Ranks: %d, Nodes: %d, IntraSize: %d\n\n", totalProcs, nNodes,
+    printf("Ranks: %d, Nodes: %d, IntraSize: %d\n", totalProcs, nNodes,
            intraSize);
+    if (FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK ==
+        FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK) {
+      printf("S21-S22 expected cases: THREAD/WARP/BLOCK x 2 variants x "
+             "INTER/WORLD\n");
+      printf("S23 expected cases: THREAD/WARP/BLOCK x 3 variants x "
+             "INTER/WORLD\n\n");
+    } else {
+      printf("S21-S22 expected cases: WARP/BLOCK x 2 variants x "
+             "INTER/WORLD\n");
+      printf("S23 expected cases: WARP/BLOCK x 3 variants x INTER/WORLD\n");
+      printf("S21-S23 unsupported coop cases: THREAD x INTER/WORLD\n\n");
+    }
   }
 
   if (nNodes < 2) {
@@ -161,6 +175,10 @@ int main(int argc, char *argv[]) {
   }
 
   bool allPass = true;
+  const uint32_t expectedPutCoopMask =
+      FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK;
+  const uint32_t expectedPutCounterMask =
+      FLAGCX_TEST_UNIFIED_INTER_PUT_COUNTER_EXPECTED_MASK;
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
@@ -179,7 +197,7 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // =======================================================================
-    // S16: DevBarrier — INTER + WORLD (BarrierSync + ArriveWait)
+    // S16: DevBarrier — BLOCK × 2 teams × 2 forms = 4 cases
     // =======================================================================
     {
       int hostResults[4];
@@ -225,13 +243,14 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S17: DevTeamResolution — INTER + WORLD, plus nonzero-node INTRA
+    // S17: DevTeamResolution — 3 coop × INTER/WORLD/INTRA = 9 cases
     // =======================================================================
     {
       int maxRanks = totalProcs;
       if (nNodes > maxRanks)
         maxRanks = nNodes;
-      size_t s17Size = 7 * maxRanks * sizeof(float);
+      size_t s17Size =
+          kUnifiedIrInterTeamResolutionComboCount * maxRanks * sizeof(float);
 
       float myTag = (float)proc;
       FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, &myTag, sizeof(float),
@@ -252,7 +271,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      float *s17Recv = new float[7 * maxRanks];
+      float *s17Recv =
+          new float[kUnifiedIrInterTeamResolutionComboCount * maxRanks];
       FLAGCXCHECK(devHandle->deviceMemcpy(s17Recv, recvBuff, s17Size,
                                           flagcxMemcpyDeviceToHost, stream));
 
@@ -277,12 +297,15 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      // Combination 6 is an INTRA ring on the same virtual-node topology.
-      // It specifically covers ranks on node 1, where worldRank != intraRank.
-      if (s17Pass) {
-        int prevIntra = (intraRank + intraSize - 1) % intraSize;
+      // Combinations 6-8 are THREAD/WARP/BLOCK INTRA rings on the same
+      // virtual-node topology.  They specifically cover ranks on node 1,
+      // where worldRank != intraRank.
+      int prevIntra = (intraRank + intraSize - 1) % intraSize;
+      for (int combo = 6;
+           combo < kUnifiedIrInterTeamResolutionComboCount && s17Pass;
+           combo++) {
         float expected = (float)(nodeIdx * intraSize + prevIntra);
-        if (s17Recv[6 * maxRanks + prevIntra] != expected) {
+        if (s17Recv[combo * maxRanks + prevIntra] != expected) {
           s17Pass = false;
         }
       }
@@ -375,6 +398,10 @@ int main(int argc, char *argv[]) {
     // =======================================================================
     // S19: DevGet — INTER + WORLD
     // =======================================================================
+#ifdef FLAGCX_TEST_NO_REMOTE_READ
+    RPRINTF("S19 DevGet(INTER+WORLD): SKIP (no remote read on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
@@ -421,9 +448,10 @@ int main(int argc, char *argv[]) {
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // =======================================================================
-    // S20: DevSignalStandalone (signal-only: Inc+Add+Wait+Read+Reset)
+    // S20: DevSignalStandalone — 3 coop × 2 teams × 2 actions = 12 cases
     //      — INTER + WORLD
     // =======================================================================
     {
@@ -449,15 +477,17 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S21: DevPutSignalWait — INTER + WORLD (6 combinations, split put+signal)
+    // S21: DevPutSignalWait — INTER + WORLD (12 full combinations)
     // ResetSignal → Put → SignalInc/SignalAdd → WaitSignal → ReadSignal verify
     // =======================================================================
     {
-      for (size_t i = 0; i < 6 * count; i++)
+      for (size_t i = 0; i < kUnifiedIrSignalComboCount * count; i++)
         hostSend[i] = (float)(proc * 3000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
                                           flagcxMemcpyHostToDevice, stream));
@@ -473,7 +503,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s21Pass = (hostRes == 1);
@@ -481,7 +512,10 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s21Pass; combo++) {
+      for (int combo = 0; combo < kUnifiedIrSignalComboCount && s21Pass;
+           combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -506,11 +540,13 @@ int main(int argc, char *argv[]) {
     // WaitSignal → assert ReadSignal==expected
     // =======================================================================
     {
-      for (size_t i = 0; i < 6 * count; i++)
+      for (size_t i = 0; i < kUnifiedIrSignalComboCount * count; i++)
         hostSend[i] = (float)(proc * 4000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
                                           flagcxMemcpyHostToDevice, stream));
@@ -526,7 +562,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
+                                          kUnifiedIrSignalComboCount * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s22Pass = (hostRes == 1);
@@ -534,7 +571,10 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s22Pass; combo++) {
+      for (int combo = 0; combo < kUnifiedIrSignalComboCount && s22Pass;
+           combo++) {
+        if ((expectedPutCoopMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -560,11 +600,13 @@ int main(int argc, char *argv[]) {
     // assert ReadSignal==expected
     // =======================================================================
     {
-      for (size_t i = 0; i < 6 * count; i++)
+      for (size_t i = 0; i < kUnifiedIrS23ComboCount * count; i++)
         hostSend[i] = (float)(proc * 5000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
                                           flagcxMemcpyHostToDevice, stream));
@@ -580,7 +622,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s23Pass = (hostRes == 1);
@@ -588,7 +631,9 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s23Pass; combo++) {
+      for (int combo = 0; combo < kUnifiedIrS23ComboCount && s23Pass; combo++) {
+        if ((expectedPutCounterMask & ((uint32_t)1 << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -608,14 +653,15 @@ int main(int argc, char *argv[]) {
     }
 
     // =======================================================================
-    // S24: DevPutValue_RSigInc + DevPutValue_RSigAdd — INTER + WORLD
+    // S24: DevPutValue_RSigInc/Add — 3 coop × 2 teams × 2 variants = 12
     // ResetSignal → assert ReadSignal==0 → PutValue_RSigInc/RSigAdd →
     // WaitSignal → assert ReadSignal==expected
     // Each combo writes 1 uint64_t scalar value.
     // =======================================================================
     {
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * sizeof(uint64_t),
-                                          flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(
+          recvBuff, 0, kUnifiedIrSignalComboCount * sizeof(uint64_t),
+          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
                                           flagcxMemcpyHostToDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
@@ -630,17 +676,18 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      uint64_t hostRecvV[6];
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
-                                          6 * sizeof(uint64_t),
-                                          flagcxMemcpyDeviceToHost, stream));
+      uint64_t hostRecvV[kUnifiedIrSignalComboCount];
+      FLAGCXCHECK(devHandle->deviceMemcpy(
+          hostRecvV, recvBuff, kUnifiedIrSignalComboCount * sizeof(uint64_t),
+          flagcxMemcpyDeviceToHost, stream));
 
       bool s24Pass = (hostRes == 1);
       int prevNode = (nodeIdx + nNodes - 1) % nNodes;
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s24Pass; combo++) {
+      for (int combo = 0; combo < kUnifiedIrSignalComboCount && s24Pass;
+           combo++) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);

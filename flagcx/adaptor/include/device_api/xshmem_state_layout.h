@@ -17,8 +17,15 @@
 //   [0, nRanks)         received tickets, one per source PE (written remotely)
 //   [nRanks, 2*nRanks)  tickets already sent, one per destination PE (local)
 //   [2*nRanks]          local-action counter (never written remotely)
+//   [2*nRanks + 1]      reset baseline (received-ticket snapshot)
 // Counters use the identical layout.
-#define FLAGCX_XSHMEM_SIGNAL_SLOTS(nRanks) (2 * (nRanks) + 1)
+//
+// Sender tickets must remain monotonic across a receiver-side reset: the
+// receiver cannot clear ticket state stored on every remote sender. Reset is
+// therefore represented by snapshotting the received-ticket aggregate. The
+// local-action slot can still be cleared because this PE is its only writer.
+#define FLAGCX_XSHMEM_SIGNAL_SLOTS(nRanks) (2 * (nRanks) + 2)
+#define FLAGCX_XSHMEM_RESET_BASELINE_INDEX(nRanks) (2 * (nRanks) + 1)
 
 // Upper bound on PEs, used only to size the barrier state at compile time so
 // the device pass can fold the per-barrier-kind stride into a constant.
