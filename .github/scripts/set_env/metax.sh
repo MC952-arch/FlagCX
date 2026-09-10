@@ -49,9 +49,31 @@ flagcx_ci_prepare() {
   command -v mpirun
   command -v mxcc
 
-  if [[ "$suite" == "p2p" ]]; then
-    if compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
-      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+    local -a hca_paths=()
+    local -a hca_names=()
+    local hca_path
+
+    shopt -s nullglob
+    # Prefer the native RoCE devices while retaining compatibility with MetaX
+    # runners that expose the same links through the bonded RDMA driver.
+    hca_paths=(/sys/class/infiniband/bnxt_roce*)
+    if [[ ${#hca_paths[@]} -eq 0 ]]; then
+      hca_paths=(/sys/class/infiniband/bnxt_re_bond*)
+    fi
+    shopt -u nullglob
+
+    if [[ ${#hca_paths[@]} -eq 0 ]]; then
+      echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+      return 1
+    fi
+
+    for hca_path in "${hca_paths[@]}"; do
+      hca_names+=("${hca_path##*/}")
+    done
+    if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
+      local IFS=,
+      export FLAGCX_IB_HCA="${hca_names[*]}"
     fi
 
     if [[ -d /sys/class/net/bond0 ]]; then
@@ -61,13 +83,15 @@ flagcx_ci_prepare() {
     export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
     export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,ENV}
 
-    echo "MetaX P2P diagnostics:"
+    echo "MetaX network diagnostics:"
     echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
     echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
     echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
+    echo "Network interfaces visible inside the CI container:"
+    ls /sys/class/net 2>/dev/null || true
+    echo "RDMA devices visible inside the CI container:"
+    ls /sys/class/infiniband 2>/dev/null || true
     ls /dev/infiniband 2>/dev/null || true
-    ibv_devices 2>/dev/null || true
-    ibv_devinfo 2>/dev/null || true
     ip -o addr show 2>/dev/null || true
   fi
 }
@@ -98,21 +122,24 @@ flagcx_ci_run_suite_override() {
 
   if [[ "$suite" == "runner" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    make -C "$suite_dir" run-unit "${args[@]}"
+    FLAGCX_CI_TEST_LABEL="runner unit tests" \
+      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
     echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
     return
   fi
 
   if [[ "$suite" == "rma" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    make -C "$suite_dir" run-unit "${args[@]}"
+    FLAGCX_CI_TEST_LABEL="rma unit tests" \
+      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
     echo "Skipping MetaX RMA MPI tests: one-sided RMA is not supported by the current MetaX backend."
     return
   fi
 
   if [[ "$suite" == "symmem" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    "$suite_dir/build/bin/symmem_unit_tests"
+    FLAGCX_CI_TEST_LABEL="symmem unit tests" \
+      "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests"
     echo "Skipping MetaX symmem MPI tests: symmetric windows are not supported by the current MetaX backend."
     return
   fi

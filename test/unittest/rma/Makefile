@@ -1,5 +1,7 @@
 include ../../make.inc
 
+MPIRUN ?= mpirun
+
 # Local include directory for RMA test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
@@ -47,6 +49,6 @@ run-unit:
 	@echo "No non-MPI unit tests for rma."
 
 run-mpi: $(MPI_TARGET)
-	@mpirun --allow-run-as-root -np 2 $(HETERO_ENV) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(HETERO_ENV) $(MPI_TARGET)
 
 run: run-unit run-mpi

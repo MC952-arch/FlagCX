@@ -298,12 +298,12 @@ class FLAGCXLibrary:
         # it is better not to call it at all.
         # flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
         Function("flagcxCommDestroy", flagcxResult_t, [flagcxComm_t]),
-        
+
         Function("flagcxCommRegister", flagcxResult_t, [
             flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_void_p), ctypes.c_int
         ]),
-        
+
         Function("flagcxOneSideRegister", flagcxResult_t, [
             flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t
         ]),
@@ -883,7 +883,12 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        raw_stream = getattr(old_stream, 'musa_stream', getattr(old_stream, 'npu_stream', getattr(old_stream, 'cuda_stream', 0)))
+        attr_names = ['txda_stream', 'musa_stream', 'npu_stream', 'cuda_stream']
+        raw_stream = 0
+        for name in attr_names:
+            if hasattr(old_stream, name):
+                raw_stream = getattr(old_stream, name)
+                break
         self.FLAGCX_CHECK(self.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 
@@ -892,7 +897,7 @@ class FLAGCXLibrary:
 
     def adaptor_stream_destroy(self, stream):
         self.FLAGCX_CHECK(self.devHandle.contents.streamDestroy(stream))
-    
+
     def sync_stream(self, stream):
         self.FLAGCX_CHECK(self.devHandle.contents.streamSynchronize(stream))
 
