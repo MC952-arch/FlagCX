@@ -5,9 +5,11 @@
  * Thin dispatcher: delegates all backend-specific logic via devApiBackend.
  ************************************************************************/
 
+#define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
 #include "comm.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
+#include "mem_alloc_registry.h"
 #include "p2p.h"
 #include "proxy.h"
 #include "reg_pool.h"
@@ -22,12 +24,14 @@
 // DevComm lifecycle
 // ==========================================================================
 
-extern "C" flagcxResult_t
-flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
-                    flagcxDevComm_t *devComm) {
-  if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
+static flagcxResult_t
+flagcxDevCommCreateInternal(flagcxComm_t comm,
+                            const struct flagcxDevCommRequirements *reqs,
+                            size_t reqsSize, flagcxDevComm_t *devComm) {
+  if (comm == nullptr || reqs == nullptr || devComm == nullptr ||
+      reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
-  }
+  *devComm = nullptr;
 
   flagcxDevComm_t handle =
       (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
@@ -64,7 +68,8 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
 
   // Backend-specific creation
   {
-    flagcxResult_t ret = devApiBackend->devCommCreate(comm, reqs, handle);
+    flagcxResult_t ret =
+        devApiBackend->devCommCreate(comm, reqs, reqsSize, handle);
     if (ret != flagcxSuccess) {
       WARN("flagcxDevCommCreate: %s backend failed (%d)", devApiBackend->name,
            ret);
@@ -90,10 +95,36 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
   return flagcxSuccess;
 }
 
+extern "C" flagcxResult_t
+flagcxDevCommCreate(flagcxComm_t comm,
+                    const struct flagcxDevCommRequirements *reqs,
+                    flagcxDevComm_t *devComm) {
+  if (devComm != nullptr)
+    *devComm = nullptr;
+  return flagcxDevCommCreateInternal(
+      comm, reqs, FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE, devComm);
+}
+
+extern "C" flagcxResult_t
+flagcxDevCommCreateSized(flagcxComm_t comm,
+                         const struct flagcxDevCommRequirements *reqs,
+                         size_t reqsSize, flagcxDevComm_t *devComm) {
+  if (devComm != nullptr)
+    *devComm = nullptr;
+  return flagcxDevCommCreateInternal(comm, reqs, reqsSize, devComm);
+}
+
 extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
   if (devComm == nullptr) {
     return flagcxSuccess;
+  }
+
+  // The proxy owns no reference to DevComm. Stop publishing this handle before
+  // backend resources are released instead of leaving a stale pointer behind.
+  if (comm != nullptr && comm->heteroComm != nullptr &&
+      comm->heteroComm->devCommHandle == devComm) {
+    comm->heteroComm->devCommHandle = nullptr;
   }
 
   devApiBackend->devCommDestroy(comm, devComm);
@@ -118,7 +149,11 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
+  if (devMem == nullptr) {
+    return flagcxInvalidArgument;
+  }
+  *devMem = nullptr;
+  if (comm == nullptr || buff == nullptr || size == 0) {
     return flagcxInvalidArgument;
   }
 
@@ -133,6 +168,30 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   // Baseline: always
   handle->rawPtr = buff;
   handle->ipcIndex = -1;
+
+  // A subrange is valid only when its complete byte range lies inside the
+  // exact flagcxMemAlloc allocation that contains its first byte. Unknown
+  // pointers remain supported for the default/CCL backend.
+  flagcxMemAllocationInfo allocation;
+  flagcxResult_t allocationRes =
+      globalMemAllocRegistry.findRange(buff, 1, &allocation);
+  if (allocationRes == flagcxSuccess) {
+    if (globalMemAllocRegistry.findRange(buff, size, &allocation) !=
+        flagcxSuccess) {
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
+      free(handle);
+      return flagcxInvalidUsage;
+    }
+    handle->allocationTracked = true;
+    handle->allocationBase = allocation.base;
+    handle->allocationSize = allocation.size;
+    handle->allocator = allocation.allocator;
+    handle->allocBackend = allocation.backend;
+  } else if (allocationRes != flagcxInvalidUsage) {
+    pthread_mutex_destroy(&handle->cachedPtrMutex);
+    free(handle);
+    return allocationRes;
+  }
 
   // Backend-specific creation
   {

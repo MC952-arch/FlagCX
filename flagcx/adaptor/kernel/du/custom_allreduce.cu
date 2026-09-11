@@ -10,7 +10,8 @@
 #include "device_api/flagcx_device.h"
 #include "dev_comm_state.h"
 #include "flagcx_kernel.h"
-#include "nvidia_adaptor.h" // for struct flagcxStream (stream->base)
+#include "global_comm.h"
+#include "du_adaptor.h" // for struct flagcxStream (stream->base)
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>

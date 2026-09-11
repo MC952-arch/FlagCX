@@ -13,8 +13,38 @@
 #ifndef TEST_KERNEL_DEVICE_IR_H_
 #define TEST_KERNEL_DEVICE_IR_H_
 
+#include <stdint.h>
+
 #include "device_api/flagcx_device_enums.h"
 #include "flagcx.h"
+
+// S21-S22 use the full 12-slot product of cooperation kind, signal variant,
+// and team. S23 uses the corresponding 18-slot product with three completion
+// variants. Keep the expected sets in test-only code so a platform cannot
+// silently turn an unsupported case into a passing one. NVIDIA expects every
+// slot. A platform that cannot issue a cross-node THREAD put may opt out of the
+// leading THREAD slots without changing public Device API or CommTraits
+// contracts.
+#define FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK ((uint32_t)0xfff)
+#define FLAGCX_TEST_UNIFIED_PUT_COOP_NO_THREAD_MASK ((uint32_t)0xff0)
+#define FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK ((uint32_t)0x3ffff)
+#define FLAGCX_TEST_UNIFIED_PUT_COUNTER_NO_THREAD_MASK ((uint32_t)0x3ffc0)
+#define FLAGCX_TEST_UNIFIED_INTRA_PUT_COOP_EXPECTED_MASK                       \
+  FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK
+#define FLAGCX_TEST_UNIFIED_INTRA_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK
+
+#if defined(FLAGCX_TEST_NO_REMOTE_THREAD_PUT)
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK                       \
+  FLAGCX_TEST_UNIFIED_PUT_COOP_NO_THREAD_MASK
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_NO_THREAD_MASK
+#else
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COOP_EXPECTED_MASK                       \
+  FLAGCX_TEST_UNIFIED_PUT_COOP_ALL_MASK
+#define FLAGCX_TEST_UNIFIED_INTER_PUT_COUNTER_EXPECTED_MASK                    \
+  FLAGCX_TEST_UNIFIED_PUT_COUNTER_ALL_MASK
+#endif
 
 // =========================================================================
 // Intra-Node Scalar IR kernel launchers (S1–S10)

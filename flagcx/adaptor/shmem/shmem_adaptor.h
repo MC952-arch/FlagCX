@@ -18,7 +18,8 @@ extern "C" {
 struct flagcxShmemCommInternal;
 typedef struct flagcxShmemCommInternal *flagcxShmemComm_t;
 
-// Forward declarations
+// Public requirements are size-tagged at the call boundary so future appended
+// fields can be consumed without changing this adaptor callback again.
 struct flagcxDevCommRequirements;
 
 struct flagcxShmemAdaptor {
@@ -36,6 +37,7 @@ struct flagcxShmemAdaptor {
   // Device comm setup
   flagcxResult_t (*devCommCreate)(flagcxComm_t comm,
                                   const struct flagcxDevCommRequirements *reqs,
+                                  size_t reqsSize,
                                   flagcxShmemComm_t *shmemComm);
   flagcxResult_t (*devCommDestroy)(flagcxShmemComm_t shmemComm);
 };

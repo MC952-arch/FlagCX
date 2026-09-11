@@ -118,11 +118,65 @@ __global__ void kernelIntraPointer(const void *devCommPtr,
   output[tid] = *peerPtr;
 }
 
+__global__ void kernelIntraPointerWithAccess(const void *devCommPtr,
+                                             const void *devMemPtr,
+                                             float *output) {
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (myRank + 1) % nRanks;
+
+  size_t offset = tid * sizeof(float);
+  float *peerPtr = (float *)flagcxGetIntraPointerWithAccessC(
+      devMemPtr, offset, peer, flagcxDevPeerAccessReadOnly);
+  if (output[tid] != *peerPtr)
+    output[tid] = -1.0f;
+}
+
+__global__ void kernelPeerPointer(const void *devCommPtr,
+                                  const void *devMemPtr, float *output) {
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (myRank + 1) % nRanks;
+  flagcxTeam teamIntra;
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
+
+  size_t offset = tid * sizeof(float);
+  float *peerPtr =
+      (float *)flagcxGetPeerPointerC(devMemPtr, offset, &teamIntra, peer);
+  if (output[tid] != *peerPtr)
+    output[tid] = -1.0f;
+}
+
+__global__ void kernelPeerPointerWithAccess(const void *devCommPtr,
+                                            const void *devMemPtr,
+                                            float *output) {
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (myRank + 1) % nRanks;
+  flagcxTeam teamIntra;
+  flagcxGetTeamIntra(devCommPtr, &teamIntra);
+
+  size_t offset = tid * sizeof(float);
+  float *peerPtr = (float *)flagcxGetPeerPointerWithAccessC(
+      devMemPtr, offset, &teamIntra, peer, flagcxDevPeerAccessReadOnly);
+  if (output[tid] != *peerPtr)
+    output[tid] = -1.0f;
+}
+
 void launchKernelIntraPointer(const void *devCommPtr, const void *devMemPtr,
                               float *devOutput, int nBlocks, int nThreads,
                               flagcxStream_t stream) {
   kernelIntraPointer<<<nBlocks, nThreads, 0, stream->base>>>(devCommPtr, devMemPtr,
                                                        devOutput);
+  kernelIntraPointerWithAccess<<<nBlocks, nThreads, 0, stream->base>>>(
+      devCommPtr, devMemPtr, devOutput);
+  kernelPeerPointer<<<nBlocks, nThreads, 0, stream->base>>>(
+      devCommPtr, devMemPtr, devOutput);
+  kernelPeerPointerWithAccess<<<nBlocks, nThreads, 0, stream->base>>>(
+      devCommPtr, devMemPtr, devOutput);
 }
 
 // ---------------------------------------------------------------------------

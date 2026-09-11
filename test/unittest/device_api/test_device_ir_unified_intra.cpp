@@ -24,6 +24,7 @@
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  ************************************************************************/
 
+#include "check.h"
 #include "device_ir.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -98,13 +99,13 @@ int main(int argc, char *argv[]) {
   // Allocate send/recv buffers for S23, the largest combination matrix.
   size_t bufSize = maxBytes * kUnifiedIrS23ComboCount;
   void *sendBuff = nullptr, *recvBuff = nullptr;
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
 #endif
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, bufSize, memAllocator));
 
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
@@ -142,10 +143,18 @@ int main(int argc, char *argv[]) {
 
   if (proc == 0) {
     printf("=== Device IR Unified Intra Suite (INTRA + WORLD teams) ===\n");
-    printf("Ranks: %d, IntraSize: %d\n\n", totalProcs, intraSize);
+    printf("Ranks: %d, IntraSize: %d\n", totalProcs, intraSize);
+    printf("S21-S22 expected cases: THREAD/WARP/BLOCK x 2 variants x "
+           "INTRA/WORLD\n");
+    printf("S23 expected cases: THREAD/WARP/BLOCK x 3 variants x "
+           "INTRA/WORLD\n\n");
   }
 
   bool allPass = true;
+  const uint32_t expectedPutCoopMask =
+      FLAGCX_TEST_UNIFIED_INTRA_PUT_COOP_EXPECTED_MASK;
+  const uint32_t expectedPutCounterMask =
+      FLAGCX_TEST_UNIFIED_INTRA_PUT_COUNTER_EXPECTED_MASK;
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
@@ -339,6 +348,12 @@ int main(int argc, char *argv[]) {
     }
 
     // S19: DevGet — INTRA + WORLD
+    // Skipped where the device API cannot read a peer's memory at all (P800:
+    // every remote-read path traps), so there is no implementation to check.
+#ifdef FLAGCX_TEST_NO_REMOTE_READ
+    RPRINTF("S19 DevGet(INTRA+WORLD): SKIP (no remote read on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
@@ -384,6 +399,7 @@ int main(int argc, char *argv[]) {
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // =======================================================================
     // S20: DevSignalStandalone — 3 coop × 2 teams × 2 actions = 12 cases

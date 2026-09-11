@@ -56,6 +56,13 @@ struct PlatformTraits<DefaultPlatform> {
     static inline void threadfenceSystem() {
       assert(false && "threadfenceSystem() on DefaultPlatform");
     }
+    static inline void threadfenceDevice() {
+      assert(false && "threadfenceDevice() on DefaultPlatform");
+    }
+    template <typename DstPtr, typename SrcPtr>
+    static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
+      assert(false && "coopCopyBytes() on DefaultPlatform");
+    }
   };
 
   // ==============================================================

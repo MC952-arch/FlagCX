@@ -4,7 +4,10 @@
  * Platform Traits - Compile-time dispatch for platform-level capabilities.
  *
  * PlatformTraits<P> provides:
- *   - Intrin: SIMT intrinsics (lane, activemask, syncwarp, popc, ...)
+ *   - Intrin: SIMT intrinsics and explicit platform fence mappings
+ *             (lane, activemask, syncwarp, popc, threadfence*, ...)
+ *             Platforms may additionally provide an optimized coopCopyBytes;
+ *             the unified IR has a global-memory byte-copy baseline.
  *   - Atomic: Scoped atomic operations (load, store, fetchAdd, ...)
  *
  * Each platform (NVIDIA, DU, ...) provides a specialization.
@@ -100,6 +103,8 @@ private:
 #include "nvidia_platform_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_platform_traits.h"
+#elif defined(USE_KUNLUNXIN_ADAPTOR)
+#include "kunlunxin_platform_traits.h"
 #else
 #include "default_platform_traits.h"
 #endif

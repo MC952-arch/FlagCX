@@ -81,6 +81,10 @@ flagcxMakeTeamFromKind(const flagcxDevComm &comm, flagcxTeamKind_t kind) {
  * gridSyncState[0] = arrive counter, gridSyncState[1] = sense.
  * ================================================================ */
 
+// Unused by every current IR entry point, and written against CUDA builtins
+// (threadIdx/gridDim/atomicAdd). Keep it CUDA-only rather than porting dead
+// code to platforms that have no device-wide atomic.
+#if defined(__CUDACC__)
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxGridSync(unsigned int *gridSyncState) {
   __syncthreads();
@@ -107,6 +111,7 @@ flagcxGridSync(unsigned int *gridSyncState) {
   }
   __syncthreads();
 }
+#endif // __CUDACC__
 
 /* ================================================================
  * Category 2: Scalar Cooperative Group (6)
@@ -175,10 +180,11 @@ flagcxTeamRankToIntraS(const void *commOpaque, flagcxTeamKind_t teamKind,
 }
 
 /* ================================================================
- * Category 4: Pointer Access (scalar team) (4)
+ * Category 4: Pointer Access (scalar team) (6)
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerS(const void *memOpaque, size_t offset,
                       const void *commOpaque, flagcxTeamKind_t teamKind,
                       int peer) {
@@ -188,19 +194,42 @@ flagcxGetPeerPointerS(const void *memOpaque, size_t offset,
   return flagcxGetPeerPointer(*mem, offset, team, peer);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
+flagcxGetPeerPointerWithAccessS(const void *memOpaque, size_t offset,
+                                const void *commOpaque,
+                                flagcxTeamKind_t teamKind, int peer,
+                                flagcxDevPeerAccess_t access) {
+  const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
+  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
+  return flagcxGetPeerPointerWithAccess(*mem, offset, team, peer, access);
+}
+
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetLocalPointerS(const void *memOpaque, size_t offset) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetLocalPointer(*mem, offset);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerS(const void *memOpaque, size_t offset, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return flagcxGetIntraPointer(*mem, offset, peer);
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
+flagcxGetIntraPointerWithAccessS(const void *memOpaque, size_t offset, int peer,
+                                 flagcxDevPeerAccess_t access) {
+  const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
+  return flagcxGetIntraPointerWithAccess(*mem, offset, peer, access);
+}
+
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetMulticastPointerS(const void *memOpaque, size_t offset,
                            const void *commOpaque) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
@@ -364,15 +393,16 @@ flagcxWorldBarrierSyncS(const void *netOpaque, flagcxCoopKind_t coopKind,
  * The returned pointer is read-only and safe to use from any thread.
  * ================================================================ */
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR const void *
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR const void *
 flagcxDevNetGetFromCommS(const void *commOpaque, int idx) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   // Return pointer into pre-allocated device array (built by
   // flagcxDevCommGetDevicePtr). Each entry is a fully-constructed
   // flagcxDevNet for that context index — no per-call construction.
-  const flagcxDevNet *nets = (const flagcxDevNet *)comm->_netContexts;
+  auto nets = flagcxDevCommNetContexts(*comm);
   if (!nets || comm->_contextCount <= 0)
-    return (const void *)0;
+    return nullptr;
   int safeIdx = (int)((unsigned)idx % (unsigned)comm->_contextCount);
   return &nets[safeIdx];
 }

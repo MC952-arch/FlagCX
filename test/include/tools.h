@@ -1,5 +1,6 @@
 #pragma once
 
+#include "check.h"
 #include "flagcx.h"
 #include "mpi.h"
 #include <cstddef>

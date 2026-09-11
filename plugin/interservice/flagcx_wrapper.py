@@ -40,6 +40,8 @@ flagcxP2pMr_t = ctypes.c_uint64
 FLAGCX_WIN_DEFAULT = 0x00
 FLAGCX_WIN_COLL_SYMMETRIC = 0x01
 
+# This wrapper calls the legacy flagcxDevCommCreate symbol, so this ctypes
+# layout must remain the frozen legacy ABI prefix.
 class flagcxDevCommRequirements(ctypes.Structure):
     _fields_ = [
         ("intraMulticast", ctypes.c_bool),

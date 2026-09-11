@@ -175,11 +175,31 @@ __global__ void kernelIntraPointerS(const void *devCommPtr,
   }
 }
 
+__global__ void kernelIntraPointerWithAccessS(const void *devCommPtr,
+                                              const void *devMemPtr,
+                                              float *output, int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (myRank + 1) % nRanks;
+
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  for (int i = tid; i < count; i += nthreads) {
+    size_t offset = i * sizeof(float);
+    float *peerPtr = (float *)flagcxGetIntraPointerWithAccessS(
+        devMemPtr, offset, peer, flagcxDevPeerAccessReadOnly);
+    if (output[i] != *peerPtr)
+      output[i] = -1.0f;
+  }
+}
+
 void launchKernelIntraPointerS(const void *devCommPtr,
                                     const void *devMemPtr, float *devOutput,
                                     int count,
                                     flagcxStream_t stream) {
   kernelIntraPointerS<<<4, 256, 0, stream->base>>>(
+      devCommPtr, devMemPtr, devOutput, count);
+  kernelIntraPointerWithAccessS<<<4, 256, 0, stream->base>>>(
       devCommPtr, devMemPtr, devOutput, count);
 }
 
@@ -279,11 +299,32 @@ __global__ void kernelPeerPointerS(const void *devCommPtr,
   }
 }
 
+__global__ void kernelPeerPointerWithAccessS(const void *devCommPtr,
+                                             const void *devMemPtr,
+                                             float *output, int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
+  int peer = (myRank + 1) % nRanks;
+
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  for (int i = tid; i < count; i += nthreads) {
+    size_t offset = i * sizeof(float);
+    float *peerPtr = (float *)flagcxGetPeerPointerWithAccessS(
+        devMemPtr, offset, devCommPtr, FLAGCX_TEAM_INTRA, peer,
+        flagcxDevPeerAccessReadOnly);
+    if (output[i] != *peerPtr)
+      output[i] = -1.0f;
+  }
+}
+
 void launchKernelPeerPointerS(const void *devCommPtr,
                               const void *devMemPtr, float *devOutput,
                               int count,
                               flagcxStream_t stream) {
   kernelPeerPointerS<<<4, 256, 0, stream->base>>>(
+      devCommPtr, devMemPtr, devOutput, count);
+  kernelPeerPointerWithAccessS<<<4, 256, 0, stream->base>>>(
       devCommPtr, devMemPtr, devOutput, count);
 }
 
