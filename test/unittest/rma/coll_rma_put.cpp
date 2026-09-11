@@ -3,6 +3,7 @@
 // select either IPC or RDMA explicitly.
 
 #include "flagcx_hetero.h"
+#include "global_comm.h"
 #include "rma_test.hpp"
 #include "sym_heap.h"
 #include <cstring>

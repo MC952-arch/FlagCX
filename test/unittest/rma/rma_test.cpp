@@ -280,7 +280,8 @@ void RmaTest::SetUpTestSuite() {
     res = flagcxHeteroRmaIpcInit(comm->heteroComm);
     int peer = nranks == 2 ? 1 - rank : -1;
     struct flagcxRmaIpcState *ipc = comm->heteroComm->rmaProxy->ipcState;
-    bool localSignalIpcReady = res == flagcxSuccess && ipc != nullptr &&
+    bool localSignalIpcReady = res == flagcxSuccess && peer >= 0 &&
+                               ipc != nullptr && peer < ipc->nRanks &&
                                ipc->peerSignalBufs != nullptr &&
                                ipc->peerSignalBufs[peer] != nullptr;
     if (!allRanksReady(localSignalIpcReady)) {

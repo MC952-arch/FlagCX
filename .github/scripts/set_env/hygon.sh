@@ -55,6 +55,12 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
+    adaptor|p2p|rma)
+      # Surface the libibverbs device/port selection path when the kernel
+      # sysfs preflight succeeds but IBRC still reports zero usable devices.
+      export FLAGCX_DEBUG="${FLAGCX_DEBUG:-INFO}"
+      export FLAGCX_DEBUG_SUBSYS="${FLAGCX_DEBUG_SUBSYS:-INIT,NET,ENV}"
+      ;;
   esac
 }
 

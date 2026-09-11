@@ -356,6 +356,36 @@ int flagcxIbSpeed(int speed) {
   return ibvSpeeds[firstBitSet(speed, sizeof(ibvSpeeds) / sizeof(int) - 1)];
 }
 
+static const char *flagcxIbPortStateName(int state) {
+  switch (state) {
+    case IBV_PORT_NOP:
+      return "NOP";
+    case IBV_PORT_DOWN:
+      return "DOWN";
+    case IBV_PORT_INIT:
+      return "INIT";
+    case IBV_PORT_ARMED:
+      return "ARMED";
+    case IBV_PORT_ACTIVE:
+      return "ACTIVE";
+    case IBV_PORT_ACTIVE_DEFER:
+      return "ACTIVE_DEFER";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static const char *flagcxIbLinkLayerName(int linkLayer) {
+  switch (linkLayer) {
+    case IBV_LINK_LAYER_INFINIBAND:
+      return "InfiniBand";
+    case IBV_LINK_LAYER_ETHERNET:
+      return "Ethernet";
+    default:
+      return "Unsupported";
+  }
+}
+
 int flagcxIbRelaxedOrderingCapable(void) {
   int roMode = flagcxParamIbPciRelaxedOrdering();
   flagcxResult_t r = flagcxInternalError;
@@ -392,6 +422,13 @@ int flagcxIbFindMatchingDev(int dev) {
 
 flagcxResult_t flagcxIbInit() {
   flagcxResult_t ret;
+  int verbsDeviceCount = -1;
+  int openedDeviceCount = 0;
+  int queriedDeviceCount = 0;
+  int queriedPortCount = 0;
+  int activePortCount = 0;
+  int supportedLinkLayerCount = 0;
+  int matchedPortCount = 0;
   if (flagcxParamIbDisable())
     return flagcxInternalError;
   static int shownIbHcaEnv = 0;
@@ -417,7 +454,8 @@ flagcxResult_t flagcxIbInit() {
       struct ibv_device **devices;
 
       // Check if user defined which IB device:port to use
-      char *userIbEnv = getenv("FLAGCX_IB_HCA");
+      char *configuredIbEnv = getenv("FLAGCX_IB_HCA");
+      char *userIbEnv = configuredIbEnv;
       if (userIbEnv != NULL && shownIbHcaEnv++ == 0)
         INFO(FLAGCX_NET | FLAGCX_ENV, "FLAGCX_IB_HCA set to %s", userIbEnv);
       struct netIf userIfs[MAX_IB_DEVS];
@@ -433,6 +471,9 @@ flagcxResult_t flagcxIbInit() {
         ret = flagcxInternalError;
         goto fail;
       }
+      verbsDeviceCount = nIbDevs;
+      INFO(FLAGCX_INIT | FLAGCX_NET,
+           "NET/IB : libibverbs reported %d device(s).", nIbDevs);
 
       for (int d = 0; d < nIbDevs && flagcxNIbDevs < MAX_IB_DEVS; d++) {
         struct ibv_context *context;
@@ -441,6 +482,7 @@ flagcxResult_t flagcxIbInit() {
           WARN("NET/IB : Unable to open device %s", devices[d]->name);
           continue;
         }
+        openedDeviceCount++;
         int nPorts = 0;
         struct ibv_device_attr devAttr;
         memset(&devAttr, 0, sizeof(devAttr));
@@ -452,25 +494,55 @@ flagcxResult_t flagcxIbInit() {
           }
           continue;
         }
+        queriedDeviceCount++;
+        INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IB : device=%s phys_port_cnt=%d",
+             devices[d]->name, devAttr.phys_port_cnt);
         for (int port_num = 1; port_num <= devAttr.phys_port_cnt; port_num++) {
           struct ibv_port_attr portAttr;
           if (flagcxSuccess !=
               flagcxWrapIbvQueryPort(context, port_num, &portAttr)) {
-            WARN("NET/IB : Unable to query port_num %d", port_num);
+            WARN("NET/IB : Unable to query device %s port %d", devices[d]->name,
+                 port_num);
             continue;
           }
-          if (portAttr.state != IBV_PORT_ACTIVE)
+          queriedPortCount++;
+          INFO(FLAGCX_INIT | FLAGCX_NET,
+               "NET/IB : device=%s port=%d state=%d(%s) link_layer=%d(%s)",
+               devices[d]->name, port_num, portAttr.state,
+               flagcxIbPortStateName(portAttr.state), portAttr.link_layer,
+               flagcxIbLinkLayerName(portAttr.link_layer));
+          if (portAttr.state != IBV_PORT_ACTIVE) {
+            INFO(FLAGCX_INIT | FLAGCX_NET,
+                 "NET/IB : skipping device=%s port=%d: port state is %d(%s), "
+                 "not ACTIVE",
+                 devices[d]->name, port_num, portAttr.state,
+                 flagcxIbPortStateName(portAttr.state));
             continue;
+          }
+          activePortCount++;
           if (portAttr.link_layer != IBV_LINK_LAYER_INFINIBAND &&
-              portAttr.link_layer != IBV_LINK_LAYER_ETHERNET)
+              portAttr.link_layer != IBV_LINK_LAYER_ETHERNET) {
+            INFO(FLAGCX_INIT | FLAGCX_NET,
+                 "NET/IB : skipping device=%s port=%d: unsupported "
+                 "link_layer=%d(%s)",
+                 devices[d]->name, port_num, portAttr.link_layer,
+                 flagcxIbLinkLayerName(portAttr.link_layer));
             continue;
+          }
+          supportedLinkLayerCount++;
 
           // check against user specified HCAs/ports
           if (!(matchIfList(devices[d]->name, port_num, userIfs, nUserIfs,
                             searchExact) ^
                 searchNot)) {
+            INFO(FLAGCX_INIT | FLAGCX_NET,
+                 "NET/IB : skipping device=%s port=%d: excluded by "
+                 "FLAGCX_IB_HCA=%s",
+                 devices[d]->name, port_num,
+                 configuredIbEnv == NULL ? "<unset>" : configuredIbEnv);
             continue;
           }
+          matchedPortCount++;
           pthread_mutex_init(&flagcxIbDevs[flagcxNIbDevs].lock, NULL);
           flagcxIbDevs[flagcxNIbDevs].device = d;
           flagcxIbDevs[flagcxNIbDevs].guid = devAttr.sys_image_guid;
@@ -560,7 +632,20 @@ flagcxResult_t flagcxIbInit() {
       };
     }
     if (flagcxNIbDevs == 0) {
-      INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IB : No device found.");
+      if (verbsDeviceCount > 0) {
+        WARN("NET/IB : libibverbs reported %d device(s), but no usable port "
+             "was selected (opened_devices=%d queried_devices=%d "
+             "queried_ports=%d active_ports=%d supported_link_layers=%d "
+             "hca_matched_ports=%d).",
+             verbsDeviceCount, openedDeviceCount, queriedDeviceCount,
+             queriedPortCount, activePortCount, supportedLinkLayerCount,
+             matchedPortCount);
+      } else if (verbsDeviceCount == 0) {
+        INFO(FLAGCX_INIT | FLAGCX_NET,
+             "NET/IB : libibverbs reported no devices.");
+      } else {
+        INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IB : No device found.");
+      }
     } else {
       char line[2048];
       line[0] = '\0';
