@@ -275,11 +275,12 @@ run_suite() {
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
       # Exercise device IPC handles across processes and physical devices. Use
-      # exactly two ranks so rank 0 exports from GPU 0 and rank 1 imports on
-      # GPU 1, with an independent timeout from the adaptor unit tests. Always
-      # run this invocation even when the RDMA loopback tests fail so an RDMA
-      # environment problem cannot hide device IPC coverage. Disable VMM to
-      # exercise the same IPC-exportable GDR allocation used by the RMA suite.
+      # exactly two ranks so GPU 0 and GPU 1 exercise both exporter/importer
+      # directions and the full-mesh mapping setup used by RMA, with an
+      # independent timeout from the adaptor unit tests. Always run this
+      # invocation even when the RDMA loopback tests fail so an RDMA environment
+      # problem cannot hide device IPC coverage. Disable VMM to exercise the
+      # same IPC-exportable GDR allocation used by the RMA suite.
       FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \

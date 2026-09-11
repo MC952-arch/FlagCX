@@ -18,6 +18,88 @@ static int collectiveOpStatus(flagcxResult_t res) {
   return globalStatus;
 }
 
+// Validate the symmetric-window IPC locator independently from the RMA wrapper.
+// This uses the same 1 MiB flagcxMemAlloc allocation and IPC table entry as the
+// production path, including small transfers at interior offsets.
+TEST_F(RmaTest, IpcResolvedPeerPointerSupportsDirectCopy) {
+  if (!requireIpc)
+    GTEST_SKIP() << "Runs only in the explicit IPC invocation";
+
+  constexpr size_t testSize = 64;
+  const size_t offsets[] = {0, 0x400, size - testSize};
+  flagcxStream_t s = nullptr;
+  flagcxResult_t setupRes = devHandle->streamCreate(&s);
+  if (setupRes == flagcxSuccess && s == nullptr)
+    setupRes = flagcxInternalError;
+  ASSERT_EQ(collectiveOpStatus(setupRes), 0);
+
+  for (size_t offset : offsets) {
+    setupRes =
+        devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
+    ASSERT_EQ(collectiveOpStatus(setupRes), 0);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    flagcxResult_t opRes = flagcxSuccess;
+    if (rank == 0) {
+      std::vector<uint8_t> pattern(testSize);
+      for (size_t i = 0; i < testSize; ++i)
+        pattern[i] = static_cast<uint8_t>((i * 17 + offset / testSize) & 0xff);
+
+      void *localRange = static_cast<char *>(dataBuff) + offset;
+      void *peerRange = nullptr;
+      opRes = devHandle->deviceMemcpy(localRange, pattern.data(), testSize,
+                                      flagcxMemcpyHostToDevice, nullptr);
+      if (opRes == flagcxSuccess) {
+        opRes = flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm,
+                                                 dataWin->defaultBase, 1,
+                                                 offset, testSize, &peerRange);
+      }
+      if (opRes == flagcxSuccess && peerRange == nullptr)
+        opRes = flagcxInternalError;
+      if (opRes == flagcxSuccess) {
+        opRes = devHandle->deviceMemcpy(peerRange, localRange, testSize,
+                                        flagcxMemcpyDeviceToDevice, s);
+      }
+      if (opRes == flagcxSuccess)
+        opRes = devHandle->streamSynchronize(s);
+    }
+
+    ASSERT_EQ(collectiveOpStatus(opRes), 0)
+        << "Direct symmetric-window IPC copy failed at offset " << offset;
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    bool localDataValid = true;
+    if (rank == 1) {
+      std::vector<uint8_t> actual(testSize, 0);
+      void *localRange = static_cast<char *>(dataBuff) + offset;
+      flagcxResult_t copyRes =
+          devHandle->deviceMemcpy(actual.data(), localRange, testSize,
+                                  flagcxMemcpyDeviceToHost, nullptr);
+      if (copyRes == flagcxSuccess)
+        copyRes = devHandle->deviceSynchronize();
+      for (size_t i = 0; copyRes == flagcxSuccess && i < testSize; ++i) {
+        uint8_t expected =
+            static_cast<uint8_t>((i * 17 + offset / testSize) & 0xff);
+        if (actual[i] != expected) {
+          localDataValid = false;
+          break;
+        }
+      }
+      if (copyRes != flagcxSuccess)
+        localDataValid = false;
+    }
+
+    int localValid = localDataValid ? 1 : 0;
+    int allDataValid = 0;
+    MPI_Allreduce(&localValid, &allDataValid, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    EXPECT_EQ(allDataValid, 1)
+        << "Direct symmetric-window IPC data mismatch at offset " << offset;
+  }
+
+  EXPECT_EQ(devHandle->streamDestroy(s), flagcxSuccess);
+}
+
 // The IPC data path must use the symmetric window's IPC locator directly. It
 // must not require a network MR index or an initialized RDMA sendComm.
 TEST_F(RmaTest, IpcPutWithoutNetworkMr) {
@@ -30,51 +112,58 @@ TEST_F(RmaTest, IpcPutWithoutNetworkMr) {
   ASSERT_EQ(allMrsAbsent, 1)
       << "IPC invocation unexpectedly registered a network MR";
 
-  const size_t testSize = 64;
+  constexpr size_t testSize = 64;
+  const size_t offsets[] = {0, 0x400, size - testSize};
   flagcxStream_t s = nullptr;
   flagcxResult_t setupRes = devHandle->streamCreate(&s);
   if (setupRes == flagcxSuccess && s == nullptr)
     setupRes = flagcxInternalError;
   ASSERT_EQ(collectiveOpStatus(setupRes), 0);
 
-  setupRes =
-      devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
-  ASSERT_EQ(collectiveOpStatus(setupRes), 0);
-  MPI_Barrier(MPI_COMM_WORLD);
+  for (size_t offset : offsets) {
+    setupRes =
+        devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
+    ASSERT_EQ(collectiveOpStatus(setupRes), 0);
+    MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxResult_t opRes = flagcxSuccess;
-  if (rank == 0) {
-    std::vector<uint8_t> pattern(testSize, 0x5A);
-    opRes = devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
-                                    flagcxMemcpyHostToDevice, nullptr);
-    if (opRes == flagcxSuccess) {
-      uint64_t opSeq = 0;
-      opRes = flagcxHeteroPutStream(comm->heteroComm, 1, 0, 0, testSize, -1, -1,
-                                    dataWin->defaultBase, dataWin->defaultBase,
-                                    s, &opSeq);
+    flagcxResult_t opRes = flagcxSuccess;
+    if (rank == 0) {
+      std::vector<uint8_t> pattern(testSize, 0x5A);
+      void *localRange = static_cast<char *>(dataBuff) + offset;
+      opRes = devHandle->deviceMemcpy(localRange, pattern.data(), testSize,
+                                      flagcxMemcpyHostToDevice, nullptr);
+      if (opRes == flagcxSuccess) {
+        uint64_t opSeq = 0;
+        opRes = flagcxHeteroPutStream(comm->heteroComm, 1, offset, offset,
+                                      testSize, -1, -1, dataWin->defaultBase,
+                                      dataWin->defaultBase, s, &opSeq);
+      }
+      if (opRes == flagcxSuccess)
+        opRes = devHandle->streamSynchronize(s);
     }
-    if (opRes == flagcxSuccess)
-      opRes = devHandle->streamSynchronize(s);
+
+    int globalOpStatus = collectiveOpStatus(opRes);
+    ASSERT_EQ(globalOpStatus, 0)
+        << "IPC PUT failed without network MR state at offset " << offset;
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    bool localDataValid = true;
+    if (rank == 1) {
+      std::vector<uint8_t> received(testSize, 0);
+      void *localRange = static_cast<char *>(dataBuff) + offset;
+      flagcxResult_t copyRes =
+          devHandle->deviceMemcpy(received.data(), localRange, testSize,
+                                  flagcxMemcpyDeviceToHost, nullptr);
+      localDataValid = copyRes == flagcxSuccess &&
+                       received == std::vector<uint8_t>(testSize, 0x5A);
+    }
+
+    int localValid = localDataValid ? 1 : 0;
+    int allDataValid = 0;
+    MPI_Allreduce(&localValid, &allDataValid, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    EXPECT_EQ(allDataValid, 1) << "IPC PUT data mismatch at offset " << offset;
   }
-
-  int globalOpStatus = collectiveOpStatus(opRes);
-  ASSERT_EQ(globalOpStatus, 0) << "IPC PUT failed without network MR state";
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  bool localDataValid = true;
-  if (rank == 1) {
-    std::vector<uint8_t> received(testSize, 0);
-    flagcxResult_t copyRes = devHandle->deviceMemcpy(
-        received.data(), dataBuff, testSize, flagcxMemcpyDeviceToHost, nullptr);
-    localDataValid = copyRes == flagcxSuccess &&
-                     received == std::vector<uint8_t>(testSize, 0x5A);
-  }
-
-  int localValid = localDataValid ? 1 : 0;
-  int allDataValid = 0;
-  MPI_Allreduce(&localValid, &allDataValid, 1, MPI_INT, MPI_MIN,
-                MPI_COMM_WORLD);
-  EXPECT_EQ(allDataValid, 1);
   EXPECT_EQ(devHandle->streamDestroy(s), flagcxSuccess);
 }
 
