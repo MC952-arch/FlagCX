@@ -1426,7 +1426,9 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  // Step 2b: Create IPC handle for the buffer (hetero path only)
+  // Step 2b: Create an IPC handle for the allocation containing the buffer
+  // (hetero path only). The handle is cached once per allocation; consumers
+  // compute the user-buffer offset independently for each registered range.
   // Write-once: if localIpcHandleData is already populated, skip.
   // Note: cudaIpcGetMemHandle is incompatible with VMM buffers (cuMemCreate/
   // cuMemMap). When it fails, we skip IPC handle creation and still proceed
@@ -1435,6 +1437,19 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     char zeros[sizeof(flagcxIpcHandleData)] = {};
     if (memcmp(&regItem->localIpcHandleData, zeros,
                sizeof(flagcxIpcHandleData)) == 0) {
+      void *exportBase = buff;
+      size_t allocationSize = 0;
+      size_t userOffset = 0;
+      res = flagcxGetIpcExportRange(buff, size, &exportBase, &allocationSize,
+                                    &userOffset);
+      if (res != flagcxSuccess) {
+        INFO(FLAGCX_REG,
+             "flagcxCommRegister: allocation range query failed (%d) for "
+             "buff %p, skipping IPC handle",
+             (int)res, buff);
+        res = flagcxSuccess;
+        goto skip_ipc;
+      }
       flagcxIpcMemHandle_t handlePtr = nullptr;
       size_t ipcSize = 0;
       res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
@@ -1442,7 +1457,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
         res = flagcxSuccess;
         goto skip_ipc;
       }
-      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
       if (res != flagcxSuccess) {
         deviceAdaptor->ipcMemHandleFree(handlePtr);
         INFO(FLAGCX_REG,

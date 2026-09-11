@@ -5,11 +5,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #include "adaptor.h"
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
+#include "flagcx_kernel_internal.h"
 #include "global_comm.h"
 #include "onesided.h"
 
@@ -19,6 +21,11 @@ flagcxHeteroComm *signalOwnerHeteroComm = nullptr;
 void *freedSignalBuffer = nullptr;
 int signalBufferFreeCount = 0;
 bool signalStateClearedBeforeFree = false;
+void *closedIpcMappings[4] = {};
+int closedIpcMappingCount = 0;
+void *queriedAllocationBase = nullptr;
+size_t queriedAllocationSize = 0;
+flagcxResult_t addressRangeResult = flagcxSuccess;
 
 flagcxResult_t recordSignalGdrFree(void *ptr, void *) {
   freedSignalBuffer = ptr;
@@ -31,6 +38,21 @@ flagcxResult_t recordSignalGdrFree(void *ptr, void *) {
   return flagcxSuccess;
 }
 
+flagcxResult_t recordIpcMemHandleClose(void *ptr) {
+  if (closedIpcMappingCount < 4)
+    closedIpcMappings[closedIpcMappingCount] = ptr;
+  closedIpcMappingCount++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t queryTestAddressRange(const void *, void **base, size_t *size) {
+  if (addressRangeResult != flagcxSuccess)
+    return addressRangeResult;
+  *base = queriedAllocationBase;
+  *size = queriedAllocationSize;
+  return flagcxSuccess;
+}
+
 class RmaSignalRegistrationOwnershipTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -40,11 +62,17 @@ protected:
     savedDeviceAdaptor_ = deviceAdaptor;
     testDeviceAdaptor_ = *deviceAdaptor;
     testDeviceAdaptor_.gdrMemFree = recordSignalGdrFree;
+    testDeviceAdaptor_.ipcMemHandleClose = recordIpcMemHandleClose;
     deviceAdaptor = &testDeviceAdaptor_;
     signalOwnerHeteroComm = nullptr;
     freedSignalBuffer = nullptr;
     signalBufferFreeCount = 0;
     signalStateClearedBeforeFree = false;
+    memset(closedIpcMappings, 0, sizeof(closedIpcMappings));
+    closedIpcMappingCount = 0;
+    queriedAllocationBase = nullptr;
+    queriedAllocationSize = 0;
+    addressRangeResult = flagcxSuccess;
   }
 
   void TearDown() override {
@@ -94,6 +122,134 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   EXPECT_EQ(freedSignalBuffer, signalBuffer);
   EXPECT_EQ(signalBufferFreeCount, 1);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcTableCleanupClosesRawMappingBase) {
+  flagcxComm comm = {};
+  struct flagcxIpcTableEntry *entry = &comm.ipcTable[0];
+  entry->hostPeerPtrs = static_cast<void **>(calloc(2, sizeof(void *)));
+  entry->hostPeerBasePtrs = static_cast<void **>(calloc(2, sizeof(void *)));
+  ASSERT_NE(entry->hostPeerPtrs, nullptr);
+  ASSERT_NE(entry->hostPeerBasePtrs, nullptr);
+
+  entry->hostPeerPtrs[0] = reinterpret_cast<void *>(0x200000);
+  entry->hostPeerPtrs[1] = reinterpret_cast<void *>(0x100400);
+  entry->hostPeerBasePtrs[1] = reinterpret_cast<void *>(0x100000);
+  entry->nPeers = 2;
+  entry->basePtr = entry->hostPeerPtrs[0];
+  entry->inUse = false;
+
+  ASSERT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
+  ASSERT_EQ(closedIpcMappingCount, 1);
+  EXPECT_EQ(closedIpcMappings[0], reinterpret_cast<void *>(0x100000));
+  EXPECT_EQ(entry->hostPeerPtrs, nullptr);
+  EXPECT_EQ(entry->hostPeerBasePtrs, nullptr);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       DeferredIpcCleanupClosesRawMappingBase) {
+  flagcxComm comm = {};
+  flagcxIntruQueueConstruct(&comm.deferredIpcQueue);
+  struct flagcxIpcTableEntry *entry = &comm.ipcTable[0];
+  entry->hostPeerPtrs = static_cast<void **>(calloc(2, sizeof(void *)));
+  entry->hostPeerBasePtrs = static_cast<void **>(calloc(2, sizeof(void *)));
+  ASSERT_NE(entry->hostPeerPtrs, nullptr);
+  ASSERT_NE(entry->hostPeerBasePtrs, nullptr);
+
+  entry->hostPeerPtrs[0] = reinterpret_cast<void *>(0x200000);
+  entry->hostPeerPtrs[1] = reinterpret_cast<void *>(0x100400);
+  entry->hostPeerBasePtrs[1] = reinterpret_cast<void *>(0x100000);
+  entry->nPeers = 2;
+  entry->basePtr = entry->hostPeerPtrs[0];
+  entry->inUse = true;
+
+  releaseIpcTableSlot(&comm, 0);
+  EXPECT_EQ(entry->hostPeerPtrs, nullptr);
+  EXPECT_EQ(entry->hostPeerBasePtrs, nullptr);
+  ASSERT_EQ(flagcxCommDrainDeferredIpc(&comm), flagcxSuccess);
+  ASSERT_EQ(closedIpcMappingCount, 1);
+  EXPECT_EQ(closedIpcMappings[0], reinterpret_cast<void *>(0x100000));
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcExportRangePreservesInteriorOffset) {
+  testDeviceAdaptor_.getAddressRange = queryTestAddressRange;
+  queriedAllocationBase = reinterpret_cast<void *>(0x100000);
+  queriedAllocationSize = 0x2000;
+
+  void *exportBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 0;
+  ASSERT_EQ(flagcxGetIpcExportRange(reinterpret_cast<void *>(0x100400), 0x800,
+                                    &exportBase, &allocationSize, &userOffset),
+            flagcxSuccess);
+  EXPECT_EQ(exportBase, queriedAllocationBase);
+  EXPECT_EQ(allocationSize, 0x2000u);
+  EXPECT_EQ(userOffset, 0x400u);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcExportRangeFallsBackWhenCallbackIsNull) {
+  testDeviceAdaptor_.getAddressRange = nullptr;
+  void *userPtr = reinterpret_cast<void *>(0x100400);
+  void *exportBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 1;
+
+  ASSERT_EQ(flagcxGetIpcExportRange(userPtr, 0x800, &exportBase,
+                                    &allocationSize, &userOffset),
+            flagcxSuccess);
+  EXPECT_EQ(exportBase, userPtr);
+  EXPECT_EQ(allocationSize, 0x800u);
+  EXPECT_EQ(userOffset, 0u);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcExportRangeRejectsRangeOutsideAllocation) {
+  testDeviceAdaptor_.getAddressRange = queryTestAddressRange;
+  queriedAllocationBase = reinterpret_cast<void *>(0x100000);
+  queriedAllocationSize = 0x1000;
+
+  void *exportBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 0;
+  EXPECT_EQ(flagcxGetIpcExportRange(reinterpret_cast<void *>(0x100f00), 0x200,
+                                    &exportBase, &allocationSize, &userOffset),
+            flagcxInvalidUsage);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcExportRangeFallsBackWhenQueryIsUnsupported) {
+  testDeviceAdaptor_.getAddressRange = queryTestAddressRange;
+  addressRangeResult = flagcxNotSupported;
+  void *userPtr = reinterpret_cast<void *>(0x100400);
+  void *exportBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 1;
+
+  ASSERT_EQ(flagcxGetIpcExportRange(userPtr, 0x800, &exportBase,
+                                    &allocationSize, &userOffset),
+            flagcxSuccess);
+  EXPECT_EQ(exportBase, userPtr);
+  EXPECT_EQ(allocationSize, 0x800u);
+  EXPECT_EQ(userOffset, 0u);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest, IpcExportRangePropagatesQueryError) {
+  testDeviceAdaptor_.getAddressRange = queryTestAddressRange;
+  addressRangeResult = flagcxSystemError;
+  void *userPtr = reinterpret_cast<void *>(0x100400);
+  void *exportBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 1;
+
+  EXPECT_EQ(flagcxGetIpcExportRange(userPtr, 0x800, &exportBase,
+                                    &allocationSize, &userOffset),
+            flagcxSystemError);
+  EXPECT_EQ(exportBase, userPtr);
+  EXPECT_EQ(allocationSize, 0x800u);
+  EXPECT_EQ(userOffset, 0u);
 }
 
 TEST(RmaSignalRegistrationOwnership,

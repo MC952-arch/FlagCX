@@ -704,11 +704,15 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     struct flagcxIpcTableEntry *e = &comm->ipcTable[devComm->barrierIpcIndex];
-    if (e->hostPeerPtrs) {
+    if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr)
-          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
+        if (e->hostPeerBasePtrs[i])
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
+      free(e->hostPeerBasePtrs);
+      e->hostPeerBasePtrs = nullptr;
+    }
+    if (e->hostPeerPtrs) {
       free(e->hostPeerPtrs);
       e->hostPeerPtrs = nullptr;
     }
@@ -725,11 +729,15 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES)
       return;
     struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
-    if (e->hostPeerPtrs) {
+    if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr)
-          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
+        if (e->hostPeerBasePtrs[i])
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
+      free(e->hostPeerBasePtrs);
+      e->hostPeerBasePtrs = nullptr;
+    }
+    if (e->hostPeerPtrs) {
       free(e->hostPeerPtrs);
       e->hostPeerPtrs = nullptr;
     }
@@ -889,44 +897,25 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     }
     // ---- Priority 4 & 5: No window — IPC ----
     else if (win == nullptr && !flagcxParamDeviceOneSidedForceNet()) {
-      // Check if buffer supports IPC (VMM-allocated buffers do not support
-      // cudaIpcGetMemHandle). Probe via ipcMemHandleGet before entering the
-      // collective buildIpcPeerPointers.
-      bool ipcCapable = false;
-      if (deviceAdaptor->ipcMemHandleCreate && deviceAdaptor->ipcMemHandleGet &&
-          deviceAdaptor->ipcMemHandleFree) {
-        flagcxIpcMemHandle_t probe = NULL;
-        size_t probeSize = 0;
-        if (deviceAdaptor->ipcMemHandleCreate(&probe, &probeSize) ==
-            flagcxSuccess) {
-          if (deviceAdaptor->ipcMemHandleGet(probe, buff) == flagcxSuccess) {
-            ipcCapable = true;
-          }
-          deviceAdaptor->ipcMemHandleFree(probe);
+      int existingIdx = -1;
+      for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
+        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
+          existingIdx = i;
+          break;
         }
       }
-
-      if (!ipcCapable) {
-        INFO(FLAGCX_INIT,
-             "flagcxDevMemCreate: buff %p not IPC-capable, skipping IPC", buff);
+      if (existingIdx >= 0) {
+        devMem->ipcIndex = existingIdx;
       } else {
-        int existingIdx = -1;
-        for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
-          if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
-            existingIdx = i;
-            break;
-          }
-        }
-        if (existingIdx >= 0) {
-          devMem->ipcIndex = existingIdx;
+        // IPC capability is a collective property of the local group. Let
+        // buildIpcPeerPointers exchange per-rank export status instead of
+        // making an independent capability decision on each rank.
+        int idx = buildIpcPeerPointers(comm, buff, size);
+        if (idx >= 0) {
+          devMem->ipcIndex = idx;
         } else {
-          int idx = buildIpcPeerPointers(comm, buff, size);
-          if (idx >= 0) {
-            devMem->ipcIndex = idx;
-          } else {
-            WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
-                 "IPC layer not available");
-          }
+          WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
+               "IPC layer not available");
         }
       }
     }

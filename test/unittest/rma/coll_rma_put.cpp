@@ -6,6 +6,7 @@
 #include "global_comm.h"
 #include "rma_test.hpp"
 #include "sym_heap.h"
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -33,6 +34,66 @@ TEST_F(RmaTest, IpcResolvedPeerPointerSupportsDirectCopy) {
     setupRes = flagcxInternalError;
   ASSERT_EQ(collectiveOpStatus(setupRes), 0);
 
+  // An IPC handle describes the containing allocation. Verify that the common
+  // IPC table restores each peer's user-buffer offset after opening that
+  // allocation in the importing process. Address-range introspection is an
+  // optional adaptor capability, so every rank must agree whether this
+  // additional check can run before entering its collectives.
+  void *allocationBase = nullptr;
+  size_t allocationSize = 0;
+  flagcxResult_t addressRangeRes = flagcxNotSupported;
+  if (deviceAdaptor->getAddressRange != nullptr) {
+    addressRangeRes = deviceAdaptor->getAddressRange(dataBuff, &allocationBase,
+                                                     &allocationSize);
+  }
+  int addressRangeStatus = collectiveOpStatus(addressRangeRes);
+  ASSERT_NE(addressRangeStatus, 2)
+      << "Allocation-range query failed on at least one rank";
+
+  if (addressRangeStatus == 0) {
+    uintptr_t userAddress = reinterpret_cast<uintptr_t>(dataBuff);
+    uintptr_t baseAddress = reinterpret_cast<uintptr_t>(allocationBase);
+    uint64_t localUserOffset =
+        userAddress >= baseAddress ? userAddress - baseAddress : UINT64_MAX;
+    std::vector<uint64_t> peerUserOffsets(nranks, UINT64_MAX);
+    MPI_Allgather(&localUserOffset, sizeof(localUserOffset), MPI_BYTE,
+                  peerUserOffsets.data(), sizeof(localUserOffset), MPI_BYTE,
+                  MPI_COMM_WORLD);
+
+    int peer = nranks == 2 ? 1 - rank : -1;
+    int peerLocalRank =
+        peer >= 0 && comm->heteroComm->rankToLocalRank != nullptr
+            ? comm->heteroComm->rankToLocalRank[peer]
+            : -1;
+    int slot = dataWin->defaultBase->ipcSlot;
+    bool localOffsetValid = peer >= 0 && peerLocalRank >= 0 && slot >= 0 &&
+                            slot < comm->ipcTableSize;
+    if (localOffsetValid) {
+      struct flagcxIpcTableEntry *entry = &comm->ipcTable[slot];
+      localOffsetValid = peerLocalRank < entry->nPeers &&
+                         entry->hostPeerBasePtrs != nullptr &&
+                         entry->hostPeerPtrs != nullptr &&
+                         entry->hostPeerBasePtrs[peerLocalRank] != nullptr &&
+                         entry->hostPeerPtrs[peerLocalRank] != nullptr;
+      if (localOffsetValid) {
+        uintptr_t peerBase =
+            reinterpret_cast<uintptr_t>(entry->hostPeerBasePtrs[peerLocalRank]);
+        uintptr_t peerUser =
+            reinterpret_cast<uintptr_t>(entry->hostPeerPtrs[peerLocalRank]);
+        localOffsetValid = peerUser >= peerBase &&
+                           peerUser - peerBase == peerUserOffsets[peer];
+      }
+    }
+    int localValid = localOffsetValid ? 1 : 0;
+    int allValid = 0;
+    MPI_Allreduce(&localValid, &allValid, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    ASSERT_EQ(allValid, 1)
+        << "IPC peer pointer did not preserve the exported user offset";
+  }
+
+  // The direct-copy checks are deliberately outside the optional address-range
+  // block. Adaptors without introspection must still prove IPC data
+  // correctness.
   for (size_t offset : offsets) {
     setupRes =
         devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);

@@ -677,6 +677,20 @@ flagcxResult_t ppucudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ppucudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                             size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ppucudaAdaptor {
   "PPU_CUDA",
       // Basic functions
@@ -725,7 +739,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymMulticastBind, ppucudaAdaptorSymMulticastTeardown,
       ppucudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      ppucudaAdaptorGetPointerType,
+      ppucudaAdaptorGetPointerType, ppucudaAdaptorGetAddressRange,
 };
 
 #endif // USE_PPU_ADAPTOR

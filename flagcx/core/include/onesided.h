@@ -51,6 +51,13 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
 // Stores results in comm->ipcTable and returns the table index.
 // Returns -1 on failure (IPC not available for this buffer).
 struct flagcxComm;
+// Resolve the allocation exported by an IPC handle and the offset of the user
+// buffer within it. Backends without allocation-range introspection retain the
+// legacy exact-pointer behavior.
+flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
+                                       void **exportBase,
+                                       size_t *allocationSize,
+                                       size_t *userOffset);
 int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

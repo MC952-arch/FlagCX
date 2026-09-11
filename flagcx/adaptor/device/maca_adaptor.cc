@@ -750,6 +750,17 @@ flagcxResult_t macaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  mcDeviceptr_t allocationBase = 0;
+  DEVCHECK(mcMemGetAddressRange(&allocationBase, size, (mcDeviceptr_t)ptr));
+  *base = (void *)(uintptr_t)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -815,7 +826,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
       macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      macaAdaptorGetPointerType,
+      macaAdaptorGetPointerType, macaAdaptorGetAddressRange,
 };
 
 #endif // USE_METAX_ADAPTOR

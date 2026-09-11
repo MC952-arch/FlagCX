@@ -977,6 +977,20 @@ flagcxResult_t cudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -1044,6 +1058,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
       cudaAdaptorGetLastError, cudaAdaptorGetPointerType,
+      cudaAdaptorGetAddressRange,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

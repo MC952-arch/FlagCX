@@ -11,15 +11,14 @@
 #include "flagcx.h"
 #include "topo.h"
 
-TEST(DeviceAdaptorCompatibilityTest, V1UpgradeProvidesPointerTypeStub) {
+TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
   flagcxDeviceAdaptor_v1 v1 = {};
   flagcxDeviceAdaptor_latest latest = {};
 
   flagcxDeviceAdaptorUpgradeV1(&v1, &latest);
 
-  ASSERT_NE(latest.getPointerType, nullptr);
-  int ptrType = 0;
-  EXPECT_EQ(latest.getPointerType(&v1, &ptrType), flagcxNotSupported);
+  EXPECT_EQ(latest.getPointerType, nullptr);
+  EXPECT_EQ(latest.getAddressRange, nullptr);
 }
 
 class DeviceAdaptorTest : public ::testing::Test {
@@ -157,6 +156,61 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(devHandle->deviceFree(managedPtr, flagcxMemManaged, nullptr),
             flagcxSuccess);
+}
+
+TEST_F(DeviceAdaptorTest, GetAddressRangeForInteriorGdrPointer) {
+  if (deviceAdaptor->getAddressRange == nullptr ||
+      deviceAdaptor->gdrMemAlloc == nullptr ||
+      deviceAdaptor->gdrMemFree == nullptr) {
+    GTEST_SKIP() << "Allocation range queries are not available";
+  }
+
+  constexpr size_t allocationSize = 1 << 20;
+  constexpr size_t interiorOffset = 0x400;
+  void *invalidBase = nullptr;
+  size_t invalidSize = 0;
+  flagcxResult_t result =
+      deviceAdaptor->getAddressRange(nullptr, &invalidBase, &invalidSize);
+  if (result == flagcxNotSupported) {
+    GTEST_SKIP() << "Allocation range queries are not supported";
+  }
+  EXPECT_EQ(result, flagcxInvalidArgument);
+
+  void *allocation = nullptr;
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(allocation, nullptr);
+
+  void *allocationBase = nullptr;
+  size_t queriedAllocationSize = 0;
+  ASSERT_EQ(deviceAdaptor->getAddressRange(allocation, &allocationBase,
+                                           &queriedAllocationSize),
+            flagcxSuccess);
+  ASSERT_NE(allocationBase, nullptr);
+
+  uintptr_t allocationAddress = reinterpret_cast<uintptr_t>(allocation);
+  uintptr_t baseAddress = reinterpret_cast<uintptr_t>(allocationBase);
+  ASSERT_LE(baseAddress, allocationAddress);
+  size_t allocationOffset = allocationAddress - baseAddress;
+  ASSERT_LE(allocationOffset, queriedAllocationSize);
+  EXPECT_GE(queriedAllocationSize - allocationOffset, allocationSize);
+
+  const size_t offsets[] = {interiorOffset, allocationSize - 64};
+  for (size_t offset : offsets) {
+    void *interior = reinterpret_cast<void *>(allocationAddress + offset);
+    void *interiorBase = nullptr;
+    size_t interiorRangeSize = 0;
+    ASSERT_EQ(deviceAdaptor->getAddressRange(interior, &interiorBase,
+                                             &interiorRangeSize),
+              flagcxSuccess);
+    EXPECT_EQ(interiorBase, allocationBase);
+    EXPECT_EQ(interiorRangeSize, queriedAllocationSize);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(interior) -
+                  reinterpret_cast<uintptr_t>(interiorBase),
+              allocationOffset + offset);
+  }
+
+  EXPECT_EQ(deviceAdaptor->gdrMemFree(allocation, nullptr), flagcxSuccess);
 }
 
 // Test: Memory copy Host -> Device -> Host

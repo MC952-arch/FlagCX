@@ -561,6 +561,20 @@ flagcxResult_t ducudaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ducudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                            size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -634,6 +648,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      ducudaAdaptorGetAddressRange,
 };
 
 #endif // USE_DU_ADAPTOR
