@@ -71,9 +71,37 @@ protected:
 };
 
 enum class CrossGpuIpcDirection { Read, Write };
+enum class IpcAllocationKind { Device, Gdr };
+enum class IpcCopyMode { Synchronous, Asynchronous };
 
-void runCrossGpuIpcTransfer(flagcxDeviceHandle_t devHandle,
-                            CrossGpuIpcDirection direction) {
+flagcxResult_t allocateIpcTestBuffer(flagcxDeviceHandle_t devHandle,
+                                     IpcAllocationKind kind, void **ptr,
+                                     size_t size) {
+  if (kind == IpcAllocationKind::Device) {
+    return devHandle->deviceMalloc(ptr, size, flagcxMemDevice, nullptr);
+  }
+  if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemAlloc == nullptr) {
+    return flagcxNotSupported;
+  }
+  return deviceAdaptor->gdrMemAlloc(ptr, size, nullptr);
+}
+
+flagcxResult_t freeIpcTestBuffer(flagcxDeviceHandle_t devHandle,
+                                 IpcAllocationKind kind, void *ptr) {
+  if (kind == IpcAllocationKind::Device) {
+    return devHandle->deviceFree(ptr, flagcxMemDevice, nullptr);
+  }
+  if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemFree == nullptr) {
+    return flagcxNotSupported;
+  }
+  return deviceAdaptor->gdrMemFree(ptr, nullptr);
+}
+
+void runCrossGpuIpcTransfer(
+    flagcxDeviceHandle_t devHandle, CrossGpuIpcDirection direction,
+    IpcAllocationKind exportedAllocation = IpcAllocationKind::Device,
+    IpcAllocationKind localAllocation = IpcAllocationKind::Device,
+    IpcCopyMode copyMode = IpcCopyMode::Asynchronous) {
   int rank = -1;
   int worldSize = 0;
   ASSERT_MPI_SUCCESS(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
@@ -91,6 +119,19 @@ void runCrossGpuIpcTransfer(flagcxDeviceHandle_t devHandle,
     GTEST_SKIP() << "Cross-GPU IPC tests require at least 2 visible devices";
   }
   ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));
+
+  int localAllocatorsAvailable =
+      (exportedAllocation == IpcAllocationKind::Device &&
+       localAllocation == IpcAllocationKind::Device) ||
+      (deviceAdaptor != nullptr && deviceAdaptor->gdrMemAlloc != nullptr &&
+       deviceAdaptor->gdrMemFree != nullptr);
+  int allAllocatorsAvailable = 0;
+  ASSERT_MPI_SUCCESS(MPI_Allreduce(&localAllocatorsAvailable,
+                                   &allAllocatorsAvailable, 1, MPI_INT, MPI_MIN,
+                                   MPI_COMM_WORLD));
+  if (!allAllocatorsAvailable) {
+    GTEST_SKIP() << "GDR memory allocation is not available";
+  }
 
   int localApisAvailable = devHandle->ipcMemHandleCreate != nullptr &&
                            devHandle->ipcMemHandleGet != nullptr &&
@@ -138,22 +179,25 @@ void runCrossGpuIpcTransfer(flagcxDeviceHandle_t devHandle,
   ASSERT_FLAGCX_SUCCESS(devHandle->streamCreate(&stream));
   ASSERT_MPI_TRUE(stream != nullptr);
 
-  const int tagBase = direction == CrossGpuIpcDirection::Read ? 10 : 20;
+  const int tagBase = 10 + static_cast<int>(direction) * 40 +
+                      static_cast<int>(exportedAllocation) * 20 +
+                      static_cast<int>(localAllocation) * 10 +
+                      static_cast<int>(copyMode) * 3;
   if (rank == 0) {
     void *exportedPtr = nullptr;
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMalloc(&exportedPtr, bufferSize,
-                                                  flagcxMemDevice, nullptr));
+    ASSERT_FLAGCX_SUCCESS(allocateIpcTestBuffer(devHandle, exportedAllocation,
+                                                &exportedPtr, bufferSize));
     ASSERT_MPI_TRUE(exportedPtr != nullptr);
 
     if (direction == CrossGpuIpcDirection::Read) {
       ASSERT_FLAGCX_SUCCESS(
           devHandle->deviceMemcpy(exportedPtr, expected.data(), bufferSize,
-                                  flagcxMemcpyHostToDevice, stream));
+                                  flagcxMemcpyHostToDevice, nullptr));
     } else {
       ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemset(exportedPtr, 0, bufferSize,
-                                                    flagcxMemDevice, stream));
+                                                    flagcxMemDevice, nullptr));
     }
-    ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+    ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleGet(handle, exportedPtr));
 
     ASSERT_MPI_SUCCESS(MPI_Send(&localHandleSize, sizeof(localHandleSize),
@@ -170,14 +214,14 @@ void runCrossGpuIpcTransfer(flagcxDeviceHandle_t devHandle,
       std::vector<unsigned char> actual(bufferSize, 0);
       ASSERT_FLAGCX_SUCCESS(
           devHandle->deviceMemcpy(actual.data(), exportedPtr, bufferSize,
-                                  flagcxMemcpyDeviceToHost, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+                                  flagcxMemcpyDeviceToHost, nullptr));
+      ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
       ASSERT_MPI_TRUE(actual == expected);
     }
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
     ASSERT_FLAGCX_SUCCESS(
-        devHandle->deviceFree(exportedPtr, flagcxMemDevice, nullptr));
+        freeIpcTestBuffer(devHandle, exportedAllocation, exportedPtr));
   } else {
     size_t receivedHandleSize = 0;
     ASSERT_MPI_SUCCESS(MPI_Recv(&receivedHandleSize, sizeof(receivedHandleSize),
@@ -193,34 +237,49 @@ void runCrossGpuIpcTransfer(flagcxDeviceHandle_t devHandle,
     ASSERT_MPI_TRUE(mappedPtr != nullptr);
 
     void *localPtr = nullptr;
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMalloc(&localPtr, bufferSize,
-                                                  flagcxMemDevice, nullptr));
+    ASSERT_FLAGCX_SUCCESS(allocateIpcTestBuffer(devHandle, localAllocation,
+                                                &localPtr, bufferSize));
     ASSERT_MPI_TRUE(localPtr != nullptr);
+
+    flagcxStream_t copyStream =
+        copyMode == IpcCopyMode::Asynchronous ? stream : nullptr;
 
     if (direction == CrossGpuIpcDirection::Read) {
       ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemset(localPtr, 0, bufferSize,
-                                                    flagcxMemDevice, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
-          localPtr, mappedPtr, bufferSize, flagcxMemcpyDeviceToDevice, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+                                                    flagcxMemDevice, nullptr));
+      ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
+      ASSERT_FLAGCX_SUCCESS(
+          devHandle->deviceMemcpy(localPtr, mappedPtr, bufferSize,
+                                  flagcxMemcpyDeviceToDevice, copyStream));
+      if (copyMode == IpcCopyMode::Asynchronous) {
+        ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+      } else {
+        ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
+      }
 
       std::vector<unsigned char> actual(bufferSize, 0);
       ASSERT_FLAGCX_SUCCESS(
           devHandle->deviceMemcpy(actual.data(), localPtr, bufferSize,
-                                  flagcxMemcpyDeviceToHost, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+                                  flagcxMemcpyDeviceToHost, nullptr));
+      ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
       ASSERT_MPI_TRUE(actual == expected);
     } else {
       ASSERT_FLAGCX_SUCCESS(
           devHandle->deviceMemcpy(localPtr, expected.data(), bufferSize,
-                                  flagcxMemcpyHostToDevice, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
-          mappedPtr, localPtr, bufferSize, flagcxMemcpyDeviceToDevice, stream));
-      ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+                                  flagcxMemcpyHostToDevice, nullptr));
+      ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
+      ASSERT_FLAGCX_SUCCESS(
+          devHandle->deviceMemcpy(mappedPtr, localPtr, bufferSize,
+                                  flagcxMemcpyDeviceToDevice, copyStream));
+      if (copyMode == IpcCopyMode::Asynchronous) {
+        ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(stream));
+      } else {
+        ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
+      }
     }
 
     ASSERT_FLAGCX_SUCCESS(
-        devHandle->deviceFree(localPtr, flagcxMemDevice, nullptr));
+        freeIpcTestBuffer(devHandle, localAllocation, localPtr));
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleClose(mappedPtr));
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
 
@@ -357,6 +416,54 @@ TEST_F(IpcMemHandleMpiTest, CrossGpuImportedMappingRead) {
 
 TEST_F(IpcMemHandleMpiTest, CrossGpuImportedMappingWrite) {
   runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuImportedGdrMappingReadSync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Read,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Device,
+                         IpcCopyMode::Synchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuImportedGdrMappingReadAsync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Read,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Device,
+                         IpcCopyMode::Asynchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuDeviceToImportedGdrWriteSync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Device,
+                         IpcCopyMode::Synchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuDeviceToImportedGdrWriteAsync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Device,
+                         IpcCopyMode::Asynchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuGdrToImportedDeviceWriteSync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Device, IpcAllocationKind::Gdr,
+                         IpcCopyMode::Synchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuGdrToImportedDeviceWriteAsync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Device, IpcAllocationKind::Gdr,
+                         IpcCopyMode::Asynchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuGdrToImportedGdrWriteSync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Gdr,
+                         IpcCopyMode::Synchronous);
+}
+
+TEST_F(IpcMemHandleMpiTest, CrossGpuGdrToImportedGdrWriteAsync) {
+  runCrossGpuIpcTransfer(devHandle, CrossGpuIpcDirection::Write,
+                         IpcAllocationKind::Gdr, IpcAllocationKind::Gdr,
+                         IpcCopyMode::Asynchronous);
 }
 
 } // namespace

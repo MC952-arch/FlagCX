@@ -265,18 +265,29 @@ run_suite() {
 
   case "$SUITE" in
     adaptor)
+      local unit_status=0
+      local ipc_status=0
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
       # layer can express QP selection together with ordering boundaries.
       FLAGCX_IB_QPS_PER_CONNECTION=2 \
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+        unit_status=$?
       # Exercise device IPC handles across processes and physical devices. Use
       # exactly two ranks so rank 0 exports from GPU 0 and rank 1 imports on
-      # GPU 1, with an independent timeout from the adaptor unit tests.
+      # GPU 1, with an independent timeout from the adaptor unit tests. Always
+      # run this invocation even when the RDMA loopback tests fail so an RDMA
+      # environment problem cannot hide device IPC coverage. Disable VMM to
+      # exercise the same IPC-exportable GDR allocation used by the RMA suite.
       FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" MPI_NP=2
+        MPIRUN="$MPI_RUNNER" MPI_NP=2 \
+        MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
+      if ((unit_status != 0 || ipc_status != 0)); then
+        echo "Adaptor failures: unit=$unit_status IPC=$ipc_status" >&2
+        return 1
+      fi
       ;;
     core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
