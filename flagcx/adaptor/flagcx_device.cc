@@ -491,10 +491,12 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
       WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
       if (handlePtr != NULL)
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-    } else if (ipcSize == 0 || ipcSize > sizeof(myIpcDesc.handleData)) {
+    } else if (handlePtr == NULL || ipcSize == 0 ||
+               ipcSize > sizeof(myIpcDesc.handleData)) {
       WARN("buildIpcPeerPointers: IPC handle size %zu exceeds storage %zu",
            ipcSize, sizeof(myIpcDesc.handleData));
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      if (handlePtr != NULL)
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
       res = flagcxNotSupported;
     } else {
       res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
@@ -502,10 +504,15 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
         WARN("buildIpcPeerPointers: ipcMemHandleGet failed for allocation %p",
              exportBase);
       } else {
-        memcpy(&myIpcDesc.handleData, handlePtr, ipcSize);
-        myIpcDesc.handleSize = ipcSize;
-        myIpcDesc.userSize = size;
-        myIpcDesc.valid = true;
+        res = flagcxStoreIpcHandle(&myIpcDesc.handleData, handlePtr, ipcSize);
+        if (res != flagcxSuccess) {
+          WARN("buildIpcPeerPointers: cannot store IPC handle of size %zu",
+               ipcSize);
+        } else {
+          myIpcDesc.handleSize = ipcSize;
+          myIpcDesc.userSize = size;
+          myIpcDesc.valid = true;
+        }
       }
       deviceAdaptor->ipcMemHandleFree(handlePtr);
     }

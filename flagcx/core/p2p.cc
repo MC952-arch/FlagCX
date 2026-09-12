@@ -646,6 +646,10 @@ flagcxP2pRecvProxyConnect(struct flagcxProxyConnection *connection,
 flagcxResult_t
 flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
                                  struct flagcxP2pIpcDesc *ipcDesc, void **ptr) {
+  if (ipcDesc == NULL || ptr == NULL)
+    return flagcxInvalidArgument;
+
+  memset(ipcDesc, 0, sizeof(*ipcDesc));
   // 'directMap' parameter is reserved for future cuMem (direct mapping)
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(ptr, size, flagcxMemDevice, NULL));
   size_t ipcSize = 0;
@@ -656,6 +660,16 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
     deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
     *ptr = NULL;
     return res;
+  }
+  if (handlePtr == NULL || ipcSize == 0 ||
+      ipcSize > sizeof(ipcDesc->handleData)) {
+    WARN("Unsupported IPC handle size %zu (capacity %zu)", ipcSize,
+         sizeof(ipcDesc->handleData));
+    if (handlePtr != NULL)
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
+    *ptr = NULL;
+    return flagcxNotSupported;
   }
 
   // Get the actual IPC handle data
@@ -668,7 +682,14 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
     *ptr = NULL;
     return res;
   }
-  memcpy(&ipcDesc->handleData, handlePtr, sizeof(flagcxIpcHandleData));
+  res = flagcxStoreIpcHandle(&ipcDesc->handleData, handlePtr, ipcSize);
+  if (res != flagcxSuccess) {
+    deviceAdaptor->ipcMemHandleFree(handlePtr);
+    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
+    *ptr = NULL;
+    return res;
+  }
+  ipcDesc->handleSize = ipcSize;
   ipcDesc->size = size;
 
   // Free the temporary handle wrapper
@@ -680,6 +701,10 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               int peer, size_t size,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr) {
+  if (ipcDesc == NULL || devMemPtr == NULL || ipcDesc->handleSize == 0 ||
+      ipcDesc->handleSize > sizeof(ipcDesc->handleData))
+    return flagcxInvalidArgument;
+
   *devMemPtr = NULL;
 
   // CRITICAL: Set device context before opening IPC handle
@@ -793,8 +818,10 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
       if (sameProcess) {
         // The peer proxy shares this address space, so exchange the raw
         // allocation base instead of opening an IPC handle.
-        memcpy(&handleData, &allocationBase, sizeof(void *));
         handleSize = sizeof(void *);
+        FLAGCXCHECKGOTO(
+            flagcxStoreIpcHandle(&handleData, &allocationBase, handleSize), ret,
+            fail);
       } else {
         flagcxIpcMemHandle_t ipcHandle = NULL;
         ret = deviceAdaptor->ipcMemHandleCreate(&ipcHandle, &handleSize);
@@ -807,12 +834,14 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
             deviceAdaptor->ipcMemHandleFree(ipcHandle);
           return flagcxSuccess;
         }
-        if (handleSize == 0 || handleSize > sizeof(handleData)) {
+        if (ipcHandle == NULL || handleSize == 0 ||
+            handleSize > sizeof(handleData)) {
           INFO(FLAGCX_REG,
                "rank %d - IPC handle size %zu is unsupported; falling back "
                "to FIFO",
                comm->rank, handleSize);
-          deviceAdaptor->ipcMemHandleFree(ipcHandle);
+          if (ipcHandle != NULL)
+            deviceAdaptor->ipcMemHandleFree(ipcHandle);
           return flagcxSuccess;
         }
         ret = deviceAdaptor->ipcMemHandleGet(ipcHandle, allocationBase);
@@ -824,8 +853,10 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
           deviceAdaptor->ipcMemHandleFree(ipcHandle);
           return flagcxSuccess;
         }
-        memcpy(&handleData, ipcHandle, handleSize);
+        ret = flagcxStoreIpcHandle(&handleData, ipcHandle, handleSize);
         flagcxResult_t freeRes = deviceAdaptor->ipcMemHandleFree(ipcHandle);
+        if (ret != flagcxSuccess)
+          return ret;
         if (freeRes != flagcxSuccess)
           return freeRes;
       }
@@ -840,8 +871,10 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
       // Build IPC export info and send to peer's proxy
       struct p2pIpcExpInfo ipcExpInfo;
       memset(&ipcExpInfo, 0, sizeof(ipcExpInfo));
-      memcpy(&ipcExpInfo.ipcDesc.handleData, &handleData,
-             sizeof(flagcxIpcHandleData));
+      FLAGCXCHECKGOTO(flagcxStoreIpcHandle(&ipcExpInfo.ipcDesc.handleData,
+                                           &handleData, handleSize),
+                      ret, fail);
+      ipcExpInfo.ipcDesc.handleSize = handleSize;
       ipcExpInfo.legacyIpcCap = true;
       ipcExpInfo.handleSize = handleSize;
       ipcExpInfo.allocationSize = allocationSize;
@@ -1068,7 +1101,7 @@ flagcxResult_t flagcxP2pProxyRegister(struct flagcxProxyConnection *connection,
         const unsigned char *hb =
             (const unsigned char *)&ipcExpInfo->ipcDesc.handleData;
         bool allZero = true;
-        for (size_t i = 0; i < sizeof(flagcxIpcHandleData); i++) {
+        for (size_t i = 0; i < ipcExpInfo->handleSize; i++) {
           if (hb[i] != 0) {
             allZero = false;
             break;
