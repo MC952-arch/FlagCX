@@ -2,6 +2,7 @@
 // Requires 2 local ranks with a hetero communicator; individual invocations
 // select either IPC or RDMA explicitly.
 
+#include "adaptor.h"
 #include "flagcx_hetero.h"
 #include "global_comm.h"
 #include "rma_test.hpp"
@@ -67,7 +68,7 @@ TEST_F(RmaTest, IpcResolvedPeerPointerSupportsDirectCopy) {
             : -1;
     int slot = dataWin->defaultBase->ipcSlot;
     bool localOffsetValid = peer >= 0 && peerLocalRank >= 0 && slot >= 0 &&
-                            slot < comm->ipcTableSize;
+                            slot < FLAGCX_MAX_IPC_ENTRIES;
     if (localOffsetValid) {
       struct flagcxIpcTableEntry *entry = &comm->ipcTable[slot];
       localOffsetValid = peerLocalRank < entry->nPeers &&
