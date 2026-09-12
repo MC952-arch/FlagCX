@@ -58,6 +58,10 @@ flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
                                        void **exportBase,
                                        size_t *allocationSize,
                                        size_t *userOffset);
+flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
+                                           size_t allocationSize,
+                                           size_t userOffset, size_t userSize,
+                                           void **peerPtr);
 int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

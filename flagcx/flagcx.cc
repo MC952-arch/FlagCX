@@ -1408,10 +1408,8 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   flagcxResult_t res = flagcxSuccess;
 
-  // Step 2a: Homo path — backend CCL registration
-  // NCCL handles IPC/VMM internally via ncclCommRegister, so skip Step 2b
-  // (cudaIpcGetMemHandle is incompatible with ncclMemAlloc VMM buffers)
-  // and Step 3 (one-sided MR registration, hetero-only).
+  // Step 2: Homo path — backend CCL registration. NCCL handles IPC/VMM
+  // internally via ncclCommRegister, so skip the hetero one-sided MR path.
   if (useHomoComm(comm) && !useHeteroComm()) {
     // Re-registration: this comm already completed homo backend init
     if (regItem->homoRegHandles.count(thisCommKey)) {
@@ -1426,61 +1424,9 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  // Step 2b: Create an IPC handle for the allocation containing the buffer
-  // (hetero path only). The handle is cached once per allocation; consumers
-  // compute the user-buffer offset independently for each registered range.
-  // Write-once: if localIpcHandleData is already populated, skip.
-  // Note: cudaIpcGetMemHandle is incompatible with VMM buffers (cuMemCreate/
-  // cuMemMap). When it fails, we skip IPC handle creation and still proceed
-  // to Step 3 (one-sided MR registration) which handles VMM buffers correctly.
-  {
-    char zeros[sizeof(flagcxIpcHandleData)] = {};
-    if (memcmp(&regItem->localIpcHandleData, zeros,
-               sizeof(flagcxIpcHandleData)) == 0) {
-      void *exportBase = buff;
-      size_t allocationSize = 0;
-      size_t userOffset = 0;
-      res = flagcxGetIpcExportRange(buff, size, &exportBase, &allocationSize,
-                                    &userOffset);
-      if (res != flagcxSuccess) {
-        INFO(FLAGCX_REG,
-             "flagcxCommRegister: allocation range query failed (%d) for "
-             "buff %p, skipping IPC handle",
-             (int)res, buff);
-        res = flagcxSuccess;
-        goto skip_ipc;
-      }
-      flagcxIpcMemHandle_t handlePtr = nullptr;
-      size_t ipcSize = 0;
-      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-      if (res != flagcxSuccess) {
-        res = flagcxSuccess;
-        goto skip_ipc;
-      }
-      res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
-      if (res != flagcxSuccess) {
-        deviceAdaptor->ipcMemHandleFree(handlePtr);
-        INFO(FLAGCX_REG,
-             "flagcxCommRegister: ipcMemHandleGet failed (%d) for buff %p "
-             "(likely VMM memory), skipping IPC handle",
-             (int)res, buff);
-        res = flagcxSuccess;
-        goto skip_ipc;
-      }
-      if (ipcSize > sizeof(flagcxIpcHandleData)) {
-        deviceAdaptor->ipcMemHandleFree(handlePtr);
-        INFO(FLAGCX_REG,
-             "flagcxCommRegister: ipcSize %zu exceeds storage, skipping IPC",
-             ipcSize);
-        goto skip_ipc;
-      }
-      memcpy(&regItem->localIpcHandleData, handlePtr, ipcSize);
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
-    }
-  }
-skip_ipc:
-
-  // Step 3: One-sided MR registration (hetero path only)
+  // Step 3: One-sided MR registration (hetero path only). IPC handles are
+  // exported lazily by each IPC consumer from the allocation base; a page
+  // registration item cannot safely own a single allocation handle.
   {
     flagcxResult_t regRes =
         flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);

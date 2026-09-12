@@ -12,7 +12,6 @@
 #include "mem_alloc_registry.h"
 #include "p2p.h"
 #include "proxy.h"
-#include "reg_pool.h"
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
@@ -361,9 +360,11 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
 
 struct flagcxIpcPeerDesc {
   flagcxIpcHandleData handleData;
+  size_t handleSize;
   size_t allocationSize;
   size_t userOffset;
   size_t userSize;
+  bool valid;
 };
 
 flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
@@ -406,6 +407,31 @@ flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
   *exportBase = allocationBase;
   *allocationSize = queriedSize;
   *userOffset = offset;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
+                                           size_t allocationSize,
+                                           size_t userOffset, size_t userSize,
+                                           void **peerPtr) {
+  if (importedBase == nullptr || allocationSize == 0 || userSize == 0 ||
+      peerPtr == nullptr)
+    return flagcxInvalidArgument;
+  *peerPtr = nullptr;
+
+  if (userOffset > allocationSize || userSize > allocationSize - userOffset) {
+    WARN("IPC user range offset %zu size %zu exceeds allocation size %zu",
+         userOffset, userSize, allocationSize);
+    return flagcxInvalidUsage;
+  }
+  uintptr_t mappingBase = reinterpret_cast<uintptr_t>(importedBase);
+  if (userOffset > UINTPTR_MAX - mappingBase) {
+    WARN("IPC peer mapping address overflow for base %p offset %zu",
+         importedBase, userOffset);
+    return flagcxInvalidUsage;
+  }
+
+  *peerPtr = reinterpret_cast<void *>(mappingBase + userOffset);
   return flagcxSuccess;
 }
 
@@ -454,33 +480,34 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
          myIpcDesc.userOffset);
   }
 
-  // Check globalRegPool for pre-registered handle
+  // Export lazily from the allocation base. globalRegPool entries describe
+  // page-aligned registration ranges and may span more than one allocation,
+  // so they cannot safely cache a single IPC handle.
   if (res == flagcxSuccess) {
-    flagcxRegItem *item = globalRegPool.getItem(nullptr, buff);
-    if (item && item->localIpcHandleData.reserved[0] != 0) {
-      memcpy(&myIpcDesc.handleData, &item->localIpcHandleData,
-             sizeof(myIpcDesc.handleData));
-      myIpcDesc.userSize = size;
-    } else {
-      // Create IPC handle directly on the existing buffer (do NOT allocate new)
-      size_t ipcSize = 0;
-      flagcxIpcMemHandle_t handlePtr = NULL;
-      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-      if (res != flagcxSuccess) {
-        WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
-        if (handlePtr != NULL)
-          deviceAdaptor->ipcMemHandleFree(handlePtr);
-      } else {
-        res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
-        if (res != flagcxSuccess) {
-          WARN("buildIpcPeerPointers: ipcMemHandleGet failed for buff %p",
-               buff);
-        } else {
-          memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
-          myIpcDesc.userSize = size;
-        }
+    size_t ipcSize = 0;
+    flagcxIpcMemHandle_t handlePtr = NULL;
+    res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    if (res != flagcxSuccess) {
+      WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
+      if (handlePtr != NULL)
         deviceAdaptor->ipcMemHandleFree(handlePtr);
+    } else if (ipcSize == 0 || ipcSize > sizeof(myIpcDesc.handleData)) {
+      WARN("buildIpcPeerPointers: IPC handle size %zu exceeds storage %zu",
+           ipcSize, sizeof(myIpcDesc.handleData));
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      res = flagcxNotSupported;
+    } else {
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
+      if (res != flagcxSuccess) {
+        WARN("buildIpcPeerPointers: ipcMemHandleGet failed for allocation %p",
+             exportBase);
+      } else {
+        memcpy(&myIpcDesc.handleData, handlePtr, ipcSize);
+        myIpcDesc.handleSize = ipcSize;
+        myIpcDesc.userSize = size;
+        myIpcDesc.valid = true;
       }
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
 
@@ -503,7 +530,7 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   for (int lr = 0; lr < localRanks; lr++) {
     int globalR = localRankToRank[lr];
     struct flagcxIpcPeerDesc *pd = &allDescs[globalR];
-    if (pd->userSize == 0) {
+    if (!pd->valid) {
       INFO(FLAGCX_INIT,
            "buildIpcPeerPointers: rank %d has no exportable IPC handle; "
            "disabling IPC for this local group",
@@ -511,11 +538,13 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
       res = flagcxNotSupported;
       goto fail;
     }
-    if (pd->userOffset > pd->allocationSize ||
+    if (pd->handleSize == 0 || pd->handleSize > sizeof(pd->handleData) ||
+        pd->userOffset > pd->allocationSize ||
         pd->userSize > pd->allocationSize - pd->userOffset) {
       WARN("buildIpcPeerPointers: rank %d reported an invalid IPC range "
-           "(allocationSize=%zu userOffset=%zu userSize=%zu)",
-           globalR, pd->allocationSize, pd->userOffset, pd->userSize);
+           "(handleSize=%zu allocationSize=%zu userOffset=%zu userSize=%zu)",
+           globalR, pd->handleSize, pd->allocationSize, pd->userOffset,
+           pd->userSize);
       res = flagcxInvalidUsage;
       goto fail;
     }
@@ -541,7 +570,7 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
       hostPeerPtrs[lr] = buff;
     } else {
       struct flagcxIpcPeerDesc *pd = &allDescs[globalR];
-      if (pd->userSize > 0 && deviceAdaptor->ipcMemHandleOpen) {
+      if (pd->valid && deviceAdaptor->ipcMemHandleOpen) {
         void *peerPtr = nullptr;
         flagcxIpcMemHandle_t handlePtr = (flagcxIpcMemHandle_t)&pd->handleData;
         res = deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerPtr);
@@ -551,16 +580,10 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
           goto fail;
         }
         hostPeerBasePtrs[lr] = peerPtr;
-        uintptr_t mappingBase = reinterpret_cast<uintptr_t>(peerPtr);
-        if (pd->userOffset > UINTPTR_MAX - mappingBase) {
-          WARN(
-              "buildIpcPeerPointers: peer mapping address overflow for rank %d",
-              globalR);
-          res = flagcxInvalidUsage;
-          goto fail;
-        }
-        hostPeerPtrs[lr] =
-            reinterpret_cast<void *>(mappingBase + pd->userOffset);
+        FLAGCXCHECKGOTO(flagcxResolveIpcPeerAddress(
+                            peerPtr, pd->allocationSize, pd->userOffset,
+                            pd->userSize, &hostPeerPtrs[lr]),
+                        res, fail);
       } else {
         hostPeerPtrs[lr] = nullptr;
       }

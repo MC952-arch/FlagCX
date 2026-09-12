@@ -190,6 +190,34 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
 }
 
 TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcPeerAddressUsesAllocationRelativeOffset) {
+  void *peerPtr = nullptr;
+  ASSERT_EQ(flagcxResolveIpcPeerAddress(reinterpret_cast<void *>(0x800000),
+                                        0x2000, 0x400, 0x800, &peerPtr),
+            flagcxSuccess);
+  EXPECT_EQ(peerPtr, reinterpret_cast<void *>(0x800400));
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcPeerAddressRejectsRangePastAllocation) {
+  void *peerPtr = reinterpret_cast<void *>(0x1);
+  EXPECT_EQ(flagcxResolveIpcPeerAddress(reinterpret_cast<void *>(0x800000),
+                                        0x1000, 0xf00, 0x200, &peerPtr),
+            flagcxInvalidUsage);
+  EXPECT_EQ(peerPtr, nullptr);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       IpcPeerAddressRejectsAddressOverflow) {
+  void *peerPtr = reinterpret_cast<void *>(0x1);
+  EXPECT_EQ(
+      flagcxResolveIpcPeerAddress(reinterpret_cast<void *>(UINTPTR_MAX - 0x100),
+                                  0x1000, 0x200, 0x100, &peerPtr),
+      flagcxInvalidUsage);
+  EXPECT_EQ(peerPtr, nullptr);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
        IpcExportRangeFallsBackWhenCallbackIsNull) {
   testDeviceAdaptor_.getAddressRange = nullptr;
   void *userPtr = reinterpret_cast<void *>(0x100400);
