@@ -10,7 +10,7 @@
  *   - Struct definitions (flagcxDeviceTrigger, flagcxReduceTrigger)
  *   - Kernel launch configuration macros
  *
- * For host-side methods and lifecycle functions, see flagcx_kernel_internal.h.
+ * For public host-side lifecycle functions, see flagcx_device_api.h.
  * For normal builds, include flagcx_kernel.h (umbrella header).
  ************************************************************************/
 

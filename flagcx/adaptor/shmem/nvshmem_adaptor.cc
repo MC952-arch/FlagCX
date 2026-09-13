@@ -72,7 +72,12 @@ static flagcxResult_t nvshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm);
 static flagcxResult_t
 nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
                             const struct flagcxDevCommRequirements *reqs,
-                            flagcxShmemComm_t *shmemComm) {
+                            size_t reqsSize, flagcxShmemComm_t *shmemComm) {
+  if (comm == nullptr || reqs == nullptr || shmemComm == nullptr ||
+      reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
+    return flagcxInvalidArgument;
+  *shmemComm = nullptr;
+
   auto *sc = new flagcxShmemCommInternal();
   memset(sc, 0, sizeof(*sc));
   sc->intraTeam = NVSHMEM_TEAM_INVALID;

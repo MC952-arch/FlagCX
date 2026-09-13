@@ -24,7 +24,10 @@ static void flagcxDevNetLaunchConstruct(void *, void *, int, void *) {}
 static flagcxResult_t
 ncclDevApiCommCreate(flagcxComm_t comm,
                      const struct flagcxDevCommRequirements *reqs,
-                     flagcxDevComm_t devComm) {
+                     size_t reqsSize, flagcxDevComm_t devComm) {
+  // Keep the existing CCL adaptor ABI unchanged; it consumes only the frozen
+  // requirements prefix.
+  (void)reqsSize;
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm == nullptr ||
       cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate == NULL) {

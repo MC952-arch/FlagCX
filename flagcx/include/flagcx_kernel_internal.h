@@ -7,20 +7,25 @@
  * other host infrastructure. It includes:
  *   - flagcxFifo struct and methods
  *   - Host-side FIFO functions (dequeue, enqueue)
- *   - Device communicator lifecycle (flagcxDevCommCreate, etc.)
- *   - Device memory lifecycle (flagcxDevMemCreate, etc.)
  *   - Test kernels and AlltoAll implementations
  *
  * NOT safe for LLVM bitcode compilation.
  * For device-side types and constants, see flagcx_kernel_core.h.
- * For normal builds, include flagcx_kernel.h (umbrella header).
+ * Internal host sources that need these helpers must include this header
+ * explicitly; it is not part of the installed public-header set.
  ************************************************************************/
 
 #ifndef FLAGCX_KERNEL_INTERNAL_H_
 #define FLAGCX_KERNEL_INTERNAL_H_
 
 #include "adaptor.h"
+#include "flagcx_device_api.h"
 #include "flagcx_kernel_core.h"
+
+// The original public requirements layout ends immediately before the first
+// appended field. Keep compatibility metadata private to the library.
+#define FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE                               \
+  offsetof(struct flagcxDevCommRequirements, intraScratchBytes)
 
 struct flagcxFifo {
   // Unified fifo layout: [capacity][consumed][produced][terminate][data...]
@@ -60,35 +65,6 @@ void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
 // Device Communicator — Host-side lifecycle management
 // ==========================================================================
 
-// Requirements for creating a device communicator.
-// Named fields map to NCCL ncclDevCommRequirements (Vendor).
-// Naming: NCCL "lsa" → FlagCX "intra", "gin" → "inter", "multimem" →
-// "multicast".
-struct flagcxDevCommRequirements {
-  bool intraMulticast; // → ncclReqs.lsaMultimem
-
-  int barrierCount;      // → ncclReqs.barrierCount (world barrier)
-  int intraBarrierCount; // → ncclReqs.lsaBarrierCount
-  int interBarrierCount; // → ncclReqs.railGinBarrierCount
-
-  int intraLLA2ABlockCount; // → ncclReqs.lsaLLA2ABlockCount
-  int intraLLA2ASlotCount;  // → ncclReqs.lsaLLA2ASlotCount
-
-  bool interForceEnable; // → ncclReqs.ginForceEnable
-  int interContextCount; // → ncclReqs.ginContextCount (hint, default 4)
-  int interSignalCount;  // → ncclReqs.ginSignalCount (start at id=0)
-  int interCounterCount; // → ncclReqs.ginCounterCount (start at id=0)
-};
-
-#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
-  {                                                                            \
-    false,       /* intraMulticast */                                          \
-        0, 0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */      \
-        0, 0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */               \
-        false, 4, 0, 0 /* interForceEnable, interContextCount,                 \
-                          interSignalCount, interCounterCount */               \
-  }
-
 // Network type enumeration (maps to ncclGinType_t on NVIDIA backend).
 typedef enum {
   flagcxNetTypeNone = 0,  // → NCCL_GIN_TYPE_NONE
@@ -106,65 +82,6 @@ struct flagcxCommProperties {
   flagcxNetType_t netType;     // → ncclCommProperties.ginType
 };
 typedef struct flagcxCommProperties flagcxCommProperties_t;
-
-// Opaque handle to a device communicator (host-side lifetime management).
-// Internally wraps ncclDevComm on NVIDIA backend (Vendor),
-// or IPC barrier state on default path (Default).
-typedef struct flagcxDevCommInternal *flagcxDevComm_t;
-
-// Opaque handle to device memory (host-side lifetime management).
-// Internally wraps ncclWindow_t on NVIDIA backend (Vendor),
-// or IPC peer pointer table on default path (Default).
-#ifndef FLAGCX_DEV_MEM_T_DEFINED
-#define FLAGCX_DEV_MEM_T_DEFINED
-typedef struct flagcxDevMemInternal *flagcxDevMem_t;
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Create a device communicator for custom kernel usage.
-// On NVIDIA backend (Vendor), internally calls pncclDevCommCreate.
-// On default path (Default), sets up IPC-based barrier across intra-node peers.
-// The returned handle must be destroyed with flagcxDevCommDestroy(comm,
-// devComm).
-flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
-                                   const flagcxDevCommRequirements *reqs,
-                                   flagcxDevComm_t *devComm);
-
-// Destroy a device communicator created by flagcxDevCommCreate.
-flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
-
-// Create a device memory handle for a registered buffer.
-// Registration is the caller's responsibility (Decision 7.16):
-//   - IPC mode (win=NULL): caller calls flagcxCommRegister first.
-//   - Window mode (win!=NULL): caller calls flagcxCommWindowRegister first.
-// This function exchanges IPC handles to build peer pointer tables (both modes)
-// and stores the window handle (window mode only).
-flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxWindow_t win, flagcxDevMem_t *devMem);
-
-// Destroy a device memory handle created by flagcxDevMemCreate.
-flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
-
-// ---- Device Pointer API (for Triton integration) ----
-// Allocate device memory, copy the DevComm/DevMem struct, return device
-// pointer. The returned pointer is immutable (epoch lives in persistent buffer)
-// and cached. Calling multiple times returns the same pointer.
-flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
-                                         void **devPtr);
-flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm);
-flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr);
-flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
-
-// Comm-level cleanup — delegates to devApiBackend->commCleanup.
-// Called from flagcxCommDestroy before heteroComm teardown.
-flagcxResult_t flagcxCommCleanup(flagcxComm_t comm);
-
-#ifdef __cplusplus
-}
-#endif
 
 // Clean up IPC peer pointer table on comm.
 // Must be called after homoComm destroy.

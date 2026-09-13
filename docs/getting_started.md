@@ -35,6 +35,8 @@ where `<backend>` is one of:
 - `USE_AMD`: AMD support
 - `USE_TSM`: TsingMicro support
 - `USE_ENFLAME`: Enflame support
+- `USE_SUNRISE`: Sunrise support
+- `USE_PPU`: PPU support
 - `USE_GLOO`: GLOO support
 - `USE_MPI`: MPI support
 
@@ -53,7 +55,7 @@ Performance tests are maintained in `test/perf/`, organized by API level:
 
 ```shell
 cd test/perf/host_api
-make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_TSM | USE_ENFLAME]=1
+make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_AMD | USE_TSM | USE_ENFLAME | USE_SUNRISE | USE_PPU]=1
 cd build/bin
 mpirun --allow-run-as-root -np 8 ./perf_allreduce -b 128K -e 4G -f 2
 ```
@@ -146,6 +148,30 @@ mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABL
 mpirun --allow-run-as-root -np 8 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
   ./test_device_ir -b 1M -e 4M -f 2 -R 2
 ```
+
+#### SHMEM Device API memory ownership
+
+When FlagCX is built with a SHMEM backend, memory passed to
+`flagcxDevMemCreate`, `flagcxCommRegister`, or `flagcxCommWindowRegister` with
+the `flagcxMemSHMEM` allocator must be allocated and freed through FlagCX:
+
+```cpp
+void *buffer = nullptr;
+flagcxMemAlloc(&buffer, bytes, flagcxMemSHMEM);
+
+flagcxDevMem_t devMem = nullptr;
+flagcxDevMemCreate(comm, buffer, bytes, nullptr, &devMem);
+
+flagcxDevMemDestroy(comm, devMem);
+flagcxMemFree(buffer, flagcxMemSHMEM);
+```
+
+Direct `nvshmem_malloc` or `xshmem_malloc` allocations remain valid for their
+native runtime APIs, but FlagCX does not have their allocation bounds or
+ownership metadata. Passing such a pointer to `flagcxDevMemCreate` is rejected
+with `flagcxInvalidUsage`. Existing code that combines a native SHMEM allocation
+with a FlagCX Device API memory handle should migrate to the allocation flow
+shown above.
 
 ### Torch API Test
 

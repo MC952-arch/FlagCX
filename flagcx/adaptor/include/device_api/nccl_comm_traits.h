@@ -79,6 +79,20 @@ struct CommTraits<NcclBackend> {
       return ncclGetPeerPointer(_impl, offset, (ncclTeam_t)team, peer);
     }
 
+    // NCCL window mappings support all declared access contracts.
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer,
+                   flagcxDevPeerAccess_t access) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          return getPeerPointer(offset, team, peer);
+        default:
+          return nullptr;
+      }
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return ncclGetLocalPointer(_impl, offset);
     }
@@ -86,6 +100,19 @@ struct CommTraits<NcclBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
       return ncclGetLsaPointer(_impl, offset, peer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getIntraPointer(size_t offset, int peer,
+                    flagcxDevPeerAccess_t access) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          return getIntraPointer(offset, peer);
+        default:
+          return nullptr;
+      }
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *

@@ -109,4 +109,20 @@ typedef uint32_t flagcxDevContext_t;
 typedef flagcxDevSignal_t flagcxDevNetSignal_t;
 typedef flagcxDevCounter_t flagcxDevNetCounter_t;
 
+/* ================================================================
+ * Peer Pointer Access
+ *
+ * Specifies the operations the caller may perform through a translated peer
+ * pointer. Read-write preserves the legacy behavior; read-only is for load
+ * paths and write-only is for store paths. A backend must reject an access
+ * mode that its peer-memory transport cannot support. Multiple supported modes
+ * may use the same native mapping, but the caller must still obey the requested
+ * access contract.
+ * ================================================================ */
+typedef enum {
+  flagcxDevPeerAccessReadWrite = 0,
+  flagcxDevPeerAccessWriteOnly = 1,
+  flagcxDevPeerAccessReadOnly = 2,
+} flagcxDevPeerAccess_t;
+
 #endif /* FLAGCX_DEVICE_ENUMS_H_ */

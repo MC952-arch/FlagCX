@@ -120,7 +120,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
 flagcxTeamRankToIntraC(const void *comm, const void *team, int rank);
 
 /* ================================================================
- * Category 4: Pointer Access (4)
+ * Category 4: Pointer Access (6)
  *
  * @param mem     Opaque pointer to flagcxDevMem (memory descriptor).
  * @param offset  Byte offset into the memory region.
@@ -129,18 +129,27 @@ flagcxTeamRankToIntraC(const void *comm, const void *team, int rank);
  * @param comm    Opaque pointer to flagcxDevComm (for multicast).
  * ================================================================ */
 
-/** @brief Get pointer to peer's memory region (team-relative). */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+/** @brief Get a read-write pointer to a peer's memory region. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetPeerPointerC(const void *mem, size_t offset, const void *team,
                       int peer);
+/** @brief Get a peer pointer for an explicit access intent. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
+flagcxGetPeerPointerWithAccessC(const void *mem, size_t offset,
+                                const void *team, int peer,
+                                flagcxDevPeerAccess_t access);
 /** @brief Get pointer to local memory at offset. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetLocalPointerC(const void *mem, size_t offset);
 /** @brief Get pointer to intra-node peer's memory. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetIntraPointerC(const void *mem, size_t offset, int peer);
+/** @brief Get an intra-node peer pointer for an explicit access intent. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
+flagcxGetIntraPointerWithAccessC(const void *mem, size_t offset, int peer,
+                                 flagcxDevPeerAccess_t access);
 /** @brief Get multicast pointer spanning all comm ranks. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEVICE_GLOBAL_PTR void *
 flagcxGetMulticastPointerC(const void *mem, size_t offset, const void *comm);
 
 /* ================================================================

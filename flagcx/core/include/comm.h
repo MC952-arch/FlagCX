@@ -11,6 +11,7 @@
 #include "device.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
+#include "flagcx_net_adaptor.h"
 #include "flagcx_tuner.h"
 #include "info.h"
 #include "register.h"

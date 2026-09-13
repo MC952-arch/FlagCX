@@ -1,6 +1,6 @@
 #include "comm.h"
 #include "flagcx.h"
-#include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 
 FLAGCX_PARAM(KernelFifoCapacity, "KERNEL_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 

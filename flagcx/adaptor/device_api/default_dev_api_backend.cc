@@ -13,6 +13,7 @@
 #include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
+#include "flagcx_kernel_internal.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -373,7 +374,9 @@ static flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
-                        flagcxDevComm_t devComm) {
+                        size_t reqsSize, flagcxDevComm_t devComm) {
+  // The default backend consumes only fields in the frozen prefix.
+  (void)reqsSize;
   const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
   const bool oneSidedRequested =
       reqs->interSignalCount > 0 || reqs->interCounterCount > 0;

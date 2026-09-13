@@ -69,6 +69,20 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return nullptr;
     }
 
+    // IPC/VMM mappings support all declared access contracts.
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getPeerPointer(size_t offset, const Team &team, int peer,
+                   flagcxDevPeerAccess_t access) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          return getPeerPointer(offset, team, peer);
+        default:
+          return nullptr;
+      }
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       if (mode == SYMMETRIC && flatBasePtr)
         return (char *)flatBasePtr + (size_t)intraRank * allocSize + offset;
@@ -86,6 +100,19 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                ipcBasePtrs[peer])
         return (char *)ipcBasePtrs[peer] + offset;
       return nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void *
+    getIntraPointer(size_t offset, int peer,
+                    flagcxDevPeerAccess_t access) const {
+      switch (access) {
+        case flagcxDevPeerAccessReadWrite:
+        case flagcxDevPeerAccessWriteOnly:
+        case flagcxDevPeerAccessReadOnly:
+          return getIntraPointer(offset, peer);
+        default:
+          return nullptr;
+      }
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
