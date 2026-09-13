@@ -56,9 +56,9 @@ flagcx_ci_configure_suite() {
 
   case "$suite" in
     adaptor)
-      # BAREX has no DMA-BUF callback. Keep the remaining adaptor contract
-      # tests enabled, including GPU MR registration.
-      export GTEST_FILTER="-NetAdaptorMemory.RegMrDmaBufRegistration"
+      # Fail rather than silently falling back to IBRC/socket: this suite is
+      # the integration coverage for the BAREX one-sided contract.
+      export FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX
       ;;
     p2p)
       # These suites call the IBRC vtable directly. The Engine tests use the
