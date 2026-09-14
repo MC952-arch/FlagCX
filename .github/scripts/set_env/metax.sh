@@ -30,11 +30,6 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
-    p2p)
-      # The MetaX CI RoCE environment cannot establish IB_P2P QPs reliably yet.
-      # Keep structure/bootstrap/slice tests enabled and skip real IB_P2P paths.
-      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*:P2pLoopbackTest.*:P2pBatchTest.*:P2pEngineRpcIbTest.*"
-      ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
         "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
@@ -129,29 +124,4 @@ flagcx_ci_build_suite_override() {
   fi
 
   FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
-}
-
-flagcx_ci_run_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
-
-  if [[ "$suite" == "runner" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="runner unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-    echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
-    return
-  fi
-
-  if [[ "$suite" == "symmem" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="symmem unit tests" \
-      "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests"
-    echo "Skipping MetaX symmem MPI tests: symmetric windows are not supported by the current MetaX backend."
-    return
-  fi
-
-  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
 }
