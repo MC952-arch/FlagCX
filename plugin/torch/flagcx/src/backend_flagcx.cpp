@@ -512,7 +512,7 @@ void flagcxBackend::initComm(at::Device dev) {
 }
 
 void flagcxBackend::initComm() {
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||      \
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||            \
     defined(USE_METAX_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                   \
     defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR)
   initComm(c10::impl::getDeviceGuardImpl(at::DeviceType::CUDA)->getDevice());
