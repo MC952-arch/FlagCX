@@ -15,7 +15,7 @@
  *
  * Built with USE_ACCL_BAREX=1 (RDMA registry slot, like USE_UCX) or
  * loaded as a plugin .so (preferred; see the export note below).
- * FLAGCX_BAREX_DISABLE=1 opts out at runtime.
+ * FLAGCX_IB_DISABLE=1 disables every RDMA-class adaptor, including BAREX.
  ************************************************************************/
 
 #ifdef USE_ACCL_BAREX
@@ -64,6 +64,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <limits.h>
 #include <limits>
 #include <map>
 #include <memory>
@@ -96,7 +97,6 @@ using accl::barex::XListener;
 using accl::barex::XSimpleMempool;
 using accl::barex::XThreadpool;
 
-FLAGCX_PARAM(BarexDisable, "BAREX_DISABLE", 0);
 FLAGCX_PARAM(BarexSpeed, "BAREX_SPEED", 100000); /* Mbps, for topo costing */
 FLAGCX_PARAM(BarexMaxMrBytes, "BAREX_MAX_MR_BYTES", 64LL << 20);
 
@@ -172,7 +172,7 @@ struct BarexNetHandle {
   union flagcxSocketAddress connectAddr; /* OOB IP + barex data port */
   uint64_t commId;                       /* demux key for accept side */
   uint32_t state;                        /* connect-side stage */
-  uint32_t pad;
+  uint32_t listenDev;                    /* remote BAREX device index */
   void *connectState; /* connect-side heap state across retries */
   /* Keep <= 56 bytes: transport.cc writes stage.comm at offset 56 after
      bootstrapRecv, landing in this buffer's tail padding. */
@@ -194,6 +194,13 @@ enum BarexReqState : int {
   BAREX_REQ_DONE = 2,
   BAREX_REQ_ERROR = 3,
   BAREX_REQ_COMPLETING = 4,
+};
+
+enum BarexCommState : int {
+  BAREX_COMM_ACTIVE = 0,
+  BAREX_COMM_FAILED = 1,
+  BAREX_COMM_CLOSING = 2,
+  BAREX_COMM_CLOSED = 3,
 };
 
 struct BarexRequest {
@@ -229,7 +236,8 @@ struct BarexComm {
   uint64_t commId = 0;
   bool isSend = false;
   int connectorDev = 0;
-  std::atomic<bool> dead{false};
+  std::atomic<int> state{BAREX_COMM_ACTIVE};
+  std::atomic<int> firstError{flagcxSuccess};
 
   std::mutex callbackMu;
   std::condition_variable callbackCv;
@@ -262,7 +270,7 @@ struct BarexComm {
 
   bool beginCallback() {
     std::lock_guard<std::mutex> lk(callbackMu);
-    if (dead.load(std::memory_order_acquire))
+    if (state.load(std::memory_order_acquire) != BAREX_COMM_ACTIVE)
       return false;
     activeCallbacks++;
     return true;
@@ -277,6 +285,25 @@ struct BarexComm {
   void waitCallbacks() {
     std::unique_lock<std::mutex> lk(callbackMu);
     callbackCv.wait(lk, [this] { return activeCallbacks == 0; });
+  }
+
+  void fail(flagcxResult_t result) {
+    if (result == flagcxSuccess || result == flagcxInProgress)
+      return;
+    int expectedError = flagcxSuccess;
+    firstError.compare_exchange_strong(expectedError, result,
+                                       std::memory_order_acq_rel);
+    int expectedState = BAREX_COMM_ACTIVE;
+    state.compare_exchange_strong(expectedState, BAREX_COMM_FAILED,
+                                  std::memory_order_acq_rel);
+  }
+
+  flagcxResult_t submissionStatus() const {
+    if (state.load(std::memory_order_acquire) == BAREX_COMM_ACTIVE)
+      return flagcxSuccess;
+    const int result = firstError.load(std::memory_order_acquire);
+    return result == flagcxSuccess ? flagcxInternalError
+                                   : static_cast<flagcxResult_t>(result);
   }
 };
 
@@ -296,6 +323,8 @@ struct BarexConnectState {
 
 struct PendingAccept {
   std::deque<XChannel *> channels;
+  int dev = -1;
+  int nicId = -1;
 };
 
 class BarexNetCallback; /* fwd */
@@ -309,8 +338,8 @@ struct BarexEngine {
   std::vector<XContext *> serverCtxs;
   std::vector<XContext *> clientCtxs;
   std::vector<XConnector *> connectors; /* one per client ctx: honors dev */
-  XListener *listener = nullptr;
-  int barexPort = 0;
+  std::vector<XListener *> listeners;   /* one per server ctx: honors dev */
+  std::vector<int> barexPorts;
   union flagcxSocketAddress ifAddr; /* OOB IP for listen handles */
 
   std::mutex mu; /* guards the three maps below */
@@ -333,7 +362,13 @@ static void barexCompleteRequest(BarexRequest *request, flagcxResult_t result) {
 
 static void barexCompleteCallback(BarexRequest *request, Status status) {
   BarexComm *comm = request->comm;
-  barexCompleteRequest(request, barexStatus(status));
+  const flagcxResult_t result = barexStatus(status);
+  if (result != flagcxSuccess) {
+    WARN("NET/BAREX : asynchronous transfer failed: %s",
+         status.ErrMsg().c_str());
+    comm->fail(result);
+  }
+  barexCompleteRequest(request, result);
   comm->endCallback();
 }
 
@@ -362,7 +397,8 @@ public:
       {
         std::lock_guard<std::mutex> lk(engine_->mu);
         auto it = engine_->pendingAccepts.find(hello.commId);
-        if (it != engine_->pendingAccepts.end()) {
+        if (it != engine_->pendingAccepts.end() &&
+            channel->GetLocalNicId() == it->second.nicId) {
           it->second.channels.push_back(channel);
           accepted = true;
         }
@@ -381,7 +417,7 @@ public:
       {
         std::lock_guard<std::mutex> lk(engine_->mu);
         auto it = engine_->channelComm.find(channel);
-        if (it != engine_->channelComm.end())
+        if (it != engine_->channelComm.end() && it->second->beginCallback())
           comm = it->second;
       }
       if (comm == nullptr) {
@@ -390,6 +426,7 @@ public:
       }
       std::lock_guard<std::mutex> lk(comm->mu);
       comm->ctsPending[cts.seq] = cts;
+      comm->endCallback();
       return;
     }
 
@@ -401,14 +438,16 @@ public:
     {
       std::lock_guard<std::mutex> lk(engine_->mu);
       auto it = engine_->channelComm.find(channel);
-      if (it != engine_->channelComm.end())
+      if (it != engine_->channelComm.end() && it->second->beginCallback())
         comm = it->second;
     }
     if (comm == nullptr)
       return;
     const uint32_t slot = imm & kImmSlotMask;
-    if (slot >= kMaxRequests)
+    if (slot >= kMaxRequests) {
+      comm->endCallback();
       return;
+    }
     BarexRequest *req = &comm->requests[slot];
     int expected = BAREX_REQ_PENDING;
     /* data is already placed: write-with-imm orders payload first */
@@ -416,6 +455,7 @@ public:
       req->result.store(flagcxSuccess, std::memory_order_relaxed);
       req->state.store(BAREX_REQ_DONE, std::memory_order_release);
     }
+    comm->endCallback();
   }
 
 private:
@@ -494,27 +534,35 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
     e->clientCtxs.push_back(cctx);
   }
 
-  /* one data-plane listener over all server contexts; probed free port */
+  /* Bind one listener and one connector to each device.  listen(dev) and
+     connect(dev) must not silently create a channel on another HCA after the
+     topology layer has selected the NIC closest to the GPU. */
   const int base = 19000 + (int)(getpid() % 4096);
-  for (int attempt = 0; attempt < 32 && e->listener == nullptr; attempt++) {
-    const int port = base + attempt * 3;
-    XListener *lis = nullptr;
-    if (XListener::NewInstance(lis, 2, port, accl::barex::TIMER_3S,
-                               e->serverCtxs) == accl::barex::BAREX_SUCCESS &&
-        lis->Listen() == accl::barex::BAREX_SUCCESS) {
-      e->listener = lis;
-      e->barexPort = port;
-      break;
+  e->listeners.resize(e->devs.size(), nullptr);
+  e->barexPorts.resize(e->devs.size(), 0);
+  for (size_t d = 0; d < e->devs.size(); d++) {
+    std::vector<XContext *> oneServer = {e->serverCtxs[d]};
+    for (int attempt = 0; attempt < 32 && e->listeners[d] == nullptr;
+         attempt++) {
+      const int port = base + (int)d * 96 + attempt * 3;
+      XListener *lis = nullptr;
+      if (XListener::NewInstance(lis, 2, port, accl::barex::TIMER_3S,
+                                 oneServer) == accl::barex::BAREX_SUCCESS &&
+          lis->Listen() == accl::barex::BAREX_SUCCESS) {
+        e->listeners[d] = lis;
+        e->barexPorts[d] = port;
+        break;
+      }
+      if (lis != nullptr) {
+        lis->Shutdown();
+        lis->WaitStop();
+        delete lis;
+      }
     }
-    if (lis != nullptr) {
-      lis->Shutdown();
-      lis->WaitStop();
-      delete lis;
+    if (e->listeners[d] == nullptr) {
+      WARN("NET/BAREX : no free data port for dev %zu", d);
+      return flagcxInternalError;
     }
-  }
-  if (e->listener == nullptr) {
-    WARN("NET/BAREX : no free data port");
-    return flagcxInternalError;
   }
 
   /* one connector per client context so connect() can honor `dev` */
@@ -539,16 +587,15 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
   memcpy(&e->ifAddr, ifAddr, sizeof(e->ifAddr));
 
   e->started = true;
-  INFO(FLAGCX_INIT | FLAGCX_NET, "NET/BAREX : engine up (nics=%zu port=%d)",
-       e->devs.size(), e->barexPort);
+  INFO(FLAGCX_INIT | FLAGCX_NET,
+       "NET/BAREX : engine up with %zu device-bound endpoints", e->devs.size());
   *out = e;
   return flagcxSuccess;
 }
 
 static flagcxResult_t barexInit() {
-  if (flagcxParamBarexDisable()) {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
-         "NET/BAREX : disabled by FLAGCX_BAREX_DISABLE");
+  if (flagcxParamIbDisable()) {
+    INFO(FLAGCX_INIT | FLAGCX_NET, "NET/BAREX : disabled by FLAGCX_IB_DISABLE");
     return flagcxInternalError; /* registry falls through to next slot */
   }
   return barexProbeDevices(nullptr);
@@ -559,23 +606,42 @@ static flagcxResult_t barexDevices(int *ndev) {
 }
 
 static flagcxResult_t barexGetProperties(int dev, void *props) {
+  if (props == nullptr || dev < 0 || dev >= kMaxNics)
+    return flagcxInvalidArgument;
   auto *p = static_cast<flagcxNetProperties_v1_t *>(props);
   memset(p, 0, sizeof(*p));
 
   static char devName[kMaxNics][64];
-  const char *name = "barex";
+  static char pciPath[kMaxNics][PATH_MAX];
+  static bool propertiesReady[kMaxNics] = {};
+  static std::mutex propertiesMu;
   XDeviceManager *mgr = nullptr;
-  if (XDeviceManager::Singleton(mgr) == accl::barex::BAREX_SUCCESS &&
-      mgr != nullptr) {
-    std::vector<XDevice *> devs = mgr->AllDevices();
-    if (dev >= 0 && dev < (int)devs.size() && dev < kMaxNics) {
-      snprintf(devName[dev], sizeof(devName[dev]), "%s",
-               devs[dev]->GetName().c_str());
-      name = devName[dev];
+  if (XDeviceManager::Singleton(mgr) != accl::barex::BAREX_SUCCESS ||
+      mgr == nullptr)
+    return flagcxInternalError;
+  std::vector<XDevice *> devs = mgr->AllDevices();
+  if (dev >= (int)devs.size())
+    return flagcxInvalidArgument;
+
+  std::lock_guard<std::mutex> lk(propertiesMu);
+  if (!propertiesReady[dev]) {
+    snprintf(devName[dev], sizeof(devName[dev]), "%s",
+             devs[dev]->GetName().c_str());
+    char sysfsPath[PATH_MAX];
+    snprintf(sysfsPath, sizeof(sysfsPath), "/sys/class/infiniband/%s/device",
+             devName[dev]);
+    char *resolved = realpath(sysfsPath, nullptr);
+    if (resolved == nullptr) {
+      WARN("NET/BAREX : cannot resolve PCI path for %s (%s)", devName[dev],
+           sysfsPath);
+      return flagcxSystemError;
     }
+    snprintf(pciPath[dev], sizeof(pciPath[dev]), "%s", resolved);
+    free(resolved);
+    propertiesReady[dev] = true;
   }
-  p->name = const_cast<char *>(name);
-  p->pciPath = nullptr;
+  p->name = devName[dev];
+  p->pciPath = pciPath[dev];
   p->guid = (uint64_t)dev;
   /* RegUserMr pins cudaMalloc'd PPU memory (VMM off). PPU has no dmabuf. */
   p->ptrSupport = FLAGCX_PTR_HOST | FLAGCX_PTR_CUDA;
@@ -592,13 +658,19 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
 
 static flagcxResult_t barexListen(int dev, void *opaqueHandle,
                                   void **listenComm) {
+  if (opaqueHandle == nullptr || listenComm == nullptr)
+    return flagcxInvalidArgument;
+  *listenComm = nullptr;
   BarexEngine *e = nullptr;
   FLAGCXCHECK(barexEngineStart(&e));
+  if (dev < 0 || dev >= (int)e->listeners.size() ||
+      e->listeners[dev] == nullptr || e->barexPorts[dev] <= 0)
+    return flagcxInvalidArgument;
 
   auto *handle = static_cast<BarexNetHandle *>(opaqueHandle);
   memset(handle, 0, sizeof(*handle));
   memcpy(&handle->connectAddr, &e->ifAddr, sizeof(handle->connectAddr));
-  addrSetPort(&handle->connectAddr, e->barexPort);
+  addrSetPort(&handle->connectAddr, e->barexPorts[dev]);
 
   auto *lc = new BarexListenComm();
   lc->engine = e;
@@ -608,10 +680,14 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
     do {
       lc->commId = e->rng();
     } while (lc->commId == 0 || e->pendingAccepts.count(lc->commId) != 0);
-    e->pendingAccepts[lc->commId] = PendingAccept{};
+    PendingAccept pending;
+    pending.dev = dev;
+    pending.nicId = e->devs[dev]->GetId();
+    e->pendingAccepts[lc->commId] = std::move(pending);
   }
   handle->commId = lc->commId;
   handle->state = BAREX_CONN_INIT;
+  handle->listenDev = (uint32_t)dev;
   handle->connectState = nullptr;
 
   *listenComm = lc;
@@ -622,9 +698,13 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
    and HELLO delivered; state lives in the handle across retries. */
 static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
                                    void **sendComm) {
+  if (opaqueHandle == nullptr || sendComm == nullptr)
+    return flagcxInvalidArgument;
   *sendComm = nullptr;
   BarexEngine *e = nullptr;
   FLAGCXCHECK(barexEngineStart(&e));
+  if (dev < 0 || dev >= (int)e->connectors.size())
+    return flagcxInvalidArgument;
   auto *handle = static_cast<BarexNetHandle *>(opaqueHandle);
 
   if (handle->state == BAREX_CONN_INIT) {
@@ -641,8 +721,7 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
                                ? handle->connectAddr.sin.sin_port
                                : handle->connectAddr.sin6.sin6_port);
 
-    XConnector *con =
-        e->connectors[(dev >= 0 && dev < (int)e->connectors.size()) ? dev : 0];
+    XConnector *con = e->connectors[dev];
     BarexResult r =
         con->Connect(std::string(ip), port, [st](XChannel *ch, Status s) {
           if (s.IsOk() && ch != nullptr)
@@ -681,8 +760,7 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
     comm->channel = ch;
     comm->commId = handle->commId;
     comm->isSend = true;
-    comm->connectorDev =
-        (dev >= 0 && dev < (int)e->connectors.size()) ? dev : 0;
+    comm->connectorDev = dev;
     st->comm = comm;
     {
       std::lock_guard<std::mutex> lk(e->mu);
@@ -781,6 +859,12 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
   }
   if (ch == nullptr)
     return flagcxSuccess; /* no HELLO yet — call again */
+  if (ch->GetLocalNicId() != e->devs[lc->dev]->GetId()) {
+    WARN("NET/BAREX : accepted channel on nic %d for listen dev %d (nic %d)",
+         ch->GetLocalNicId(), lc->dev, e->devs[lc->dev]->GetId());
+    ch->Destroy();
+    return flagcxRemoteError;
+  }
 
   auto *comm = new BarexComm();
   comm->engine = e;
@@ -801,7 +885,7 @@ static flagcxResult_t barexCloseComm(BarexComm *comm) {
   if (comm == nullptr)
     return flagcxSuccess;
   BarexEngine *e = comm->engine;
-  comm->dead.store(true, std::memory_order_release);
+  comm->state.store(BAREX_COMM_CLOSING, std::memory_order_release);
   if (e != nullptr && comm->channel != nullptr) {
     {
       std::lock_guard<std::mutex> lk(e->mu);
@@ -809,14 +893,25 @@ static flagcxResult_t barexCloseComm(BarexComm *comm) {
     }
     if (comm->isSend && comm->connectorDev >= 0 &&
         comm->connectorDev < (int)e->connectors.size()) {
-      /* connector owns close notification; server side lets the peer's
-         close + heartbeat reap its end (Mooncake does the same) */
       XChannel *ch = comm->channel;
-      e->connectors[comm->connectorDev]->CloseChannel(
-          ch, [ch](Status) { ch->Destroy(); });
+      BarexResult closeResult = e->connectors[comm->connectorDev]->CloseChannel(
+          ch, [ch](Status status) {
+            if (!status.IsOk())
+              WARN("NET/BAREX : CloseChannel failed: %s",
+                   status.ErrMsg().c_str());
+            ch->Destroy();
+          });
+      if (closeResult != accl::barex::BAREX_SUCCESS) {
+        WARN("NET/BAREX : CloseChannel sync error: %s", bxstr(closeResult));
+      }
     }
   }
+  /* Completion/receive callbacks retain the comm explicitly.  The channel
+     close callback does not reference it, so a failed asynchronous close
+     cannot keep closeSend() blocked or cause a use-after-free. */
   comm->waitCallbacks();
+  comm->channel = nullptr;
+  comm->state.store(BAREX_COMM_CLOSED, std::memory_order_release);
   delete comm;
   return flagcxSuccess;
 }
@@ -1007,8 +1102,9 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
   auto *mr = static_cast<BarexMr *>(mhandle);
   if (comm == nullptr || mr == nullptr)
     return flagcxInternalError;
-  if (comm->dead.load(std::memory_order_acquire))
-    return flagcxInternalError;
+  flagcxResult_t submissionStatus = comm->submissionStatus();
+  if (submissionStatus != flagcxSuccess)
+    return submissionStatus;
 
   BarexCtsMsg cts;
   BarexRequest *req = nullptr;
@@ -1047,7 +1143,7 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
 
   if (!comm->beginCallback()) {
     barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexRequest *reqCapture = req;
   BarexResult r = comm->channel->WriteSingle(
@@ -1057,9 +1153,11 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
       /*done_inline=*/true, UINT64_MAX);
   if (r != accl::barex::BAREX_SUCCESS) {
     WARN("NET/BAREX : WriteSingle sync error: %s", bxstr(r));
+    const flagcxResult_t mapped = barexResult(r);
+    comm->fail(mapped);
     comm->endCallback();
     barexReleaseRequest(req);
-    return barexResult(r);
+    return mapped;
   }
   *request = req;
   return flagcxSuccess;
@@ -1078,8 +1176,9 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   auto *mr = static_cast<BarexMr *>(mhandles[0]);
   if (mr == nullptr)
     return flagcxInternalError;
-  if (comm->dead.load(std::memory_order_acquire))
-    return flagcxInternalError;
+  flagcxResult_t submissionStatus = comm->submissionStatus();
+  if (submissionStatus != flagcxSuccess)
+    return submissionStatus;
   BarexEngine *e = comm->engine;
 
   BarexRequest *req = nullptr;
@@ -1121,24 +1220,30 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   if (!comm->beginCallback()) {
     e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
     barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexRequest *reqCapture = req;
   BarexResult r = comm->channel->Send(
       msg, /*auto_release=*/true, hdr,
       [reqCapture](Status s) {
-        if (!s.IsOk()) /* CTS lost: fail the request; sender never writes */
-          barexCompleteRequest(reqCapture, barexStatus(s));
+        if (!s.IsOk()) { /* CTS lost: fail the request; sender never writes */
+          const flagcxResult_t result = barexStatus(s);
+          WARN("NET/BAREX : CTS delivery failed: %s", s.ErrMsg().c_str());
+          reqCapture->comm->fail(result);
+          barexCompleteRequest(reqCapture, result);
+        }
         reqCapture->comm->endCallback();
       },
       true);
   if (r != accl::barex::BAREX_SUCCESS) {
     WARN("NET/BAREX : CTS send sync error: %s", bxstr(r));
+    const flagcxResult_t mapped = barexResult(r);
+    comm->fail(mapped);
     /* per xchannel.h: on send failure the buffer is NOT auto-released */
     e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
     comm->endCallback();
     barexReleaseRequest(req);
-    return barexResult(r);
+    return mapped;
   }
   /* completion arrives via OnImmRecvCall(imm == req->slot) */
   *request = req;
@@ -1213,7 +1318,10 @@ static flagcxResult_t barexPrepareOneSided(
     return flagcxInvalidArgument;
   if (size > std::numeric_limits<uint32_t>::max())
     return flagcxInvalidArgument;
-  if (comm->dead.load(std::memory_order_acquire) || comm->channel == nullptr)
+  flagcxResult_t submissionStatus = comm->submissionStatus();
+  if (submissionStatus != flagcxSuccess)
+    return submissionStatus;
+  if (comm->channel == nullptr)
     return flagcxInternalError;
 
   const int localNic = comm->channel->GetLocalNicId();
@@ -1290,16 +1398,18 @@ static flagcxResult_t barexIput(void *sendComm, uint64_t srcOff,
   }
   if (!comm->beginCallback()) {
     barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexResult result = comm->channel->WriteSingle(
       localMem, remoteAddress, remoteRkey, /*signal_peer=*/false, 0,
       [req](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true, UINT64_MAX);
   if (result != accl::barex::BAREX_SUCCESS) {
+    const flagcxResult_t mapped = barexResult(result);
+    comm->fail(mapped);
     comm->endCallback();
     barexReleaseRequest(req);
-    return barexResult(result);
+    return mapped;
   }
   *request = req;
   return flagcxSuccess;
@@ -1335,16 +1445,18 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
   }
   if (!comm->beginCallback()) {
     barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexResult result = comm->channel->ReadSingle(
       localMem, remoteAddress, remoteRkey,
       [req](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true, UINT64_MAX);
   if (result != accl::barex::BAREX_SUCCESS) {
+    const flagcxResult_t mapped = barexResult(result);
+    comm->fail(mapped);
     comm->endCallback();
     barexReleaseRequest(req);
-    return barexResult(result);
+    return mapped;
   }
   *request = req;
   return flagcxSuccess;
@@ -1404,24 +1516,31 @@ barexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
   if (!comm->beginCallback()) {
     for (BarexRequest *req : *acceptedRequests)
       barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexResult result = comm->channel->WriteBatch(
       postedData,
       [comm, postedData, acceptedRequests](Status status) {
         const flagcxResult_t completion = barexStatus(status);
+        if (completion != flagcxSuccess) {
+          WARN("NET/BAREX : asynchronous batch failed: %s",
+               status.ErrMsg().c_str());
+          comm->fail(completion);
+        }
         for (BarexRequest *req : *acceptedRequests)
           barexCompleteRequest(req, completion);
         comm->endCallback();
       },
       /*done_inline=*/true);
   if (result != accl::barex::BAREX_SUCCESS) {
+    const flagcxResult_t mapped = barexResult(result);
+    comm->fail(mapped);
     comm->endCallback();
     for (BarexRequest *req : *acceptedRequests)
       barexReleaseRequest(req);
     /* BAREX does not report a rejected element, so a synchronous failure is
        treated as accepting no work. */
-    return barexResult(result);
+    return mapped;
   }
 
   for (int i = 0; i < accepted; ++i)
@@ -1496,15 +1615,17 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
   }
   if (!comm->beginCallback()) {
     barexReleaseRequest(req);
-    return flagcxInternalError;
+    return comm->submissionStatus();
   }
   BarexResult result = comm->channel->ReadBatch(
       data, [req, data](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true);
   if (result != accl::barex::BAREX_SUCCESS) {
+    const flagcxResult_t mapped = barexResult(result);
+    comm->fail(mapped);
     comm->endCallback();
     barexReleaseRequest(req);
-    return barexResult(result);
+    return mapped;
   }
   *request = req;
   return flagcxSuccess;
