@@ -133,6 +133,37 @@ flagcx_ci_prepare() {
   echo "PPU devices:"
   ls -l /dev/alixpu* 2>/dev/null || true
   echo "ACCL/RDMA devices:"
+  ls -l /sys/class/infiniband 2>/dev/null || true
+  ls -l /sys/class/infiniband_verbs 2>/dev/null || true
   ls -l /dev/infiniband 2>/dev/null || true
   ibv_devices 2>/dev/null || true
+}
+
+flagcx_ci_validate_rdma() {
+  local suite=$1
+
+  # PPU ACCL/BAREX uses the vsolar HCA together with the standard uverbs and
+  # vendor command nodes. Check only kernel/sysfs visibility here; provider
+  # diagnostics remain informational and do not depend on ibv_devices or
+  # ibv_devinfo being installed in the image.
+  if ! compgen -G "/sys/class/infiniband/vsolar_*" >/dev/null; then
+    echo "PPU $suite tests require a vsolar_* RDMA HCA in /sys/class/infiniband." >&2
+    return 1
+  fi
+  if ! compgen -G "/sys/class/infiniband_verbs/uverbs*" >/dev/null; then
+    echo "PPU $suite tests require uverbs entries in /sys/class/infiniband_verbs." >&2
+    return 1
+  fi
+  if ! compgen -G "/dev/infiniband/uverbs*" >/dev/null; then
+    echo "PPU $suite tests require /dev/infiniband/uverbs* device nodes." >&2
+    return 1
+  fi
+  if [[ ! -e /dev/infiniband/rdma_cm ]]; then
+    echo "PPU $suite tests require /dev/infiniband/rdma_cm." >&2
+    return 1
+  fi
+  if ! compgen -G "/dev/infiniband/fic2_soe_ucmd*" >/dev/null; then
+    echo "PPU $suite tests require /dev/infiniband/fic2_soe_ucmd* control nodes." >&2
+    return 1
+  fi
 }
