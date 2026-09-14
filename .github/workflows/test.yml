@@ -417,3 +417,43 @@ jobs:
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reduce -b 128M -e 1G -f 2 -r 0 -p 1
+
+  perf-test-ppu:
+    name: perf-test (ppu, PCCL + BAREX)
+    runs-on: [flagcicd-810e]
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: recursive
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run PPU homogeneous and BAREX heterogeneous perf tests
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_IMAGE: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_ppu_container.sh" perf
+
+      - name: Cleanup PPU perf container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true

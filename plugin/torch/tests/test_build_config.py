@@ -149,6 +149,25 @@ class TorchBackendConfigTest(unittest.TestCase):
             build_config.get_device_rpath_dirs("unused", paths), paths
         )
 
+    def test_ppu_uses_cuda_compatible_torch_runtime(self):
+        with self.clean_environment():
+            backend = build_config.resolve_torch_backend("ppu")
+            config = build_config.get_device_config(
+                build_config.ADAPTOR_MAP["ppu"], backend
+            )
+
+        self.assertEqual(backend.name, "vendor")
+        self.assertEqual(backend.device_name, "")
+        self.assertEqual(
+            config,
+            (
+                ["/usr/local/cuda/include"],
+                ["/usr/local/cuda/lib64"],
+                ["cuda", "cudart", "c10_cuda", "torch_cuda"],
+            ),
+        )
+        self.assertEqual(build_config.ADAPTOR_TO_MAKE_FLAG["ppu"], "USE_PPU")
+
 
 if __name__ == "__main__":
     unittest.main()

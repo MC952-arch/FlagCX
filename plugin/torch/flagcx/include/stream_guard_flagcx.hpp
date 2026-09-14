@@ -12,7 +12,7 @@
 #error "The FlagOS torch backend supports only Ascend and Enflame"
 #endif
 #include <flagos.h>
-#elif USE_NVIDIA_ADAPTOR
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/impl/CUDAGuardImpl.h>
@@ -99,7 +99,7 @@ public:
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
         guard_(*reinterpret_cast<Stream_t *>(stream)),
         previous_(GetCurrentStreamForDevice(deviceId)), previousDevice_(0)
-#elif USE_NVIDIA_ADAPTOR
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
 #elif USE_ILUVATAR_ADAPTOR
@@ -175,7 +175,7 @@ public:
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
     guard_ = *reinterpret_cast<Stream_t *>(stream);
     SetCurrentStreamForDevice(deviceId_, guard_);
-#elif USE_NVIDIA_ADAPTOR
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
 #elif USE_ILUVATAR_ADAPTOR
@@ -226,7 +226,7 @@ private:
   Stream_t guard_;
   Stream_t previous_;
   int previousDevice_;
-#elif USE_NVIDIA_ADAPTOR
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ILUVATAR_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;

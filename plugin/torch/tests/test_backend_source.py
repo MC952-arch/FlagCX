@@ -6,6 +6,10 @@ from pathlib import Path
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 SOURCE = (PLUGIN_DIR / "flagcx/src/backend_flagcx.cpp").read_text()
 HEADER = (PLUGIN_DIR / "flagcx/include/backend_flagcx.hpp").read_text()
+EVENT_HEADER = (PLUGIN_DIR / "flagcx/include/event_flagcx.hpp").read_text()
+STREAM_GUARD_HEADER = (
+    PLUGIN_DIR / "flagcx/include/stream_guard_flagcx.hpp"
+).read_text()
 
 
 def function_body(source, signature, next_signature):
@@ -15,6 +19,34 @@ def function_body(source, signature, next_signature):
 
 
 class BackendSourceRegressionTest(unittest.TestCase):
+    def test_ppu_uses_cuda_compatible_stream_event_and_device_paths(self):
+        cuda_or_ppu = (
+            "defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)"
+        )
+
+        self.assertGreaterEqual(EVENT_HEADER.count(cuda_or_ppu), 2)
+        self.assertGreaterEqual(STREAM_GUARD_HEADER.count(cuda_or_ppu), 4)
+        self.assertIn(
+            "defined(USE_PPU_ADAPTOR)",
+            function_body(
+                SOURCE,
+                "void flagcxBackend::initComm()",
+                "flagcxComm_t flagcxBackend::getOrCreatePairComm",
+            ),
+        )
+        self.assertRegex(
+            HEADER,
+            re.compile(
+                r"defined\(USE_NVIDIA_ADAPTOR\).*"
+                r"defined\(USE_PPU_ADAPTOR\).*flagcxCudaEvent",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            HEADER,
+            re.compile(r"USE_PPU_ADAPTOR\s+devName = \"cuda\";"),
+        )
+
     def test_ascend_flagos_does_not_reference_torch_npu_stream(self):
         get_stream = function_body(
             SOURCE,

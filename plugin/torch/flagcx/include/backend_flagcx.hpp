@@ -43,7 +43,7 @@ public:
              opType),
         stream_(stream), devHandle_(devHandle), future_(std::move(future)),
         deviceId_(deviceId), isBarrierOp_(false) {
-#ifdef USE_NVIDIA_ADAPTOR
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
     event_ = std::make_unique<flagcxCudaEvent>();
 #elif USE_ASCEND_ADAPTOR
     event_ = std::make_unique<flagcxCannEvent>();
@@ -242,6 +242,8 @@ public:
 #elif USE_CAMBRICON_ADAPTOR
     devName = "mlu";
 #elif USE_METAX_ADAPTOR
+    devName = "cuda";
+#elif USE_PPU_ADAPTOR
     devName = "cuda";
 #elif USE_MUSA_ADAPTOR
     devName = "musa";

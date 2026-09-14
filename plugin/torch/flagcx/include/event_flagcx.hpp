@@ -16,7 +16,7 @@
 #error "The FlagOS torch backend supports only Ascend and Enflame"
 #endif
 #include <flagos.h>
-#elif USE_NVIDIA_ADAPTOR
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
 #elif USE_ASCEND_ADAPTOR
@@ -98,7 +98,7 @@ public:
   virtual void block(const flagcxStream_t &stream, const int deviceId) = 0;
 };
 
-#ifdef USE_NVIDIA_ADAPTOR
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 class flagcxCudaEvent : public flagcxEvent {
 public:
   flagcxCudaEvent() {
