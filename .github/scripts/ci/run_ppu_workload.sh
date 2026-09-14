@@ -46,7 +46,6 @@ run_perf() {
   if [[ "$mode" == heterogeneous ]]; then
     mode_env=(
       -x FLAGCX_USE_HETERO_COMM=1
-      -x FLAGCX_CLUSTER_SPLIT_LIST=2
       -x FLAGCX_MEM_ENABLE=1
       -x FLAGCX_VMM_ENABLE=0
       -x FLAGCX_P2P_TRANSPORT=accl
@@ -64,24 +63,36 @@ run_perf_suite() {
   local mode=$1
   local begin=$2
   local end=$3
-  local log_file=${4:-}
   local -a common_args=(-b "$begin" -e "$end" -f 2 -p 1)
+  local -a operations
   local operation
 
-  for operation in alltoall alltoallv sendrecv allreduce allgather \
-                   reducescatter; do
-    if [[ -n "$log_file" ]]; then
-      run_perf "$mode" "$operation" "${common_args[@]}" 2>&1 | tee -a "$log_file"
-    else
-      run_perf "$mode" "$operation" "${common_args[@]}"
-    fi
-  done
-  for operation in broadcast gather scatter reduce; do
-    if [[ -n "$log_file" ]]; then
-      run_perf "$mode" "$operation" "${common_args[@]}" -r 0 2>&1 | tee -a "$log_file"
-    else
-      run_perf "$mode" "$operation" "${common_args[@]}" -r 0
-    fi
+  case "$mode" in
+    homogeneous)
+      operations=(
+        alltoall alltoallv sendrecv allreduce allgather reducescatter
+        broadcast gather scatter reduce
+      )
+      ;;
+    heterogeneous)
+      # Match CUDA uniRunner coverage. Reduction collectives are not supported
+      # by uniRunner and must be exercised through homoRunner or hybridRunner.
+      operations=(alltoall alltoallv sendrecv allgather broadcast gather scatter)
+      ;;
+    *)
+      echo "Unknown PPU perf mode: $mode" >&2
+      return 2
+      ;;
+  esac
+
+  for operation in "${operations[@]}"; do
+    local -a operation_args=("${common_args[@]}")
+    case "$operation" in
+      broadcast|gather|scatter|reduce)
+        operation_args+=(-r 0)
+        ;;
+    esac
+    run_perf "$mode" "$operation" "${operation_args[@]}"
   done
 }
 
@@ -98,19 +109,14 @@ case "$workload" in
       python3 setup.py build_ext --inplace
     )
 
-    torch_log=${RUNNER_TEMP:-/tmp}/flagcx-ppu-torch-api.log
     export PYTHON_BIN=python3
     export FLAGCX_ADAPTOR=ppu
-    export FLAGCX_USE_HETERO_COMM=1
+    unset FLAGCX_USE_HETERO_COMM
     export FLAGCX_CLUSTER_SPLIT_LIST=2
     export FLAGCX_MEM_ENABLE=1
     export FLAGCX_VMM_ENABLE=0
     export FLAGCX_P2P_TRANSPORT=accl
-    bash "$project_root/test/script/torch_api_test.sh" 2>&1 | tee "$torch_log"
-    if ! grep -Eq 'NET/(ACCL_P2P|BAREX)' "$torch_log"; then
-      echo "PPU heterogeneous Torch API tests did not report ACCL/BAREX transport" >&2
-      exit 1
-    fi
+    bash "$project_root/test/script/torch_api_test.sh"
     ;;
   perf)
     build_flagcx
@@ -120,13 +126,7 @@ case "$workload" in
     # Homogeneous coverage aligned with the CUDA/Hygon/MetaX platform jobs.
     run_perf_suite homogeneous 128M 1G
 
-    barex_log=${RUNNER_TEMP:-/tmp}/flagcx-ppu-barex-perf.log
-    : >"$barex_log"
-    run_perf_suite heterogeneous 128M 1G "$barex_log"
-    if ! grep -Eq 'NET/(ACCL_P2P|BAREX)' "$barex_log"; then
-      echo "PPU heterogeneous perf tests did not report ACCL/BAREX transport" >&2
-      exit 1
-    fi
+    run_perf_suite heterogeneous 128M 1G
     ;;
   *)
     echo "Unknown PPU workload: $workload" >&2

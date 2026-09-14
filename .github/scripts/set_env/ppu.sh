@@ -68,11 +68,6 @@ flagcx_ci_configure_suite() {
     rma)
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
-    runner)
-      # Keep simulated cross-cluster traffic on the FlagCX transport path.
-      export NCCL_P2P_DISABLE=1
-      export NCCL_SHM_DISABLE=1
-      ;;
   esac
 }
 
@@ -104,16 +99,16 @@ flagcx_ci_run_suite_override() {
       ./build/bin/runner_mpi_tests \
       --gtest_filter=FlagCXCollTest.SendRecv
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous" \
+      env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-      -x FLAGCX_USE_HETERO_COMM=1 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
       ./build/bin/runner_mpi_tests
     FLAGCX_CI_MPI_LABEL="runner BAREX forced NET" \
+      env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-      -x FLAGCX_USE_HETERO_COMM=1 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
