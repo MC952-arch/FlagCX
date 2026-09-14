@@ -326,7 +326,7 @@ jobs:
           bash torch_api_test.sh
 
   torch-api-test-ppu:
-    name: torch-api-test (ppu, PCCL + BAREX)
+    name: torch-api-test (ppu)
     runs-on: [flagcicd-810e]
     timeout-minutes: 180
 
@@ -351,7 +351,7 @@ jobs:
         shell: bash
         run: docker version
 
-      - name: Run PPU homogeneous and BAREX heterogeneous Torch API tests
+      - name: Run PPU Torch API tests
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-torch-${{ github.run_id }}-${{ github.run_attempt }}

@@ -76,8 +76,10 @@ class PpuCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn("perf-test-ppu:", perf_workflow)
+        self.assertIn("name: perf-test (ppu)", perf_workflow)
         self.assertIn("run_ppu_container.sh\" perf", perf_workflow)
         self.assertIn("torch-api-test-ppu:", torch_workflow)
+        self.assertIn("name: torch-api-test (ppu)", torch_workflow)
         self.assertIn("run_ppu_container.sh\" torch-api", torch_workflow)
 
         # BAREX needs host networking. GitHub Actions job containers reject

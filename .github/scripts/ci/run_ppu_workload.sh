@@ -117,7 +117,7 @@ case "$workload" in
     make -C "$project_root/test/perf" --jobs="$(nproc)" \
       USE_PPU=1 USE_ACCL_BAREX=1
 
-    # Homogeneous PCCL parity with the CUDA/Hygon/MetaX platform jobs.
+    # Homogeneous coverage aligned with the CUDA/Hygon/MetaX platform jobs.
     run_perf_suite homogeneous 128M 1G
 
     barex_log=${RUNNER_TEMP:-/tmp}/flagcx-ppu-barex-perf.log

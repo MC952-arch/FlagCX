@@ -419,7 +419,7 @@ jobs:
           mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reduce -b 128M -e 1G -f 2 -r 0 -p 1
 
   perf-test-ppu:
-    name: perf-test (ppu, PCCL + BAREX)
+    name: perf-test (ppu)
     runs-on: [flagcicd-810e]
     timeout-minutes: 240
 
@@ -444,7 +444,7 @@ jobs:
         shell: bash
         run: docker version
 
-      - name: Run PPU homogeneous and BAREX heterogeneous perf tests
+      - name: Run PPU perf tests
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}

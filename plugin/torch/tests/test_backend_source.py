@@ -19,28 +19,26 @@ def function_body(source, signature, next_signature):
 
 
 class BackendSourceRegressionTest(unittest.TestCase):
-    def test_ppu_uses_cuda_compatible_stream_event_and_device_paths(self):
-        cuda_or_ppu = (
-            "defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)"
+    def test_ppu_has_independent_cuda_compatible_torch_paths(self):
+        self.assertGreaterEqual(EVENT_HEADER.count("#elif USE_PPU_ADAPTOR"), 2)
+        self.assertIn("class flagcxPpuEvent", EVENT_HEADER)
+        self.assertGreaterEqual(
+            STREAM_GUARD_HEADER.count("#elif USE_PPU_ADAPTOR"), 4
         )
-
-        self.assertGreaterEqual(EVENT_HEADER.count(cuda_or_ppu), 2)
-        self.assertGreaterEqual(STREAM_GUARD_HEADER.count(cuda_or_ppu), 4)
-        self.assertIn(
-            "defined(USE_PPU_ADAPTOR)",
+        self.assertRegex(
             function_body(
                 SOURCE,
                 "void flagcxBackend::initComm()",
                 "flagcxComm_t flagcxBackend::getOrCreatePairComm",
             ),
+            re.compile(
+                r"#elif USE_PPU_ADAPTOR\s+"
+                r"initComm\(c10::impl::getDeviceGuardImpl"
+            ),
         )
         self.assertRegex(
             HEADER,
-            re.compile(
-                r"defined\(USE_NVIDIA_ADAPTOR\).*"
-                r"defined\(USE_PPU_ADAPTOR\).*flagcxCudaEvent",
-                re.DOTALL,
-            ),
+            re.compile(r"USE_PPU_ADAPTOR\s+event_ = .*flagcxPpuEvent"),
         )
         self.assertRegex(
             HEADER,

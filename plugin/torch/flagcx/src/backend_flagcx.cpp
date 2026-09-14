@@ -439,8 +439,10 @@ std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
       search != flagcxEvents_.end()) {
     return search->second;
   } else {
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+#if USE_NVIDIA_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxCudaEvent>();
+#elif USE_PPU_ADAPTOR
+    flagcxEvents_[eventId] = std::make_unique<flagcxPpuEvent>();
 #elif USE_ASCEND_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxCannEvent>();
 #elif USE_ILUVATAR_ADAPTOR
@@ -512,8 +514,9 @@ void flagcxBackend::initComm(at::Device dev) {
 void flagcxBackend::initComm() {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||      \
     defined(USE_METAX_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                   \
-    defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR) ||              \
-    defined(USE_PPU_ADAPTOR)
+    defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR)
+  initComm(c10::impl::getDeviceGuardImpl(at::DeviceType::CUDA)->getDevice());
+#elif USE_PPU_ADAPTOR
   initComm(c10::impl::getDeviceGuardImpl(at::DeviceType::CUDA)->getDevice());
 #elif defined(USE_CAMBRICON_ADAPTOR)
   initComm(

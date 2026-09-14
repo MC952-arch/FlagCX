@@ -69,9 +69,7 @@ flagcx_ci_configure_suite() {
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     runner)
-      # PCCL and BAREX share libu2mm symbol names. The preparation hook loads
-      # PCCL with RTLD_DEEPBIND; disabling its internal P2P/SHM paths also
-      # keeps the simulated cross-cluster traffic on FlagCX ACCL/BAREX.
+      # Keep simulated cross-cluster traffic on the FlagCX transport path.
       export NCCL_P2P_DISABLE=1
       export NCCL_SHM_DISABLE=1
       ;;
@@ -140,8 +138,7 @@ flagcx_ci_prepare() {
   rm -rf "$project_root/build" \
     "$project_root/third-party/googletest/build"
 
-  # BAREX exposes libu2mm symbols globally. PCCL uses the same names for
-  # function-pointer objects, so deep-bind PCCL to prevent a startup crash.
+  # Deep-bind the vendor collective library to avoid symbol interposition.
   mkdir -p "$FLAGCX_CI_PPU_DLOPEN_SHIM_DIR"
   "${CC:-cc}" -shared -fPIC -O2 -Wall -Wextra \
     "$FLAGCX_CI_PPU_DLOPEN_SHIM_SOURCE" \
@@ -150,7 +147,7 @@ flagcx_ci_prepare() {
     *":$FLAGCX_CI_PPU_DLOPEN_SHIM:"*) ;;
     *) export LD_PRELOAD="$FLAGCX_CI_PPU_DLOPEN_SHIM${LD_PRELOAD:+:$LD_PRELOAD}" ;;
   esac
-  echo "PCCL deep-bind shim: $FLAGCX_CI_PPU_DLOPEN_SHIM"
+  echo "PPU deep-bind shim: $FLAGCX_CI_PPU_DLOPEN_SHIM"
   command -v mpirun
   mpirun --version
 

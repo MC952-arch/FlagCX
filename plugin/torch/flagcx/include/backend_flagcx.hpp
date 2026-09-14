@@ -43,8 +43,10 @@ public:
              opType),
         stream_(stream), devHandle_(devHandle), future_(std::move(future)),
         deviceId_(deviceId), isBarrierOp_(false) {
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+#if USE_NVIDIA_ADAPTOR
     event_ = std::make_unique<flagcxCudaEvent>();
+#elif USE_PPU_ADAPTOR
+    event_ = std::make_unique<flagcxPpuEvent>();
 #elif USE_ASCEND_ADAPTOR
     event_ = std::make_unique<flagcxCannEvent>();
 #elif USE_ILUVATAR_ADAPTOR
