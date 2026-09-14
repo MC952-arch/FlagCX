@@ -165,17 +165,5 @@ flagcx_ci_run_suite_override() {
     return
   fi
 
-  if [[ "$suite" == "runner" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="runner unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-    cd "$suite_dir"
-    FLAGCX_CI_MPI_LABEL="runner default" \
-      "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-      ./build/bin/runner_mpi_tests
-    echo "Skipping Hygon runner hetero-mode MPI variants: current DU path stalls in the single-node hetero simulation."
-    return
-  fi
-
   FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
 }
