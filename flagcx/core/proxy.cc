@@ -97,6 +97,53 @@ static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
   return flagcxSuccess;
 }
 
+flagcxResult_t
+flagcxProxyRecordConnectionError(struct flagcxProxyConnection *connection,
+                                 flagcxResult_t result) {
+  if (connection == NULL || result == flagcxSuccess ||
+      result == flagcxInProgress)
+    return result;
+
+  flagcxResult_t expected = flagcxSuccess;
+  __atomic_compare_exchange_n(&connection->result, &expected, result, false,
+                              __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+  __atomic_store_n(&connection->state, connFailed, __ATOMIC_RELEASE);
+  return result;
+}
+
+flagcxResult_t
+flagcxProxyGetConnectionError(struct flagcxProxyConnection *connection) {
+  if (connection == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&connection->state, __ATOMIC_ACQUIRE) != connFailed)
+    return flagcxSuccess;
+
+  flagcxResult_t result =
+      __atomic_load_n(&connection->result, __ATOMIC_ACQUIRE);
+  return result == flagcxSuccess ? flagcxInternalError : result;
+}
+
+// Complete every parsed control RPC exactly once. Permanent setup/connect
+// failures still need a response so the caller cannot wait forever or treat a
+// half-built connection as usable.
+static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
+                                             struct flagcxProxyAsyncOp *op,
+                                             int *asyncOpCount,
+                                             flagcxResult_t result) {
+  if (result != flagcxSuccess && op->respBuff != NULL && op->respSize > 0)
+    memset(op->respBuff, 0, op->respSize);
+
+  flagcxProxyRpcResponseHeader resp = {op->opId, result, op->respSize};
+  flagcxResult_t sendResult =
+      flagcxSocketSend(&peer->sock, &resp, sizeof(resp));
+  if (sendResult == flagcxSuccess && op->respSize > 0)
+    sendResult = flagcxSocketSend(&peer->sock, op->respBuff, op->respSize);
+
+  asyncProxyOpDequeue(peer, op);
+  (*asyncOpCount)--;
+  return sendResult;
+}
+
 // ============================================================
 // Proxy Init Request/Response (forward declarations for connection pool)
 // ============================================================
@@ -179,6 +226,7 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
        "transport %d",
        (*connection)->send ? "send" : "recv", id, (*connection)->tpLocalRank,
        (*connection)->transport);
+  __atomic_store_n(&(*connection)->result, flagcxSuccess, __ATOMIC_RELEASE);
   __atomic_store_n(&(*connection)->state, connInitialized, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
@@ -765,6 +813,13 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
                    struct flagcxHeteroComm *comm) {
   int done = 0;
   flagcxResult_t res = flagcxSuccess;
+  if (op->type != flagcxProxyMsgInit && op->connection != NULL &&
+      !proxyCleanupOpType(op->type)) {
+    flagcxResult_t connectionResult =
+        flagcxProxyGetConnectionError(op->connection);
+    if (connectionResult != flagcxSuccess)
+      return connectionResult;
+  }
   const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
   bool dmaEnabled = false; // disabled by default
   if (dmaBufEnable != NULL) {
@@ -1002,13 +1057,10 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
 
     flagcxProxyRpcResponseHeader resp = {op->opId, res, op->respSize};
 
-    // Send the opId for referencing async operation
     FLAGCXCHECK(flagcxSocketSend(op->connection->sock, &resp, sizeof(resp)));
-    if (op->respSize) {
-      // Send the response
+    if (op->respSize)
       FLAGCXCHECK(
           flagcxSocketSend(op->connection->sock, op->respBuff, op->respSize));
-    }
 
     asyncProxyOpDequeue(peer, op);
     (*asyncOpCount)--;
@@ -1034,6 +1086,13 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
   if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress &&
       !proxyCleanupOpType(type))
     return asyncResult;
+
+  if (proxyConn->connection != NULL && !proxyCleanupOpType(type)) {
+    flagcxResult_t connectionResult =
+        flagcxProxyGetConnectionError(proxyConn->connection);
+    if (connectionResult != flagcxSuccess)
+      return connectionResult;
+  }
 
   if (sharedProxyState->peerSocks == NULL)
     return flagcxInternalError;
@@ -1112,8 +1171,15 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
 
   asyncProxyOpEnqueue(peer, asyncOp);
   (*asyncOpCount)++;
-  FLAGCXCHECK(
-      proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm));
+  ret = proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm);
+  if (ret != flagcxSuccess && ret != flagcxInProgress) {
+    if (!proxyCleanupOpType(type))
+      flagcxProxyRecordConnectionError(asyncOp->connection, ret);
+    flagcxResult_t responseResult =
+        proxyServiceCompleteOp(peer, asyncOp, asyncOpCount, ret);
+    if (responseResult != flagcxSuccess)
+      return responseResult;
+  }
   return flagcxSuccess;
 fail:
   if (asyncOp->reqBuff)
@@ -1385,20 +1451,15 @@ void *flagcxProxyService(void *args) {
           WARN("[Service thread] Error encountered progressing operation with "
                "res=%d",
                res);
-          flagcxProxyRecordAsyncError(comm->proxyState, res);
-
-          // Preserve the wire contract even on failure so another caller may
-          // safely buffer this out-of-order response.  Zero any partially
-          // initialized payload; the caller must ignore it when res is an
-          // error.
-          if (op->respBuff != NULL && op->respSize > 0)
-            memset(op->respBuff, 0, op->respSize);
-          flagcxProxyRpcResponseHeader resp = {op->opId, res, op->respSize};
-          (void)flagcxSocketSend(&peer->sock, &resp, sizeof(resp));
-          if (op->respBuff != NULL && op->respSize > 0)
-            (void)flagcxSocketSend(&peer->sock, op->respBuff, op->respSize);
-          asyncProxyOpDequeue(peer, op);
-          asyncOpCount--;
+          if (!proxyCleanupOpType(op->type))
+            flagcxProxyRecordConnectionError(op->connection, res);
+          flagcxResult_t responseResult =
+              proxyServiceCompleteOp(peer, op, &asyncOpCount, res);
+          if (responseResult != flagcxSuccess) {
+            // At this point no reliable RPC response can be delivered. Poison
+            // the proxy so callers terminate through the socket/abort path.
+            flagcxProxyRecordAsyncError(comm->proxyState, responseResult);
+          }
           op = opNext;
         }
       }

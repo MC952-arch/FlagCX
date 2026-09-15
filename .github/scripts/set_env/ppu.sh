@@ -117,6 +117,7 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
       -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
       ./build/bin/runner_mpi_tests
     return
   fi
