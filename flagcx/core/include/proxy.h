@@ -347,6 +347,10 @@ struct flagcxProxyState {
   // Set by flagcxProxyStop, checked by service thread as backup
   volatile int stop;
   flagcxResult_t asyncResult;
+  // First teardown error recorded after the service thread has stopped
+  // accepting work. Kept separate from asyncResult so cleanup failures do not
+  // masquerade as data-plane completion failures.
+  flagcxResult_t cleanupResult;
   int nRanks;
 
   // Used by main thread
