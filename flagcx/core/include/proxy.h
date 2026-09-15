@@ -413,6 +413,8 @@ void *flagcxProxyService(void *args);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
+flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
+                                           flagcxResult_t result);
 flagcxResult_t flagcxProxyComputeP2p(struct flagcxInfo *info,
                                      struct flagcxProxyOp *proxyOp, int reg);
 flagcxResult_t flagcxProxyStart(struct flagcxHeteroComm *comm);

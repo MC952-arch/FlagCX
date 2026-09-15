@@ -400,6 +400,7 @@ static flagcxResult_t flagcxCommInitRankDev(flagcxHeteroComm_t *newcomm,
       FLAGCX_MAGIC; // Used to detect comm corruption.
   FLAGCXCHECKGOTO(flagcxCalloc((uint32_t **)&comm->abortFlagRefCount, 1), res,
                   fail);
+  FLAGCXCHECKGOTO(flagcxCalloc((uint32_t **)&comm->abortFlag, 1), res, fail);
   *comm->abortFlagRefCount = 1;
   /* start with flagcxInternalError and will be changed to flagcxSuccess if init
    * succeeds. */
@@ -422,6 +423,7 @@ exit:
   return flagcxGroupErrCheck(res);
 fail:
   if (comm) {
+    free((void *)comm->abortFlag);
     if (comm->abortFlagRefCount)
       free(comm->abortFlagRefCount);
     free(comm);
@@ -495,6 +497,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->tasks.peers);
   free(comm->tasks.p2pOrder);
   free(comm->p2pSchedule);
+  free((void *)comm->abortFlag);
   free(comm->abortFlagRefCount);
   if (comm->topoServer) {
     flagcxTopoFree(comm->topoServer);

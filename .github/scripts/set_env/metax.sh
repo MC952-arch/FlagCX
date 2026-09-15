@@ -39,9 +39,9 @@ flagcx_ci_configure_suite() {
         "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
       )
       ;;
-    symmem)
-      # Keep this temporary until the MetaX symmetric-memory hang has been
-      # localized to a specific VMM, IPC, MR, or collective stage.
+    p2p|runner|symmem)
+      # Temporary full diagnostics while MetaX P2P, heterogeneous runner, and
+      # symmetric-memory paths are being qualified.
       export FLAGCX_DEBUG=TRACE
       export FLAGCX_DEBUG_SUBSYS=ALL
       ;;
@@ -58,38 +58,6 @@ flagcx_ci_prepare() {
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" || "$suite" == "perf" ||
         "$suite" == "torch-api" ]]; then
-    local -a hca_paths=()
-    local -a hca_names=()
-    local hca_path
-
-    shopt -s nullglob
-    # Prefer the native RoCE devices while retaining compatibility with MetaX
-    # runners that expose the same links through the bonded RDMA driver.
-    hca_paths=(/sys/class/infiniband/bnxt_roce*)
-    if [[ ${#hca_paths[@]} -eq 0 ]]; then
-      hca_paths=(/sys/class/infiniband/bnxt_re_bond*)
-    fi
-    shopt -u nullglob
-
-    if [[ ${#hca_paths[@]} -eq 0 ]]; then
-      if [[ "$suite" != "rma" ]]; then
-        echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
-        return 1
-      fi
-      # The RMA suite runs an explicit IPC invocation before its RDMA
-      # preflight. Leave HCA selection unset here so missing RDMA does not hide
-      # IPC regressions; flagcx_ci_validate_rdma will reject the NET phase.
-      echo "MetaX RMA IPC phase will run without a detected Broadcom RDMA HCA."
-    else
-      for hca_path in "${hca_paths[@]}"; do
-        hca_names+=("${hca_path##*/}")
-      done
-      if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
-        local IFS=,
-        export FLAGCX_IB_HCA="${hca_names[*]}"
-      fi
-    fi
-
     if [[ -d /sys/class/net/bond0 ]]; then
       export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
     fi
@@ -110,13 +78,43 @@ flagcx_ci_prepare() {
   fi
 }
 
+flagcx_ci_select_rdma() {
+  local suite=$1
+  local -a hca_paths=()
+  local -a hca_names=()
+  local hca_path
+
+  shopt -s nullglob
+  # Prefer the native RoCE devices while retaining compatibility with MetaX
+  # runners that expose the same links through the bonded RDMA driver.
+  hca_paths=(/sys/class/infiniband/bnxt_roce*)
+  FLAGCX_CI_METAX_RDMA_PATTERN="/sys/class/infiniband/bnxt_roce*"
+  if [[ ${#hca_paths[@]} -eq 0 ]]; then
+    hca_paths=(/sys/class/infiniband/bnxt_re_bond*)
+    FLAGCX_CI_METAX_RDMA_PATTERN="/sys/class/infiniband/bnxt_re_bond*"
+  fi
+  shopt -u nullglob
+
+  if [[ ${#hca_paths[@]} -eq 0 ]]; then
+    echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+    return 1
+  fi
+
+  if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
+    for hca_path in "${hca_paths[@]}"; do
+      hca_names+=("${hca_path##*/}")
+    done
+    local IFS=,
+    export FLAGCX_IB_HCA="${hca_names[*]}"
+  fi
+}
+
 flagcx_ci_validate_rdma() {
   local suite=$1
-  local -a patterns=("/sys/class/infiniband/bnxt_roce*")
-  if ! compgen -G "${patterns[0]}" >/dev/null; then
-    patterns=("/sys/class/infiniband/bnxt_re_bond*")
-  fi
-  flagcx_ci_validate_rdma_static MetaX "$suite" "${patterns[@]}"
+  flagcx_ci_select_rdma "$suite" || return
+  flagcx_ci_validate_rdma_static MetaX "$suite" \
+    "$FLAGCX_CI_METAX_RDMA_PATTERN" || return
+  echo "MetaX RDMA selection: FLAGCX_IB_HCA=$FLAGCX_IB_HCA"
 }
 
 flagcx_ci_build_suite_override() {
