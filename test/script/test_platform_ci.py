@@ -81,6 +81,47 @@ class PlatformCiRegressionTest(unittest.TestCase):
             source = (perf_dir / f"test_{operation}.cpp").read_text()
             self.assertIn("PERF_CHECK(flagcx", source, operation)
 
+    def test_rdma_integration_suites_fail_fast_without_hardware_adaptor(self):
+        adaptor_test = (
+            REPO_ROOT / "test/unittest/adaptor/test_net_adaptor.cpp"
+        ).read_text()
+        p2p_test = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_adaptor.cpp"
+        ).read_text()
+        runner_test = (
+            REPO_ROOT / "test/unittest/runner/main_mpi.cpp"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        ppu_env = (
+            REPO_ROOT / ".github/scripts/set_env/ppu.sh"
+        ).read_text()
+
+        self.assertIn("ASSERT_GT(nDevs_, 0)", adaptor_test)
+        device_requirement = p2p_test[
+            p2p_test.index("TEST_F(P2pAdaptorTest, DevicesReturnsPositive)") :
+        ]
+        device_requirement = device_requirement[:
+            device_requirement.index("TEST_F(P2pAdaptorTest, InitIsIdempotent)")
+        ]
+        self.assertIn("ASSERT_EQ(initResult, flagcxSuccess)", device_requirement)
+        self.assertRegex(device_requirement, r"(?:ASSERT|EXPECT)_GT\(nDevs, 0\)")
+        self.assertNotIn("GTEST_SKIP", device_requirement)
+
+        self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR", runner_test)
+        forced_net = unit_runner[
+            unit_runner.index('FLAGCX_CI_MPI_LABEL="runner forced NET"') :
+        ]
+        forced_net = forced_net[:forced_net.index(";;")]
+        self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IB", forced_net)
+
+        ppu_forced_net = ppu_env[
+            ppu_env.index('FLAGCX_CI_MPI_LABEL="runner BAREX forced NET"') :
+        ]
+        ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
+        self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
+
 
 class MetaXEnvironmentTest(unittest.TestCase):
     def run_metax_shell(self, body, *, extra_env=None):

@@ -390,7 +390,8 @@ enum proxyConnectState {
   connSharedInitialized = 2,
   connSetupDone = 3,
   connConnected = 4,
-  numConnStates = 5
+  connFailed = 5,
+  numConnStates = 6
 };
 
 struct flagcxProxyConnection {
@@ -405,6 +406,8 @@ struct flagcxProxyConnection {
   flagcxNetDeviceHandle_t *netDeviceHandle;
   void *mhandles[FLAGCX_NUM_PROTOCOLS];
   proxyConnectState state;
+  // First terminal control-plane error for this connection.
+  flagcxResult_t result;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -419,6 +422,11 @@ flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  bool *justInquire = NULL);
 flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
                                            flagcxResult_t result);
+flagcxResult_t
+flagcxProxyRecordConnectionError(struct flagcxProxyConnection *connection,
+                                 flagcxResult_t result);
+flagcxResult_t
+flagcxProxyGetConnectionError(struct flagcxProxyConnection *connection);
 flagcxResult_t flagcxProxyComputeP2p(struct flagcxInfo *info,
                                      struct flagcxProxyOp *proxyOp, int reg);
 flagcxResult_t flagcxProxyStart(struct flagcxHeteroComm *comm);

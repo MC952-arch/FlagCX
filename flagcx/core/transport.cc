@@ -27,6 +27,16 @@ static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
   return comm->peerInfo[peer].hostHash == comm->peerInfo[comm->rank].hostHash;
 }
 
+static flagcxResult_t waitForProxyConnect(struct flagcxHeteroComm *comm,
+                                          struct flagcxConnector *connector) {
+  flagcxResult_t result;
+  do {
+    result =
+        flagcxPollProxyResponse(comm, &connector->proxyConn, NULL, connector);
+  } while (result == flagcxInProgress);
+  return result;
+}
+
 flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                                        struct flagcxTopoGraph *graph,
                                        int connIndex,
@@ -235,9 +245,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Recv connect: rank %d <- peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
-                 flagcxInProgress)
-            ;
+          FLAGCXCHECK(waitForProxyConnect(comm, conn));
         }
         comm->channels[c].peers[peer]->recv[0].connected = 1;
         comm->connectRecv[peer] ^= (1UL << c);
@@ -278,9 +286,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Send connect: rank %d -> peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
-                 flagcxInProgress)
-            ;
+          FLAGCXCHECK(waitForProxyConnect(comm, conn));
         }
         comm->channels[c].peers[peer]->send[0].connected = 1;
         comm->connectSend[peer] ^= (1UL << c);
