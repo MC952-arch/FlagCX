@@ -2515,6 +2515,7 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  flagcxResult_t destroyResult = flagcxSuccess;
 
   // Destroy cluster info
   free(comm->clusterIds);
@@ -2552,7 +2553,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     flagcxOneSideDeregister(comm->heteroComm);
 
     // Destroy hetero comm
-    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
+    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
     // Destroy host comm
     if (useHostComm()) {
       FLAGCXCHECK(
@@ -2589,7 +2590,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   flagcxDeviceAdaptorPluginFinalize();
 
   free(comm);
-  return flagcxSuccess;
+  return destroyResult;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
@@ -2681,7 +2682,7 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
     return flagcxInvalidArgument;
 
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
-    flagcxResult_t result = comm->asyncResult;
+    flagcxResult_t result = flagcxSuccess;
 
     // Hybrid collectives also execute intra-cluster work on the device CCL.
     // A healthy heterogeneous proxy must not hide an asynchronous CCL error.

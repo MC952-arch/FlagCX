@@ -186,22 +186,21 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
 
 static flagcxResult_t
 proxyFreeConnection(struct flagcxProxyConnection *connection,
-                    struct flagcxHeteroComm *comm) {
+                    struct flagcxHeteroComm *comm, bool closeP2pImports) {
   if (connection->transportResources) {
     if (connection->transport == TRANSPORT_P2P) {
-      if (connection->send) {
-        flagcxP2pSendProxyFree(
+      if (closeP2pImports && connection->send)
+        return flagcxP2pSendProxyFree(
             (struct flagcxP2pResources *)connection->transportResources);
-      } else {
-        flagcxP2pRecvProxyFree(
+      if (!closeP2pImports && !connection->send)
+        return flagcxP2pRecvProxyFree(
             (struct flagcxP2pResources *)connection->transportResources);
-      }
-    } else if (connection->transport == TRANSPORT_NET) {
+    } else if (!closeP2pImports && connection->transport == TRANSPORT_NET) {
       if (connection->send) {
-        flagcxSendProxyFree(
+        return flagcxSendProxyFree(
             (struct sendNetResources *)connection->transportResources);
       } else {
-        flagcxRecvProxyFree(
+        return flagcxRecvProxyFree(
             (struct recvNetResources *)connection->transportResources);
       }
     }
@@ -209,21 +208,44 @@ proxyFreeConnection(struct flagcxProxyConnection *connection,
   return flagcxSuccess;
 }
 
+static void flagcxProxyCaptureCleanupResult(flagcxResult_t nextResult,
+                                            flagcxResult_t *firstResult) {
+  if (nextResult != flagcxSuccess && nextResult != flagcxInProgress &&
+      *firstResult == flagcxSuccess)
+    *firstResult = nextResult;
+}
+
 static flagcxResult_t
 flagcxProxyFreeConnections(struct flagcxProxyConnectionPool *pool,
                            struct flagcxHeteroComm *comm) {
+  flagcxResult_t result = flagcxSuccess;
+
+  // Phase 1 closes every imported P2P FIFO and publishes the peer-visible ACK.
+  // Running this pass across the whole pool before freeing any exported FIFO
+  // prevents two service threads from waiting on each other in recv cleanup.
   for (int b = 0; b < pool->banks; b++) {
     int max = b == pool->banks - 1 ? pool->offset : FLAGCX_PROXY_CONN_POOL_SIZE;
     for (int i = 0; i < max; i++) {
       struct flagcxProxyConnection *connection = pool->pools[b] + i;
-      if (connection->state != connUninitialized) {
-        proxyFreeConnection(connection, comm);
-      }
+      if (connection->state != connUninitialized)
+        flagcxProxyCaptureCleanupResult(
+            proxyFreeConnection(connection, comm, true), &result);
+    }
+  }
+
+  // Phase 2 may now release exported P2P FIFOs, then cleans up NET resources.
+  for (int b = 0; b < pool->banks; b++) {
+    int max = b == pool->banks - 1 ? pool->offset : FLAGCX_PROXY_CONN_POOL_SIZE;
+    for (int i = 0; i < max; i++) {
+      struct flagcxProxyConnection *connection = pool->pools[b] + i;
+      if (connection->state != connUninitialized)
+        flagcxProxyCaptureCleanupResult(
+            proxyFreeConnection(connection, comm, false), &result);
     }
     free(pool->pools[b]);
   }
   free(pool->pools);
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t SaveProxy(struct flagcxHeteroComm *comm,
@@ -1210,6 +1232,7 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   comm->proxyState->nRanks = comm->nRanks;
   comm->proxyState->abortFlag = comm->abortFlag;
   comm->proxyState->asyncResult = flagcxSuccess;
+  comm->proxyState->cleanupResult = flagcxSuccess;
   comm->proxyState->stop = 0;
   pthread_create(&comm->proxyState->thread, NULL, flagcxProxyService,
                  (void *)comm);
@@ -1527,7 +1550,16 @@ out:
 
   // Free all connections from pool (all resource cleanup happens
   // inside the service thread before it exits)
-  flagcxProxyFreeConnections(&connectionPool, comm);
+  flagcxResult_t cleanupResult =
+      flagcxProxyFreeConnections(&connectionPool, comm);
+  if (cleanupResult != flagcxSuccess && cleanupResult != flagcxInProgress) {
+    flagcxResult_t expected = flagcxSuccess;
+    __atomic_compare_exchange_n(&comm->proxyState->cleanupResult, &expected,
+                                cleanupResult, false, __ATOMIC_RELEASE,
+                                __ATOMIC_RELAXED);
+    WARN("[Service thread] transport cleanup failed with result %d",
+         cleanupResult);
+  }
 
   flagcxSocketClose(&comm->proxyState->listenSock);
   free(pollfds);
@@ -2348,10 +2380,13 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
 }
 
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
+  flagcxResult_t result = flagcxSuccess;
   if (comm->proxyState->initialized == 1) {
     // Join service thread
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: joining service thread...");
     pthread_join(comm->proxyState->thread, nullptr);
+    result =
+        __atomic_load_n(&comm->proxyState->cleanupResult, __ATOMIC_ACQUIRE);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: service thread joined, freeing...");
     // Free transport resources (must happen after thread join)
     flagcxProxyFree(comm);
@@ -2366,5 +2401,5 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
     free(comm->proxyState->peerAddresses);
     comm->proxyState->peerAddresses = NULL;
   }
-  return flagcxSuccess;
+  return result;
 }

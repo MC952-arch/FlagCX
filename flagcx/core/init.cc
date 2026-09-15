@@ -471,7 +471,10 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   // Stop: send stop + close peerSocks
   FLAGCXCHECK(flagcxProxyStop(comm));
   // Destroy: join thread, free proxy resources
-  FLAGCXCHECK(flagcxProxyDestroy(comm));
+  // A transport cleanup failure is reported after the service thread has
+  // joined. Continue releasing communicator-owned host state before returning
+  // that error; returning immediately here would leak the communicator.
+  flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);
@@ -508,5 +511,5 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->peerInfo);
   free(comm);
 
-  return flagcxSuccess;
+  return proxyDestroyResult;
 }
