@@ -14,6 +14,32 @@ env:
   DEVICE_API_BIN: /__w/FlagCX/FlagCX/test/perf/device_api/build/bin
 
 jobs:
+  load-hardware-container-configs:
+    name: Load explicit container configurations
+    runs-on: ubuntu-latest
+    outputs:
+      hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
+      hygon_docker_args: ${{ steps.hygon.outputs.docker_args }}
+      hygon_set_env: ${{ steps.hygon.outputs.set_env }}
+      ppu_ci_image: ${{ steps.ppu.outputs.ci_image }}
+      ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
+      ppu_set_env: ${{ steps.ppu.outputs.set_env }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Load Hygon configuration
+        id: hygon
+        run: ruby .github/scripts/ci/load_platform_config.rb hygon
+
+      - name: Load PPU configuration
+        id: ppu
+        run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
   perf-test:
     runs-on: [self-hosted, cx-build]
     container:
@@ -142,37 +168,16 @@ jobs:
 
   perf-test-hygon:
     name: perf-test (hygon)
+    needs: load-hardware-container-configs
     runs-on: [hg-8g-cicd-flagcx]
-    container:
-      # Same digest as .github/configs/hygon.yml; see the comment there.
-      image: harbor.baai.ac.cn/flagos-dev/flagcx@sha256:00db17623d118e5c9c7788799c67c36a430d4d43550fc0f42476001e353a4140
-      volumes:
-        - /usr/local/hyhal:/opt/hyhal:ro
-        - /var/log/shca:/var/log/shca
-      options: >-
-        --network=host
-        --ipc=host
-        --privileged=true
-        --shm-size=100gb
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --device=/dev/kfd
-        --device=/dev/dri
-        --device=/dev/shca-ioctl
-        --mount=type=bind,src=/dev/infiniband,dst=/dev/infiniband
-        --mount=type=bind,src=/sys/class/infiniband,dst=/sys/class/infiniband,readonly
-        --mount=type=bind,src=/sys/class/infiniband_verbs,dst=/sys/class/infiniband_verbs,readonly
-        --group-add video
-    env:
-      MPI_HOME: /opt/mpi
-      PERF_BIN: /__w/FlagCX/FlagCX/test/perf/host_api/build/bin
+    timeout-minutes: 240
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
           ssh-strict: true
           ssh-user: git
           persist-credentials: true
@@ -181,66 +186,30 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: false
+          submodules: recursive
           set-safe-directory: true
 
-      - name: Checkout submodules
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-          git submodule sync --recursive
-          git submodule update --init --force --recursive
-
-      - name: Prepare Hygon environment
+      - name: Check Docker
         shell: bash
-        run: |
-          cd /__w/FlagCX/FlagCX
-          source .github/scripts/set_env/hygon.sh
-          flagcx_ci_configure_suite perf
-          flagcx_ci_prepare perf
-          echo "CUDA_PATH=$CUDA_PATH" >> "$GITHUB_ENV"
-          echo "CUDA_HOME=$CUDA_HOME" >> "$GITHUB_ENV"
-          echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
-          echo "PATH=$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-          python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
+        run: docker version
 
-      - name: Build FlagCX
+      - name: Run Hygon perf tests
         shell: bash
-        run: |
-          cd /__w/FlagCX/FlagCX
-          source .github/scripts/set_env/hygon.sh
-          flagcx_ci_configure_suite perf
-          make -j"$(nproc)" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.hygon_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          hygon perf
 
-      - name: Build perf tests
+      - name: Cleanup Hygon perf container
+        if: always()
         shell: bash
-        run: |
-          cd /__w/FlagCX/FlagCX
-          source .github/scripts/set_env/hygon.sh
-          flagcx_ci_configure_suite perf
-          make -C test/perf -j"$(nproc)" "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
-
-      - name: Perf tests (Hygon homogeneous 8-chip)
-        shell: bash
-        run: |
-          cd /__w/FlagCX/FlagCX
-          source .github/scripts/set_env/hygon.sh
-          export PATH=$MPI_HOME/bin:$PATH
-          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH
-          FLAGCX_CI_PERF_PLATFORM=Hygon \
-            .github/scripts/ci/run_host_perf_suite.sh homogeneous "$PERF_BIN"
-
-      - name: Perf tests (Hygon uniRunner 8-chip)
-        shell: bash
-        run: |
-          cd /__w/FlagCX/FlagCX
-          source .github/scripts/set_env/hygon.sh
-          export PATH=$MPI_HOME/bin:$PATH
-          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH
-          FLAGCX_CI_PERF_PLATFORM=Hygon \
-            .github/scripts/ci/run_host_perf_suite.sh heterogeneous "$PERF_BIN"
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   perf-test-cuda:
     name: perf-test (cuda)
@@ -286,6 +255,9 @@ jobs:
         shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/cuda.sh
+          flagcx_ci_configure_suite perf
+          flagcx_ci_prepare perf
+          flagcx_ci_validate_rdma perf
           echo "PATH=$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
           echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
@@ -374,6 +346,9 @@ jobs:
         shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
+          flagcx_ci_configure_suite perf
+          flagcx_ci_prepare perf
+          flagcx_ci_validate_rdma perf
           echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
           echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
@@ -415,6 +390,7 @@ jobs:
 
   perf-test-ppu:
     name: perf-test (ppu)
+    needs: load-hardware-container-configs
     runs-on: [flagcicd-810e]
     timeout-minutes: 240
 
@@ -443,8 +419,12 @@ jobs:
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-perf-${{ github.run_id }}-${{ github.run_attempt }}
-          FLAGCX_CI_IMAGE: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_ppu_container.sh" perf
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          ppu perf
 
       - name: Cleanup PPU perf container
         if: always()

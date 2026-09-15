@@ -13,6 +13,7 @@ ppu_env="$project_root/.github/scripts/set_env/ppu.sh"
 
 # shellcheck source=/dev/null
 source "$ppu_env"
+flagcx_ci_configure_suite "$workload"
 flagcx_ci_prepare "$workload"
 flagcx_ci_validate_rdma "$workload"
 

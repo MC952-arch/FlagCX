@@ -3,6 +3,10 @@
 # Everything in this file is CUDA/NVIDIA specific. The common workflow and
 # runner deliberately do not inspect the platform name.
 
+FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
+
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
 # The FlagScale training image ships a launcher wrapper that passes "$@" as a
@@ -64,9 +68,15 @@ flagcx_ci_configure_suite() {
 
 flagcx_ci_prepare() {
   local suite=$1
-  echo "Preparing CUDA environment for unit-test suite: $suite"
+  echo "Preparing CUDA environment for CI workload: $suite"
   command -v nvcc
   command -v mpirun
   mpirun --version
   nvidia-smi
+}
+
+flagcx_ci_validate_rdma() {
+  local suite=$1
+  flagcx_ci_validate_rdma_static CUDA "$suite" \
+    "/sys/class/infiniband/mlx5_*"
 }

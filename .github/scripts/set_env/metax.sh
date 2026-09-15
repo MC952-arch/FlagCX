@@ -2,6 +2,10 @@
 
 # MetaX-specific unit-test environment setup.
 
+FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
+
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
 # Use the real OpenMPI launcher if the image provides a wrapper.
@@ -35,17 +39,25 @@ flagcx_ci_configure_suite() {
         "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
       )
       ;;
+    symmem)
+      # Keep this temporary until the MetaX symmetric-memory hang has been
+      # localized to a specific VMM, IPC, MR, or collective stage.
+      export FLAGCX_DEBUG=TRACE
+      export FLAGCX_DEBUG_SUBSYS=ALL
+      ;;
   esac
 }
 
 flagcx_ci_prepare() {
   local suite=$1
-  echo "Preparing MetaX environment for unit-test suite: $suite"
+  echo "Preparing MetaX environment for CI workload: $suite"
   command -v mpirun
   command -v mxcc
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
-        "$suite" == "rma" ]]; then
+        "$suite" == "rma" || "$suite" == "runner" ||
+        "$suite" == "symmem" || "$suite" == "perf" ||
+        "$suite" == "torch-api" ]]; then
     local -a hca_paths=()
     local -a hca_names=()
     local hca_path
@@ -100,12 +112,11 @@ flagcx_ci_prepare() {
 
 flagcx_ci_validate_rdma() {
   local suite=$1
-
-  if ! compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null &&
-    ! compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
-    echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
-    return 1
+  local -a patterns=("/sys/class/infiniband/bnxt_roce*")
+  if ! compgen -G "${patterns[0]}" >/dev/null; then
+    patterns=("/sys/class/infiniband/bnxt_re_bond*")
   fi
+  flagcx_ci_validate_rdma_static MetaX "$suite" "${patterns[@]}"
 }
 
 flagcx_ci_build_suite_override() {
