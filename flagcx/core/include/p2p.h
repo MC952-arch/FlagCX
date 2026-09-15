@@ -94,6 +94,14 @@ struct flagcxP2pResources {
 
   // Proxy info for async operations
   struct flagcxP2pShmProxyInfo proxyInfo;
+
+  // FIFO ownership is intentionally separate from proxyInfo.recvFifo, which
+  // is only the adjusted pointer consumed by the copy path.  The receiver
+  // owns a local allocation; the sender owns the raw base returned by
+  // ipcMemHandleOpen.  Only these owner fields may be released at teardown.
+  void *localRecvFifo;
+  void *importedRecvFifoBase;
+  int cudaDev;
 };
 
 // Bootstrap tag for one-sided IPC registration (first call only).

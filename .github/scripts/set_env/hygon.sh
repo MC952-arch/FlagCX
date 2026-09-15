@@ -59,11 +59,11 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    adaptor|p2p|rma)
-      # Surface the libibverbs device/port selection path when the kernel
-      # sysfs preflight succeeds but IBRC still reports zero usable devices.
-      export FLAGCX_DEBUG="${FLAGCX_DEBUG:-INFO}"
-      export FLAGCX_DEBUG_SUBSYS="${FLAGCX_DEBUG_SUBSYS:-INIT,NET,ENV}"
+    adaptor|p2p|rma|runner|symmem)
+      # Temporary full diagnostics while the Hygon SHCA/heterogeneous paths
+      # are being qualified across all communication suites.
+      export FLAGCX_DEBUG=TRACE
+      export FLAGCX_DEBUG_SUBSYS=ALL
       ;;
   esac
 }
@@ -78,7 +78,8 @@ flagcx_ci_prepare() {
   hy-smi --showproductname || true
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
-        "$suite" == "rma" ]]; then
+        "$suite" == "rma" || "$suite" == "runner" ||
+        "$suite" == "symmem" ]]; then
     echo "Network interfaces visible inside the CI container:"
     ls /sys/class/net 2>/dev/null || true
     echo "RDMA devices visible inside the CI container:"

@@ -573,9 +573,17 @@ flagcxResult_t flagcxP2pRecvProxySetup(struct flagcxProxyConnection *connection,
   int size = req->size;
   if (respSize != sizeof(struct flagcxP2pBuff))
     return flagcxInternalError;
+  struct flagcxP2pResources *resources =
+      (struct flagcxP2pResources *)connection->transportResources;
+  if (resources == NULL) {
+    WARN("flagcxP2pRecvProxySetup: transportResources is NULL");
+    return flagcxInternalError;
+  }
   struct flagcxP2pBuff *p2pBuff = (struct flagcxP2pBuff *)respBuff;
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       size, req->refcount, &p2pBuff->ipcDesc, &p2pBuff->directPtr));
+  resources->localRecvFifo = p2pBuff->directPtr;
+  resources->cudaDev = connection->cudaDev;
   p2pBuff->size = size;
   *done = 1;
   return flagcxSuccess;
@@ -603,6 +611,8 @@ flagcxP2pSendProxyConnect(struct flagcxProxyConnection *connection,
   }
 
   resources->proxyInfo.recvFifo = *((char **)reqBuff);
+  resources->importedRecvFifoBase = resources->proxyInfo.recvFifo;
+  resources->cudaDev = connection->cudaDev;
 
   // Create stream and events for data transfers
   FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->proxyInfo.stream));
@@ -1168,15 +1178,30 @@ flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources) {
   for (int s = 0; s < flagcxP2pChunks; s++) {
     if (resources->proxyInfo.events[s] != NULL) {
       FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]));
+      resources->proxyInfo.events[s] = NULL;
     }
   }
 
   if (resources->proxyInfo.stream != NULL) {
     FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->proxyInfo.stream));
+    resources->proxyInfo.stream = NULL;
+  }
+
+  if (resources->importedRecvFifoBase != NULL) {
+    FLAGCXCHECK(deviceAdaptor->setDevice(resources->cudaDev));
+    TRACE(FLAGCX_P2P,
+          "P2P FIFO close: device=%d rawImportedBase=%p adjusted=%p",
+          resources->cudaDev, resources->importedRecvFifoBase,
+          resources->proxyInfo.recvFifo);
+    FLAGCXCHECK(
+        deviceAdaptor->ipcMemHandleClose(resources->importedRecvFifoBase));
+    resources->importedRecvFifoBase = NULL;
+    resources->proxyInfo.recvFifo = NULL;
   }
 
   if (resources->proxyInfo.shm != NULL) {
     FLAGCXCHECK(flagcxShmIpcClose(&resources->proxyInfo.desc));
+    resources->proxyInfo.shm = NULL;
   }
   return flagcxSuccess;
 }
@@ -1189,12 +1214,30 @@ flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources) {
   for (int s = 0; s < flagcxP2pChunks; s++) {
     if (resources->proxyInfo.events[s] != NULL) {
       FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]));
+      resources->proxyInfo.events[s] = NULL;
     }
   }
 
   // Destroy stream
   if (resources->proxyInfo.stream != NULL) {
     FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->proxyInfo.stream));
+    resources->proxyInfo.stream = NULL;
+  }
+
+  if (resources->localRecvFifo != NULL) {
+    FLAGCXCHECK(deviceAdaptor->setDevice(resources->cudaDev));
+    TRACE(FLAGCX_P2P, "P2P FIFO free: device=%d localBase=%p",
+          resources->cudaDev, resources->localRecvFifo);
+    FLAGCXCHECK(deviceAdaptor->deviceFree(resources->localRecvFifo,
+                                          flagcxMemDevice, NULL));
+    resources->localRecvFifo = NULL;
+    resources->proxyInfo.recvFifo = NULL;
+  }
+
+  if (resources->shm != NULL) {
+    FLAGCXCHECK(flagcxShmIpcClose(&resources->desc));
+    resources->shm = NULL;
+    resources->proxyInfo.shm = NULL;
   }
   return flagcxSuccess;
 }

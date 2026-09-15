@@ -89,8 +89,7 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_MPI_LABEL="runner default" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
-      -u FLAGCX_VMM_ENABLE -u FLAGCX_P2P_TRANSPORT \
-      -u FLAGCX_P2P_DISABLE \
+      -u FLAGCX_P2P_TRANSPORT -u FLAGCX_P2P_DISABLE \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
       ./build/bin/runner_mpi_tests
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous SendRecv smoke" \

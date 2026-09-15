@@ -28,6 +28,14 @@ if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
 
+# Keep every hardware backend on the same diagnostic and allocation baseline.
+# Individual invocations may add transport selectors, but must not silently
+# change the device-memory allocator or reduce the information available when a
+# hardware-only failure needs to be diagnosed.
+export FLAGCX_DEBUG=TRACE
+export FLAGCX_DEBUG_SUBSYS=ALL
+export FLAGCX_VMM_ENABLE=0
+
 : "${MPI_HOME:?The platform set_env script must define MPI_HOME}"
 declare -p FLAGCX_CI_PROJECT_MAKE_ARGS >/dev/null 2>&1 || {
   echo "The platform set_env script must define FLAGCX_CI_PROJECT_MAKE_ARGS" >&2
@@ -51,8 +59,10 @@ flagcx_ci_require_rdma() {
     *) return 0 ;;
   esac
 
+  # Symmem currently runs its explicit IPC-fallback invocation with the RDMA
+  # class disabled, so it must not be gated by an RDMA preflight.
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem) ;;
+    adaptor|p2p|rma|runner) ;;
     *) return 0 ;;
   esac
 
@@ -182,8 +192,8 @@ run_device_api_unified_ir() {
   )
   local -a inter_env=(
     "${common_env[@]}"
-    -x FLAGCX_DEBUG=INFO
-    -x FLAGCX_DEBUG_SUBSYS=PROXY
+    -x FLAGCX_DEBUG=TRACE
+    -x FLAGCX_DEBUG_SUBSYS=ALL
   )
   local -a intra_fallback_env=(
     "${intra_env[@]}"

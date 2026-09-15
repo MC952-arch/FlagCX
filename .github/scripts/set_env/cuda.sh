@@ -24,6 +24,13 @@ else
   export MPI_HOME=$FLAGCX_CI_MPI_BASE_HOME
 fi
 
+# Make the selected launcher effective in the current shell as well as in
+# subsequent workflow steps. The CUDA image's default mpirun wrapper forwards
+# "$@" literally, so flagcx_ci_prepare() must not resolve that stale wrapper
+# before the workflow writes the updated PATH to GITHUB_ENV.
+export PATH="$MPI_HOME/bin:$PATH"
+hash -r
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_NVIDIA=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_NVIDIA=1)
 FLAGCX_CI_INTRA_NP=8

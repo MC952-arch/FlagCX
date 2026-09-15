@@ -64,15 +64,35 @@ void FlagCXCollTest::SetUp() {
 }
 
 void FlagCXCollTest::TearDown() {
-  flagcxCommDestroy(comm);
+  // Collective work is asynchronous with respect to the host.  Drain the
+  // stream before communicator teardown so no runtime callback can retain an
+  // IPC mapping after the communicator starts releasing transport resources.
+  if (devHandle != nullptr && stream != nullptr)
+    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
 
-  devHandle->streamDestroy(stream);
-  devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
-  devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
+  if (comm != nullptr) {
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    comm = nullptr;
+  }
 
-  flagcxDeviceHandleFree(devHandle);
+  if (devHandle != nullptr) {
+    if (stream != nullptr)
+      EXPECT_EQ(devHandle->streamDestroy(stream), flagcxSuccess);
+    if (sendbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL),
+                flagcxSuccess);
+    if (recvbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL),
+                flagcxSuccess);
+    if (hostsendbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL),
+                flagcxSuccess);
+    if (hostrecvbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL),
+                flagcxSuccess);
+
+    EXPECT_EQ(flagcxDeviceHandleFree(devHandle), flagcxSuccess);
+  }
   FlagCXTest::TearDown();
 
   // Synchronize all ranks before the next test to prevent bootstrap hangs
