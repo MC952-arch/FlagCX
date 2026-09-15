@@ -221,7 +221,9 @@ protected:
     SKIP_IF_CALLBACK_NULL(net_, closeListen);
     ASSERT_EQ(net_->init(), flagcxSuccess);
     ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
-    ASSERT_GT(nDevs_, 0);
+    ASSERT_GT(nDevs_, 0)
+        << "The net adaptor integration suite requires at least one usable "
+           "network device";
     ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_),
               flagcxSuccess);
     ASSERT_EQ(net_->listen(netDev_, handle_, &listenComm_), flagcxSuccess);

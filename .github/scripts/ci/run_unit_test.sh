@@ -347,6 +347,7 @@ run_suite() {
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
         ./build/bin/runner_mpi_tests
       ;;
     symmem)

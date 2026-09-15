@@ -2,8 +2,11 @@
 // Provides main(), MPIEnvironment, and all fixture implementations
 // for the coll_*.cpp test files.
 
+#include "comm.h"
+#include "global_comm.h"
 #include "runner_fixtures.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -40,6 +43,7 @@ void FlagCXCollTest::SetUp() {
   recvbuff = nullptr;
   hostsendbuff = nullptr;
   hostrecvbuff = nullptr;
+  stream = nullptr;
   size = 4ULL * 1024 * 1024; // 4MB
   count = size / sizeof(float);
 
@@ -54,7 +58,40 @@ void FlagCXCollTest::SetUp() {
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  flagcxResult_t commInitResult =
+      flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  int localCommReady = commInitResult == flagcxSuccess && comm != nullptr;
+  int allCommsReady = 0;
+  MPI_Allreduce(&localCommReady, &allCommsReady, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  ASSERT_EQ(allCommsReady, 1)
+      << "flagcxCommInitRank failed on at least one rank; local result="
+      << commInitResult;
+
+  // Forced-NET CI invocations must prove that they selected the intended
+  // hardware adaptor. FLAGCX_P2P_DISABLE only disables the IPC transport; it
+  // does not prevent flagcxNetInit() from falling back to Socket when RDMA is
+  // unavailable. Converge this check across ranks before any collective so a
+  // mixed or unexpected selection fails quickly instead of hanging later.
+  const char *expectedNetAdaptor = std::getenv("FLAGCX_CI_EXPECT_NET_ADAPTOR");
+  if (expectedNetAdaptor != nullptr && expectedNetAdaptor[0] != '\0') {
+    const char *actualNetAdaptor = nullptr;
+    if (comm->heteroComm != nullptr &&
+        comm->heteroComm->netAdaptor != nullptr) {
+      actualNetAdaptor = comm->heteroComm->netAdaptor->name;
+    }
+    int localAdaptorMatches =
+        actualNetAdaptor != nullptr &&
+        std::strcmp(actualNetAdaptor, expectedNetAdaptor) == 0;
+    int allAdaptorsMatch = 0;
+    MPI_Allreduce(&localAdaptorMatches, &allAdaptorsMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allAdaptorsMatch, 1)
+        << "Forced-NET runner expected adaptor " << expectedNetAdaptor
+        << " on every rank, but rank " << rank << " selected "
+        << (actualNetAdaptor != nullptr ? actualNetAdaptor : "<none>");
+  }
+
   devHandle->streamCreate(&stream);
 
   devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL);

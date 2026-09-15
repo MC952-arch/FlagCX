@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iomanip>
 #include <memory>
 #include <sched.h>
 #include <string>
@@ -433,11 +434,13 @@ TEST_F(FlagcxP2pEngineReadTest,
   ScopedAllocation remoteSource;
   ScopedAllocation localDestination;
   ScopedAllocation hostExpected;
+  ScopedAllocation hostSourceActual;
   ScopedAllocation hostActual;
 
   allocGpuBufferOnDevice(&remoteSource, bytes, kClientGpuIdx, clientStream);
   allocGpuBufferOnDevice(&localDestination, bytes, kServerGpuIdx, serverStream);
   allocHostBuffer(&hostExpected, bytes, kClientGpuIdx, clientStream);
+  allocHostBuffer(&hostSourceActual, bytes, kClientGpuIdx, clientStream);
   allocHostBuffer(&hostActual, bytes, kServerGpuIdx, serverStream);
 
   uint32_t *expected = hostExpected.as<uint32_t>();
@@ -449,6 +452,12 @@ TEST_F(FlagcxP2pEngineReadTest,
 
   copyHostToDevice(kClientGpuIdx, clientStream, remoteSource.get(),
                    hostExpected.get(), bytes);
+  copyDeviceToHost(kClientGpuIdx, clientStream, hostSourceActual.get(),
+                   remoteSource.get(), bytes);
+  ASSERT_EQ(memcmp(hostSourceActual.get(), hostExpected.get(), bytes), 0)
+      << "Remote source data was already incorrect before the P2P Engine read; "
+         "the failure is in source initialization rather than descriptor or "
+         "local-transfer address resolution";
   copyHostToDevice(kServerGpuIdx, serverStream, localDestination.get(),
                    hostActual.get(), bytes);
 
@@ -488,8 +497,35 @@ TEST_F(FlagcxP2pEngineReadTest,
 
   copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
                    localDestination.get(), bytes);
+  size_t firstMismatch = kElemCount;
   for (size_t i = 0; i < kElemCount; ++i) {
-    EXPECT_EQ(actual[i], expected[i]) << "Mismatch at index " << i;
+    if (actual[i] != expected[i]) {
+      firstMismatch = i;
+      break;
+    }
+  }
+  if (firstMismatch != kElemCount) {
+    size_t apparentSourceIndex = kElemCount;
+    for (size_t i = 0; i < kElemCount; ++i) {
+      if (expected[i] == actual[firstMismatch]) {
+        apparentSourceIndex = i;
+        break;
+      }
+    }
+    const long long apparentByteShift =
+        apparentSourceIndex == kElemCount
+            ? -1
+            : ((long long)apparentSourceIndex - (long long)firstMismatch) *
+                  (long long)sizeof(uint32_t);
+    ADD_FAILURE() << "First mismatch at index " << firstMismatch
+                  << ": actual=" << actual[firstMismatch]
+                  << " expected=" << expected[firstMismatch]
+                  << ", apparent source index=" << apparentSourceIndex
+                  << ", apparent byte shift=" << apparentByteShift
+                  << ", remote source=" << remoteSource.get()
+                  << ", local destination=" << localDestination.get()
+                  << ", descriptor address=0x" << std::hex << remoteDesc.addr
+                  << std::dec << ", descriptor size=" << remoteDesc.size;
   }
 }
 
