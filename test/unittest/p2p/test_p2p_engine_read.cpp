@@ -427,7 +427,7 @@ private:
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
-  connectViaClientMetadata();
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   const size_t testSizes[] = {1024, 2048, 2052, 2304, 4096, 8192};
   for (size_t bytes : testSizes) {
@@ -533,7 +533,7 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
-  connectViaClientMetadata();
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kChunkBytes = 2048;
   constexpr size_t kTotalBytes = 2 * kChunkBytes;
@@ -609,7 +609,7 @@ TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
 }
 
 TEST_F(FlagcxP2pEngineReadTest, ReadsWholeRegisteredHostBuffer) {
-  connectViaClientMetadata();
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kBytes = 4096;
   ScopedAllocation remoteSource;
@@ -654,7 +654,7 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsWholeRegisteredHostBuffer) {
 }
 
 TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
-  connectViaClientMetadata();
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kBytes = 4096;
   ScopedAllocation remoteSource;
@@ -705,7 +705,7 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
-  connectViaClientMetadata();
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kSourceElems = 256;
   constexpr size_t kDestElems = 128;
