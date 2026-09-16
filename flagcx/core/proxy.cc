@@ -1087,13 +1087,6 @@ flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
       !proxyCleanupOpType(type))
     return asyncResult;
 
-  if (proxyConn->connection != NULL && !proxyCleanupOpType(type)) {
-    flagcxResult_t connectionResult =
-        flagcxProxyGetConnectionError(proxyConn->connection);
-    if (connectionResult != flagcxSuccess)
-      return connectionResult;
-  }
-
   if (sharedProxyState->peerSocks == NULL)
     return flagcxInternalError;
   sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
