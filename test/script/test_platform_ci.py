@@ -122,6 +122,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
 
+    def test_p2p_read_diagnostics_use_fresh_qp_and_mtu_processes(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        p2p_runner = unit_runner[unit_runner.index("    p2p)") :]
+        p2p_runner = p2p_runner[: p2p_runner.index("    rma)")]
+
+        self.assertIn("read_diagnostic_filter", p2p_runner)
+        self.assertIn("ReadsWholeRegisteredGpuBuffer", p2p_runner)
+        self.assertIn("TwoIndependent2KiBReadsCover4KiBBuffer", p2p_runner)
+        self.assertIn("ReadsWholeRegisteredHostBuffer", p2p_runner)
+        self.assertIn(
+            "FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=4096",
+            p2p_runner,
+        )
+        self.assertIn(
+            "FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048",
+            p2p_runner,
+        )
+        self.assertIn("single_qp_status", p2p_runner)
+        self.assertIn("mtu_2048_status", p2p_runner)
+
 
 class MetaXEnvironmentTest(unittest.TestCase):
     def run_metax_shell(self, body, *, extra_env=None):

@@ -2516,6 +2516,11 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   flagcxResult_t destroyResult = flagcxSuccess;
+  TRACE(FLAGCX_INIT,
+        "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
+        "homoCommMapSize=%zu commMapSize=%zu",
+        comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
+        comm->commMap.size());
 
   // Destroy cluster info
   free(comm->clusterIds);
@@ -2527,25 +2532,40 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Destroy custom op state before homo comm — vendor DevCommDestroy
   // needs the NCCL comm to still be alive.
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p", comm);
   FLAGCXCHECK(flagcxDevCommStateDestroy(comm));
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
 
   // Destroy homo comms
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
   if (comm->tuner) {
+    size_t homoCommIndex = 0;
     for (const auto &item : comm->homoCommMap) {
       if (item.second != nullptr) {
+        TRACE(FLAGCX_INIT,
+              "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
+              comm, homoCommIndex, item.second);
         FLAGCXCHECK(
             cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
+        TRACE(FLAGCX_INIT,
+              "flagcxCommDestroy homo comm end comm=%p index=%zu inner=%p",
+              comm, homoCommIndex, item.second);
       }
+      homoCommIndex++;
     }
   } else {
     FLAGCXCHECK(
         cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
   }
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
 
   if (!useHomoComm(comm) || useHeteroComm()) {
     // Backend-level comm cleanup: relay teardown, IPC table cleanup.
     // Must run before flagcxHeteroCommDestroy, which frees proxyState and
     // heteroComm.
+    TRACE(FLAGCX_INIT,
+          "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
+          comm->heteroComm);
     FLAGCXCHECK(flagcxCommCleanup(comm));
     // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
     flagcxOneSideStagingDeregister(comm);
@@ -2553,7 +2573,12 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     flagcxOneSideDeregister(comm->heteroComm);
 
     // Destroy hetero comm
+    TRACE(FLAGCX_INIT,
+          "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,
+          comm->heteroComm);
     destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
+    TRACE(FLAGCX_INIT, "flagcxCommDestroy hetero cleanup end comm=%p result=%d",
+          comm, destroyResult);
     // Destroy host comm
     if (useHostComm()) {
       FLAGCXCHECK(
@@ -2562,10 +2587,12 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   // Clean up IPC peer pointer table — deferred to here.
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy IPC table cleanup begin comm=%p", comm);
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
 
   // Drain deferred IPC entries (slots released at runtime).
   FLAGCXCHECK(flagcxCommDrainDeferredIpc(comm));
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy IPC table cleanup end comm=%p", comm);
 
   // Drain deferred DevComm buffer queue.
   FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));
