@@ -1377,6 +1377,14 @@ static bool memRegContains(const FlagcxP2pMemRegEntry &entry, uintptr_t addr,
   return offset <= entry.size && size <= entry.size - offset;
 }
 
+static bool remoteDescContains(const FlagcxP2pRdmaDesc &desc, size_t size) {
+  if (size > desc.size)
+    return false;
+  if (size != 0 && desc.addr == 0)
+    return false;
+  return desc.addr <= UINT64_MAX - size;
+}
+
 static int resolveIbDevN(int netDev) {
   if (netDev < 0 || netDev >= flagcxNMergedIbDevs)
     return 0;
@@ -3169,11 +3177,17 @@ int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc, uint64_t remoteAddr,
 int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                         size_t size, FlagcxP2pRdmaDesc desc,
                         uint64_t *transferId) {
-  if (conn != NULL && flagcxP2pIsAccl(conn))
-    return flagcxAcclEngineRead(conn, mr, data, size, desc, transferId);
-  (void)mr;
   if (conn == NULL || data == NULL || transferId == NULL)
     return -1;
+  *transferId = 0;
+  if (!remoteDescContains(desc, size)) {
+    WARN("P2P read remote descriptor bounds check failed: addr=%p "
+         "descSize=%u requestSize=%zu",
+         reinterpret_cast<void *>((uintptr_t)desc.addr), desc.size, size);
+    return -1;
+  }
+  if (flagcxP2pIsAccl(conn))
+    return flagcxAcclEngineRead(conn, mr, data, size, desc, transferId);
 
   TRACE(FLAGCX_P2P,
         "P2P read trace conn=%p engine=%p gpu=%d mr=%llu local=%p size=%zu "
@@ -3195,8 +3209,12 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   }
 
   FlagcxP2pMemRegEntry localEntry;
-  if (!findMemReg((uintptr_t)data, &localEntry))
+  if (!findMemRegByMr(mr, &localEntry) ||
+      !memRegContains(localEntry, reinterpret_cast<uintptr_t>(data), size)) {
+    WARN("P2P read local MR bounds check failed: mr=%llu addr=%p size=%zu",
+         (unsigned long long)mr, data, size);
     return -1;
+  }
 
   if (getCommView(conn->sendComm)->ibDevN != localEntry.ibDevN)
     return -1;
@@ -3241,9 +3259,6 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
                               std::vector<FlagcxP2pRdmaDesc> descs, int numIovs,
                               uint64_t *transferId,
                               std::vector<char *> ipcBufs) {
-  if (conn != NULL && flagcxP2pIsAccl(conn))
-    return flagcxAcclEngineReadVector(conn, mrIds, dstVec, sizeVec, descs,
-                                      numIovs, transferId);
   if (conn == NULL || numIovs <= 0 || transferId == NULL) {
     fprintf(stderr,
             "[FlagCX P2P] ReadVector early exit: invalid args (conn=%p, "
@@ -3251,6 +3266,7 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
             conn, numIovs, (void *)transferId);
     return -1;
   }
+  *transferId = 0;
 
   if (dstVec.size() < static_cast<size_t>(numIovs) ||
       sizeVec.size() < static_cast<size_t>(numIovs) ||
@@ -3261,6 +3277,18 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
             numIovs);
     return -1;
   }
+  for (int i = 0; i < numIovs; i++) {
+    if (!remoteDescContains(descs[i], sizeVec[i])) {
+      WARN("P2P ReadVector remote descriptor bounds check failed: iov=%d "
+           "addr=%p descSize=%u requestSize=%zu",
+           i, reinterpret_cast<void *>((uintptr_t)descs[i].addr), descs[i].size,
+           sizeVec[i]);
+      return -1;
+    }
+  }
+  if (flagcxP2pIsAccl(conn))
+    return flagcxAcclEngineReadVector(conn, mrIds, dstVec, sizeVec, descs,
+                                      numIovs, transferId);
 
   if (conn->isLocal && (conn->sameProcess || !ipcBufs.empty())) {
     fprintf(stderr,
