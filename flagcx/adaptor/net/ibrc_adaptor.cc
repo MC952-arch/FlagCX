@@ -2661,6 +2661,115 @@ flagcxResult_t flagcxIbGdrSupport() {
   return flagcxSuccess;
 }
 
+// Probe the actual verbs registration contract for the current GPU and one
+// merged network device. The cache intentionally keeps only the most recent
+// (GPU, netDev) result: normal rank-per-GPU operation repeatedly queries the
+// topology-selected device, while a process that switches either endpoint is
+// re-probed instead of reusing a stale capability result.
+flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported) {
+  static pthread_mutex_t probeLock = PTHREAD_MUTEX_INITIALIZER;
+  static int probedGpu = -1;
+  static int probedNetDev = -1;
+  static int gpuMrSupported = -1;
+  const size_t probeSize = 64 * 1024;
+
+  if (supported == NULL)
+    return flagcxInvalidArgument;
+  *supported = false;
+  if (dev < 0 || dev >= flagcxNMergedIbDevs || deviceAdaptor == NULL ||
+      deviceAdaptor->getDevice == NULL || deviceAdaptor->gdrMemAlloc == NULL ||
+      deviceAdaptor->gdrMemFree == NULL)
+    return flagcxSuccess;
+
+  int gpu = -1;
+  if (deviceAdaptor->getDevice(&gpu) != flagcxSuccess)
+    return flagcxSuccess;
+
+  pthread_mutex_lock(&probeLock);
+  if (gpuMrSupported != -1 && probedGpu == gpu && probedNetDev == dev) {
+    *supported = gpuMrSupported != 0;
+    pthread_mutex_unlock(&probeLock);
+    return flagcxSuccess;
+  }
+
+  bool probeSucceeded = true;
+  void *gpuPtr = NULL;
+  flagcxResult_t result = deviceAdaptor->gdrMemAlloc(&gpuPtr, probeSize, NULL);
+  if (result != flagcxSuccess || gpuPtr == NULL) {
+    probeSucceeded = false;
+  } else {
+    const long systemPageSize = sysconf(_SC_PAGESIZE);
+    if (systemPageSize <= 0) {
+      probeSucceeded = false;
+    }
+    const size_t pageSize =
+        systemPageSize > 0 ? (size_t)systemPageSize : (size_t)4096;
+    const uintptr_t addr = (uintptr_t)gpuPtr & ~(pageSize - 1);
+    const size_t pages =
+        ((uintptr_t)gpuPtr + probeSize - addr + pageSize - 1) / pageSize;
+    const size_t registrationSize = pages * pageSize;
+    const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+    struct flagcxIbMergedDev *mergedDev = flagcxIbMergedDevs + dev;
+
+    if (mergedDev->ndevs <= 0)
+      probeSucceeded = false;
+
+    for (int i = 0; i < mergedDev->ndevs; i++) {
+      const int ibDev = mergedDev->devs[i];
+      struct ibv_pd *pd = NULL;
+      struct ibv_mr *mr = NULL;
+      void *cpuPtr = NULL;
+
+      if (ibDev < 0 || ibDev >= flagcxNIbDevs ||
+          flagcxIbDevs[ibDev].context == NULL ||
+          flagcxWrapIbvAllocPd(&pd, flagcxIbDevs[ibDev].context) !=
+              flagcxSuccess) {
+        probeSucceeded = false;
+      }
+
+      if (probeSucceeded && deviceAdaptor->gdrPtrMmap != NULL &&
+          deviceAdaptor->gdrPtrMunmap != NULL &&
+          deviceAdaptor->gdrPtrMmap(&cpuPtr, (void *)addr, registrationSize) !=
+              flagcxSuccess) {
+        probeSucceeded = false;
+      }
+
+      if (probeSucceeded &&
+          flagcxWrapIbvRegMr(&mr, pd, cpuPtr == NULL ? (void *)addr : cpuPtr,
+                             registrationSize, access) != flagcxSuccess) {
+        probeSucceeded = false;
+      }
+
+      if (mr != NULL && flagcxWrapIbvDeregMr(mr) != flagcxSuccess)
+        probeSucceeded = false;
+      if (cpuPtr != NULL && deviceAdaptor->gdrPtrMunmap(
+                                cpuPtr, registrationSize) != flagcxSuccess)
+        probeSucceeded = false;
+      if (pd != NULL && flagcxWrapIbvDeallocPd(pd) != flagcxSuccess)
+        probeSucceeded = false;
+
+      if (!probeSucceeded)
+        break;
+    }
+  }
+
+  if (gpuPtr != NULL &&
+      deviceAdaptor->gdrMemFree(gpuPtr, NULL) != flagcxSuccess)
+    probeSucceeded = false;
+
+  probedGpu = gpu;
+  probedNetDev = dev;
+  gpuMrSupported = probeSucceeded ? 1 : 0;
+  *supported = probeSucceeded;
+  INFO(FLAGCX_INIT | FLAGCX_NET,
+       "NET/IB : GPU MR probe gpu=%d netDev=%d (%s) result=%s", gpu, dev,
+       flagcxIbMergedDevs[dev].devName,
+       probeSucceeded ? "supported" : "unsupported");
+  pthread_mutex_unlock(&probeLock);
+  return flagcxSuccess;
+}
+
 // Detect whether DMA-BUF support is present in the kernel
 // Returns :
 // flagcxSuccess : DMA-BUF support is available
@@ -2716,9 +2825,10 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->guid = ibDev->guid;
   properties->ptrSupport = FLAGCX_PTR_HOST;
 
-  if (flagcxIbGdrSupport() == flagcxSuccess) {
-    properties->ptrSupport |= FLAGCX_PTR_CUDA; // GDR support via nv_peermem
-  }
+  bool gpuMrSupported = false;
+  FLAGCXCHECK(flagcxIbProbeGpuMrSupport(dev, &gpuMrSupported));
+  if (gpuMrSupported)
+    properties->ptrSupport |= FLAGCX_PTR_CUDA;
   properties->regIsGlobal = 1;
   if (flagcxIbDmaBufSupport(dev) == flagcxSuccess) {
     properties->ptrSupport |= FLAGCX_PTR_DMABUF;

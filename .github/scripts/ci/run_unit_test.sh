@@ -32,7 +32,7 @@ fi
 # Individual invocations may add transport selectors, but must not silently
 # change the device-memory allocator or reduce the information available when a
 # hardware-only failure needs to be diagnosed.
-export FLAGCX_DEBUG=TRACE
+export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
 
@@ -187,12 +187,12 @@ run_device_api_unified_ir() {
   )
   local -a intra_env=(
     "${common_env[@]}"
-    -x FLAGCX_DEBUG=TRACE
+    -x FLAGCX_DEBUG=INFO
     -x FLAGCX_DEBUG_SUBSYS=ALL
   )
   local -a inter_env=(
     "${common_env[@]}"
-    -x FLAGCX_DEBUG=TRACE
+    -x FLAGCX_DEBUG=INFO
     -x FLAGCX_DEBUG_SUBSYS=ALL
   )
   local -a intra_fallback_env=(
