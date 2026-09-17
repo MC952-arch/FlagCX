@@ -32,7 +32,7 @@ build_flagcx() {
 
 case "$workload" in
   torch-api)
-    export FLAGCX_DEBUG=TRACE
+    export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     build_flagcx
     (

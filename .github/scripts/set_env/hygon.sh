@@ -59,12 +59,6 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    adaptor|p2p|rma|runner|symmem)
-      # Temporary full diagnostics while the Hygon SHCA/heterogeneous paths
-      # are being qualified across all communication suites.
-      export FLAGCX_DEBUG=TRACE
-      export FLAGCX_DEBUG_SUBSYS=ALL
-      ;;
   esac
 }
 
