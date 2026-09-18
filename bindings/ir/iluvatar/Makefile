@@ -102,7 +102,7 @@ check_public_symbols: $(LLVM_IR_FILE)
 	@missing=0; \
 	while IFS= read -r symbol; do \
 		case "$$symbol" in ''|'#'*) continue ;; esac; \
-		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(" $<; then \
+		if ! grep -Eq "^[[:space:]]*define .*@$$symbol[(]" $<; then \
 			echo "Missing public Device IR symbol: $$symbol"; missing=1; \
 		fi; \
 	done < $(SYMBOLS_FILE); \
@@ -113,14 +113,17 @@ check_ir: $(OPTIMIZED_BC) $(LLVM_IR_FILE)
 	@if grep -Eq 'PlatformCoop|VTable' $(LLVM_IR_FILE); then \
 		echo "Iluvatar Device IR contains PlatformCoop/vtable state"; exit 1; \
 	fi
-	@if grep -Eq 'call[[:space:]].*%[A-Za-z0-9_.-]+\\(' $(LLVM_IR_FILE); then \
+	@if grep -Eq 'call[[:space:]].*%[A-Za-z0-9_.-]+[(]' $(LLVM_IR_FILE); then \
 		echo "Iluvatar Device IR contains an indirect device call"; exit 1; \
 	fi
-	@if ! grep -Eq 'define .*@flagcxCoopAnyInitLanes\\([^)]*i64' $(LLVM_IR_FILE); then \
+	@if ! grep -Eq 'define .*@flagcxCoopAnyInitLanes[(].*i64' $(LLVM_IR_FILE); then \
 		echo "Iluvatar lane-mask ABI is not i64"; exit 1; \
 	fi
-	@if ! grep -Eq 'define .*@flagcxDevCommGetRank\\(.*addrspace\\(1\\)' $(LLVM_IR_FILE); then \
+	@if ! grep -Eq 'define .*@flagcxDevCommGetRank[(].*addrspace[(]1[)]' $(LLVM_IR_FILE); then \
 		echo "Iluvatar comm pointer ABI is not addrspace(1)"; exit 1; \
+	fi
+	@if grep -Eq '(atomicrmw|cmpxchg).*i64' $(LLVM_IR_FILE); then \
+		echo "Iluvatar Device IR contains unsupported 64-bit RMW"; exit 1; \
 	fi
 	@if $(LLVM_NM) --undefined-only $(OPTIMIZED_BC) | grep -Ev '^[[:space:]]*$$' | grep -q .; then \
 		echo "Iluvatar Device IR contains unresolved external symbols"; \

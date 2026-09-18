@@ -14,6 +14,11 @@
 struct IluvatarPlatform {};
 
 template <>
+struct PlatformCompletionWord<IluvatarPlatform> {
+  using type = uint32_t;
+};
+
+template <>
 struct PlatformTraits<IluvatarPlatform> {
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
@@ -144,13 +149,11 @@ struct PlatformTraits<IluvatarPlatform> {
   };
 
   struct Atomic {
-    // These operations intentionally follow the CoreX path validated by the
-    // single-machine tests in FlagTree PR 1184 and the corresponding IXCCL
-    // device primitives. The DefaultBackend contract assumes peer-visible
-    // system-scope RMW; there is no capability downgrade in this platform.
-    // A peer may update a P2P-mapped cache line, so acquire polling uses
-    // volatile loads. Release publication fences before the volatile flag
-    // store. RMW operations use the CoreX __atomic_* lowering directly.
+    // FlagTree PR 1184 validates aligned load/store and 32-bit CoreX RMW.
+    // Acquire polling therefore uses volatile loads, release publication
+    // fences before the volatile store, and RMW is deliberately restricted
+    // to uint32_t. DefaultBackend selects this width at compile time; no
+    // unsupported 64-bit RMW is emitted for ivcore11.
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     load(T *ptr, flagcxDeviceMemoryOrder_t order) {
@@ -182,6 +185,8 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchAdd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
     }
@@ -189,6 +194,8 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchSub(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_fetch_sub(ptr, value, __ATOMIC_SEQ_CST);
     }
@@ -196,6 +203,8 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T fetchOr(T *ptr, const T &value,
                                                     flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_fetch_or(ptr, value, __ATOMIC_SEQ_CST);
     }
@@ -203,6 +212,8 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchAnd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_fetch_and(ptr, value, __ATOMIC_SEQ_CST);
     }
@@ -210,6 +221,8 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     exchange(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_exchange_n(ptr, value, __ATOMIC_SEQ_CST);
     }
@@ -218,6 +231,8 @@ struct PlatformTraits<IluvatarPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR static bool
     compareExchange(T *ptr, T &expected, const T &desired,
                     flagcxDeviceMemoryOrder_t) {
+      static_assert(sizeof(T) == sizeof(uint32_t),
+                    "CoreX RMW operations require a 32-bit operand");
       (void)Scope;
       return __atomic_compare_exchange_n(ptr, &expected, desired, false,
                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);

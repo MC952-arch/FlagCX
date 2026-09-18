@@ -1,26 +1,21 @@
-// Reuse the platform-neutral CUDA-compatible native Device API tests. CoreX
-// defines __IVCORE_ARCH__ only for the device pass.
-#if defined(__IVCORE_ARCH__)
-#define FLAGCX_ILUVATAR_DEVICE_COMPILE 1
-#endif
-
+// Reuse the platform-neutral CUDA-compatible native Device API tests. The
+// build supplies CoreX's explicit device-pass marker to both compiler passes.
 #include "../nvidia/device_api.cu"
 
-// Compile every operation in the DefaultBackend atomic contract, including
-// the less frequently used bitwise/exchange paths. Runtime acceptance still
-// requires the single- and dual-device tests on real CoreX hardware.
-__global__ void flagcxIluvatarAtomicContractKernel(uint64_t *value) {
+// Compile every CoreX-supported RMW operation. Aligned uint64_t load/store is
+// covered by the public tests; RMW intentionally uses the 32-bit domain.
+__global__ void flagcxIluvatarAtomicContractKernel(uint32_t *value) {
   if (FLAGCX_THREAD_IDX_X != 0)
     return;
-  uint64_t expected =
+  uint32_t expected =
       DeviceAPI::Atomic::load(value, flagcxDeviceMemoryOrderAcquire);
   DeviceAPI::Atomic::store(value, expected, flagcxDeviceMemoryOrderRelease);
-  DeviceAPI::Atomic::fetchAdd(value, uint64_t{1},
+  DeviceAPI::Atomic::fetchAdd(value, uint32_t{1},
                               flagcxDeviceMemoryOrderAcqRel);
-  DeviceAPI::Atomic::fetchSub(value, uint64_t{1},
+  DeviceAPI::Atomic::fetchSub(value, uint32_t{1},
                               flagcxDeviceMemoryOrderAcqRel);
-  DeviceAPI::Atomic::fetchOr(value, uint64_t{1}, flagcxDeviceMemoryOrderAcqRel);
-  DeviceAPI::Atomic::fetchAnd(value, ~uint64_t{0},
+  DeviceAPI::Atomic::fetchOr(value, uint32_t{1}, flagcxDeviceMemoryOrderAcqRel);
+  DeviceAPI::Atomic::fetchAnd(value, ~uint32_t{0},
                               flagcxDeviceMemoryOrderAcqRel);
   DeviceAPI::Atomic::exchange(value, expected, flagcxDeviceMemoryOrderAcqRel);
   DeviceAPI::Atomic::compareExchange(value, expected, expected,
