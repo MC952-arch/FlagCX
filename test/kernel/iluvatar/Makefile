@@ -10,7 +10,8 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
 	$(DEVICE_INCLUDE)
 
 COREX_TEST_FLAGS := -x ivcore --cuda-path=$(DEVICE_HOME) \
-	--cuda-gpu-arch=$(ILUVATAR_ARCH) -std=c++17 -O2 -c -fPIC
+	--cuda-gpu-arch=$(ILUVATAR_ARCH) -std=c++17 -O2 -c -fPIC \
+	-DFLAGCX_ILUVATAR_DEVICE_COMPILE=1
 
 .PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o
 

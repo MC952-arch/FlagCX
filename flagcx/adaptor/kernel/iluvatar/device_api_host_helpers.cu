@@ -4,7 +4,8 @@
  * Device-compiled helpers for Iluvatar/CoreX Device API host integration.
  ************************************************************************/
 
-#include "device_api/flagcx_device.h"
+#include "device_api/flagcx_device_internal.h"
+#include "device_api/flagcx_device_core.h"
 #include <new>
 
 extern "C" size_t flagcxDevNetSizeOf() { return sizeof(flagcxDevNet); }

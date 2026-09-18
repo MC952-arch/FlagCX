@@ -77,6 +77,24 @@ flagcxCoopMemcpy(flagcxDevCoopKind_t coopKind, DstPtr dst, SrcPtr src,
       dst, src, bytes, coop.threadRank(), coop.size(), 0);
 }
 
+// DefaultBackend owns the completion-word width.  Other backends retain their
+// existing uint64_t counter operation through the fallback overload.
+template <typename Net>
+static FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxCompleteCounterInternal(const Net &net, flagcxDevCounter_t counter,
+                              uint64_t delta, int)
+    -> decltype(net.completeCounter(counter, delta), void()) {
+  net.completeCounter(counter, delta);
+}
+
+template <typename Net>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxCompleteCounterInternal(const Net &net, flagcxDevCounter_t counter,
+                              uint64_t delta, long) {
+  DeviceAPI::Atomic::fetchAdd(net.getCounterPtr(counter), delta,
+                              flagcxDeviceMemoryOrderRelease);
+}
+
 /* ================================================================
  * Category U4: Unified Signal (2)
  *
@@ -88,32 +106,10 @@ flagcxDevSignalInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                    flagcxDevTeamKind_t teamKind, int peer,
                    flagcxDevSignal_t signal, flagcxDevContext_t contextId,
                    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  // Resolve team-scoped peer to local rank for P2P indexing
-  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
-
-  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
-  int localPeer =
-      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
-  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
-      localPeer < comm->_commBase.getIntraSize()) {
-    // P2P fast path: one atomic per cooperative group.
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal =
-          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
-      DeviceAPI::Atomic::fetchAdd(peerSignal, (uint64_t)1,
-                                  flagcxDeviceMemoryOrderRelease);
-    }
-    coop.sync();
-  } else {
-    // Net FIFO fallback (inter-node or P2P not available)
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
-                              peer, coopKind, signal);
-  }
+  (void)scope;
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer,
+                            coopKind, signal);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -122,33 +118,10 @@ flagcxDevSignalAdd(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                    flagcxDevSignal_t signal, uint64_t value,
                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                    flagcxDevMemoryScope_t scope) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  // Resolve team-scoped peer to local rank for P2P indexing
-  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
-
-  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
-  int localPeer =
-      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
-  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
-      localPeer < comm->_commBase.getIntraSize()) {
-    // P2P fast path: one atomic per cooperative group.
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal =
-          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
-
-      DeviceAPI::Atomic::fetchAdd(peerSignal, value,
-                                  flagcxDeviceMemoryOrderRelease);
-    }
-    coop.sync();
-  } else {
-    // Net FIFO fallback (inter-node or P2P not available)
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
-                              peer, coopKind, signal, value);
-  }
+  (void)scope;
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer,
+                            coopKind, signal, value);
 }
 
 /* ================================================================
@@ -160,28 +133,9 @@ flagcxDevWaitSignal(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                     flagcxDevSignal_t signal, uint64_t least, int bits,
                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                     flagcxDevMemoryOrder_t order) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-
-  // Send and wait share one communicator-wide signal transport decision.
-  if (comm->_commBase.usesDirectP2pSignals()) {
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    auto localSignal = FLAGCX_IR_NET_REF(net).getSignalPtr(signal);
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(localSignal, order) < least) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    coop.sync();
-  } else {
-    // Net FIFO path for multi-node
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least,
-                            bits, order);
-  }
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least, bits,
+                          order);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -260,29 +214,9 @@ flagcxDevWaitSignalMeetShadow(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                               flagcxDevSignal_t slot, int bits,
                               flagcxDevCoopKind_t coopKind,
                               flagcxDevMemoryOrder_t order) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-
-  if (comm->_commBase.usesDirectP2pSignals()) {
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    auto signalPtr = FLAGCX_IR_NET_REF(net).getSignalPtr(slot);
-    auto shadowPtr = FLAGCX_IR_NET_REF(net).getSignalShadowPtr(slot);
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      uint64_t expectedVal = DeviceAPI::Atomic::load(shadowPtr, order);
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(signalPtr, order) < expectedVal) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    coop.sync();
-  } else {
-    // Net FIFO path for multi-node
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot,
-                                      bits, order);
-  }
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot,
+                                    bits, order);
 }
 
 /* ================================================================
@@ -586,9 +520,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_LCtrInc(
     coop.sync();
     if (coop.threadRank() == 0) {
       // Counter is local to sender.
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {
@@ -640,9 +573,8 @@ flagcxDevPut_RSigInc_LCtrInc(
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {
@@ -695,9 +627,8 @@ flagcxDevPut_RSigAdd_LCtrInc(
                          contextId, FLAGCX_COOP_THREAD,
                          flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {

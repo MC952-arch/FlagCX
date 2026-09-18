@@ -1,12 +1,9 @@
 # makefiles/platforms/iluvatar.mk
 # Iluvatar CoreX platform configuration.
 
-# The DefaultBackend needs its device-compiled Net constructor helper. Keep an
-# explicit command-line COMPILE_KERNEL=0 override available for host-only
-# packaging, but enable the helper for a normal Iluvatar build.
-ifeq ($(origin COMPILE_KERNEL),file)
-  COMPILE_KERNEL := 1
-endif
+# Keep the repository-wide COMPILE_KERNEL default. Consumers that need native
+# collective kernels or device-side Net construction request
+# COMPILE_KERNEL=1 explicitly.
 
 DEVICE_HOME  ?= /usr/local/corex
 DEVICE_LIB   := $(DEVICE_HOME)/lib

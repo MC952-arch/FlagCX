@@ -1,6 +1,3 @@
-// Reuse the complete IR test surface with CoreX's explicit device-pass marker.
-#if defined(__IVCORE_ARCH__)
-#define FLAGCX_ILUVATAR_DEVICE_COMPILE 1
-#endif
-
+// Reuse the complete IR test surface. The build supplies CoreX's explicit
+// device-pass marker to both compiler passes.
 #include "../nvidia/device_ir.cu"

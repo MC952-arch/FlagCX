@@ -24,6 +24,14 @@
 template <typename Platform>
 struct PlatformTraits;
 
+// DefaultBackend control/completion RMW width.  This is a compile-time
+// platform property, not a communicator capability: existing platforms keep
+// the original 64-bit domain unless their platform header specializes it.
+template <typename Platform>
+struct PlatformCompletionWord {
+  using type = uint64_t;
+};
+
 // Common CoopAny — vtable-based type erasure, platform-independent.
 // Each PlatformTraits<P> aliases CoopAny = PlatformCoop.
 struct PlatformCoop {
