@@ -19,7 +19,7 @@
 
 #include "flagcx_kernel_core.h"
 #include <cassert>
-#ifndef __CUDACC__
+#ifndef FLAGCX_DEVICE_COMPILE
 #include "sym_heap.h"
 #endif
 
@@ -142,7 +142,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return !(*this == o);
     }
 
-#ifndef __CUDACC__
+#ifndef FLAGCX_DEVICE_COMPILE
     // Host-side population from flagcxWindow_t (sym heap or IPC).
     void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
                           int intraSize_, int mrIndex_, uintptr_t mrBase_,
@@ -170,7 +170,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
       }
     }
-#endif // __CUDACC__
+#endif // FLAGCX_DEVICE_COMPILE
   };
 
   // ---- Comm: All fallback layers ----
