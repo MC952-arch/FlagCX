@@ -59,8 +59,8 @@
 #include <accl/barex/xsimple_mempool.h>
 #include <accl/barex/xthreadpool.h>
 
-#include <arpa/inet.h>
 #include <algorithm>
+#include <arpa/inet.h>
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
@@ -555,8 +555,7 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
       const int port = base + (int)d * 96 + attempt * 3;
       XListener *lis = nullptr;
       if (XListener::NewInstance(lis, 2, port, accl::barex::TIMER_3S,
-                                 oneServer) ==
-              accl::barex::BAREX_SUCCESS &&
+                                 oneServer) == accl::barex::BAREX_SUCCESS &&
           lis->Listen() == accl::barex::BAREX_SUCCESS) {
         e->listeners[d] = lis;
         e->barexPorts[d] = port;
@@ -578,8 +577,8 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
   for (XContext *ctx : e->clientCtxs) {
     XConnector *con = nullptr;
     std::vector<XContext *> one = {ctx};
-    if (XConnector::NewInstance(con, 2, accl::barex::TIMER_3S,
-                                one) != accl::barex::BAREX_SUCCESS) {
+    if (XConnector::NewInstance(con, 2, accl::barex::TIMER_3S, one) !=
+        accl::barex::BAREX_SUCCESS) {
       WARN("NET/BAREX : XConnector create failed");
       return flagcxInternalError;
     }
