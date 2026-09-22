@@ -414,6 +414,7 @@ flagcxResult_t flagcx_p2p_ib_init(int *nDevs, int *nmDevs,
             flagcxIbDevs[flagcxNIbDevs].ibProvider = ibProvider;
             flagcxIbDevs[flagcxNIbDevs].guid = devAttr.sys_image_guid;
             flagcxIbDevs[flagcxNIbDevs].portAttr = portAttr;
+            flagcxIbDevs[flagcxNIbDevs].lid = flagcxIbPortLid(&portAttr);
             flagcxIbDevs[flagcxNIbDevs].portNum = port_num;
             flagcxIbDevs[flagcxNIbDevs].link = portAttr.link_layer;
 #if HAVE_STRUCT_IBV_PORT_ATTR_ACTIVE_SPEED_EX

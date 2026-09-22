@@ -7,12 +7,8 @@
 #ifndef FLAGCX_IBV_SYMBOLS_H_
 #define FLAGCX_IBV_SYMBOLS_H_
 
-#ifdef FLAGCX_BUILD_RDMA_CORE
-#include <infiniband/verbs.h>
-#else
-#include "ibvcore.h"
+#include "ibv_compat.h"
 #include "type.h"
-#endif
 
 /* IB Verbs Function Pointers*/
 struct flagcxIbvSymbols {

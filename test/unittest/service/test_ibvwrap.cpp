@@ -1,3 +1,4 @@
+#include "ib_common.h"
 #include "ibvwrap.h"
 
 #include <cerrno>
@@ -56,4 +57,31 @@ TEST(IbvWrapOneSidedPost, ReportsPermanentFailureWithoutRetrying) {
   EXPECT_EQ(flagcxWrapIbvPostSendOneSided(&qp, wrs, &badWr), flagcxSystemError);
   EXPECT_EQ(postCalls, 1);
   EXPECT_EQ(badWr, &wrs[1]);
+}
+
+TEST(IbvCompatLid, ConvertsPortLidToPortableMetadata) {
+  ibv_port_attr portAttr = {};
+#ifdef USE_SHCA
+  constexpr uint32_t lid = 91972;
+  portAttr.lid = u32_to_17(lid);
+#else
+  constexpr uint32_t lid = 1234;
+  portAttr.lid = static_cast<uint16_t>(lid);
+#endif
+
+  EXPECT_EQ(flagcxIbPortLid(&portAttr), lid);
+}
+
+TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
+  ibv_ah_attr ahAttr = {};
+#ifdef USE_SHCA
+  constexpr uint32_t lid = 91972;
+  ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
+  EXPECT_EQ(u17_to_32(ahAttr.dlid), lid);
+#else
+  constexpr uint32_t lid = 1234;
+  ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
+  EXPECT_EQ(ahAttr.dlid, lid);
+  EXPECT_EQ(flagcxIbSetAhDlid(&ahAttr, UINT16_MAX + 1U), flagcxInvalidArgument);
+#endif
 }

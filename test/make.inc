@@ -78,6 +78,7 @@ USE_METAX          ?= 0
 USE_MUSA           ?= 0
 USE_KUNLUNXIN      ?= 0
 USE_DU             ?= 0
+USE_SHCA           ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 USE_PPU            ?= 0
@@ -108,6 +109,13 @@ else
   ifneq ($(MAKECMDGOALS),clean)
     $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, USE_ENFLAME=1, etc.)
   endif
+endif
+
+ifeq ($(USE_SHCA), 1)
+SHCA_HOME ?= /usr
+SHCA_INCLUDE ?= $(SHCA_HOME)/include
+CXXFLAGS += -DUSE_SHCA
+FLAGCX_INCLUDES += -I$(SHCA_INCLUDE)
 endif
 
 # Test-specific overrides (format for compiler flags)

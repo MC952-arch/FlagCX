@@ -12,13 +12,8 @@
 #ifndef FLAGCX_IBVWRAP_H_
 #define FLAGCX_IBVWRAP_H_
 
-#ifdef FLAGCX_BUILD_RDMA_CORE
-#include <infiniband/verbs.h>
-#else
-#include "ibvcore.h"
-#endif
-
 #include "core.h"
+#include "ibv_compat.h"
 #include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>

@@ -7,7 +7,6 @@
 
 #include "ib_retrans.h"
 #include "flagcx_common.h"
-#include "ibvcore.h"
 #include "ibvwrap.h"
 #include "param.h"
 #include <errno.h>
@@ -648,7 +647,7 @@ flagcxResult_t
 flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
                               struct flagcxIbCtrlQp *ctrlQp,
                               uint32_t remote_qpn, union ibv_gid *remote_gid,
-                              uint16_t remote_lid, uint8_t port_num,
+                              uint32_t remote_lid, uint8_t port_num,
                               uint8_t link_layer, uint8_t local_gid_index) {
 
   if (!ctrlQp || !ctrlQp->qp)
@@ -697,7 +696,7 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
           port_num);
 
     ahAttr.is_global = 0;
-    ahAttr.dlid = remote_lid;
+    FLAGCXCHECK(flagcxIbSetAhDlid(&ahAttr, remote_lid));
   }
 
   ahAttr.sl = 0;

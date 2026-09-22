@@ -7,12 +7,12 @@
 #include <cstring>
 #include <future>
 #include <gtest/gtest.h>
-#include <infiniband/verbs.h>
 #include <thread>
 
 #include "../adaptor/net_test_utils.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "ibv_compat.h"
 
 // The P2P adaptor struct is non-static in ibrc_p2p_adaptor.cc
 extern struct flagcxNetAdaptor flagcxNetIbP2p;

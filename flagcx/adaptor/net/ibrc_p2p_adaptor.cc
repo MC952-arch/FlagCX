@@ -373,7 +373,7 @@ static void flagcxP2pBuildConnMeta(struct flagcxP2pConnMeta *meta,
   meta->gid = base->gidInfo.localGid;
   meta->ibPort = ibDev->portNum;
   meta->linkLayer = ibDev->link;
-  meta->lid = ibDev->portAttr.lid;
+  meta->lid = ibDev->lid;
   meta->mtu = (enum ibv_mtu)std::min((int)ibDev->portAttr.active_mtu,
                                      (int)flagcxP2pConfiguredMtuCap());
 }

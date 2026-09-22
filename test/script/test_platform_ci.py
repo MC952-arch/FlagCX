@@ -7,9 +7,23 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
+HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_hygon_builds_all_verbs_adaptors_with_shca_abi(self):
+        hygon_env = HYGON_ENV.read_text()
+        makefile = (REPO_ROOT / "Makefile").read_text()
+        compat = (
+            REPO_ROOT / "flagcx/service/include/ibv_compat.h"
+        ).read_text()
+
+        self.assertIn("USE_SHCA=1", hygon_env)
+        self.assertIn("USE_SHCA ?= 0", makefile)
+        self.assertIn("NET_ADAPTOR_FLAG += -DUSE_SHCA", makefile)
+        self.assertIn("<infiniband/verbs.h>", compat)
+        self.assertIn("<infiniband/shca_17b_types.h>", compat)
+
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         torch_workflow = (

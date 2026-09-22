@@ -9,7 +9,7 @@
 #define FLAGCX_IB_COMMON_H_
 
 #include "flagcx_net.h"
-#include "ibvcore.h"
+#include "ibv_compat.h"
 #include "ibvwrap.h"
 #include "net.h"
 #include "onesided.h"
@@ -45,6 +45,26 @@ extern int64_t flagcxParamIbMergeVfs(void);
 extern int64_t flagcxParamIbAdaptiveRouting(void);
 extern int64_t flagcxParamIbMergeNics(void);
 
+static inline uint32_t flagcxIbPortLid(const struct ibv_port_attr *portAttr) {
+#ifdef USE_SHCA
+  return u17_to_32(portAttr->lid);
+#else
+  return portAttr->lid;
+#endif
+}
+
+static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
+                                               uint32_t lid) {
+#ifdef USE_SHCA
+  ahAttr->dlid = u32_to_17(lid);
+#else
+  if (lid > UINT16_MAX)
+    return flagcxInvalidArgument;
+  ahAttr->dlid = (uint16_t)lid;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxIbMr {
   uintptr_t addr;
   size_t pages;
@@ -67,6 +87,7 @@ struct flagcxIbDev {
   int ibProvider;
   uint64_t guid;
   struct ibv_port_attr portAttr;
+  uint32_t lid;
   int portNum;
   int link;
   int speed;
@@ -297,7 +318,7 @@ struct flagcxIbConnectionMetadata {
 
   uint32_t ctrlQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
   union ibv_gid ctrlGid[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  uint16_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  uint32_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int retransEnabled;
 };
 

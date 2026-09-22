@@ -546,6 +546,7 @@ flagcxResult_t flagcxIbInit() {
           flagcxIbDevs[flagcxNIbDevs].device = d;
           flagcxIbDevs[flagcxNIbDevs].guid = devAttr.sys_image_guid;
           flagcxIbDevs[flagcxNIbDevs].portAttr = portAttr;
+          flagcxIbDevs[flagcxNIbDevs].lid = flagcxIbPortLid(&portAttr);
           flagcxIbDevs[flagcxNIbDevs].portNum = port_num;
           flagcxIbDevs[flagcxNIbDevs].link = portAttr.link_layer;
           flagcxIbDevs[flagcxNIbDevs].speed =
@@ -845,7 +846,7 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
   } else {
     qpAttr.ah_attr.is_global = 0;
-    qpAttr.ah_attr.dlid = info->lid;
+    FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
   }
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
@@ -975,7 +976,7 @@ ib_connect_check:
     flagcxIbDevInfo *devInfo = meta.devs + i;
     devInfo->ibPort = ibDev->portNum;
     devInfo->mtu = ibDev->portAttr.active_mtu;
-    devInfo->lid = ibDev->portAttr.lid;
+    devInfo->lid = ibDev->lid;
 
     // Prepare my fifo
     FLAGCXCHECK(
@@ -1014,7 +1015,7 @@ ib_connect_check:
       FLAGCXCHECK(flagcxIbCreateCtrlQp(ibDev->context, commDev->base.pd,
                                        ibDev->portNum, &commDev->ctrlQp));
       meta.ctrlQpn[i] = commDev->ctrlQp.qp->qp_num;
-      meta.ctrlLid[i] = ibDev->portAttr.lid;
+      meta.ctrlLid[i] = ibDev->lid;
       meta.ctrlGid[i] = commDev->base.gidInfo.localGid;
 
       size_t ackBufSize =
@@ -1493,7 +1494,7 @@ ib_recv:
                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ,
                            &rCommDev->gpuFlush.qp));
       struct flagcxIbDevInfo devInfo;
-      devInfo.lid = ibDev->portAttr.lid;
+      devInfo.lid = ibDev->lid;
       devInfo.linkLayer = ibDev->portAttr.link_layer;
       devInfo.ibPort = ibDev->portNum;
       devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
@@ -1506,7 +1507,7 @@ ib_recv:
     }
 
     // Fill Handle
-    meta.devs[i].lid = ibDev->portAttr.lid;
+    meta.devs[i].lid = ibDev->lid;
     meta.devs[i].linkLayer = rCommDev->base.gidInfo.linkLayer =
         ibDev->portAttr.link_layer;
     meta.devs[i].ibPort = ibDev->portNum;
@@ -1531,7 +1532,7 @@ ib_recv:
       FLAGCXCHECK(flagcxIbCreateCtrlQp(ibDev->context, rCommDev->base.pd,
                                        ibDev->portNum, &rCommDev->ctrlQp));
       meta.ctrlQpn[i] = rCommDev->ctrlQp.qp->qp_num;
-      meta.ctrlLid[i] = ibDev->portAttr.lid;
+      meta.ctrlLid[i] = ibDev->lid;
       meta.ctrlGid[i] = rCommDev->base.gidInfo.localGid;
 
       TRACE(FLAGCX_NET,

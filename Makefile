@@ -29,6 +29,7 @@ USE_TSM ?= 0
 USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
+USE_SHCA ?= 0
 USE_ACCL_BAREX ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
@@ -45,6 +46,7 @@ CCL_HOME ?=
 HOST_CCL_HOME ?=
 MPI_HOME ?=
 UCX_HOME ?=
+SHCA_HOME ?= /usr
 
 ifeq ($(strip $(DEVICE_HOME)),)
 	ifeq ($(USE_NVIDIA), 1)
@@ -152,6 +154,9 @@ UCX_LIB =
 UCX_INCLUDE =
 UCX_LINK =
 NET_ADAPTOR_FLAG =
+SHCA_INCLUDE_FLAG =
+SHCA_LINK_FLAG =
+SHCA_LINK =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
@@ -226,6 +231,23 @@ endif
 # IBUC network adaptor configuration
 ifeq ($(USE_IBUC), 1)
 	NET_ADAPTOR_FLAG += -DUSE_IBUC
+endif
+
+# ScaleFabric SHCA is a compile-time ABI variant of the existing verbs
+# adaptors. Its vendor verbs headers use an extended 17-bit LID layout, so all
+# RDMA translation units must be compiled against those headers consistently.
+ifeq ($(USE_SHCA), 1)
+ifeq ($(USE_UCX), 1)
+$(error USE_SHCA=1 cannot be combined with USE_UCX=1 because UCX may load a different verbs ABI)
+endif
+	SHCA_INCLUDE ?= $(SHCA_HOME)/include
+	SHCA_LIB ?=
+	SHCA_INCLUDE_FLAG = -I$(SHCA_INCLUDE)
+	ifneq ($(strip $(SHCA_LIB)),)
+		SHCA_LINK_FLAG = -L$(SHCA_LIB) -Wl,-rpath,$(SHCA_LIB)
+	endif
+	SHCA_LINK = -libverbs
+	NET_ADAPTOR_FLAG += -DUSE_SHCA
 endif
 
 # ACCL (accl::barex) transport for PPU + vsolar hosts lacking peer-mem/DMA-BUF.
@@ -337,6 +359,7 @@ print_var:
 	@echo "UCX_LIB: $(UCX_LIB)"
 	@echo "UCX_INCLUDE: $(UCX_INCLUDE)"
 	@echo "USE_IBUC: $(USE_IBUC)"
+	@echo "USE_SHCA: $(USE_SHCA)"
 	@echo "NET_ADAPTOR_FLAG: $(NET_ADAPTOR_FLAG)"
 	@echo "DEVSRCFILES: $(DEVSRCFILES)"
 	@echo "DEVICE_NEEDS_DLINK: $(DEVICE_NEEDS_DLINK)"
@@ -363,7 +386,7 @@ endif
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@mkdir -p `dirname $@`
 	@echo "Linking   $@"
-	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) -g
+	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g
 
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).
@@ -380,7 +403,7 @@ $(BUILD_INCDIR)/device_utils.h: flagcx/adaptor/include/device_utils.h
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 ifeq ($(DEVICE_NEEDS_DLINK), 1)
@@ -391,7 +414,7 @@ endif
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
-	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
+	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)
