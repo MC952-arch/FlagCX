@@ -65,6 +65,14 @@ static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
   return flagcxSuccess;
 }
 
+static inline uint32_t flagcxIbAhDlid(const struct ibv_ah_attr *ahAttr) {
+#ifdef USE_SHCA
+  return u17_to_32(ahAttr->dlid);
+#else
+  return ahAttr->dlid;
+#endif
+}
+
 struct flagcxIbMr {
   uintptr_t addr;
   size_t pages;
@@ -126,6 +134,7 @@ struct flagcxIbQpInfo {
 };
 
 struct flagcxIbDevInfo {
+  char devName[MAXNAMESIZE];
   uint32_t lid;
   uint8_t ibPort;
   enum ibv_mtu mtu;
@@ -360,6 +369,10 @@ struct alignas(32) flagcxIbNetCommBase {
   int devIndex;
   struct flagcxSocket sock;
   int ready;
+  // First permanent data-plane error observed on this communicator. Once a
+  // CQE fails, no later request may be posted or wait indefinitely for other
+  // completions from the failed QP.
+  flagcxResult_t asyncResult;
   // Track necessary remDevInfo here
   int nRemDevs;
   struct flagcxIbDevInfo remDevs[FLAGCX_IB_MAX_DEVS_PER_NIC];
@@ -524,6 +537,10 @@ flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
 flagcxResult_t
 flagcxIbCommonRecordUnsignaledCompletion(struct flagcxIbNetCommBase *base,
                                          uint64_t wrId, flagcxResult_t result);
+flagcxResult_t flagcxIbCommonRecordCommError(struct flagcxIbNetCommBase *base,
+                                             flagcxResult_t result);
+flagcxResult_t
+flagcxIbCommonGetCommError(const struct flagcxIbNetCommBase *base);
 
 static_assert((sizeof(struct flagcxIbNetCommBase) % 32) == 0,
               "flagcxIbNetCommBase size must be 32-byte multiple to ensure "
@@ -551,9 +568,11 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props);
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
                                 struct flagcxIbNetCommDevBase *base,
                                 int accessFlags, struct flagcxIbQp *qp);
-flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
-                             uint32_t dest_qp_num,
-                             struct flagcxIbDevInfo *info);
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbGidInfo *localGidInfo,
+                             const char *remoteDevName, uint32_t dest_qp_num,
+                             const struct flagcxIbDevInfo *info);
 flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp);
 flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            void *data, size_t size, int type,

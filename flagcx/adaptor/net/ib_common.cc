@@ -101,6 +101,26 @@ flagcxIbCommonRecordRequestEvent(struct flagcxIbRequest *req, int devIndex,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxIbCommonRecordCommError(struct flagcxIbNetCommBase *base,
+                                             flagcxResult_t result) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  if (result == flagcxSuccess || result == flagcxInProgress)
+    return result;
+
+  flagcxResult_t expected = flagcxSuccess;
+  __atomic_compare_exchange_n(&base->asyncResult, &expected, result, false,
+                              __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+  return result;
+}
+
+flagcxResult_t
+flagcxIbCommonGetCommError(const struct flagcxIbNetCommBase *base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  return __atomic_load_n(&base->asyncResult, __ATOMIC_ACQUIRE);
+}
+
 // Record a CQE against the request encoded in wr_id, not the request whose
 // test() call happened to poll the shared CQ. A batched read reuses one wr_id
 // for several WRs, so every CQE consumes exactly one event and the request is
@@ -149,6 +169,8 @@ flagcxIbCommonRecordUnsignaledCompletion(struct flagcxIbNetCommBase *base,
     return flagcxInternalError;
   if (req->result == flagcxSuccess && result != flagcxSuccess)
     req->result = result;
+  if (result != flagcxSuccess && result != flagcxInProgress)
+    flagcxIbCommonRecordCommError(base, result);
   return flagcxSuccess;
 }
 
@@ -157,6 +179,12 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                          const struct flagcxIbCommonTestOps *ops) {
   if (!r || !done)
     return flagcxInternalError;
+
+  flagcxResult_t commError = flagcxIbCommonGetCommError(r->base);
+  if (commError != flagcxSuccess && commError != flagcxInProgress) {
+    *done = 1;
+    return commError;
+  }
 
   if (ops && ops->pre_check) {
     FLAGCXCHECK(ops->pre_check(r));
@@ -213,6 +241,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                    "vendor_err=%d wr_id=%llu",
                    flagcxIbCommonComponent(ops), wc->status, wc->opcode,
                    wc->vendor_err, (unsigned long long)wc->wr_id);
+              *done = 1;
+              return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
             }
             continue;
           }
@@ -252,7 +282,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                  remoteGidStr ? " remoteGid " : "", remoteGidString);
             FLAGCXCHECK(flagcxIbCommonRecordDataCompletion(
                 r->base, wc->wr_id, i, flagcxRemoteError));
-            continue;
+            *done = 1;
+            return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
           }
 
           uint8_t req_idx = wc->wr_id & 0xff;

@@ -472,11 +472,28 @@ TEST(IbRequestCompletionTest, SharedCqUpdatesTheWrIdRequestAndDrainsBatch) {
   EXPECT_EQ(polled->result, flagcxSuccess);
   EXPECT_EQ(completed->events[0], 1);
   EXPECT_EQ(completed->result, flagcxRemoteError);
+  EXPECT_EQ(flagcxIbCommonGetCommError(base.get()), flagcxSuccess);
 
   EXPECT_EQ(flagcxIbCommonRecordDataCompletion(base.get(), 1, 0, flagcxSuccess),
             flagcxSuccess);
   EXPECT_EQ(completed->events[0], 0);
   EXPECT_EQ(completed->result, flagcxRemoteError);
+}
+
+TEST(IbRequestCompletionTest, CommunicatorErrorPreservesFirstFailure) {
+  auto base = std::make_unique<flagcxIbNetCommBase>();
+
+  EXPECT_EQ(flagcxIbCommonRecordCommError(base.get(), flagcxInProgress),
+            flagcxInProgress);
+  EXPECT_EQ(flagcxIbCommonGetCommError(base.get()), flagcxSuccess);
+
+  EXPECT_EQ(flagcxIbCommonRecordCommError(base.get(), flagcxRemoteError),
+            flagcxRemoteError);
+  EXPECT_EQ(flagcxIbCommonGetCommError(base.get()), flagcxRemoteError);
+
+  EXPECT_EQ(flagcxIbCommonRecordCommError(base.get(), flagcxSystemError),
+            flagcxSystemError);
+  EXPECT_EQ(flagcxIbCommonGetCommError(base.get()), flagcxRemoteError);
 }
 
 TEST(IbRequestCompletionTest,
@@ -494,6 +511,7 @@ TEST(IbRequestCompletionTest,
             flagcxSuccess);
   EXPECT_EQ(request->events[0], 1);
   EXPECT_EQ(request->result, flagcxRemoteError);
+  EXPECT_EQ(flagcxIbCommonGetCommError(base.get()), flagcxRemoteError);
 
   EXPECT_EQ(flagcxIbCommonRecordDataCompletion(base.get(), 7, 0, flagcxSuccess),
             flagcxSuccess);

@@ -21,6 +21,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <thread>
 #include <unistd.h>
@@ -75,6 +76,7 @@ struct flagcxP2pListenComm {
 struct flagcxP2pConnMeta {
   uint32_t qpn;
   union ibv_gid gid;
+  char hcaName[MAXNAMESIZE];
   uint8_t ibPort;
   uint8_t linkLayer;
   uint32_t lid;
@@ -380,6 +382,7 @@ static void flagcxP2pBuildConnMeta(struct flagcxP2pConnMeta *meta,
   memset(meta, 0, sizeof(*meta));
   meta->qpn = qp->qp->qp_num;
   meta->gid = base->gidInfo.localGid;
+  snprintf(meta->hcaName, sizeof(meta->hcaName), "%s", ibDev->devName);
   meta->ibPort = ibDev->portNum;
   meta->linkLayer = ibDev->link;
   meta->lid = ibDev->lid;
@@ -411,7 +414,7 @@ flagcxP2pTransitionQp(struct flagcxIbQp *qp,
   remoteInfo.spn = remoteMeta->gid.global.subnet_prefix;
   remoteInfo.iid = remoteMeta->gid.global.interface_id;
 
-  FLAGCXCHECK(flagcxIbRtrQp(qp->qp, base->gidInfo.localGidIndex,
+  FLAGCXCHECK(flagcxIbRtrQp(qp->qp, ibDev, &base->gidInfo, remoteMeta->hcaName,
                             remoteMeta->qpn, &remoteInfo));
   FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
   return flagcxSuccess;

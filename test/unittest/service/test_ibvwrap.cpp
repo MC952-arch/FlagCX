@@ -112,10 +112,12 @@ TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
   constexpr uint32_t lid = 91972;
   ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
   EXPECT_EQ(u17_to_32(ahAttr.dlid), lid);
+  EXPECT_EQ(flagcxIbAhDlid(&ahAttr), lid);
 #else
   constexpr uint32_t lid = 1234;
   ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
   EXPECT_EQ(ahAttr.dlid, lid);
+  EXPECT_EQ(flagcxIbAhDlid(&ahAttr), lid);
   EXPECT_EQ(flagcxIbSetAhDlid(&ahAttr, UINT16_MAX + 1U), flagcxInvalidArgument);
 #endif
 }

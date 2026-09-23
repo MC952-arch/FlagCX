@@ -986,9 +986,18 @@ static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
 #endif
 }
 
-flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
-                             uint32_t dest_qp_num,
-                             struct flagcxIbDevInfo *info) {
+static int flagcxIbMtuBytes(enum ibv_mtu mtu) {
+  return mtu >= IBV_MTU_256 && mtu <= IBV_MTU_4096 ? 128 << mtu : -1;
+}
+
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbGidInfo *localGidInfo,
+                             const char *remoteDevName, uint32_t dest_qp_num,
+                             const struct flagcxIbDevInfo *info) {
+  if (qp == NULL || localDev == NULL || localGidInfo == NULL || info == NULL)
+    return flagcxInvalidArgument;
+
   struct ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTR;
@@ -1002,7 +1011,7 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = info->iid;
     qpAttr.ah_attr.grh.flow_label = 0;
-    qpAttr.ah_attr.grh.sgid_index = sGidIndex;
+    qpAttr.ah_attr.grh.sgid_index = localGidInfo->localGidIndex;
     qpAttr.ah_attr.grh.hop_limit = 255;
     qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
 #ifdef USE_SHCA
@@ -1014,7 +1023,23 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
   }
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
-  qpAttr.ah_attr.port_num = info->ibPort;
+  // port_num selects the local egress port. The peer's port belongs only to
+  // the exchanged route metadata and must not be programmed into a local QP.
+  qpAttr.ah_attr.port_num = localDev->portNum;
+  INFO(FLAGCX_NET,
+       "NET/IB: RTR path local_hca=%s local_gid_index=%d "
+       "local_gid=%016lx:%016lx local_lid=%u local_qpn=%u remote_hca=%s "
+       "remote_gid=%016lx:%016lx remote_lid=%u remote_qpn=%u "
+       "is_global=%u final_dlid=%u mtu=%d(%dB) sl=%u port=%u",
+       localDev->devName, localGidInfo->localGidIndex,
+       (unsigned long)localGidInfo->localGid.global.subnet_prefix,
+       (unsigned long)localGidInfo->localGid.global.interface_id, localDev->lid,
+       qp->qp_num, remoteDevName == NULL ? "<unknown>" : remoteDevName,
+       (unsigned long)info->spn, (unsigned long)info->iid, info->lid,
+       dest_qp_num, (unsigned int)qpAttr.ah_attr.is_global,
+       flagcxIbAhDlid(&qpAttr.ah_attr), qpAttr.path_mtu,
+       flagcxIbMtuBytes(qpAttr.path_mtu), (unsigned int)qpAttr.ah_attr.sl,
+       (unsigned int)qpAttr.ah_attr.port_num);
   FLAGCXCHECK(flagcxWrapIbvModifyQp(
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
@@ -1139,6 +1164,7 @@ ib_connect_check:
 
     // Write to the metadata struct via this pointer
     flagcxIbDevInfo *devInfo = meta.devs + i;
+    snprintf(devInfo->devName, sizeof(devInfo->devName), "%s", ibDev->devName);
     devInfo->ibPort = ibDev->portNum;
     devInfo->mtu = ibDev->portAttr.active_mtu;
     devInfo->lid = ibDev->lid;
@@ -1329,14 +1355,15 @@ ib_connect:
     comm->base.qps[q].remDevIdx = remQpInfo->devIndex;
     int devIndex = comm->base.qps[q].devIndex;
     flagcxIbSendCommDev *commDev = comm->devs + devIndex;
-    uint8_t gidIndex = commDev->base.gidInfo.localGidIndex;
+    struct flagcxIbDev *ibDev = flagcxIbDevs + commDev->base.ibDevN;
 
     struct ibv_qp *qp = comm->base.qps[q].qp;
     if (remQpInfo->eceSupported)
       FLAGCXCHECK(
           flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->eceSupported));
 
-    FLAGCXCHECK(flagcxIbRtrQp(qp, gidIndex, remQpInfo->qpn, remDevInfo));
+    FLAGCXCHECK(flagcxIbRtrQp(qp, ibDev, &commDev->base.gidInfo,
+                              remDevInfo->devName, remQpInfo->qpn, remDevInfo));
     FLAGCXCHECK(flagcxIbRtsQp(qp));
   }
 
@@ -1623,8 +1650,9 @@ ib_recv:
                                           &meta.qpInfo[q].eceSupported));
     }
 
-    FLAGCXCHECK(flagcxIbRtrQp(qp->qp, rCommDev->base.gidInfo.localGidIndex,
-                              remMeta.qpInfo[q].qpn, remDevInfo));
+    FLAGCXCHECK(flagcxIbRtrQp(qp->qp, ibDev, &rCommDev->base.gidInfo,
+                              remDevInfo->devName, remMeta.qpInfo[q].qpn,
+                              remDevInfo));
     FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
   }
 
@@ -1661,19 +1689,22 @@ ib_recv:
                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ,
                            &rCommDev->gpuFlush.qp));
       struct flagcxIbDevInfo devInfo;
+      memset(&devInfo, 0, sizeof(devInfo));
       devInfo.lid = ibDev->lid;
       devInfo.linkLayer = ibDev->portAttr.link_layer;
       devInfo.ibPort = ibDev->portNum;
       devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
       devInfo.iid = rCommDev->base.gidInfo.localGid.global.interface_id;
       devInfo.mtu = ibDev->portAttr.active_mtu;
-      FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp,
-                                rCommDev->base.gidInfo.localGidIndex,
+      FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp, ibDev,
+                                &rCommDev->base.gidInfo, ibDev->devName,
                                 rCommDev->gpuFlush.qp.qp->qp_num, &devInfo));
       FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp));
     }
 
     // Fill Handle
+    snprintf(meta.devs[i].devName, sizeof(meta.devs[i].devName), "%s",
+             ibDev->devName);
     meta.devs[i].lid = ibDev->lid;
     meta.devs[i].linkLayer = rCommDev->base.gidInfo.linkLayer =
         ibDev->portAttr.link_layer;
@@ -1822,6 +1853,12 @@ ib_recv_ready:
 
 flagcxResult_t flagcxIbGetRequest(struct flagcxIbNetCommBase *base,
                                   struct flagcxIbRequest **req) {
+  if (base == NULL || req == NULL)
+    return flagcxInvalidArgument;
+  *req = NULL;
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   for (int i = 0; i < MAX_REQUESTS; i++) {
     struct flagcxIbRequest *r = base->reqs + i;
     if (r->type == FLAGCX_NET_IB_REQ_UNUSED) {
@@ -2166,6 +2203,9 @@ static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
 
 flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   struct flagcxIbRequest **reqs = comm->fifoReqs[slot];
   volatile struct flagcxIbSendFifo *slots = comm->fifo[slot];
   int nreqs = slots[0].nreqs;
@@ -2311,6 +2351,9 @@ flagcxResult_t flagcxIbIsend(void *sendComm, void *data, size_t size, int tag,
     WARN("NET/IB: flagcxIbIsend() called before the communicator is ready");
     return flagcxInternalError;
   }
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
 
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
 
@@ -2329,8 +2372,15 @@ flagcxResult_t flagcxIbIsend(void *sendComm, void *data, size_t size, int tag,
   nreqs = slots[0].nreqs;
   // Wait until all data has arrived
   for (int r = 1; r < nreqs; r++)
-    while (slots[r].idx != idx)
-      ;
+    while (slots[r].idx != idx) {
+      asyncResult = flagcxIbCommonGetCommError(&comm->base);
+      if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+        return asyncResult;
+      if (comm->base.sock.abortFlag != NULL &&
+          __atomic_load_n(comm->base.sock.abortFlag, __ATOMIC_ACQUIRE) != 0)
+        return flagcxRemoteError;
+      sched_yield();
+    }
   __sync_synchronize(); // order the nreqsPtr load against tag/rkey/addr loads
                         // below
   for (int r = 0; r < nreqs; r++) {
@@ -2430,6 +2480,9 @@ flagcxResult_t flagcxIbIrecv(void *recvComm, int n, void **data, size_t *sizes,
     WARN("NET/IB: flagcxIbIrecv() called before the communicator is ready");
     return flagcxInternalError;
   }
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   if (n <= 0 || n > FLAGCX_NET_IB_MAX_RECVS || data == NULL || sizes == NULL ||
       tags == NULL || mhandles == NULL)
     return flagcxInvalidArgument;
@@ -2484,6 +2537,9 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
   if (comm == NULL || comm->base.ready != 1)
     return comm == NULL ? flagcxInvalidArgument : flagcxInternalError;
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   if (n < 0 || (n > 0 && (data == NULL || sizes == NULL || mhandles == NULL)))
     return flagcxInvalidArgument;
   int last = -1;
