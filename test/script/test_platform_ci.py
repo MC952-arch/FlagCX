@@ -94,11 +94,67 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         self.assertIn("static bool flagcxIbUseGlobalRoute", ibrc)
         self.assertIn("#ifdef USE_SHCA", ibrc)
+        self.assertIn(
+            'FLAGCX_PARAM(IbShcaUseGid, "IB_SHCA_USE_GID", 1)', ibrc
+        )
+        self.assertIn("return flagcxParamIbShcaUseGid() != 0", ibrc)
         self.assertIn("qpAttr.ah_attr.is_global = 1", ibrc)
         self.assertIn("qpAttr.ah_attr.grh.dgid.global.subnet_prefix", ibrc)
         self.assertIn("flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid)", ibrc)
         self.assertIn("flagcxIbUseGlobalRoute(devInfo->linkLayer)", ibrc)
         self.assertIn("flagcxIbRtrQp(qp->qp", p2p)
+
+    def test_hygon_rma_compares_global_and_lid_routes(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        rma_makefile = (
+            REPO_ROOT / "test/unittest/rma/Makefile"
+        ).read_text()
+
+        rma_runner = unit_runner[unit_runner.index("    rma)") :]
+        rma_runner = rma_runner[: rma_runner.index("    runner)")]
+        self.assertIn('platform_name" == "hygon"', rma_runner)
+        self.assertIn("FLAGCX_IB_SHCA_USE_GID=1", rma_runner)
+        self.assertIn("FLAGCX_IB_SHCA_USE_GID=0", rma_runner)
+        self.assertIn("FLAGCX_IB_TIMEOUT=14", rma_runner)
+        self.assertIn("FLAGCX_IB_RETRY_CNT=1", rma_runner)
+        self.assertIn("--gtest_filter=RmaTest.GetSmall", rma_runner)
+        self.assertIn(
+            "global_route_status != 0 && lid_route_status != 0", rma_runner
+        )
+
+        self.assertIn("RMA_NET_PLATFORM_ENV ?=", rma_makefile)
+        self.assertIn("RMA_NET_TEST_ARGS ?=", rma_makefile)
+        self.assertIn("$(RMA_NET_PLATFORM_ENV)", rma_makefile)
+        self.assertIn("$(RMA_NET_TEST_ARGS)", rma_makefile)
+
+    def test_automatic_hardware_ci_is_limited_to_hygon_unittest(self):
+        matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
+        result = subprocess.run(
+            [
+                "ruby",
+                str(matrix_loader),
+                str(REPO_ROOT / ".github/configs"),
+                "all",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            '{"include":[{"platform":"hygon","display_name":"Hygon DCU Tests"}]}',
+        )
+
+        for workflow_name in ("test.yml", "torch-api-test.yml"):
+            workflow = (
+                REPO_ROOT / f".github/workflows/{workflow_name}"
+            ).read_text()
+            trigger = workflow[: workflow.index("\njobs:")]
+            self.assertIn("workflow_dispatch:", trigger)
+            self.assertNotIn("pull_request:", trigger)
+            self.assertNotIn("push:", trigger)
 
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()

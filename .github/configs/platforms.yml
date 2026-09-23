@@ -3,12 +3,15 @@
 # The per-platform files keep detailed runner/image settings. This registry
 # controls which platforms are included when the workflow runs with
 # platform=all.
+#
+# SHCA bring-up temporarily runs only the Hygon unittest matrix. The disabled
+# platform definitions remain available for explicit workflow_dispatch runs.
 platforms:
   cuda:
-    enabled: true
+    enabled: false
   hygon:
     enabled: true
   metax:
-    enabled: true
+    enabled: false
   ppu:
-    enabled: true
+    enabled: false

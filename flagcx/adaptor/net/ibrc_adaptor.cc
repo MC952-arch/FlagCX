@@ -48,6 +48,12 @@ FLAGCX_PARAM(IbMergeVfs, "IB_MERGE_VFS", 1);
 FLAGCX_PARAM(IbMergeNics, "IB_MERGE_NICS", 1);
 FLAGCX_PARAM(IbQpsPerConn, "IB_QPS_PER_CONNECTION", 1);
 FLAGCX_PARAM(IbRdAtomicDepth, "IB_RD_ATOMIC_DEPTH", 16);
+#ifdef USE_SHCA
+// Diagnostic route selector for SHCA InfiniBand ports. Keep the Mooncake-
+// compatible GID/GRH route as the production default while allowing CI to
+// verify whether a provider requires a pure 17-bit LID route instead.
+FLAGCX_PARAM(IbShcaUseGid, "IB_SHCA_USE_GID", 1);
+#endif
 
 int flagcxNMergedIbDevs = -1;
 int flagcxNIbDevs = -1;
@@ -1021,11 +1027,12 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
 
 static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
 #ifdef USE_SHCA
-  // SHCA requires the GRH/GID route for its InfiniBand RC QPs as well as for
-  // Ethernet links. The standard verbs path retains the existing distinction
-  // between RoCE global routing and InfiniBand LID-only routing.
+  // SHCA normally follows Mooncake and programs both GID/GRH and its extended
+  // 17-bit DLID. Some provider versions report a LID-only route after RTR;
+  // retain an explicit diagnostic switch so CI can test that route without
+  // changing the default used by applications.
   (void)linkLayer;
-  return true;
+  return flagcxParamIbShcaUseGid() != 0;
 #else
   return linkLayer == IBV_LINK_LAYER_ETHERNET;
 #endif

@@ -19,9 +19,11 @@ MPI_TARGET := $(BINDIR)/rma_mpi_tests
 # Common environment for single-node heterogeneous RMA tests. Keep transport
 # selection out of this list so CI can exercise IPC and RDMA independently.
 RMA_PLATFORM_ENV ?=
+RMA_NET_PLATFORM_ENV ?=
+RMA_NET_TEST_ARGS ?=
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 $(RMA_PLATFORM_ENV)
 IPC_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=1 -x FLAGCX_P2P_DISABLE=0
-NET_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1
+NET_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1 $(RMA_NET_PLATFORM_ENV)
 IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
 
 .PHONY: all clean run-unit run-mpi-ipc run-mpi-net run-mpi run
@@ -76,7 +78,7 @@ run-mpi-ipc: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np 2 $(IPC_ENV) $(MPI_TARGET) --gtest_filter=$(IPC_FILTER)
 
 run-mpi-net: $(MPI_TARGET)
-	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) $(MPI_TARGET) $(RMA_NET_TEST_ARGS)
 
 run-mpi: run-mpi-ipc run-mpi-net
 

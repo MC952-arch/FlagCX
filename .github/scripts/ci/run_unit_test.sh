@@ -347,6 +347,8 @@ run_suite() {
     rma)
       local ipc_status=0
       local network_status=0
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       # Keep these as separate invocations so each transport has its own
@@ -356,9 +358,34 @@ run_suite() {
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" || ipc_status=$?
       if flagcx_ci_require_rdma "$SUITE"; then
-        FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
-          make -C "$suite_dir" run-mpi-net "${args[@]}" \
-          MPIRUN="$MPI_RUNNER" || network_status=$?
+        if [[ "$platform_name" == "hygon" ]]; then
+          local global_route_status=0
+          local lid_route_status=0
+          local shca_rma_env="-x FLAGCX_IB_SHCA_USE_GID=1 -x FLAGCX_IB_TIMEOUT=14 -x FLAGCX_IB_RETRY_CNT=1"
+          FLAGCX_CI_MPI_LABEL="rma SHCA global-route GetSmall" \
+            make -C "$suite_dir" run-mpi-net "${args[@]}" \
+            MPIRUN="$MPI_RUNNER" \
+            RMA_NET_PLATFORM_ENV="$shca_rma_env" \
+            RMA_NET_TEST_ARGS="--gtest_filter=RmaTest.GetSmall" || \
+            global_route_status=$?
+
+          shca_rma_env="-x FLAGCX_IB_SHCA_USE_GID=0 -x FLAGCX_IB_TIMEOUT=14 -x FLAGCX_IB_RETRY_CNT=1"
+          FLAGCX_CI_MPI_LABEL="rma SHCA LID-route GetSmall" \
+            make -C "$suite_dir" run-mpi-net "${args[@]}" \
+            MPIRUN="$MPI_RUNNER" \
+            RMA_NET_PLATFORM_ENV="$shca_rma_env" \
+            RMA_NET_TEST_ARGS="--gtest_filter=RmaTest.GetSmall" || \
+            lid_route_status=$?
+
+          echo "SHCA RMA route diagnostics: global=$global_route_status LID=$lid_route_status"
+          if ((global_route_status != 0 && lid_route_status != 0)); then
+            network_status=1
+          fi
+        else
+          FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
+            make -C "$suite_dir" run-mpi-net "${args[@]}" \
+            MPIRUN="$MPI_RUNNER" || network_status=$?
+        fi
       else
         network_status=$?
       fi
