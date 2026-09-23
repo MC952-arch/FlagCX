@@ -17,6 +17,7 @@
 #include "socket.h"
 #include "timer.h"
 #include "utils.h"
+#include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -978,6 +979,43 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   FLAGCXCHECK(flagcxWrapIbvModifyQp(qp->qp, &qpAttr,
                                     IBV_QP_STATE | IBV_QP_PKEY_INDEX |
                                         IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
+  struct ibv_qp_attr actualAttr;
+  struct ibv_qp_init_attr actualInitAttr;
+  memset(&actualAttr, 0, sizeof(actualAttr));
+  memset(&actualInitAttr, 0, sizeof(actualInitAttr));
+  flagcxResult_t queryResult = flagcxWrapIbvQueryQp(
+      qp->qp, &actualAttr,
+      IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS,
+      &actualInitAttr);
+  if (queryResult == flagcxSuccess) {
+    uint16_t pkey = 0;
+    uint8_t pkeyPort = actualAttr.port_num == 0 ? ib_port : actualAttr.port_num;
+    flagcxResult_t pkeyResult =
+        flagcxWrapIbvQueryPkey(flagcxIbDevs[base->ibDevN].context, pkeyPort,
+                               actualAttr.pkey_index, &pkey);
+    if (pkeyResult == flagcxSuccess) {
+      uint16_t hostPkey = ntohs(pkey);
+      INFO(FLAGCX_NET,
+           "NET/IB: INIT actual hca=%s qpn=%u state=%d port=%u "
+           "requested_pkey_index=%lld actual_pkey_index=%u "
+           "pkey_raw=0x%04x pkey_host=0x%04x partition=0x%04x "
+           "membership=%s access_flags=0x%x",
+           flagcxIbDevs[base->ibDevN].devName, qp->qp->qp_num,
+           actualAttr.qp_state, (unsigned int)actualAttr.port_num,
+           (long long)flagcxParamIbPkey(), (unsigned int)actualAttr.pkey_index,
+           (unsigned int)pkey, (unsigned int)hostPkey,
+           (unsigned int)(hostPkey & 0x7fff),
+           (hostPkey & 0x8000) ? "full" : "limited",
+           actualAttr.qp_access_flags);
+    } else {
+      WARN("NET/IB: unable to query P_Key hca=%s port=%u index=%u qpn=%u",
+           flagcxIbDevs[base->ibDevN].devName, (unsigned int)pkeyPort,
+           (unsigned int)actualAttr.pkey_index, qp->qp->qp_num);
+    }
+  } else {
+    WARN("NET/IB: unable to query INIT QP state hca=%s qpn=%u",
+         flagcxIbDevs[base->ibDevN].devName, qp->qp->qp_num);
+  }
   return flagcxSuccess;
 }
 
@@ -995,6 +1033,104 @@ static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
 
 static int flagcxIbMtuBytes(enum ibv_mtu mtu) {
   return mtu >= IBV_MTU_256 && mtu <= IBV_MTU_4096 ? 128 << mtu : -1;
+}
+
+static void flagcxIbFormatGid(const union ibv_gid *gid, char *buffer,
+                              size_t bufferSize) {
+  if (buffer == NULL || bufferSize == 0)
+    return;
+  if (gid == NULL ||
+      inet_ntop(AF_INET6, gid->raw, buffer, bufferSize) == NULL) {
+    snprintf(buffer, bufferSize, "<invalid>");
+  }
+}
+
+static void flagcxIbFormatBytes(const void *data, size_t size, char *buffer,
+                                size_t bufferSize) {
+  if (buffer == NULL || bufferSize == 0)
+    return;
+  const unsigned char *bytes = static_cast<const unsigned char *>(data);
+  size_t written = 0;
+  for (size_t i = 0; i < size && written + 2 < bufferSize; i++) {
+    int count = snprintf(buffer + written, bufferSize - written, "%02x",
+                         (unsigned int)bytes[i]);
+    if (count <= 0)
+      break;
+    written += (size_t)count;
+  }
+  buffer[written < bufferSize ? written : bufferSize - 1] = '\0';
+}
+
+static void flagcxIbLogActualRtrQp(struct ibv_qp *qp,
+                                   const struct flagcxIbDev *localDev,
+                                   const char *remoteDevName) {
+  struct ibv_qp_attr attr;
+  struct ibv_qp_init_attr initAttr;
+  memset(&attr, 0, sizeof(attr));
+  memset(&initAttr, 0, sizeof(initAttr));
+  int mask = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+             IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER |
+             IBV_QP_PKEY_INDEX | IBV_QP_PORT;
+  if (flagcxWrapIbvQueryQp(qp, &attr, mask, &initAttr) != flagcxSuccess) {
+    WARN("NET/IB: unable to query actual RTR state local_hca=%s qpn=%u",
+         localDev->devName, qp->qp_num);
+    return;
+  }
+
+  union ibv_gid actualSgid;
+  memset(&actualSgid, 0, sizeof(actualSgid));
+  bool haveSgid =
+      attr.ah_attr.is_global &&
+      flagcxWrapIbvQueryGid(localDev->context, attr.ah_attr.port_num,
+                            attr.ah_attr.grh.sgid_index,
+                            &actualSgid) == flagcxSuccess;
+  char sgid[INET6_ADDRSTRLEN];
+  char dgid[INET6_ADDRSTRLEN];
+  char dlidRaw[2 * sizeof(attr.ah_attr.dlid) + 1];
+  if (haveSgid)
+    flagcxIbFormatGid(&actualSgid, sgid, sizeof(sgid));
+  else
+    snprintf(sgid, sizeof(sgid), "<unavailable>");
+  flagcxIbFormatGid(&attr.ah_attr.grh.dgid, dgid, sizeof(dgid));
+  flagcxIbFormatBytes(&attr.ah_attr.dlid, sizeof(attr.ah_attr.dlid), dlidRaw,
+                      sizeof(dlidRaw));
+
+  INFO(FLAGCX_NET,
+       "NET/IB: RTR actual local_hca=%s remote_hca=%s qpn=%u state=%d "
+       "dest_qpn=%u is_global=%u sgid_index=%u sgid=%s dgid=%s "
+       "dlid=%u dlid_raw=%s dlid_size=%zu port=%u pkey_index=%u "
+       "mtu=%d(%dB) rq_psn=%u max_dest_rd_atomic=%u min_rnr_timer=%u",
+       localDev->devName, remoteDevName == NULL ? "<unknown>" : remoteDevName,
+       qp->qp_num, attr.qp_state, attr.dest_qp_num,
+       (unsigned int)attr.ah_attr.is_global,
+       (unsigned int)attr.ah_attr.grh.sgid_index, sgid, dgid,
+       flagcxIbAhDlid(&attr.ah_attr), dlidRaw, sizeof(attr.ah_attr.dlid),
+       (unsigned int)attr.ah_attr.port_num, (unsigned int)attr.pkey_index,
+       attr.path_mtu, flagcxIbMtuBytes(attr.path_mtu), attr.rq_psn,
+       (unsigned int)attr.max_dest_rd_atomic, (unsigned int)attr.min_rnr_timer);
+}
+
+static void flagcxIbLogActualRtsQp(struct ibv_qp *qp,
+                                   const struct flagcxIbDev *localDev,
+                                   const char *remoteDevName) {
+  struct ibv_qp_attr attr;
+  struct ibv_qp_init_attr initAttr;
+  memset(&attr, 0, sizeof(attr));
+  memset(&initAttr, 0, sizeof(initAttr));
+  int mask = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+             IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC;
+  if (flagcxWrapIbvQueryQp(qp, &attr, mask, &initAttr) != flagcxSuccess) {
+    WARN("NET/IB: unable to query actual RTS state local_hca=%s qpn=%u",
+         localDev->devName, qp->qp_num);
+    return;
+  }
+  INFO(FLAGCX_NET,
+       "NET/IB: RTS actual local_hca=%s remote_hca=%s qpn=%u state=%d "
+       "sq_psn=%u timeout=%u retry_cnt=%u rnr_retry=%u max_rd_atomic=%u",
+       localDev->devName, remoteDevName == NULL ? "<unknown>" : remoteDevName,
+       qp->qp_num, attr.qp_state, attr.sq_psn, (unsigned int)attr.timeout,
+       (unsigned int)attr.retry_cnt, (unsigned int)attr.rnr_retry,
+       (unsigned int)attr.max_rd_atomic);
 }
 
 flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
@@ -1034,19 +1170,29 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
   // port_num selects the local egress port. The peer's port belongs only to
   // the exchanged route metadata and must not be programmed into a local QP.
   qpAttr.ah_attr.port_num = localDev->portNum;
+  union ibv_gid remoteGid;
+  memset(&remoteGid, 0, sizeof(remoteGid));
+  remoteGid.global.subnet_prefix = info->spn;
+  remoteGid.global.interface_id = info->iid;
+  char localGid[INET6_ADDRSTRLEN];
+  char remoteGidText[INET6_ADDRSTRLEN];
+  char dlidRaw[2 * sizeof(qpAttr.ah_attr.dlid) + 1];
+  flagcxIbFormatGid(&localGidInfo->localGid, localGid, sizeof(localGid));
+  flagcxIbFormatGid(&remoteGid, remoteGidText, sizeof(remoteGidText));
+  flagcxIbFormatBytes(&qpAttr.ah_attr.dlid, sizeof(qpAttr.ah_attr.dlid),
+                      dlidRaw, sizeof(dlidRaw));
   INFO(FLAGCX_NET,
        "NET/IB: RTR path local_hca=%s local_gid_index=%d "
-       "local_gid=%016lx:%016lx local_lid=%u local_qpn=%u remote_hca=%s "
-       "remote_gid=%016lx:%016lx remote_lid=%u remote_qpn=%u "
-       "is_global=%u final_dlid=%u mtu=%d(%dB) sl=%u port=%u "
+       "local_gid=%s local_lid=%u local_qpn=%u remote_hca=%s "
+       "remote_gid=%s remote_lid=%u remote_qpn=%u "
+       "is_global=%u final_dlid=%u dlid_raw=%s dlid_size=%zu "
+       "mtu=%d(%dB) sl=%u port=%u "
        "max_dest_rd_atomic=%u",
-       localDev->devName, localGidInfo->localGidIndex,
-       (unsigned long)localGidInfo->localGid.global.subnet_prefix,
-       (unsigned long)localGidInfo->localGid.global.interface_id, localDev->lid,
+       localDev->devName, localGidInfo->localGidIndex, localGid, localDev->lid,
        qp->qp_num, remoteDevName == NULL ? "<unknown>" : remoteDevName,
-       (unsigned long)info->spn, (unsigned long)info->iid, info->lid,
-       dest_qp_num, (unsigned int)qpAttr.ah_attr.is_global,
-       flagcxIbAhDlid(&qpAttr.ah_attr), qpAttr.path_mtu,
+       remoteGidText, info->lid, dest_qp_num,
+       (unsigned int)qpAttr.ah_attr.is_global, flagcxIbAhDlid(&qpAttr.ah_attr),
+       dlidRaw, sizeof(qpAttr.ah_attr.dlid), qpAttr.path_mtu,
        flagcxIbMtuBytes(qpAttr.path_mtu), (unsigned int)qpAttr.ah_attr.sl,
        (unsigned int)qpAttr.ah_attr.port_num,
        (unsigned int)qpAttr.max_dest_rd_atomic);
@@ -1054,6 +1200,7 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
           IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER));
+  flagcxIbLogActualRtrQp(qp, localDev, remoteDevName);
   return flagcxSuccess;
 }
 
@@ -1083,6 +1230,7 @@ flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
           IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC));
+  flagcxIbLogActualRtsQp(qp, localDev, remoteInfo->devName);
   return flagcxSuccess;
 }
 

@@ -15,6 +15,8 @@ ibv_send_wr *firstRejected = nullptr;
 
 int queryGidExResult = 0;
 int queryGidExErrno = 0;
+int queryPkeyResult = 0;
+uint16_t queryPkeyValue = 0;
 
 int fakeQueryGidEx(ibv_context *, uint32_t portNum, uint32_t gidIndex,
                    flagcxIbGidEntry *entry, uint32_t, size_t entrySize) {
@@ -30,6 +32,13 @@ int fakeQueryGidEx(ibv_context *, uint32_t portNum, uint32_t gidIndex,
   return 0;
 }
 
+int fakeQueryPkey(ibv_context *, uint8_t, int, uint16_t *pkey) {
+  if (queryPkeyResult != 0)
+    return queryPkeyResult;
+  *pkey = queryPkeyValue;
+  return 0;
+}
+
 class ScopedQueryGidExSymbol {
 public:
   explicit ScopedQueryGidExSymbol(
@@ -42,6 +51,20 @@ public:
 
 private:
   decltype(ibvSymbols.ibv_internal_query_gid_ex) saved_;
+};
+
+class ScopedQueryPkeySymbol {
+public:
+  explicit ScopedQueryPkeySymbol(
+      decltype(ibvSymbols.ibv_internal_query_pkey) replacement)
+      : saved_(ibvSymbols.ibv_internal_query_pkey) {
+    ibvSymbols.ibv_internal_query_pkey = replacement;
+  }
+
+  ~ScopedQueryPkeySymbol() { ibvSymbols.ibv_internal_query_pkey = saved_; }
+
+private:
+  decltype(ibvSymbols.ibv_internal_query_pkey) saved_;
 };
 
 int fakePostSend(ibv_qp *, ibv_send_wr *, ibv_send_wr **badWr) {
@@ -109,10 +132,13 @@ TEST(IbvCompatLid, ConvertsPortLidToPortableMetadata) {
 TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
   ibv_ah_attr ahAttr = {};
 #ifdef USE_SHCA
-  constexpr uint32_t lid = 91972;
-  ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
-  EXPECT_EQ(u17_to_32(ahAttr.dlid), lid);
-  EXPECT_EQ(flagcxIbAhDlid(&ahAttr), lid);
+  const uint32_t lids[] = {0, 65535, 65536, 91972, 91984, 91986, 131071};
+  for (uint32_t lid : lids) {
+    ahAttr = {};
+    ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess) << "lid=" << lid;
+    EXPECT_EQ(u17_to_32(ahAttr.dlid), lid) << "lid=" << lid;
+    EXPECT_EQ(flagcxIbAhDlid(&ahAttr), lid) << "lid=" << lid;
+  }
 #else
   constexpr uint32_t lid = 1234;
   ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
@@ -120,6 +146,41 @@ TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
   EXPECT_EQ(flagcxIbAhDlid(&ahAttr), lid);
   EXPECT_EQ(flagcxIbSetAhDlid(&ahAttr, UINT16_MAX + 1U), flagcxInvalidArgument);
 #endif
+}
+
+TEST(IbvCompatPkey, QueriesSelectedPortTableEntry) {
+  ibv_context context = {};
+  uint16_t pkey = 0;
+  ScopedQueryPkeySymbol symbol(fakeQueryPkey);
+  queryPkeyResult = 0;
+  queryPkeyValue = 0xffff;
+
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(&context, 1, 0, &pkey), flagcxSuccess);
+  EXPECT_EQ(pkey, 0xffff);
+}
+
+TEST(IbvCompatPkey, MissingCallbackIsUnsupported) {
+  ibv_context context = {};
+  uint16_t pkey = 0;
+  ScopedQueryPkeySymbol symbol(nullptr);
+
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(&context, 1, 0, &pkey), flagcxNotSupported);
+}
+
+TEST(IbvCompatPkey, RejectsInvalidArgumentsAndReportsQueryFailure) {
+  ibv_context context = {};
+  uint16_t pkey = 0;
+  ScopedQueryPkeySymbol symbol(fakeQueryPkey);
+
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(nullptr, 1, 0, &pkey),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(&context, 1, -1, &pkey),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(&context, 1, 0, nullptr),
+            flagcxInvalidArgument);
+
+  queryPkeyResult = EIO;
+  EXPECT_EQ(flagcxWrapIbvQueryPkey(&context, 1, 0, &pkey), flagcxSystemError);
 }
 
 TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {

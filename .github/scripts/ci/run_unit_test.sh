@@ -304,7 +304,9 @@ run_suite() {
       local default_status=0
       local single_qp_status=0
       local mtu_2048_status=0
+      local retry_status=0
       local read_diagnostic_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake:FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer:FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
+      local host_read_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
       FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
@@ -326,10 +328,19 @@ run_suite() {
           FLAGCX_CI_TEST_LABEL="p2p READ MTU-2048 diagnostics" \
           "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
           mtu_2048_status=$?
+        # Use a short RC timeout/retry budget so a broken cross-HCA route
+        # produces its real CQ completion status before the test deadline.
+        GTEST_FILTER="$host_read_filter" \
+          FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048 \
+          FLAGCX_P2P_RETRY_CNT=1 FLAGCX_IB_TIMEOUT=14 FLAGCX_IB_RETRY_CNT=1 \
+          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+          FLAGCX_CI_TEST_LABEL="p2p host READ retry diagnostics" \
+          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+          retry_status=$?
       fi
       if ((default_status != 0 || single_qp_status != 0 ||
-           mtu_2048_status != 0)); then
-        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status" >&2
+           mtu_2048_status != 0 || retry_status != 0)); then
+        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status short-retry=$retry_status" >&2
         return 1
       fi
       ;;

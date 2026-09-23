@@ -43,6 +43,9 @@ flagcxResult_t flagcxWrapIbvQueryPort(struct ibv_context *context,
 flagcxResult_t flagcxWrapIbvQueryGid(struct ibv_context *context,
                                      uint8_t port_num, int index,
                                      union ibv_gid *gid);
+flagcxResult_t flagcxWrapIbvQueryPkey(struct ibv_context *context,
+                                      uint8_t port_num, int index,
+                                      uint16_t *pkey);
 flagcxResult_t flagcxWrapIbvQueryGidEx(struct ibv_context *context,
                                        uint32_t portNum, uint32_t index,
                                        struct flagcxIbGidEntry *entry,
