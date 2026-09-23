@@ -184,6 +184,9 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
                                            int mrFlags, void **mhandle) {
   assert(size > 0);
   assert(comm != NULL);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
 
   int ibDevN = flagcxP2pGetIbDevN(comm);
   struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
@@ -202,8 +205,12 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
   }
 
   ibv_mr *mr = NULL;
-  FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(&devBase, data, size, type, offset,
-                                          fd, mrFlags, &mr));
+  flagcxResult_t result = flagcxIbRegMrDmaBufInternal(
+      &devBase, data, size, type, offset, fd, mrFlags, &mr);
+  if (result != flagcxSuccess) {
+    free(handle);
+    return result;
+  }
 
   handle->baseVa = (uintptr_t)data;
   handle->lkey = mr->lkey;
@@ -222,6 +229,8 @@ static flagcxResult_t flagcxP2pRegMr(void *comm, void *data, size_t size,
 }
 
 static flagcxResult_t flagcxP2pDeregMr(void *comm, void *mhandle) {
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
   struct flagcxP2pMrHandle *handle = (struct flagcxP2pMrHandle *)mhandle;
 
   // Build a temporary devBase for the internal deregistration call

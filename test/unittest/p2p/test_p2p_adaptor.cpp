@@ -250,20 +250,20 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
 
   void *mhandle = nullptr;
   int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
-  EXPECT_EQ(flagcxNetIbP2p.regMr(sendComm, buf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxNetIbP2p.regMr(sendComm, buf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &mhandle),
             flagcxSuccess);
-  EXPECT_NE(mhandle, nullptr);
+  ASSERT_NE(mhandle, nullptr);
 
   // Deregister
   EXPECT_EQ(flagcxNetIbP2p.deregMr(sendComm, mhandle), flagcxSuccess);
 
   // Register on recv side too (symmetric)
   void *mhandle2 = nullptr;
-  EXPECT_EQ(flagcxNetIbP2p.regMr(recvComm, buf, bufSize, FLAGCX_PTR_HOST,
+  ASSERT_EQ(flagcxNetIbP2p.regMr(recvComm, buf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &mhandle2),
             flagcxSuccess);
-  EXPECT_NE(mhandle2, nullptr);
+  ASSERT_NE(mhandle2, nullptr);
   EXPECT_EQ(flagcxNetIbP2p.deregMr(recvComm, mhandle2), flagcxSuccess);
 
   free(buf);

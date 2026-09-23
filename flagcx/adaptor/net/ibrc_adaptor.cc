@@ -387,6 +387,18 @@ static const char *flagcxIbLinkLayerName(int linkLayer) {
 
 int flagcxIbRelaxedOrderingCapable(void) {
   int roMode = flagcxParamIbPciRelaxedOrdering();
+#ifdef USE_SHCA
+  // SHCA exposes ibv_reg_mr_iova2, but its provider rejects registrations
+  // using IBV_ACCESS_RELAXED_ORDERING. In auto mode, prefer the compatible
+  // ibv_reg_mr path. Keep mode 1 as an explicit user request so a provider
+  // that adds support can still be exercised and report its real result.
+  if (roMode == 1) {
+    WARN("NET/IB : FLAGCX_IB_PCI_RELAXED_ORDERING=1 is not supported by "
+         "SHCA; forced relaxed-ordering MR registration may fail.");
+  }
+  if (roMode == 2)
+    return 0;
+#endif
   flagcxResult_t r = flagcxInternalError;
   if (roMode == 1 || roMode == 2) {
     // Query IBVERBS_1.8 API - needed for IBV_ACCESS_RELAXED_ORDERING support
