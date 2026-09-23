@@ -106,6 +106,10 @@ struct flagcxIbDev {
   char *pciPath;
   int realPort;
   int maxQp;
+  // Per-QP responder and initiator RDMA Read/Atomic limits reported by
+  // ibv_query_device().
+  int maxQpRdAtomic;
+  int maxQpInitRdAtomic;
   struct flagcxIbMrCache mrCache;
   struct flagcxIbStats stats;
   int ar; // ADAPTIVE_ROUTING
@@ -142,8 +146,36 @@ struct flagcxIbDevInfo {
   uint64_t spn;
   uint64_t iid;
   uint32_t fifoRkey;
+  // Responder credits selected by this peer for QPs on this physical HCA.
+  uint8_t maxDestRdAtomic;
   union ibv_gid remoteGid;
 };
+
+static inline uint8_t flagcxIbResponderAtomicDepth(int64_t requestedDepth,
+                                                   int localCap) {
+  if (requestedDepth <= 0 || localCap <= 0)
+    return 0;
+  uint64_t depth = (uint64_t)requestedDepth;
+  if (depth > (uint64_t)localCap)
+    depth = (uint64_t)localCap;
+  if (depth > UINT8_MAX)
+    depth = UINT8_MAX;
+  return (uint8_t)depth;
+}
+
+static inline uint8_t flagcxIbInitiatorAtomicDepth(int64_t requestedDepth,
+                                                   int localCap,
+                                                   int remoteResponderDepth) {
+  uint8_t depth = flagcxIbResponderAtomicDepth(requestedDepth, localCap);
+  if (remoteResponderDepth <= 0)
+    return 0;
+  uint8_t remoteDepth = remoteResponderDepth > UINT8_MAX
+                            ? UINT8_MAX
+                            : (uint8_t)remoteResponderDepth;
+  if (depth > remoteDepth)
+    depth = remoteDepth;
+  return depth;
+}
 
 struct flagcxIbGidInfo {
   uint8_t linkLayer;
@@ -474,6 +506,7 @@ extern int64_t flagcxParamIbAdaptiveRouting(void);
 extern int64_t flagcxParamIbMergeVfs(void);
 extern int64_t flagcxParamIbMergeNics(void);
 extern int64_t flagcxParamIbQpsPerConn(void);
+extern int64_t flagcxParamIbRdAtomicDepth(void);
 
 extern sa_family_t envIbAddrFamily(void);
 extern void *envIbAddrRange(sa_family_t af, int *mask);
@@ -573,7 +606,9 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
                              const struct flagcxIbGidInfo *localGidInfo,
                              const char *remoteDevName, uint32_t dest_qp_num,
                              const struct flagcxIbDevInfo *info);
-flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp);
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbDevInfo *remoteInfo);
 flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            void *data, size_t size, int type,
                                            uint64_t offset, int fd, int mrFlags,

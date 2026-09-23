@@ -130,6 +130,22 @@ TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {
 #endif
 }
 
+TEST(IbvAtomicDepth, ClampsResponderDepthToDeviceCapability) {
+  EXPECT_EQ(flagcxIbResponderAtomicDepth(16, 32), 16);
+  EXPECT_EQ(flagcxIbResponderAtomicDepth(16, 8), 8);
+  EXPECT_EQ(flagcxIbResponderAtomicDepth(512, 512), UINT8_MAX);
+  EXPECT_EQ(flagcxIbResponderAtomicDepth(0, 16), 0);
+  EXPECT_EQ(flagcxIbResponderAtomicDepth(16, 0), 0);
+}
+
+TEST(IbvAtomicDepth, NegotiatesInitiatorDepthWithRemoteResponder) {
+  EXPECT_EQ(flagcxIbInitiatorAtomicDepth(16, 32, 16), 16);
+  EXPECT_EQ(flagcxIbInitiatorAtomicDepth(16, 8, 16), 8);
+  EXPECT_EQ(flagcxIbInitiatorAtomicDepth(16, 32, 4), 4);
+  EXPECT_EQ(flagcxIbInitiatorAtomicDepth(512, 512, 512), UINT8_MAX);
+  EXPECT_EQ(flagcxIbInitiatorAtomicDepth(16, 16, 0), 0);
+}
+
 TEST(IbvCompatGid, ExtendedQueryWithoutCallbackIsUnsupported) {
   ibv_context context = {};
   flagcxIbGidEntry entry = {};

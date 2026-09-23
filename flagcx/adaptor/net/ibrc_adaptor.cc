@@ -46,6 +46,7 @@ FLAGCX_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
 FLAGCX_PARAM(IbMergeVfs, "IB_MERGE_VFS", 1);
 FLAGCX_PARAM(IbMergeNics, "IB_MERGE_NICS", 1);
 FLAGCX_PARAM(IbQpsPerConn, "IB_QPS_PER_CONNECTION", 1);
+FLAGCX_PARAM(IbRdAtomicDepth, "IB_RD_ATOMIC_DEPTH", 16);
 
 int flagcxNMergedIbDevs = -1;
 int flagcxNIbDevs = -1;
@@ -643,8 +644,11 @@ flagcxResult_t flagcxIbInit() {
           continue;
         }
         queriedDeviceCount++;
-        INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IB : device=%s phys_port_cnt=%d",
-             devices[d]->name, devAttr.phys_port_cnt);
+        INFO(FLAGCX_INIT | FLAGCX_NET,
+             "NET/IB : device=%s phys_port_cnt=%d max_qp_rd_atom=%d "
+             "max_qp_init_rd_atom=%d",
+             devices[d]->name, devAttr.phys_port_cnt, devAttr.max_qp_rd_atom,
+             devAttr.max_qp_init_rd_atom);
         for (int port_num = 1; port_num <= devAttr.phys_port_cnt; port_num++) {
           struct ibv_port_attr portAttr;
           if (flagcxSuccess !=
@@ -711,6 +715,9 @@ flagcxResult_t flagcxIbInit() {
                                  &flagcxIbDevs[flagcxNIbDevs].pciPath,
                                  &flagcxIbDevs[flagcxNIbDevs].realPort));
           flagcxIbDevs[flagcxNIbDevs].maxQp = devAttr.max_qp;
+          flagcxIbDevs[flagcxNIbDevs].maxQpRdAtomic = devAttr.max_qp_rd_atom;
+          flagcxIbDevs[flagcxNIbDevs].maxQpInitRdAtomic =
+              devAttr.max_qp_init_rd_atom;
           flagcxIbDevs[flagcxNIbDevs].mrCache.capacity = 0;
           flagcxIbDevs[flagcxNIbDevs].mrCache.population = 0;
           flagcxIbDevs[flagcxNIbDevs].mrCache.slots = NULL;
@@ -1004,7 +1011,8 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
   qpAttr.path_mtu = info->mtu;
   qpAttr.dest_qp_num = dest_qp_num;
   qpAttr.rq_psn = 0;
-  qpAttr.max_dest_rd_atomic = 1;
+  qpAttr.max_dest_rd_atomic = flagcxIbResponderAtomicDepth(
+      flagcxParamIbRdAtomicDepth(), localDev->maxQpRdAtomic);
   qpAttr.min_rnr_timer = 12;
   if (flagcxIbUseGlobalRoute(info->linkLayer)) {
     qpAttr.ah_attr.is_global = 1;
@@ -1030,7 +1038,8 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
        "NET/IB: RTR path local_hca=%s local_gid_index=%d "
        "local_gid=%016lx:%016lx local_lid=%u local_qpn=%u remote_hca=%s "
        "remote_gid=%016lx:%016lx remote_lid=%u remote_qpn=%u "
-       "is_global=%u final_dlid=%u mtu=%d(%dB) sl=%u port=%u",
+       "is_global=%u final_dlid=%u mtu=%d(%dB) sl=%u port=%u "
+       "max_dest_rd_atomic=%u",
        localDev->devName, localGidInfo->localGidIndex,
        (unsigned long)localGidInfo->localGid.global.subnet_prefix,
        (unsigned long)localGidInfo->localGid.global.interface_id, localDev->lid,
@@ -1039,7 +1048,8 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
        dest_qp_num, (unsigned int)qpAttr.ah_attr.is_global,
        flagcxIbAhDlid(&qpAttr.ah_attr), qpAttr.path_mtu,
        flagcxIbMtuBytes(qpAttr.path_mtu), (unsigned int)qpAttr.ah_attr.sl,
-       (unsigned int)qpAttr.ah_attr.port_num);
+       (unsigned int)qpAttr.ah_attr.port_num,
+       (unsigned int)qpAttr.max_dest_rd_atomic);
   FLAGCXCHECK(flagcxWrapIbvModifyQp(
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
@@ -1047,7 +1057,11 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp) {
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbDevInfo *remoteInfo) {
+  if (qp == NULL || localDev == NULL || remoteInfo == NULL)
+    return flagcxInvalidArgument;
   struct ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTS;
@@ -1055,7 +1069,16 @@ flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp) {
   qpAttr.retry_cnt = flagcxParamIbRetryCnt();
   qpAttr.rnr_retry = 7;
   qpAttr.sq_psn = 0;
-  qpAttr.max_rd_atomic = 1;
+  qpAttr.max_rd_atomic = flagcxIbInitiatorAtomicDepth(
+      flagcxParamIbRdAtomicDepth(), localDev->maxQpInitRdAtomic,
+      remoteInfo->maxDestRdAtomic);
+  INFO(FLAGCX_NET,
+       "NET/IB: RTS qpn=%u local_hca=%s remote_hca=%s "
+       "max_rd_atomic=%u local_max_qp_init_rd_atom=%d "
+       "remote_max_dest_rd_atomic=%u",
+       qp->qp_num, localDev->devName, remoteInfo->devName,
+       (unsigned int)qpAttr.max_rd_atomic, localDev->maxQpInitRdAtomic,
+       (unsigned int)remoteInfo->maxDestRdAtomic);
   FLAGCXCHECK(flagcxWrapIbvModifyQp(
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
@@ -1168,6 +1191,8 @@ ib_connect_check:
     devInfo->ibPort = ibDev->portNum;
     devInfo->mtu = ibDev->portAttr.active_mtu;
     devInfo->lid = ibDev->lid;
+    devInfo->maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+        flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 
     // Prepare my fifo
     FLAGCXCHECK(
@@ -1364,7 +1389,7 @@ ib_connect:
 
     FLAGCXCHECK(flagcxIbRtrQp(qp, ibDev, &commDev->base.gidInfo,
                               remDevInfo->devName, remQpInfo->qpn, remDevInfo));
-    FLAGCXCHECK(flagcxIbRtsQp(qp));
+    FLAGCXCHECK(flagcxIbRtsQp(qp, ibDev, remDevInfo));
   }
 
   if (linkLayer == IBV_LINK_LAYER_ETHERNET) { // RoCE
@@ -1653,7 +1678,7 @@ ib_recv:
     FLAGCXCHECK(flagcxIbRtrQp(qp->qp, ibDev, &rCommDev->base.gidInfo,
                               remDevInfo->devName, remMeta.qpInfo[q].qpn,
                               remDevInfo));
-    FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
+    FLAGCXCHECK(flagcxIbRtsQp(qp->qp, ibDev, remDevInfo));
   }
 
   rComm->flushEnabled = 1;
@@ -1696,10 +1721,12 @@ ib_recv:
       devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
       devInfo.iid = rCommDev->base.gidInfo.localGid.global.interface_id;
       devInfo.mtu = ibDev->portAttr.active_mtu;
+      devInfo.maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+          flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
       FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp, ibDev,
                                 &rCommDev->base.gidInfo, ibDev->devName,
                                 rCommDev->gpuFlush.qp.qp->qp_num, &devInfo));
-      FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp));
+      FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp, ibDev, &devInfo));
     }
 
     // Fill Handle
@@ -1711,6 +1738,8 @@ ib_recv:
     meta.devs[i].ibPort = ibDev->portNum;
     meta.devs[i].spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
     meta.devs[i].iid = rCommDev->base.gidInfo.localGid.global.interface_id;
+    meta.devs[i].maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+        flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 
     // Adjust the MTU
     remMeta.devs[i].mtu =
