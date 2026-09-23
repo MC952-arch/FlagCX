@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2023 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  * All rights reserved.
  *
  * IBUC Retransmission Support - Header
@@ -23,6 +23,11 @@ extern int64_t flagcxParamIbRetransEnable(void);
 extern int64_t flagcxParamIbRetransTimeout(void);
 extern int64_t flagcxParamIbRetransMaxRetry(void);
 extern int64_t flagcxParamIbRetransAckInterval(void);
+
+// The retransmission ACK channel requires UD address handles and SRQ receive
+// posting. Some verbs ABI variants do not expose those operations even though
+// their regular RC data path is usable.
+bool flagcxIbRetransUdSupported(void);
 extern int64_t flagcxParamIbMaxOutstanding(void);
 
 static inline uint64_t flagcxIbGetTimeUs(void) {

@@ -24,6 +24,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("<infiniband/verbs.h>", compat)
         self.assertIn("<infiniband/shca_17b_types.h>", compat)
 
+    def test_shca_ibrc_excludes_ud_ah_srq_provider_operations(self):
+        common_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans.cc"
+        ).read_text()
+        ud_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
+        ).read_text()
+        ibrc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ).read_text()
+
+        self.assertNotIn("ops.create_ah", common_retrans)
+        self.assertNotIn("ops.destroy_ah", common_retrans)
+        self.assertNotIn("flagcxWrapIbvPostSrqRecv", common_retrans)
+        self.assertIn(
+            "#if !defined(USE_SHCA) || defined(USE_IBUC)", ud_retrans
+        )
+        self.assertIn(
+            "flagcxIbRetransUdSupported(void) { return false; }", ud_retrans
+        )
+        self.assertEqual(ibrc.count("flagcxIbRetransUdSupported()"), 2)
+
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         torch_workflow = (

@@ -946,7 +946,8 @@ ib_connect_check:
 
   // IBRC retransmission: default disabled, can be enabled via
   // FLAGCX_IB_RETRANS_ENABLE=1
-  meta.retransEnabled = flagcxParamIbRetransEnable() ? 1 : 0;
+  meta.retransEnabled =
+      flagcxIbRetransUdSupported() && flagcxParamIbRetransEnable() ? 1 : 0;
 
   // Alternate QPs between devices
   int devIndex;
@@ -1375,7 +1376,8 @@ ib_recv:
 
   // IBRC retransmission: default disabled, can be enabled via
   // FLAGCX_IB_RETRANS_ENABLE=1
-  meta.retransEnabled = flagcxParamIbRetransEnable() ? 1 : 0;
+  meta.retransEnabled =
+      flagcxIbRetransUdSupported() && flagcxParamIbRetransEnable() ? 1 : 0;
 
   // Create SRQ if retransmission is enabled
   if (remMeta.retransEnabled && meta.retransEnabled) {

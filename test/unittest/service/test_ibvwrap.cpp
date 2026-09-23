@@ -1,4 +1,5 @@
 #include "ib_common.h"
+#include "ib_retrans.h"
 #include "ibvwrap.h"
 
 #include <cerrno>
@@ -83,5 +84,13 @@ TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
   ASSERT_EQ(flagcxIbSetAhDlid(&ahAttr, lid), flagcxSuccess);
   EXPECT_EQ(ahAttr.dlid, lid);
   EXPECT_EQ(flagcxIbSetAhDlid(&ahAttr, UINT16_MAX + 1U), flagcxInvalidArgument);
+#endif
+}
+
+TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {
+#if defined(USE_SHCA) && !defined(USE_IBUC)
+  EXPECT_FALSE(flagcxIbRetransUdSupported());
+#else
+  EXPECT_TRUE(flagcxIbRetransUdSupported());
 #endif
 }
