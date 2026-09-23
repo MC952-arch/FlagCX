@@ -318,7 +318,7 @@ struct flagcxIbConnectionMetadata {
 
   uint32_t ctrlQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
   union ibv_gid ctrlGid[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  uint32_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  uint16_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int retransEnabled;
 };
 

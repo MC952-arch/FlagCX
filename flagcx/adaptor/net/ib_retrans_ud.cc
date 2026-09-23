@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(USE_SHCA) || defined(USE_IBUC)
+#ifndef USE_SHCA
 
 bool flagcxIbRetransUdSupported(void) { return true; }
 
@@ -103,7 +103,7 @@ flagcxResult_t
 flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
                               struct flagcxIbCtrlQp *ctrlQp,
                               uint32_t remote_qpn, union ibv_gid *remote_gid,
-                              uint32_t remote_lid, uint8_t port_num,
+                              uint16_t remote_lid, uint8_t port_num,
                               uint8_t link_layer, uint8_t local_gid_index) {
   if (!ctrlQp || !ctrlQp->qp)
     return flagcxInternalError;
@@ -147,7 +147,7 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
     TRACE(FLAGCX_NET, "Creating AH for IB: remote_lid=%u, port=%u", remote_lid,
           port_num);
     ahAttr.is_global = 0;
-    FLAGCXCHECK(flagcxIbSetAhDlid(&ahAttr, remote_lid));
+    ahAttr.dlid = remote_lid;
   }
 
   ahAttr.sl = 0;
@@ -331,7 +331,7 @@ flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
 flagcxResult_t flagcxIbSetupCtrlQpConnection(struct ibv_context *,
                                              struct ibv_pd *,
                                              struct flagcxIbCtrlQp *, uint32_t,
-                                             union ibv_gid *, uint32_t, uint8_t,
+                                             union ibv_gid *, uint16_t, uint8_t,
                                              uint8_t, uint8_t) {
   return flagcxNotSupported;
 }

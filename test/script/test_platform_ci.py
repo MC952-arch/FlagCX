@@ -11,7 +11,7 @@ HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
-    def test_hygon_builds_all_verbs_adaptors_with_shca_abi(self):
+    def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
         makefile = (REPO_ROOT / "Makefile").read_text()
         compat = (
@@ -38,13 +38,67 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("ops.create_ah", common_retrans)
         self.assertNotIn("ops.destroy_ah", common_retrans)
         self.assertNotIn("flagcxWrapIbvPostSrqRecv", common_retrans)
-        self.assertIn(
-            "#if !defined(USE_SHCA) || defined(USE_IBUC)", ud_retrans
-        )
+        self.assertIn("#ifndef USE_SHCA", ud_retrans)
         self.assertIn(
             "flagcxIbRetransUdSupported(void) { return false; }", ud_retrans
         )
         self.assertEqual(ibrc.count("flagcxIbRetransUdSupported()"), 2)
+
+    def test_shca_scope_does_not_extend_ibuc(self):
+        ibuc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibuc_adaptor.cc"
+        ).read_text()
+        ud_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
+        ).read_text()
+
+        self.assertNotIn("USE_SHCA", ibuc)
+        self.assertNotIn("flagcxIbPortLid", ibuc)
+        self.assertNotIn("flagcxIbSetAhDlid", ibuc)
+        self.assertNotIn("defined(USE_IBUC)", ud_retrans)
+
+    def test_hygon_service_checks_ibuc_with_standard_verbs_abi(self):
+        service_dir = REPO_ROOT / "test/unittest/service"
+        result = subprocess.run(
+            [
+                "make",
+                "-n",
+                "-C",
+                str(service_dir),
+                "compile-ibuc",
+                "USE_DU=1",
+                "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
+                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        compile_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if "ibuc_adaptor.cc -fsyntax-only" in line
+        )
+
+        self.assertIn("-DUSE_IBUC", compile_command)
+        self.assertNotIn("-DUSE_SHCA", compile_command)
+
+    def test_shca_ibrc_uses_gid_global_route(self):
+        ibrc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ).read_text()
+        p2p = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc"
+        ).read_text()
+
+        self.assertIn("static bool flagcxIbUseGlobalRoute", ibrc)
+        self.assertIn("#ifdef USE_SHCA", ibrc)
+        self.assertIn("qpAttr.ah_attr.is_global = 1", ibrc)
+        self.assertIn("qpAttr.ah_attr.grh.dgid.global.subnet_prefix", ibrc)
+        self.assertIn("flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid)", ibrc)
+        self.assertIn("flagcxIbUseGlobalRoute(devInfo->linkLayer)", ibrc)
+        self.assertIn("flagcxIbRtrQp(qp->qp", p2p)
 
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()

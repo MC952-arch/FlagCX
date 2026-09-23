@@ -837,6 +837,18 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   return flagcxSuccess;
 }
 
+static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
+#ifdef USE_SHCA
+  // SHCA requires the GRH/GID route for its InfiniBand RC QPs as well as for
+  // Ethernet links. The standard verbs path retains the existing distinction
+  // between RoCE global routing and InfiniBand LID-only routing.
+  (void)linkLayer;
+  return true;
+#else
+  return linkLayer == IBV_LINK_LAYER_ETHERNET;
+#endif
+}
+
 flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
                              uint32_t dest_qp_num,
                              struct flagcxIbDevInfo *info) {
@@ -848,7 +860,7 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
   qpAttr.rq_psn = 0;
   qpAttr.max_dest_rd_atomic = 1;
   qpAttr.min_rnr_timer = 12;
-  if (info->linkLayer == IBV_LINK_LAYER_ETHERNET) {
+  if (flagcxIbUseGlobalRoute(info->linkLayer)) {
     qpAttr.ah_attr.is_global = 1;
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = info->iid;
@@ -856,6 +868,9 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.ah_attr.grh.sgid_index = sGidIndex;
     qpAttr.ah_attr.grh.hop_limit = 255;
     qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
+#ifdef USE_SHCA
+    FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
+#endif
   } else {
     qpAttr.ah_attr.is_global = 0;
     FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
@@ -1006,10 +1021,11 @@ ib_connect_check:
                                    sizeof(comm->putSignalScratchpad),
                                    IBV_ACCESS_LOCAL_WRITE));
 
-    // RoCE support
+    // RoCE uses a global route on standard verbs. SHCA also requires the
+    // GID/GRH route for ports that report an InfiniBand link layer.
     devInfo->linkLayer = commDev->base.gidInfo.linkLayer =
         ibDev->portAttr.link_layer;
-    if (devInfo->linkLayer == IBV_LINK_LAYER_ETHERNET) {
+    if (flagcxIbUseGlobalRoute(devInfo->linkLayer)) {
       FLAGCXCHECK(flagcxIbGetGidIndex(ibDev->context, ibDev->portNum,
                                       ibDev->portAttr.gid_tbl_len,
                                       &commDev->base.gidInfo.localGidIndex));
