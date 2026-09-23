@@ -9,6 +9,7 @@
 #include "flagcx_common.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
+#include "ib_gid.h"
 #include "ib_retrans.h"
 #include "ibvwrap.h"
 #include "net.h"
@@ -218,6 +219,119 @@ bool validGid(union ibv_gid *gid) {
   return (configuredGid(gid) && !linkLocalGid(gid));
 }
 
+static bool flagcxIbNullGid(const union ibv_gid *gid) {
+  static const union ibv_gid zero = {};
+  return memcmp(gid, &zero, sizeof(*gid)) == 0;
+}
+
+static bool flagcxIbOverlayNetwork(const char *name) {
+  static const char *prefixes[] = {"flannel", "cni", "calico", "vxlan",
+                                   "docker"};
+  if (name == NULL)
+    return false;
+  if (strcmp(name, "tunl0") == 0)
+    return true;
+  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+    if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0)
+      return true;
+  }
+  return false;
+}
+
+static bool flagcxIbPrivateIpv4(const union ibv_gid *gid) {
+  if (getGidAddrFamily((union ibv_gid *)gid) != AF_INET)
+    return false;
+  const struct in6_addr *addr = (const struct in6_addr *)gid->raw;
+  uint32_t ipv4 = ntohl(addr->s6_addr32[3]);
+  uint8_t octet1 = (ipv4 >> 24) & 0xff;
+  uint8_t octet2 = (ipv4 >> 16) & 0xff;
+  return octet1 == 10 || (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
+         (octet1 == 100 && octet2 >= 64 && octet2 <= 127);
+}
+
+static void flagcxIbReadGidNetworkDevice(const char *deviceName,
+                                         uint8_t portNum, int gidIndex,
+                                         char *networkDevice,
+                                         size_t networkDeviceSize) {
+  if (networkDeviceSize == 0)
+    return;
+  networkDevice[0] = '\0';
+
+  char path[PATH_MAX] = {};
+  snprintf(path, sizeof(path),
+           "/sys/class/infiniband/%s/ports/%u/gid_attrs/ndevs/%d", deviceName,
+           portNum, gidIndex);
+  int fd = open(path, O_RDONLY);
+  if (fd == -1)
+    return;
+  ssize_t bytes = read(fd, networkDevice, networkDeviceSize - 1);
+  close(fd);
+  if (bytes <= 0) {
+    networkDevice[0] = '\0';
+    return;
+  }
+  networkDevice[bytes] = '\0';
+  networkDevice[strcspn(networkDevice, "\r\n")] = '\0';
+}
+
+static flagcxResult_t flagcxIbFindBestGidIndexEx(struct ibv_context *context,
+                                                 uint8_t portNum, int gidTblLen,
+                                                 int *gidIndex) {
+  if (context == NULL || gidIndex == NULL || gidTblLen <= 0)
+    return flagcxInvalidArgument;
+
+  struct flagcxIbAutoGidCandidate *candidates = NULL;
+  FLAGCXCHECK(flagcxCalloc(&candidates, gidTblLen));
+  for (int i = 0; i < gidTblLen; ++i) {
+    struct flagcxIbAutoGidCandidate *candidate = candidates + i;
+    candidate->gidIndex = i;
+
+    struct flagcxIbGidEntry entry = {};
+    flagcxResult_t result =
+        flagcxWrapIbvQueryGidEx(context, portNum, i, &entry, 0);
+    if (result == flagcxNotSupported) {
+      free(candidates);
+      return result;
+    }
+    if (result != flagcxSuccess) {
+      candidate->querySucceeded = false;
+      continue;
+    }
+
+    char networkDevice[MAX_IF_NAME_SIZE + 1] = {};
+    const char *deviceName = flagcxWrapIbvGetDeviceName(context->device);
+    flagcxIbReadGidNetworkDevice(deviceName, portNum, i, networkDevice,
+                                 sizeof(networkDevice));
+    const struct in6_addr *addr = (const struct in6_addr *)entry.gid.raw;
+    candidate->gidType = entry.gidType;
+    candidate->hasNetworkDevice =
+        entry.ndevIfindex != 0 || networkDevice[0] != '\0';
+    candidate->isIpv4Mapped = getGidAddrFamily(&entry.gid) == AF_INET;
+    candidate->isLinkLocalIpv6 = IN6_IS_ADDR_LINKLOCAL(addr);
+    candidate->isOverlayNetwork =
+        candidate->hasNetworkDevice && flagcxIbOverlayNetwork(networkDevice);
+    candidate->isPrivateIpv4 = flagcxIbPrivateIpv4(&entry.gid);
+    candidate->isNullGid = flagcxIbNullGid(&entry.gid);
+    candidate->querySucceeded = true;
+  }
+
+  struct flagcxIbAutoGidSelection selection = {};
+  bool selected =
+      flagcxIbSelectBestAutoGidCandidate(candidates, gidTblLen, &selection);
+  free(candidates);
+  if (!selected) {
+    WARN("NET/IB : no usable GID found on %s port %u",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
+    return flagcxSystemError;
+  }
+
+  *gidIndex = selection.gidIndex;
+  INFO(FLAGCX_NET, "NET/IB : auto-selected GID index %d on %s port %u (%s)",
+       *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum,
+       flagcxIbAutoGidCandidateClassName(selection.candidateClass));
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbRoceGetVersionNum(const char *deviceName, int portNum,
                                          int gidIndex, int *version) {
   char gidRoceVerStr[16] = {0};
@@ -291,8 +405,31 @@ flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
                                    int gidTblLen, int *gidIndex) {
   *gidIndex = flagcxParamIbGidIndex();
   if (*gidIndex >= 0) {
+    if (*gidIndex >= gidTblLen) {
+      WARN("NET/IB : FLAGCX_IB_GID_INDEX=%d is outside the GID table for %s "
+           "port %u (length %d)",
+           *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum,
+           gidTblLen);
+      return flagcxInvalidArgument;
+    }
+    INFO(FLAGCX_NET, "NET/IB : using FLAGCX_IB_GID_INDEX=%d on %s port %u",
+         *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum);
     return flagcxSuccess;
   }
+
+  // Prefer the richer gid_type and network-device metadata returned by
+  // ibv_query_gid_ex. The legacy family/range/version selector remains the
+  // compatibility fallback when the extended query is unavailable.
+  flagcxResult_t result =
+      flagcxIbFindBestGidIndexEx(context, portNum, gidTblLen, gidIndex);
+  if (result == flagcxSuccess)
+    return flagcxSuccess;
+  if (result != flagcxNotSupported)
+    return result;
+  INFO(FLAGCX_NET,
+       "NET/IB : ibv_query_gid_ex unavailable on %s port %u; using legacy "
+       "GID selection",
+       flagcxWrapIbvGetDeviceName(context->device), portNum);
 
   sa_family_t userAddrFamily = envIbAddrFamily();
   int userRoceVersion = flagcxParamIbRoceVersionNum();

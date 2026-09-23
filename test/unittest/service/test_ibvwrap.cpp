@@ -1,5 +1,7 @@
 #include "ib_common.h"
+#include "ib_gid.h"
 #include "ib_retrans.h"
+#include "ibvsymbols.h"
 #include "ibvwrap.h"
 
 #include <cerrno>
@@ -10,6 +12,37 @@ namespace {
 int postResult = IBV_SUCCESS;
 int postCalls = 0;
 ibv_send_wr *firstRejected = nullptr;
+
+int queryGidExResult = 0;
+int queryGidExErrno = 0;
+
+int fakeQueryGidEx(ibv_context *, uint32_t portNum, uint32_t gidIndex,
+                   flagcxIbGidEntry *entry, uint32_t, size_t entrySize) {
+  if (entrySize != sizeof(*entry))
+    return EINVAL;
+  errno = queryGidExErrno;
+  if (queryGidExResult != 0)
+    return queryGidExResult;
+  entry->gidIndex = gidIndex;
+  entry->portNum = portNum;
+  entry->gidType = FLAGCX_IB_GID_TYPE_ROCE_V2;
+  entry->ndevIfindex = 7;
+  return 0;
+}
+
+class ScopedQueryGidExSymbol {
+public:
+  explicit ScopedQueryGidExSymbol(
+      decltype(ibvSymbols.ibv_internal_query_gid_ex) replacement)
+      : saved_(ibvSymbols.ibv_internal_query_gid_ex) {
+    ibvSymbols.ibv_internal_query_gid_ex = replacement;
+  }
+
+  ~ScopedQueryGidExSymbol() { ibvSymbols.ibv_internal_query_gid_ex = saved_; }
+
+private:
+  decltype(ibvSymbols.ibv_internal_query_gid_ex) saved_;
+};
 
 int fakePostSend(ibv_qp *, ibv_send_wr *, ibv_send_wr **badWr) {
   ++postCalls;
@@ -93,4 +126,68 @@ TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {
 #else
   EXPECT_TRUE(flagcxIbRetransUdSupported());
 #endif
+}
+
+TEST(IbvCompatGid, ExtendedQueryWithoutCallbackIsUnsupported) {
+  ibv_context context = {};
+  flagcxIbGidEntry entry = {};
+
+  ScopedQueryGidExSymbol symbol(nullptr);
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 1, 2, &entry, 0),
+            flagcxNotSupported);
+}
+
+TEST(IbvCompatGid, ExtendedQueryRejectsNullArguments) {
+  ibv_context context = {};
+  flagcxIbGidEntry entry = {};
+  ScopedQueryGidExSymbol symbol(fakeQueryGidEx);
+
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(nullptr, 1, 2, &entry, 0),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 1, 2, nullptr, 0),
+            flagcxInvalidArgument);
+}
+
+TEST(IbvCompatGid, ExtendedQueryReturnsMetadata) {
+  ibv_context context = {};
+  flagcxIbGidEntry entry = {};
+  ScopedQueryGidExSymbol symbol(fakeQueryGidEx);
+  queryGidExResult = 0;
+  queryGidExErrno = 0;
+
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 3, 4, &entry, 0), flagcxSuccess);
+  EXPECT_EQ(entry.portNum, 3U);
+  EXPECT_EQ(entry.gidIndex, 4U);
+  EXPECT_EQ(entry.gidType, FLAGCX_IB_GID_TYPE_ROCE_V2);
+  EXPECT_EQ(entry.ndevIfindex, 7U);
+}
+
+TEST(IbvCompatGid, ExtendedQueryClassifiesUnsupportedResults) {
+  ibv_context context = {};
+  flagcxIbGidEntry entry = {};
+  ScopedQueryGidExSymbol symbol(fakeQueryGidEx);
+
+  queryGidExErrno = 0;
+  const int unsupportedResults[] = {ENOTSUP, EOPNOTSUPP, ENOSYS, -EOPNOTSUPP};
+  for (int result : unsupportedResults) {
+    queryGidExResult = result;
+    EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 1, 2, &entry, 0),
+              flagcxNotSupported);
+  }
+
+  queryGidExResult = -1;
+  queryGidExErrno = EOPNOTSUPP;
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 1, 2, &entry, 0),
+            flagcxNotSupported);
+}
+
+TEST(IbvCompatGid, ExtendedQueryReportsPermanentFailure) {
+  ibv_context context = {};
+  flagcxIbGidEntry entry = {};
+  ScopedQueryGidExSymbol symbol(fakeQueryGidEx);
+  queryGidExResult = EIO;
+  queryGidExErrno = EIO;
+
+  EXPECT_EQ(flagcxWrapIbvQueryGidEx(&context, 1, 2, &entry, 0),
+            flagcxSystemError);
 }
