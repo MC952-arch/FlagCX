@@ -24,27 +24,30 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("<infiniband/verbs.h>", compat)
         self.assertIn("<infiniband/shca_17b_types.h>", compat)
 
-    def test_shca_ibrc_excludes_ud_ah_srq_provider_operations(self):
+    def test_shca_ibuc_enables_wrapped_ud_ah_srq_operations(self):
         common_retrans = (
             REPO_ROOT / "flagcx/adaptor/net/ib_retrans.cc"
         ).read_text()
         ud_retrans = (
             REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
         ).read_text()
-        ibrc = (
-            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ibvwrap = (
+            REPO_ROOT / "flagcx/service/include/ibvwrap.h"
         ).read_text()
 
         self.assertNotIn("ops.create_ah", common_retrans)
         self.assertNotIn("ops.destroy_ah", common_retrans)
         self.assertNotIn("flagcxWrapIbvPostSrqRecv", common_retrans)
-        self.assertIn("#ifndef USE_SHCA", ud_retrans)
+        self.assertIn(
+            "#if !defined(USE_SHCA) || defined(USE_IBUC)", ud_retrans
+        )
         self.assertIn(
             "flagcxIbRetransUdSupported(void) { return false; }", ud_retrans
         )
-        self.assertEqual(ibrc.count("flagcxIbRetransUdSupported()"), 2)
+        self.assertIn("flagcxWrapIbvCreateAh", ibvwrap)
+        self.assertIn("ibv_post_srq_recv", ibvwrap)
 
-    def test_shca_scope_does_not_extend_ibuc(self):
+    def test_shca_scope_extends_ibuc_without_a_new_transport(self):
         ibuc = (
             REPO_ROOT / "flagcx/adaptor/net/ibuc_adaptor.cc"
         ).read_text()
@@ -52,12 +55,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
         ).read_text()
 
-        self.assertNotIn("USE_SHCA", ibuc)
-        self.assertNotIn("flagcxIbPortLid", ibuc)
-        self.assertNotIn("flagcxIbSetAhDlid", ibuc)
-        self.assertNotIn("defined(USE_IBUC)", ud_retrans)
+        self.assertIn("flagcxIbPortLid", ibuc)
+        self.assertIn("flagcxIbSetAhDlid", ibuc)
+        self.assertIn("flagcxIbUseGlobalRoute", ibuc)
+        self.assertIn("defined(USE_IBUC)", ud_retrans)
 
-    def test_hygon_service_checks_ibuc_with_standard_verbs_abi(self):
+    def test_hygon_service_checks_ibuc_with_shca_verbs_abi(self):
         service_dir = REPO_ROOT / "test/unittest/service"
         result = subprocess.run(
             [
@@ -82,7 +85,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
 
         self.assertIn("-DUSE_IBUC", compile_command)
-        self.assertNotIn("-DUSE_SHCA", compile_command)
+        self.assertIn("-DUSE_SHCA", compile_command)
 
     def test_shca_ibrc_uses_gid_global_route(self):
         ibrc = (
@@ -92,11 +95,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc"
         ).read_text()
 
-        route_selector = ibrc[
-            ibrc.index("static bool flagcxIbUseGlobalRoute") :
-        ]
+        route_selector = (
+            REPO_ROOT / "flagcx/adaptor/include/ib_common.h"
+        ).read_text()
         route_selector = route_selector[
-            : route_selector.index("flagcxResult_t flagcxIbRtrQp")
+            route_selector.index("flagcxIbUseGlobalRoute") :
         ]
         self.assertIn("#ifdef USE_SHCA", route_selector)
         self.assertIn("return true", route_selector)
@@ -138,6 +141,23 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
         self.assertIn("export NP=4", configure)
+
+    def test_cuda_metax_and_hygon_register_independent_ibuc_suite(self):
+        for platform in ("cuda", "metax", "hygon"):
+            config = (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+            env = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn("  - ibuc", config)
+            self.assertIn("ibuc)", env)
+            self.assertIn("USE_IBUC=1", env)
+
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        self.assertIn("adaptor|ibuc|p2p|rma|runner", unit_runner)
+        self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC", unit_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="IBUC forced NET runner"', unit_runner)
 
     def test_automatic_hardware_ci_covers_all_platforms(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"

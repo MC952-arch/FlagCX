@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef USE_SHCA
+#if !defined(USE_SHCA) || defined(USE_IBUC)
 
 bool flagcxIbRetransUdSupported(void) { return true; }
 
@@ -23,7 +23,10 @@ flagcxResult_t flagcxIbCreateCtrlQp(struct ibv_context *context,
 
   memset(ctrlQp, 0, sizeof(struct flagcxIbCtrlQp));
 
-  FLAGCXCHECK(flagcxWrapIbvCreateCq(&ctrlQp->cq, context, 1024, NULL, NULL, 0));
+  flagcxResult_t result =
+      flagcxWrapIbvCreateCq(&ctrlQp->cq, context, 1024, NULL, NULL, 0);
+  if (result != flagcxSuccess)
+    return result;
 
   struct ibv_qp_init_attr qpInitAttr;
   memset(&qpInitAttr, 0, sizeof(qpInitAttr));
@@ -37,11 +40,13 @@ flagcxResult_t flagcxIbCreateCtrlQp(struct ibv_context *context,
   qpInitAttr.cap.max_recv_sge = 1;
   qpInitAttr.cap.max_inline_data = 64;
 
-  FLAGCXCHECK(flagcxWrapIbvCreateQp(&ctrlQp->qp, pd, &qpInitAttr));
-  if (!ctrlQp->qp) {
+  result = flagcxWrapIbvCreateQp(&ctrlQp->qp, pd, &qpInitAttr);
+  if (result != flagcxSuccess) {
     WARN("Failed to create control UD QP");
-    flagcxWrapIbvDestroyCq(ctrlQp->cq);
-    return flagcxInternalError;
+    flagcxResult_t cleanupResult = flagcxIbDestroyCtrlQp(ctrlQp);
+    if (cleanupResult != flagcxSuccess)
+      WARN("Failed to roll back control UD CQ: %d", cleanupResult);
+    return result;
   }
 
   struct ibv_qp_attr qpAttr;
@@ -51,9 +56,15 @@ flagcxResult_t flagcxIbCreateCtrlQp(struct ibv_context *context,
   qpAttr.port_num = port_num;
   qpAttr.qkey = 0x11111111;
 
-  FLAGCXCHECK(flagcxWrapIbvModifyQp(ctrlQp->qp, &qpAttr,
-                                    IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-                                        IBV_QP_PORT | IBV_QP_QKEY));
+  result = flagcxWrapIbvModifyQp(ctrlQp->qp, &qpAttr,
+                                 IBV_QP_STATE | IBV_QP_PKEY_INDEX |
+                                     IBV_QP_PORT | IBV_QP_QKEY);
+  if (result != flagcxSuccess) {
+    flagcxResult_t cleanupResult = flagcxIbDestroyCtrlQp(ctrlQp);
+    if (cleanupResult != flagcxSuccess)
+      WARN("Failed to roll back control UD QP: %d", cleanupResult);
+    return result;
+  }
 
   TRACE(FLAGCX_NET, "Created control UD QP: qpn=%u", ctrlQp->qp->qp_num);
   return flagcxSuccess;
@@ -62,11 +73,14 @@ flagcxResult_t flagcxIbCreateCtrlQp(struct ibv_context *context,
 flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
   if (!ctrlQp)
     return flagcxSuccess;
+  flagcxResult_t result = flagcxSuccess;
 
   if (ctrlQp->ah) {
-    if (ctrlQp->qp && ctrlQp->qp->context)
-      ctrlQp->qp->context->ops.destroy_ah(ctrlQp->ah);
-    ctrlQp->ah = NULL;
+    flagcxResult_t ahResult = flagcxWrapIbvDestroyAh(ctrlQp->ah);
+    if (result == flagcxSuccess && ahResult != flagcxSuccess)
+      result = ahResult;
+    if (ahResult == flagcxSuccess)
+      ctrlQp->ah = NULL;
   }
 
   // Poll any remaining completions before destroying QP/CQ.
@@ -82,28 +96,29 @@ flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
 
   if (ctrlQp->qp) {
     flagcxResult_t qpResult = flagcxWrapIbvDestroyQp(ctrlQp->qp);
-    if (qpResult != flagcxSuccess && flagcxDebugNoWarn == 0)
-      INFO(FLAGCX_ALL, "Failed to destroy control QP: %d (non-fatal)",
-           qpResult);
-    ctrlQp->qp = NULL;
+    if (result == flagcxSuccess && qpResult != flagcxSuccess)
+      result = qpResult;
+    if (qpResult == flagcxSuccess)
+      ctrlQp->qp = NULL;
   }
 
-  if (ctrlQp->cq) {
+  // A live QP still references its CQ. Preserve both for a later retry.
+  if (ctrlQp->qp == NULL && ctrlQp->cq) {
     flagcxResult_t cqResult = flagcxWrapIbvDestroyCq(ctrlQp->cq);
-    if (cqResult != flagcxSuccess && flagcxDebugNoWarn == 0)
-      INFO(FLAGCX_ALL, "Failed to destroy control CQ: %d (non-fatal)",
-           cqResult);
-    ctrlQp->cq = NULL;
+    if (result == flagcxSuccess && cqResult != flagcxSuccess)
+      result = cqResult;
+    if (cqResult == flagcxSuccess)
+      ctrlQp->cq = NULL;
   }
 
-  return flagcxSuccess;
+  return result;
 }
 
 flagcxResult_t
 flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
                               struct flagcxIbCtrlQp *ctrlQp,
                               uint32_t remote_qpn, union ibv_gid *remote_gid,
-                              uint16_t remote_lid, uint8_t port_num,
+                              uint32_t remote_lid, uint8_t port_num,
                               uint8_t link_layer, uint8_t local_gid_index) {
   if (!ctrlQp || !ctrlQp->qp)
     return flagcxInternalError;
@@ -126,7 +141,7 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
   memset(&ahAttr, 0, sizeof(ahAttr));
   ahAttr.port_num = port_num;
 
-  if (link_layer == IBV_LINK_LAYER_ETHERNET) {
+  if (flagcxIbUseGlobalRoute(link_layer)) {
     if (!remote_gid) {
       WARN("remote_gid is NULL for RoCE");
       return flagcxInternalError;
@@ -147,14 +162,15 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
     TRACE(FLAGCX_NET, "Creating AH for IB: remote_lid=%u, port=%u", remote_lid,
           port_num);
     ahAttr.is_global = 0;
-    ahAttr.dlid = remote_lid;
   }
+
+  FLAGCXCHECK(flagcxIbSetAhDlid(&ahAttr, remote_lid));
 
   ahAttr.sl = 0;
   ahAttr.src_path_bits = 0;
 
-  ctrlQp->ah = context->ops.create_ah(pd, &ahAttr);
-  if (!ctrlQp->ah) {
+  flagcxResult_t ahResult = flagcxWrapIbvCreateAh(&ctrlQp->ah, pd, &ahAttr);
+  if (ahResult != flagcxSuccess) {
     WARN("  link_layer=%d (%s)", link_layer,
          link_layer == IBV_LINK_LAYER_ETHERNET ? "RoCE" : "IB");
     WARN("  remote_lid=%u", remote_lid);
@@ -164,7 +180,7 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
            (unsigned long)remote_gid->global.interface_id);
       WARN("  local_gid_index=%u", local_gid_index);
     }
-    return flagcxSuccess;
+    return ahResult;
   }
 
   INFO(FLAGCX_NET, "Control QP setup: local_qpn=%u, remote_qpn=%u",
@@ -191,8 +207,10 @@ flagcxResult_t flagcxIbCreateSrq(struct ibv_context *context, struct ibv_pd *pd,
   if (result != flagcxSuccess) {
     WARN("Failed to create SRQ (likely SRQ not supported or symbols not "
          "loaded)");
-    flagcxWrapIbvDestroyCq(srqMgr->cq);
-    return flagcxInternalError;
+    flagcxResult_t cqResult = flagcxWrapIbvDestroyCq(srqMgr->cq);
+    if (cqResult == flagcxSuccess)
+      srqMgr->cq = NULL;
+    return result;
   }
   srqMgr->srq = (void *)srq;
 
@@ -204,21 +222,17 @@ flagcxResult_t flagcxIbCreateSrq(struct ibv_context *context, struct ibv_pd *pd,
     srqMgr->bufs[i].buffer = malloc(bufSize);
     if (!srqMgr->bufs[i].buffer) {
       WARN("Failed to allocate SRQ buffer %d", i);
-      for (int j = 0; j < i; j++) {
-        if (srqMgr->bufs[j].mr)
-          flagcxWrapIbvDeregMr(srqMgr->bufs[j].mr);
-        free(srqMgr->bufs[j].buffer);
-      }
-      flagcxWrapIbvDestroySrq(srq);
-      flagcxWrapIbvDestroyCq(srqMgr->cq);
-      return flagcxInternalError;
+      result = flagcxInternalError;
+      goto fail;
     }
 
     srqMgr->bufs[i].size = bufSize;
     srqMgr->bufs[i].inUse = 0;
-    FLAGCXCHECK(flagcxWrapIbvRegMr(&srqMgr->bufs[i].mr, pd,
-                                   srqMgr->bufs[i].buffer, bufSize,
-                                   IBV_ACCESS_LOCAL_WRITE));
+    result = flagcxWrapIbvRegMr(&srqMgr->bufs[i].mr, pd, srqMgr->bufs[i].buffer,
+                                bufSize, IBV_ACCESS_LOCAL_WRITE);
+    if (result != flagcxSuccess)
+      goto fail;
+    srqMgr->bufCount = i + 1;
     TRACE(FLAGCX_NET, "SRQ buffer[%d]: addr=%p, size=%lu, lkey=0x%x", i,
           srqMgr->bufs[i].buffer, bufSize, srqMgr->bufs[i].mr->lkey);
   }
@@ -234,28 +248,67 @@ flagcxResult_t flagcxIbCreateSrq(struct ibv_context *context, struct ibv_pd *pd,
         FLAGCX_IB_SRQ_SIZE, (unsigned long)bufSize, srqMgr->srq,
         srqMgr->freeBufCount);
   return flagcxSuccess;
+
+fail:
+  // Include the current buffer in rollback even when its MR registration
+  // failed after allocation.
+  if (srqMgr->bufCount < FLAGCX_IB_SRQ_SIZE &&
+      srqMgr->bufs[srqMgr->bufCount].buffer != NULL)
+    srqMgr->bufCount++;
+  flagcxIbDestroySrq(srqMgr);
+  return result;
 }
 
 flagcxResult_t flagcxIbDestroySrq(struct flagcxIbSrqMgr *srqMgr) {
   if (!srqMgr)
     return flagcxSuccess;
+  flagcxResult_t result = flagcxSuccess;
 
-  for (int i = 0; i < srqMgr->bufCount; i++) {
-    if (srqMgr->bufs[i].mr)
-      flagcxWrapIbvDeregMr(srqMgr->bufs[i].mr);
-    if (srqMgr->bufs[i].buffer)
-      free(srqMgr->bufs[i].buffer);
-  }
-
+  // Posted receive WRs retain the registered buffers. Destroy the SRQ before
+  // deregistering those MRs; on failure, preserve the whole dependent set for
+  // a later retry.
   if (srqMgr->srq) {
-    flagcxWrapIbvDestroySrq((struct ibv_srq *)srqMgr->srq);
-    srqMgr->srq = NULL;
+    flagcxResult_t srqResult =
+        flagcxWrapIbvDestroySrq((struct ibv_srq *)srqMgr->srq);
+    if (result == flagcxSuccess && srqResult != flagcxSuccess)
+      result = srqResult;
+    if (srqResult == flagcxSuccess)
+      srqMgr->srq = NULL;
   }
+
+  if (srqMgr->srq != NULL)
+    return result;
+
+  bool buffersReleased = true;
+  for (int i = 0; i < srqMgr->bufCount; i++) {
+    if (srqMgr->bufs[i].mr) {
+      flagcxResult_t mrResult = flagcxWrapIbvDeregMr(srqMgr->bufs[i].mr);
+      if (result == flagcxSuccess && mrResult != flagcxSuccess)
+        result = mrResult;
+      if (mrResult == flagcxSuccess)
+        srqMgr->bufs[i].mr = NULL;
+    }
+    if (srqMgr->bufs[i].mr == NULL && srqMgr->bufs[i].buffer) {
+      free(srqMgr->bufs[i].buffer);
+      srqMgr->bufs[i].buffer = NULL;
+    }
+    buffersReleased &=
+        srqMgr->bufs[i].mr == NULL && srqMgr->bufs[i].buffer == NULL;
+  }
+
   if (srqMgr->cq) {
-    flagcxWrapIbvDestroyCq(srqMgr->cq);
-    srqMgr->cq = NULL;
+    flagcxResult_t cqResult = flagcxWrapIbvDestroyCq(srqMgr->cq);
+    if (result == flagcxSuccess && cqResult != flagcxSuccess)
+      result = cqResult;
+    if (cqResult == flagcxSuccess)
+      srqMgr->cq = NULL;
   }
-  return flagcxSuccess;
+  if (buffersReleased) {
+    srqMgr->bufCount = 0;
+    srqMgr->freeBufCount = 0;
+    srqMgr->postSrqCount = 0;
+  }
+  return result;
 }
 
 flagcxResult_t flagcxIbSrqPostRecv(struct flagcxIbSrqMgr *srqMgr, int count) {
@@ -331,7 +384,7 @@ flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
 flagcxResult_t flagcxIbSetupCtrlQpConnection(struct ibv_context *,
                                              struct ibv_pd *,
                                              struct flagcxIbCtrlQp *, uint32_t,
-                                             union ibv_gid *, uint16_t, uint8_t,
+                                             union ibv_gid *, uint32_t, uint8_t,
                                              uint8_t, uint8_t) {
   return flagcxNotSupported;
 }

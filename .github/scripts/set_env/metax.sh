@@ -34,6 +34,10 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    ibuc)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_IBUC=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(USE_IBUC=1)
+      ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
         "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1"
@@ -48,7 +52,8 @@ flagcx_ci_prepare() {
   command -v mpirun
   command -v mxcc
 
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
+  if [[ "$suite" == "adaptor" || "$suite" == "ibuc" ||
+        "$suite" == "p2p" ||
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" || "$suite" == "perf" ||
         "$suite" == "torch-api" ]]; then

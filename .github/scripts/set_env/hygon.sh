@@ -75,6 +75,14 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_RUNNER_NP=4
       export NP=4
       ;;
+    ibuc)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_IBUC=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(USE_IBUC=1)
+      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
+      export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+      FLAGCX_CI_RUNNER_NP=4
+      export NP=4
+      ;;
     device_api)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
@@ -91,7 +99,8 @@ flagcx_ci_prepare() {
   nvcc --version
   hy-smi --showproductname || true
 
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
+  if [[ "$suite" == "adaptor" || "$suite" == "ibuc" ||
+        "$suite" == "p2p" ||
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" ]]; then
     echo "Network interfaces visible inside the CI container:"

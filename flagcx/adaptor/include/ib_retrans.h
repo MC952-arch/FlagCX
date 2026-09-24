@@ -97,7 +97,7 @@ flagcxResult_t
 flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
                               struct flagcxIbCtrlQp *ctrlQp,
                               uint32_t remote_qpn, union ibv_gid *remote_gid,
-                              uint16_t remote_lid, uint8_t port_num,
+                              uint32_t remote_lid, uint8_t port_num,
                               uint8_t link_layer, uint8_t local_gid_index);
 
 flagcxResult_t flagcxIbRetransSendAckViaUd(struct flagcxIbRecvComm *comm,

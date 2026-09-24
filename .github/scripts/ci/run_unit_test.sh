@@ -62,7 +62,7 @@ flagcx_ci_require_rdma() {
   # Symmem currently runs its explicit IPC-fallback invocation with the RDMA
   # class disabled, so it must not be gated by an RDMA preflight.
   case "$suite" in
-    adaptor|p2p|rma|runner) ;;
+    adaptor|ibuc|p2p|rma|runner) ;;
     *) return 0 ;;
   esac
 
@@ -103,6 +103,14 @@ build_suite() {
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+
+  if [[ "$SUITE" == ibuc ]]; then
+    make -C "$PROJECT_ROOT/test/unittest/adaptor" --jobs="$(nproc)" \
+      "${args[@]}"
+    make -C "$PROJECT_ROOT/test/unittest/runner" --jobs="$(nproc)" \
+      "${args[@]}"
+    return
+  fi
 
   if declare -F flagcx_ci_build_suite_override >/dev/null; then
     FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
@@ -296,6 +304,42 @@ run_suite() {
         return 1
       fi
       ;;
+    ibuc)
+      : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
+      local adaptor_status=0
+      local runner_status=0
+      local -a ibuc_runner_platform_env=()
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == "hygon" ]]; then
+        ibuc_runner_platform_env+=(
+          -x FLAGCX_IB_TIMEOUT=14
+          -x FLAGCX_IB_RETRY_CNT=1
+        )
+      fi
+
+      FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
+        GTEST_FILTER="NetAdaptorInterface.IbucAdvertisesTwoSidedContract:NetAdaptorLoopback.SendRecv:NetAdaptorLoopback.RegisterGpuMr:NetAdaptorLoopback.Ibuc*:IbucOwnershipTest.*" \
+        FLAGCX_CI_TEST_LABEL="IBUC adaptor tests" \
+        "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/unittest/adaptor" \
+          run-unit "${args[@]}" || adaptor_status=$?
+
+      cd "$PROJECT_ROOT/test/unittest/runner"
+      FLAGCX_CI_MPI_LABEL="IBUC forced NET runner" \
+        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
+        "${ibuc_runner_platform_env[@]}" \
+        ./build/bin/runner_mpi_tests || runner_status=$?
+
+      if ((adaptor_status != 0 || runner_status != 0)); then
+        echo "IBUC failures: adaptor=$adaptor_status runner=$runner_status" >&2
+        return 1
+      fi
+      ;;
     core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
@@ -410,7 +454,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api_host|ibuc|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_api|device_api_unified_ir)

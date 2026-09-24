@@ -9,10 +9,7 @@ UNIT_TARGET := $(BINDIR)/service_unit_tests
 # not preprocess its implementation. Keep a syntax-only target in the common
 # service suite to prevent optional-adaptor compile regressions.
 IBUC_SOURCE := $(PROJECT_ROOT)/flagcx/adaptor/net/ibuc_adaptor.cc
-# IBUC currently targets the standard verbs ABI. Hygon's surrounding service
-# build uses the SHCA ABI, but SHCA support for IBUC is intentionally deferred
-# to a follow-up change. Keep this syntax-only check on the standard ABI.
-IBUC_CXXFLAGS := $(filter-out -DUSE_SHCA,$(CXXFLAGS))
+IBUC_CXXFLAGS := $(CXXFLAGS)
 
 # [mpi] tests: coll_*.cpp — requires MPI + GPUs
 MPI_SRCS   := $(wildcard coll_*.cpp)

@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2023 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * This file contains common InfiniBand structures and constants
  * shared between IBRC and UCX adaptors.
@@ -63,6 +63,16 @@ static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
   ahAttr->dlid = (uint16_t)lid;
 #endif
   return flagcxSuccess;
+}
+
+static inline bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
+#ifdef USE_SHCA
+  // SHCA programs a GID/GRH route together with its extended 17-bit DLID.
+  (void)linkLayer;
+  return true;
+#else
+  return linkLayer == IBV_LINK_LAYER_ETHERNET;
+#endif
 }
 
 struct flagcxIbMr {
@@ -350,7 +360,7 @@ struct flagcxIbConnectionMetadata {
 
   uint32_t ctrlQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
   union ibv_gid ctrlGid[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  uint16_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  uint32_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int retransEnabled;
 };
 
@@ -402,6 +412,11 @@ struct alignas(32) flagcxIbNetCommBase {
   // A registration rollback can itself fail. Retain partially cleaned
   // wrappers until close retries them before destroying their QPs and PDs.
   struct flagcxIbMrHandle *deferredMrHandles;
+  // IBUC setup or close can fail after partially releasing a communicator.
+  // closeSend/closeRecv consume their handles, so retain any unreleased
+  // resources on an adaptor-owned retry list.
+  struct flagcxIbNetCommBase *nextDeferredCleanup;
+  bool cleanupDeferred;
 };
 
 struct flagcxIbSendComm {
@@ -533,7 +548,8 @@ extern int firstBitSet(int val, int max);
 
 extern flagcxResult_t flagcxIbDevices(int *ndev);
 extern flagcxResult_t flagcxIbGdrSupport(void);
-extern flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported);
+extern flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, int access,
+                                                bool *supported);
 extern flagcxResult_t flagcxIbDmaBufSupport(int dev);
 extern flagcxResult_t flagcxIbFreeRequest(struct flagcxIbRequest *r);
 
@@ -617,5 +633,14 @@ flagcxIbDeregMrOrDeferWithCallback(struct flagcxIbNetCommBase *base,
 flagcxResult_t
 flagcxIbDrainDeferredMrsWithCallback(struct flagcxIbNetCommBase *base,
                                      flagcxIbDeregMrCallback callback);
+
+#ifdef USE_IBUC
+// Internal IBUC lifetime helpers exposed for transport-level ownership tests.
+flagcxResult_t flagcxIbucInitCommDevBase(int ibDevN,
+                                         struct flagcxIbNetCommDevBase *base);
+flagcxResult_t flagcxIbucDestroyBase(struct flagcxIbNetCommDevBase *base);
+flagcxResult_t flagcxIbucCloseSend(void *sendComm);
+flagcxResult_t flagcxIbucCloseRecv(void *recvComm);
+#endif
 
 #endif // FLAGCX_IB_COMMON_H_

@@ -39,6 +39,7 @@ set_env: .github/scripts/set_env/hygon.sh
 
 unit_test_suites:
   - adaptor
+  - ibuc
   - core
   - p2p
   - rma

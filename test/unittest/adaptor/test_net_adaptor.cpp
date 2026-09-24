@@ -2,6 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  ************************************************************************/
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -22,6 +23,8 @@
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 #include "ib_common.h"
+#include "ib_retrans.h"
+#include "ibvsymbols.h"
 #include "net.h"
 #include "net_test_utils.h"
 #include "onesided.h"
@@ -164,6 +167,69 @@ int batchPostResult = IBV_SUCCESS;
 int batchRejectedIndex = -1;
 int batchPostCalls = 0;
 
+#ifdef USE_IBUC
+int ibucCreateCqCalls = 0;
+int ibucDeregisterCalls = 0;
+int ibucDestroySrqCalls = 0;
+int ibucDestroyCqCalls = 0;
+int ibucDeregisterFailuresRemaining = 0;
+int ibucDestroySrqFailuresRemaining = 0;
+ibv_mr *ibucDeregisterFailure = nullptr;
+std::vector<ibv_mr *> ibucDeregisteredMrs;
+
+ibv_cq *fakeIbucCreateCq(ibv_context *, int, void *, ibv_comp_channel *, int) {
+  ++ibucCreateCqCalls;
+  errno = EIO;
+  return nullptr;
+}
+
+int fakeIbucDeregisterMr(ibv_mr *mr) {
+  ++ibucDeregisterCalls;
+  ibucDeregisteredMrs.push_back(mr);
+  if (mr == ibucDeregisterFailure && ibucDeregisterFailuresRemaining > 0) {
+    --ibucDeregisterFailuresRemaining;
+    return EIO;
+  }
+  return 0;
+}
+
+int fakeIbucDestroySrq(ibv_srq *) {
+  ++ibucDestroySrqCalls;
+  if (ibucDestroySrqFailuresRemaining > 0) {
+    --ibucDestroySrqFailuresRemaining;
+    return EIO;
+  }
+  return 0;
+}
+
+int fakeIbucDestroyCq(ibv_cq *) {
+  ++ibucDestroyCqCalls;
+  return 0;
+}
+
+class ScopedIbucVerbsSymbols {
+public:
+  ScopedIbucVerbsSymbols()
+      : createCq_(ibvSymbols.ibv_internal_create_cq),
+        deregMr_(ibvSymbols.ibv_internal_dereg_mr),
+        destroySrq_(ibvSymbols.ibv_internal_destroy_srq),
+        destroyCq_(ibvSymbols.ibv_internal_destroy_cq) {}
+
+  ~ScopedIbucVerbsSymbols() {
+    ibvSymbols.ibv_internal_create_cq = createCq_;
+    ibvSymbols.ibv_internal_dereg_mr = deregMr_;
+    ibvSymbols.ibv_internal_destroy_srq = destroySrq_;
+    ibvSymbols.ibv_internal_destroy_cq = destroyCq_;
+  }
+
+private:
+  decltype(ibvSymbols.ibv_internal_create_cq) createCq_;
+  decltype(ibvSymbols.ibv_internal_dereg_mr) deregMr_;
+  decltype(ibvSymbols.ibv_internal_destroy_srq) destroySrq_;
+  decltype(ibvSymbols.ibv_internal_destroy_cq) destroyCq_;
+};
+#endif
+
 flagcxResult_t fakeDeregisterMr(flagcxIbNetCommDevBase *, ibv_mr *mr) {
   deregisterCalls.push_back(mr);
   if (mr == deregisterFailure && deregisterFailuresRemaining > 0) {
@@ -240,12 +306,19 @@ protected:
   }
 
   void TearDown() override {
-    if (deviceBuffer_ != nullptr && deviceAdaptor != nullptr &&
-        deviceAdaptor->deviceFree != nullptr) {
-      EXPECT_EQ(
-          deviceAdaptor->deviceFree(deviceBuffer_, flagcxMemDevice, nullptr),
-          flagcxSuccess);
-      deviceBuffer_ = nullptr;
+    if (deviceAdaptor != nullptr && deviceAdaptor->deviceFree != nullptr) {
+      if (deviceBuffer_ != nullptr) {
+        EXPECT_EQ(
+            deviceAdaptor->deviceFree(deviceBuffer_, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+        deviceBuffer_ = nullptr;
+      }
+      if (secondDeviceBuffer_ != nullptr) {
+        EXPECT_EQ(deviceAdaptor->deviceFree(secondDeviceBuffer_,
+                                            flagcxMemDevice, nullptr),
+                  flagcxSuccess);
+        secondDeviceBuffer_ = nullptr;
+      }
     }
     if (net_ == nullptr)
       return;
@@ -275,6 +348,7 @@ protected:
   void *sendComm_ = nullptr;
   void *recvComm_ = nullptr;
   void *deviceBuffer_ = nullptr;
+  void *secondDeviceBuffer_ = nullptr;
 };
 
 #define ASSERT_REGISTER_MR(comm, buffer, size, type, handle)                   \
@@ -328,6 +402,42 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
     EXPECT_EQ(net->iputSignal, nullptr);
     EXPECT_EQ(net->regMrDmaBuf, nullptr);
   }
+}
+
+TEST(NetAdaptorInterface, IbucAdvertisesTwoSidedContract) {
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  const char *expected = getenv("FLAGCX_CI_EXPECT_NET_ADAPTOR");
+  if (net->name == nullptr || strcmp(net->name, "IBUC") != 0) {
+    if (expected != nullptr && strcmp(expected, "IBUC") == 0)
+      FAIL() << "IBUC CI selected "
+             << (net->name != nullptr ? net->name : "<unnamed>");
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+  }
+
+  EXPECT_NE(net->init, nullptr);
+  EXPECT_NE(net->devices, nullptr);
+  EXPECT_NE(net->getProperties, nullptr);
+  EXPECT_NE(net->listen, nullptr);
+  EXPECT_NE(net->connect, nullptr);
+  EXPECT_NE(net->accept, nullptr);
+  EXPECT_NE(net->regMr, nullptr);
+  EXPECT_NE(net->deregMr, nullptr);
+  EXPECT_NE(net->isend, nullptr);
+  EXPECT_NE(net->irecv, nullptr);
+  EXPECT_NE(net->iflush, nullptr);
+  EXPECT_NE(net->test, nullptr);
+  EXPECT_NE(net->closeSend, nullptr);
+  EXPECT_NE(net->closeRecv, nullptr);
+  EXPECT_NE(net->closeListen, nullptr);
+
+  EXPECT_EQ(net->getMrInfo, nullptr);
+  EXPECT_EQ(net->iput, nullptr);
+  EXPECT_EQ(net->iget, nullptr);
+  EXPECT_EQ(net->iputSignal, nullptr);
+  EXPECT_EQ(net->iputBatch, nullptr);
+  EXPECT_EQ(net->testBatch, nullptr);
+  EXPECT_EQ(net->igetBatch, nullptr);
 }
 
 TEST(IbDefensiveContractTest, RejectsNullAndUnreadyCommunicators) {
@@ -453,6 +563,106 @@ TEST_F(IbMrCleanupTest, FailedPublicCleanupIsDeferredAndRemainsRetryable) {
   ASSERT_EQ(deregisterCalls.size(), 1u);
   EXPECT_EQ(deregisterCalls[0], mr);
 }
+
+#ifdef USE_IBUC
+TEST(IbucOwnershipTest, CqFailureDropsOnlyTheAttemptedSharedPdReference) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_create_cq = fakeIbucCreateCq;
+  ibucCreateCqCalls = 0;
+
+  const int savedDeviceCount = flagcxNIbDevs;
+  const int testDevice = savedDeviceCount < 0 ? 0 : savedDeviceCount;
+  if (testDevice >= MAX_IB_DEVS)
+    GTEST_SKIP() << "No unused IB device slot is available";
+
+  flagcxIbDev *device = &flagcxIbDevs[testDevice];
+  memset(device, 0, sizeof(*device));
+  ASSERT_EQ(pthread_mutex_init(&device->lock, nullptr), 0);
+  ibv_pd sharedPd = {};
+  device->pd = &sharedPd;
+  device->pdRefs = 1;
+  flagcxNIbDevs = testDevice + 1;
+
+  flagcxIbNetCommDevBase base = {};
+  EXPECT_EQ(flagcxIbucInitCommDevBase(testDevice, &base), flagcxSystemError);
+  EXPECT_EQ(ibucCreateCqCalls, 2);
+  EXPECT_EQ(device->pdRefs, 1);
+  EXPECT_EQ(device->pd, &sharedPd);
+  EXPECT_EQ(base.pd, nullptr);
+  EXPECT_EQ(base.cq, nullptr);
+
+  EXPECT_EQ(pthread_mutex_destroy(&device->lock), 0);
+  memset(device, 0, sizeof(*device));
+  flagcxNIbDevs = savedDeviceCount;
+}
+
+TEST(IbucOwnershipTest, SrqCleanupPreservesPostedBuffersUntilDestroySucceeds) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_destroy_srq = fakeIbucDestroySrq;
+  ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
+  ibvSymbols.ibv_internal_destroy_cq = fakeIbucDestroyCq;
+  ibucDestroySrqCalls = 0;
+  ibucDestroyCqCalls = 0;
+  ibucDeregisterCalls = 0;
+  ibucDestroySrqFailuresRemaining = 1;
+  ibucDeregisterFailuresRemaining = 0;
+  ibucDeregisterFailure = nullptr;
+  ibucDeregisteredMrs.clear();
+
+  flagcxIbSrqMgr manager = {};
+  manager.srq = reinterpret_cast<void *>(0x1000);
+  manager.cq = reinterpret_cast<ibv_cq *>(0x2000);
+  manager.bufCount = 1;
+  manager.bufs[0].buffer = malloc(64);
+  ASSERT_NE(manager.bufs[0].buffer, nullptr);
+  manager.bufs[0].mr = reinterpret_cast<ibv_mr *>(0x3000);
+
+  EXPECT_EQ(flagcxIbDestroySrq(&manager), flagcxSystemError);
+  EXPECT_EQ(manager.srq, reinterpret_cast<void *>(0x1000));
+  EXPECT_EQ(manager.bufs[0].mr, reinterpret_cast<ibv_mr *>(0x3000));
+  EXPECT_NE(manager.bufs[0].buffer, nullptr);
+  EXPECT_EQ(ibucDeregisterCalls, 0);
+  EXPECT_EQ(ibucDestroyCqCalls, 0);
+
+  EXPECT_EQ(flagcxIbDestroySrq(&manager), flagcxSuccess);
+  EXPECT_EQ(manager.srq, nullptr);
+  EXPECT_EQ(manager.cq, nullptr);
+  EXPECT_EQ(manager.bufs[0].mr, nullptr);
+  EXPECT_EQ(manager.bufs[0].buffer, nullptr);
+  EXPECT_EQ(manager.bufCount, 0);
+  EXPECT_EQ(ibucDestroySrqCalls, 2);
+  EXPECT_EQ(ibucDeregisterCalls, 1);
+  EXPECT_EQ(ibucDestroyCqCalls, 1);
+}
+
+TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
+  ibucDeregisterCalls = 0;
+  ibucDeregisteredMrs.clear();
+  ibucDeregisterFailuresRemaining = 1;
+
+  auto *comm =
+      static_cast<flagcxIbSendComm *>(calloc(1, sizeof(flagcxIbSendComm)));
+  ASSERT_NE(comm, nullptr);
+  comm->base.isSend = true;
+  comm->base.ndevs = 1;
+  comm->base.sock.fd = -1;
+  ibv_mr *fifoMr = reinterpret_cast<ibv_mr *>(0x4000);
+  ibv_mr *retransMr = reinterpret_cast<ibv_mr *>(0x5000);
+  comm->devs[0].fifoMr = fifoMr;
+  comm->retransHdrMr = retransMr;
+  ibucDeregisterFailure = retransMr;
+
+  EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSystemError);
+  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
+  EXPECT_EQ(ibucDeregisteredMrs[0], fifoMr);
+  EXPECT_EQ(ibucDeregisteredMrs[1], retransMr);
+  // closeSend consumes the handle and immediately retries newly deferred
+  // ownership. Only the MR whose first deregistration failed is retried.
+  EXPECT_EQ(ibucDeregisteredMrs[2], retransMr);
+}
+#endif
 
 TEST(IbRequestCompletionTest, SharedCqUpdatesTheWrIdRequestAndDrainsBatch) {
   auto base = std::make_unique<flagcxIbNetCommBase>();
@@ -756,6 +966,115 @@ TEST_F(NetAdaptorLoopback, SendRecv) {
   ASSERT_EQ(waitRequest(net_, sendRequest), flagcxSuccess);
   ASSERT_EQ(waitRequest(net_, recvRequest), flagcxSuccess);
   EXPECT_EQ(source, destination);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMr);
+}
+
+TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  auto *send = static_cast<flagcxIbSendComm *>(sendComm_);
+  auto *recv = static_cast<flagcxIbRecvComm *>(recvComm_);
+  ASSERT_TRUE(send->retrans.enabled);
+  ASSERT_TRUE(recv->retrans.enabled);
+  ASSERT_NE(send->retransHdrMr, nullptr);
+  ASSERT_NE(recv->srqMgr.srq, nullptr);
+  ASSERT_GT(send->base.ndevs, 0);
+  ASSERT_EQ(send->base.ndevs, recv->base.ndevs);
+  for (int i = 0; i < send->base.ndevs; ++i) {
+    EXPECT_NE(send->devs[i].ctrlQp.qp, nullptr);
+    EXPECT_NE(send->devs[i].ctrlQp.cq, nullptr);
+    EXPECT_NE(send->devs[i].ctrlQp.ah, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.qp, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.cq, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.ah, nullptr);
+  }
+}
+
+TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->setDevice, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceMalloc, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceFree, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceMemcpy, nullptr);
+  ASSERT_NE(net_->getProperties, nullptr);
+  flagcxNetProperties_t properties = {};
+  ASSERT_EQ(net_->getProperties(netDev_, &properties), flagcxSuccess);
+  ASSERT_NE(properties.ptrSupport & FLAGCX_PTR_CUDA, 0)
+      << "IBUC collective data path requires GPU MR support";
+
+  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceMalloc(&deviceBuffer_, kBufferSize,
+                                        flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceMalloc(&secondDeviceBuffer_, kBufferSize,
+                                        flagcxMemDevice, nullptr),
+            flagcxSuccess);
+
+  std::vector<uint8_t> expected(kBufferSize);
+  std::vector<uint8_t> actual(kBufferSize, 0);
+  for (size_t i = 0; i < expected.size(); ++i)
+    expected[i] = static_cast<uint8_t>((i * 17 + 3) & 0xff);
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(
+                deviceBuffer_, expected.data(), expected.size(),
+                flagcxMemcpyHostToDevice, nullptr, nullptr),
+            flagcxSuccess);
+
+  void *sourceMr = nullptr;
+  void *destinationMr = nullptr;
+  ASSERT_REGISTER_MR(sendComm_, deviceBuffer_, kBufferSize, FLAGCX_PTR_CUDA,
+                     sourceMr);
+  ASSERT_REGISTER_MR(recvComm_, secondDeviceBuffer_, kBufferSize,
+                     FLAGCX_PTR_CUDA, destinationMr);
+
+  constexpr size_t kOffset = 128;
+  constexpr size_t kTransferSize = kBufferSize - 2 * kOffset;
+  void *recvData[1] = {static_cast<char *>(secondDeviceBuffer_) + kOffset};
+  size_t recvSizes[1] = {kTransferSize};
+  int flushSizes[1] = {static_cast<int>(kTransferSize)};
+  int tags[1] = {17};
+  void *recvMrs[1] = {destinationMr};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 1, recvData, recvSizes, tags, recvMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+
+  void *sendRequest = nullptr;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (sendRequest == nullptr &&
+         std::chrono::steady_clock::now() < deadline) {
+    ASSERT_EQ(
+        net_->isend(sendComm_, static_cast<char *>(deviceBuffer_) + kOffset,
+                    kTransferSize, tags[0], sourceMr, nullptr, &sendRequest),
+        flagcxSuccess);
+    if (sendRequest == nullptr)
+      std::this_thread::yield();
+  }
+  ASSERT_NE(sendRequest, nullptr);
+  ASSERT_EQ(waitRequest(net_, sendRequest), flagcxSuccess);
+  ASSERT_EQ(waitRequest(net_, recvRequest), flagcxSuccess);
+
+  void *flushRequest = nullptr;
+  ASSERT_EQ(
+      net_->iflush(recvComm_, 1, recvData, flushSizes, recvMrs, &flushRequest),
+      flagcxSuccess);
+  if (flushRequest != nullptr) {
+    ASSERT_EQ(waitRequest(net_, flushRequest), flagcxSuccess);
+  }
+
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(actual.data(), secondDeviceBuffer_,
+                                        actual.size(), flagcxMemcpyDeviceToHost,
+                                        nullptr, nullptr),
+            flagcxSuccess);
+  EXPECT_TRUE(std::equal(expected.begin() + kOffset,
+                         expected.begin() + kOffset + kTransferSize,
+                         actual.begin() + kOffset));
+
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, destinationMr);
 }
