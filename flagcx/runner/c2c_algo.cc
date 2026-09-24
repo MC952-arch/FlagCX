@@ -2106,6 +2106,21 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
     }
   } else {
     // single-nic
+    if (commOp_ == flagcxCommOpAllReduce ||
+        commOp_ == flagcxCommOpReduceScatter || commOp_ == flagcxCommOpReduce) {
+      int firstCluster = commOp_ == flagcxCommOpReduce ? rootClusterId_ : 0;
+      int lastCluster =
+          commOp_ == flagcxCommOpReduce ? rootClusterId_ + 1 : comm_->nclusters;
+      for (int c = firstCluster; c < lastCluster; ++c) {
+        if (comm_->clusterSizes[c] < comm_->nclusters) {
+          WARN("C2C single-NIC reduction requires one local slot per "
+               "cluster: cluster=%d localRanks=%d clusters=%d",
+               c, comm_->clusterSizes[c], comm_->nclusters);
+          return flagcxNotSupported;
+        }
+      }
+    }
+
     // setup preHomoFuncs
     flagcxCommOp_t preHomoFuncCommOp = getC2cHomoCommOp(0, 2);
     auto &buffer =
@@ -2136,21 +2151,30 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
           continue;
         }
         if (isRootCluster_ || commOp_ != flagcxCommOpReduce) {
-          int homoRankToRecvFromCluster =
-              (comm_
-                   ->globalRank2HomoRank[clusterInterRankList_[clusterId_][0]] -
-               j - 1 + homoRanks_) %
-              homoRanks_;
+          int homoRankToRecvFromCluster = flagcxC2cGetPeerHomoRank(
+              comm_->globalRank2HomoRank[clusterInterRankList_[clusterId_][0]],
+              j, clusterId_, homoRanks_);
+          if (homoRankToRecvFromCluster < 0) {
+            WARN("C2C single-NIC reduction cannot assign receive slot: "
+                 "sourceCluster=%zu destinationCluster=%d homoRanks=%d",
+                 j, clusterId_, homoRanks_);
+            return flagcxNotSupported;
+          }
           if (homoMyRank_ == homoRankToRecvFromCluster) {
             heteroFunc.addP2pOp(rank_, clusterInterRankList_[j][0], 0,
                                 totalCount_, 1);
           }
         }
         if (!isRootCluster_ || commOp_ != flagcxCommOpReduce) {
-          int homoRankToSendToCluster =
-              (comm_->globalRank2HomoRank[clusterInterRankList_[j][0]] -
-               clusterId_ - 1 + comm_->clusterSizes[j]) %
-              comm_->clusterSizes[j];
+          int homoRankToSendToCluster = flagcxC2cGetPeerHomoRank(
+              comm_->globalRank2HomoRank[clusterInterRankList_[j][0]],
+              clusterId_, j, comm_->clusterSizes[j]);
+          if (homoRankToSendToCluster < 0) {
+            WARN("C2C single-NIC reduction cannot assign send destination: "
+                 "sourceCluster=%d destinationCluster=%zu homoRanks=%d",
+                 clusterId_, j, comm_->clusterSizes[j]);
+            return flagcxNotSupported;
+          }
           int globalRankToSendToCluster =
               homoRankToSendToCluster -
               comm_->globalRank2HomoRank[clusterInterRankList_[j][0]] +

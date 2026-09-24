@@ -161,7 +161,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
         self.assertIn("export NP=4", configure)
 
-    def test_automatic_hardware_ci_is_limited_to_hygon_unittest(self):
+    def test_automatic_hardware_ci_covers_all_platforms(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -176,7 +176,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             result.stdout.strip(),
-            '{"include":[{"platform":"hygon","display_name":"Hygon DCU Tests"}]}',
+            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
+            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
+            '{"platform":"metax","display_name":"MetaX Tests"},'
+            '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
 
         for workflow_name in ("test.yml", "torch-api-test.yml"):
@@ -184,9 +187,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 REPO_ROOT / f".github/workflows/{workflow_name}"
             ).read_text()
             trigger = workflow[: workflow.index("\njobs:")]
-            self.assertIn("workflow_dispatch:", trigger)
-            self.assertNotIn("pull_request:", trigger)
-            self.assertNotIn("push:", trigger)
+            self.assertIn("pull_request:", trigger)
+            self.assertIn("push:", trigger)
 
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()

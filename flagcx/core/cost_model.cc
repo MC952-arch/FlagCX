@@ -195,7 +195,6 @@ void flagcxAlgoTimeEstimator::generateHeteroFuncForSingleNic(
     int rank, flagcxC2cHeteroFunc &heteroFunc) {
   flagcxComm_t comm = planner_.comm_;
   auto &clusterInterRankList = planner_.clusterInterRankList_;
-  int cid = 0;
   int clusterId = comm->clusterIds[rank];
   int homoMyRank = comm->globalRank2HomoRank[rank];
   int homoRanks = comm->clusterSizes[clusterId];
@@ -204,17 +203,17 @@ void flagcxAlgoTimeEstimator::generateHeteroFuncForSingleNic(
     if (clusterId == j) {
       continue;
     }
-    int homoRankToRecvFromCluster =
-        (comm->globalRank2HomoRank[clusterInterRankList[clusterId][0]] - cid -
-         1 + homoRanks) %
-        homoRanks;
+    int homoRankToRecvFromCluster = flagcxC2cGetPeerHomoRank(
+        comm->globalRank2HomoRank[clusterInterRankList[clusterId][0]], j,
+        clusterId, homoRanks);
+    int homoRankToSendToCluster = flagcxC2cGetPeerHomoRank(
+        comm->globalRank2HomoRank[clusterInterRankList[j][0]], clusterId, j,
+        comm->clusterSizes[j]);
+    if (homoRankToRecvFromCluster < 0 || homoRankToSendToCluster < 0)
+      continue;
     if (homoMyRank == homoRankToRecvFromCluster) {
       heteroFunc.addP2pOp(rank, clusterInterRankList[j][0], 0, totalCount, 1);
     }
-    int homoRankToSendToCluster =
-        (comm->globalRank2HomoRank[clusterInterRankList[j][0]] - cid - 1 +
-         comm->clusterSizes[j]) %
-        comm->clusterSizes[j];
     int globalRankToSendToCluster =
         homoRankToSendToCluster -
         comm->globalRank2HomoRank[clusterInterRankList[j][0]] +
@@ -223,7 +222,6 @@ void flagcxAlgoTimeEstimator::generateHeteroFuncForSingleNic(
         comm->globalRank2HomoRank[clusterInterRankList[clusterId][0]]) {
       heteroFunc.addP2pOp(rank, globalRankToSendToCluster, 0, totalCount, 0);
     }
-    cid += 1;
   }
 }
 

@@ -1,9 +1,12 @@
 name: Perf Tests in Container
 
 on:
-  # Temporarily disabled for automatic CI while SHCA bring-up is isolated in
-  # the Hygon unittest workflow. Keep manual dispatch for explicit debugging.
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 env:
   MPI_HOME: /usr/local/mpi
