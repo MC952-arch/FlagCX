@@ -20,6 +20,31 @@ typedef enum {
   flagcxAlgoInput = 2
 } flagcxAlgorithm_t;
 
+// Select the destination-cluster homo rank that receives a partial result from
+// sourceClusterId. Cluster ids are compacted after excluding the destination
+// cluster so that the destination's local reduction representative is never
+// reused as a receive slot.
+static inline int flagcxC2cGetPeerHomoRank(int representativeHomoRank,
+                                           int sourceClusterId,
+                                           int destinationClusterId,
+                                           int destinationHomoRanks) {
+  if (sourceClusterId < 0 || destinationClusterId < 0 ||
+      sourceClusterId == destinationClusterId || destinationHomoRanks <= 0 ||
+      representativeHomoRank < 0 ||
+      representativeHomoRank >= destinationHomoRanks)
+    return -1;
+
+  const int peerOrdinal = sourceClusterId < destinationClusterId
+                              ? sourceClusterId
+                              : sourceClusterId - 1;
+  // Each remote cluster needs a distinct slot separate from the local result.
+  if (peerOrdinal >= destinationHomoRanks - 1)
+    return -1;
+
+  return (representativeHomoRank - peerOrdinal - 1 + destinationHomoRanks) %
+         destinationHomoRanks;
+}
+
 struct C2cPatternKey {
   size_t count;
   size_t rootClusterId;

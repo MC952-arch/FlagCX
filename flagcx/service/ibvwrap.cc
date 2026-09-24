@@ -6,6 +6,7 @@
 
 #include "ibvwrap.h"
 #include "adaptor.h"
+#include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -178,6 +179,31 @@ flagcxResult_t flagcxWrapIbvQueryGid(struct ibv_context *context,
   IBV_INT_CHECK_RET_ERRNO(ibvSymbols, ibv_internal_query_gid,
                           ibv_internal_query_gid(context, port_num, index, gid),
                           0, "ibv_query_gid");
+}
+
+static flagcxResult_t flagcxIbQueryGidExResult(int ret, int savedErrno) {
+  if (ret == 0)
+    return flagcxSuccess;
+
+  int error = ret == -1 ? savedErrno : (ret < 0 ? -ret : ret);
+  if (error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS)
+    return flagcxNotSupported;
+  return flagcxSystemError;
+}
+
+flagcxResult_t flagcxWrapIbvQueryGidEx(struct ibv_context *context,
+                                       uint32_t portNum, uint32_t index,
+                                       struct flagcxIbGidEntry *entry,
+                                       uint32_t flags) {
+  if (context == NULL || entry == NULL)
+    return flagcxInvalidArgument;
+  if (ibvSymbols.ibv_internal_query_gid_ex == NULL)
+    return flagcxNotSupported;
+
+  errno = 0;
+  int ret = ibvSymbols.ibv_internal_query_gid_ex(context, portNum, index, entry,
+                                                 flags, sizeof(*entry));
+  return flagcxIbQueryGidExResult(ret, errno);
 }
 
 flagcxResult_t flagcxWrapIbvQueryQp(struct ibv_qp *qp, struct ibv_qp_attr *attr,

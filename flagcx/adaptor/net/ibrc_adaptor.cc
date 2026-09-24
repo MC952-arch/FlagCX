@@ -9,6 +9,7 @@
 #include "flagcx_common.h"
 #include "flagcx_net.h"
 #include "ib_common.h"
+#include "ib_gid.h"
 #include "ib_retrans.h"
 #include "ibvwrap.h"
 #include "net.h"
@@ -16,6 +17,7 @@
 #include "socket.h"
 #include "timer.h"
 #include "utils.h"
+#include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +47,7 @@ FLAGCX_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
 FLAGCX_PARAM(IbMergeVfs, "IB_MERGE_VFS", 1);
 FLAGCX_PARAM(IbMergeNics, "IB_MERGE_NICS", 1);
 FLAGCX_PARAM(IbQpsPerConn, "IB_QPS_PER_CONNECTION", 1);
+FLAGCX_PARAM(IbRdAtomicDepth, "IB_RD_ATOMIC_DEPTH", 16);
 
 int flagcxNMergedIbDevs = -1;
 int flagcxNIbDevs = -1;
@@ -218,6 +221,120 @@ bool validGid(union ibv_gid *gid) {
   return (configuredGid(gid) && !linkLocalGid(gid));
 }
 
+static bool flagcxIbNullGid(const union ibv_gid *gid) {
+  static const union ibv_gid zero = {};
+  return memcmp(gid, &zero, sizeof(*gid)) == 0;
+}
+
+static bool flagcxIbOverlayNetwork(const char *name) {
+  static const char *prefixes[] = {"flannel", "cni", "calico", "vxlan",
+                                   "docker"};
+  if (name == NULL)
+    return false;
+  if (strcmp(name, "tunl0") == 0)
+    return true;
+  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+    if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0)
+      return true;
+  }
+  return false;
+}
+
+static enum flagcxIbIpv4Scope
+flagcxIbIpv4AddressScope(const union ibv_gid *gid) {
+  if (getGidAddrFamily((union ibv_gid *)gid) != AF_INET)
+    return flagcxIbIpv4Routable;
+  const struct in6_addr *addr = (const struct in6_addr *)gid->raw;
+  return flagcxIbClassifyIpv4Address(ntohl(addr->s6_addr32[3]));
+}
+
+static void flagcxIbReadGidNetworkDevice(const char *deviceName,
+                                         uint8_t portNum, int gidIndex,
+                                         char *networkDevice,
+                                         size_t networkDeviceSize) {
+  if (networkDeviceSize == 0)
+    return;
+  networkDevice[0] = '\0';
+
+  char path[PATH_MAX] = {};
+  snprintf(path, sizeof(path),
+           "/sys/class/infiniband/%s/ports/%u/gid_attrs/ndevs/%d", deviceName,
+           portNum, gidIndex);
+  int fd = open(path, O_RDONLY);
+  if (fd == -1)
+    return;
+  ssize_t bytes = read(fd, networkDevice, networkDeviceSize - 1);
+  close(fd);
+  if (bytes <= 0) {
+    networkDevice[0] = '\0';
+    return;
+  }
+  networkDevice[bytes] = '\0';
+  networkDevice[strcspn(networkDevice, "\r\n")] = '\0';
+}
+
+static flagcxResult_t flagcxIbFindBestGidIndexEx(struct ibv_context *context,
+                                                 uint8_t portNum, int gidTblLen,
+                                                 int *gidIndex) {
+  if (context == NULL || gidIndex == NULL || gidTblLen <= 0)
+    return flagcxInvalidArgument;
+
+  struct flagcxIbAutoGidCandidate *candidates = NULL;
+  FLAGCXCHECK(flagcxCalloc(&candidates, gidTblLen));
+  for (int i = 0; i < gidTblLen; ++i) {
+    struct flagcxIbAutoGidCandidate *candidate = candidates + i;
+    candidate->gidIndex = i;
+
+    struct flagcxIbGidEntry entry = {};
+    flagcxResult_t result =
+        flagcxWrapIbvQueryGidEx(context, portNum, i, &entry, 0);
+    if (result == flagcxNotSupported) {
+      free(candidates);
+      return result;
+    }
+    if (result != flagcxSuccess) {
+      candidate->querySucceeded = false;
+      continue;
+    }
+
+    char networkDevice[MAX_IF_NAME_SIZE + 1] = {};
+    const char *deviceName = flagcxWrapIbvGetDeviceName(context->device);
+    flagcxIbReadGidNetworkDevice(deviceName, portNum, i, networkDevice,
+                                 sizeof(networkDevice));
+    const struct in6_addr *addr = (const struct in6_addr *)entry.gid.raw;
+    candidate->gidType = entry.gidType;
+    candidate->hasNetworkDevice =
+        entry.ndevIfindex != 0 || networkDevice[0] != '\0';
+    candidate->isIpv4Mapped = getGidAddrFamily(&entry.gid) == AF_INET;
+    enum flagcxIbIpv4Scope ipv4Scope = flagcxIbIpv4AddressScope(&entry.gid);
+    candidate->isLinkLocalIpv4 =
+        candidate->isIpv4Mapped && ipv4Scope == flagcxIbIpv4LinkLocal;
+    candidate->isLinkLocalIpv6 = IN6_IS_ADDR_LINKLOCAL(addr);
+    candidate->isOverlayNetwork =
+        candidate->hasNetworkDevice && flagcxIbOverlayNetwork(networkDevice);
+    candidate->isPrivateIpv4 =
+        candidate->isIpv4Mapped && ipv4Scope == flagcxIbIpv4Private;
+    candidate->isNullGid = flagcxIbNullGid(&entry.gid);
+    candidate->querySucceeded = true;
+  }
+
+  struct flagcxIbAutoGidSelection selection = {};
+  bool selected =
+      flagcxIbSelectBestAutoGidCandidate(candidates, gidTblLen, &selection);
+  free(candidates);
+  if (!selected) {
+    WARN("NET/IB : no usable GID found on %s port %u",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
+    return flagcxSystemError;
+  }
+
+  *gidIndex = selection.gidIndex;
+  INFO(FLAGCX_NET, "NET/IB : auto-selected GID index %d on %s port %u (%s)",
+       *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum,
+       flagcxIbAutoGidCandidateClassName(selection.candidateClass));
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbRoceGetVersionNum(const char *deviceName, int portNum,
                                          int gidIndex, int *version) {
   char gidRoceVerStr[16] = {0};
@@ -291,7 +408,45 @@ flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
                                    int gidTblLen, int *gidIndex) {
   *gidIndex = flagcxParamIbGidIndex();
   if (*gidIndex >= 0) {
+    if (*gidIndex >= gidTblLen) {
+      WARN("NET/IB : FLAGCX_IB_GID_INDEX=%d is outside the GID table for %s "
+           "port %u (length %d)",
+           *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum,
+           gidTblLen);
+      return flagcxInvalidArgument;
+    }
+    INFO(FLAGCX_NET, "NET/IB : using FLAGCX_IB_GID_INDEX=%d on %s port %u",
+         *gidIndex, flagcxWrapIbvGetDeviceName(context->device), portNum);
     return flagcxSuccess;
+  }
+
+  const char *addressFamilyEnv = flagcxGetEnv("FLAGCX_IB_ADDR_FAMILY");
+  const char *addressRangeEnv = flagcxGetEnv("FLAGCX_IB_ADDR_RANGE");
+  const char *roceVersionEnv = flagcxGetEnv("FLAGCX_IB_ROCE_VERSION_NUM");
+  const bool useAutoSelection = flagcxIbShouldUseAutoGidSelection(
+      addressFamilyEnv != NULL && addressFamilyEnv[0] != '\0',
+      addressRangeEnv != NULL && addressRangeEnv[0] != '\0',
+      roceVersionEnv != NULL && roceVersionEnv[0] != '\0');
+
+  // Prefer the richer gid_type and network-device metadata when no explicit
+  // legacy selector is configured. Explicit constraints retain their existing
+  // semantics instead of being silently bypassed by auto-ranking.
+  if (useAutoSelection) {
+    flagcxResult_t result =
+        flagcxIbFindBestGidIndexEx(context, portNum, gidTblLen, gidIndex);
+    if (result == flagcxSuccess)
+      return flagcxSuccess;
+    if (result != flagcxNotSupported)
+      return result;
+    INFO(FLAGCX_NET,
+         "NET/IB : ibv_query_gid_ex unavailable on %s port %u; using legacy "
+         "GID selection",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
+  } else {
+    INFO(FLAGCX_NET,
+         "NET/IB : explicit GID selector configured on %s port %u; using "
+         "legacy filtered GID selection",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
   }
 
   sa_family_t userAddrFamily = envIbAddrFamily();
@@ -387,6 +542,18 @@ static const char *flagcxIbLinkLayerName(int linkLayer) {
 
 int flagcxIbRelaxedOrderingCapable(void) {
   int roMode = flagcxParamIbPciRelaxedOrdering();
+#ifdef USE_SHCA
+  // SHCA exposes ibv_reg_mr_iova2, but its provider rejects registrations
+  // using IBV_ACCESS_RELAXED_ORDERING. In auto mode, prefer the compatible
+  // ibv_reg_mr path. Keep mode 1 as an explicit user request so a provider
+  // that adds support can still be exercised and report its real result.
+  if (roMode == 1) {
+    WARN("NET/IB : FLAGCX_IB_PCI_RELAXED_ORDERING=1 is not supported by "
+         "SHCA; forced relaxed-ordering MR registration may fail.");
+  }
+  if (roMode == 2)
+    return 0;
+#endif
   flagcxResult_t r = flagcxInternalError;
   if (roMode == 1 || roMode == 2) {
     // Query IBVERBS_1.8 API - needed for IBV_ACCESS_RELAXED_ORDERING support
@@ -494,8 +661,11 @@ flagcxResult_t flagcxIbInit() {
           continue;
         }
         queriedDeviceCount++;
-        INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IB : device=%s phys_port_cnt=%d",
-             devices[d]->name, devAttr.phys_port_cnt);
+        INFO(FLAGCX_INIT | FLAGCX_NET,
+             "NET/IB : device=%s phys_port_cnt=%d max_qp_rd_atom=%d "
+             "max_qp_init_rd_atom=%d",
+             devices[d]->name, devAttr.phys_port_cnt, devAttr.max_qp_rd_atom,
+             devAttr.max_qp_init_rd_atom);
         for (int port_num = 1; port_num <= devAttr.phys_port_cnt; port_num++) {
           struct ibv_port_attr portAttr;
           if (flagcxSuccess !=
@@ -546,6 +716,7 @@ flagcxResult_t flagcxIbInit() {
           flagcxIbDevs[flagcxNIbDevs].device = d;
           flagcxIbDevs[flagcxNIbDevs].guid = devAttr.sys_image_guid;
           flagcxIbDevs[flagcxNIbDevs].portAttr = portAttr;
+          flagcxIbDevs[flagcxNIbDevs].lid = flagcxIbPortLid(&portAttr);
           flagcxIbDevs[flagcxNIbDevs].portNum = port_num;
           flagcxIbDevs[flagcxNIbDevs].link = portAttr.link_layer;
           flagcxIbDevs[flagcxNIbDevs].speed =
@@ -561,6 +732,9 @@ flagcxResult_t flagcxIbInit() {
                                  &flagcxIbDevs[flagcxNIbDevs].pciPath,
                                  &flagcxIbDevs[flagcxNIbDevs].realPort));
           flagcxIbDevs[flagcxNIbDevs].maxQp = devAttr.max_qp;
+          flagcxIbDevs[flagcxNIbDevs].maxQpRdAtomic = devAttr.max_qp_rd_atom;
+          flagcxIbDevs[flagcxNIbDevs].maxQpInitRdAtomic =
+              devAttr.max_qp_init_rd_atom;
           flagcxIbDevs[flagcxNIbDevs].mrCache.capacity = 0;
           flagcxIbDevs[flagcxNIbDevs].mrCache.population = 0;
           flagcxIbDevs[flagcxNIbDevs].mrCache.slots = NULL;
@@ -824,32 +998,53 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
+static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
+#ifdef USE_SHCA
+  // SHCA programs a GID/GRH route together with its extended 17-bit DLID.
+  (void)linkLayer;
+  return true;
+#else
+  return linkLayer == IBV_LINK_LAYER_ETHERNET;
+#endif
+}
+
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbGidInfo *localGidInfo,
                              uint32_t dest_qp_num,
-                             struct flagcxIbDevInfo *info) {
+                             const struct flagcxIbDevInfo *info) {
+  if (qp == NULL || localDev == NULL || localGidInfo == NULL || info == NULL)
+    return flagcxInvalidArgument;
+
   struct ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTR;
   qpAttr.path_mtu = info->mtu;
   qpAttr.dest_qp_num = dest_qp_num;
   qpAttr.rq_psn = 0;
-  qpAttr.max_dest_rd_atomic = 1;
+  qpAttr.max_dest_rd_atomic = flagcxIbResponderAtomicDepth(
+      flagcxParamIbRdAtomicDepth(), localDev->maxQpRdAtomic);
   qpAttr.min_rnr_timer = 12;
-  if (info->linkLayer == IBV_LINK_LAYER_ETHERNET) {
+  if (flagcxIbUseGlobalRoute(info->linkLayer)) {
     qpAttr.ah_attr.is_global = 1;
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = info->iid;
     qpAttr.ah_attr.grh.flow_label = 0;
-    qpAttr.ah_attr.grh.sgid_index = sGidIndex;
+    qpAttr.ah_attr.grh.sgid_index = localGidInfo->localGidIndex;
     qpAttr.ah_attr.grh.hop_limit = 255;
     qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
+#ifdef USE_SHCA
+    FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
+#endif
   } else {
     qpAttr.ah_attr.is_global = 0;
-    qpAttr.ah_attr.dlid = info->lid;
+    FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
   }
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
-  qpAttr.ah_attr.port_num = info->ibPort;
+  // port_num selects the local egress port. The peer's port belongs only to
+  // the exchanged route metadata and must not be programmed into a local QP.
+  qpAttr.ah_attr.port_num = localDev->portNum;
   FLAGCXCHECK(flagcxWrapIbvModifyQp(
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
@@ -857,7 +1052,11 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp) {
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbDevInfo *remoteInfo) {
+  if (qp == NULL || localDev == NULL || remoteInfo == NULL)
+    return flagcxInvalidArgument;
   struct ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTS;
@@ -865,7 +1064,15 @@ flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp) {
   qpAttr.retry_cnt = flagcxParamIbRetryCnt();
   qpAttr.rnr_retry = 7;
   qpAttr.sq_psn = 0;
-  qpAttr.max_rd_atomic = 1;
+  qpAttr.max_rd_atomic = flagcxIbInitiatorAtomicDepth(
+      flagcxParamIbRdAtomicDepth(), localDev->maxQpInitRdAtomic,
+      remoteInfo->maxDestRdAtomic);
+  INFO(FLAGCX_NET,
+       "NET/IB: RTS qpn=%u local_hca=%s "
+       "max_rd_atomic=%u local_max_qp_init_rd_atom=%d "
+       "remote_max_dest_rd_atomic=%u",
+       qp->qp_num, localDev->devName, (unsigned int)qpAttr.max_rd_atomic,
+       localDev->maxQpInitRdAtomic, (unsigned int)remoteInfo->maxDestRdAtomic);
   FLAGCXCHECK(flagcxWrapIbvModifyQp(
       qp, &qpAttr,
       IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
@@ -945,7 +1152,8 @@ ib_connect_check:
 
   // IBRC retransmission: default disabled, can be enabled via
   // FLAGCX_IB_RETRANS_ENABLE=1
-  meta.retransEnabled = flagcxParamIbRetransEnable() ? 1 : 0;
+  meta.retransEnabled =
+      flagcxIbRetransUdSupported() && flagcxParamIbRetransEnable() ? 1 : 0;
 
   // Alternate QPs between devices
   int devIndex;
@@ -975,7 +1183,9 @@ ib_connect_check:
     flagcxIbDevInfo *devInfo = meta.devs + i;
     devInfo->ibPort = ibDev->portNum;
     devInfo->mtu = ibDev->portAttr.active_mtu;
-    devInfo->lid = ibDev->portAttr.lid;
+    devInfo->lid = ibDev->lid;
+    devInfo->maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+        flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 
     // Prepare my fifo
     FLAGCXCHECK(
@@ -992,10 +1202,11 @@ ib_connect_check:
                                    sizeof(comm->putSignalScratchpad),
                                    IBV_ACCESS_LOCAL_WRITE));
 
-    // RoCE support
+    // RoCE uses a global route on standard verbs. SHCA also requires the
+    // GID/GRH route for ports that report an InfiniBand link layer.
     devInfo->linkLayer = commDev->base.gidInfo.linkLayer =
         ibDev->portAttr.link_layer;
-    if (devInfo->linkLayer == IBV_LINK_LAYER_ETHERNET) {
+    if (flagcxIbUseGlobalRoute(devInfo->linkLayer)) {
       FLAGCXCHECK(flagcxIbGetGidIndex(ibDev->context, ibDev->portNum,
                                       ibDev->portAttr.gid_tbl_len,
                                       &commDev->base.gidInfo.localGidIndex));
@@ -1014,7 +1225,7 @@ ib_connect_check:
       FLAGCXCHECK(flagcxIbCreateCtrlQp(ibDev->context, commDev->base.pd,
                                        ibDev->portNum, &commDev->ctrlQp));
       meta.ctrlQpn[i] = commDev->ctrlQp.qp->qp_num;
-      meta.ctrlLid[i] = ibDev->portAttr.lid;
+      meta.ctrlLid[i] = ibDev->lid;
       meta.ctrlGid[i] = commDev->base.gidInfo.localGid;
 
       size_t ackBufSize =
@@ -1162,15 +1373,16 @@ ib_connect:
     comm->base.qps[q].remDevIdx = remQpInfo->devIndex;
     int devIndex = comm->base.qps[q].devIndex;
     flagcxIbSendCommDev *commDev = comm->devs + devIndex;
-    uint8_t gidIndex = commDev->base.gidInfo.localGidIndex;
+    struct flagcxIbDev *ibDev = flagcxIbDevs + commDev->base.ibDevN;
 
     struct ibv_qp *qp = comm->base.qps[q].qp;
     if (remQpInfo->eceSupported)
       FLAGCXCHECK(
           flagcxWrapIbvSetEce(qp, &remQpInfo->ece, &remQpInfo->eceSupported));
 
-    FLAGCXCHECK(flagcxIbRtrQp(qp, gidIndex, remQpInfo->qpn, remDevInfo));
-    FLAGCXCHECK(flagcxIbRtsQp(qp));
+    FLAGCXCHECK(flagcxIbRtrQp(qp, ibDev, &commDev->base.gidInfo, remQpInfo->qpn,
+                              remDevInfo));
+    FLAGCXCHECK(flagcxIbRtsQp(qp, ibDev, remDevInfo));
   }
 
   if (linkLayer == IBV_LINK_LAYER_ETHERNET) { // RoCE
@@ -1374,7 +1586,8 @@ ib_recv:
 
   // IBRC retransmission: default disabled, can be enabled via
   // FLAGCX_IB_RETRANS_ENABLE=1
-  meta.retransEnabled = flagcxParamIbRetransEnable() ? 1 : 0;
+  meta.retransEnabled =
+      flagcxIbRetransUdSupported() && flagcxParamIbRetransEnable() ? 1 : 0;
 
   // Create SRQ if retransmission is enabled
   if (remMeta.retransEnabled && meta.retransEnabled) {
@@ -1455,9 +1668,9 @@ ib_recv:
                                           &meta.qpInfo[q].eceSupported));
     }
 
-    FLAGCXCHECK(flagcxIbRtrQp(qp->qp, rCommDev->base.gidInfo.localGidIndex,
+    FLAGCXCHECK(flagcxIbRtrQp(qp->qp, ibDev, &rCommDev->base.gidInfo,
                               remMeta.qpInfo[q].qpn, remDevInfo));
-    FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
+    FLAGCXCHECK(flagcxIbRtsQp(qp->qp, ibDev, remDevInfo));
   }
 
   rComm->flushEnabled = 1;
@@ -1493,25 +1706,30 @@ ib_recv:
                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ,
                            &rCommDev->gpuFlush.qp));
       struct flagcxIbDevInfo devInfo;
-      devInfo.lid = ibDev->portAttr.lid;
+      memset(&devInfo, 0, sizeof(devInfo));
+      devInfo.lid = ibDev->lid;
       devInfo.linkLayer = ibDev->portAttr.link_layer;
       devInfo.ibPort = ibDev->portNum;
       devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
       devInfo.iid = rCommDev->base.gidInfo.localGid.global.interface_id;
       devInfo.mtu = ibDev->portAttr.active_mtu;
-      FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp,
-                                rCommDev->base.gidInfo.localGidIndex,
+      devInfo.maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+          flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
+      FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp, ibDev,
+                                &rCommDev->base.gidInfo,
                                 rCommDev->gpuFlush.qp.qp->qp_num, &devInfo));
-      FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp));
+      FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp, ibDev, &devInfo));
     }
 
     // Fill Handle
-    meta.devs[i].lid = ibDev->portAttr.lid;
+    meta.devs[i].lid = ibDev->lid;
     meta.devs[i].linkLayer = rCommDev->base.gidInfo.linkLayer =
         ibDev->portAttr.link_layer;
     meta.devs[i].ibPort = ibDev->portNum;
     meta.devs[i].spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
     meta.devs[i].iid = rCommDev->base.gidInfo.localGid.global.interface_id;
+    meta.devs[i].maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+        flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 
     // Adjust the MTU
     remMeta.devs[i].mtu =
@@ -1531,7 +1749,7 @@ ib_recv:
       FLAGCXCHECK(flagcxIbCreateCtrlQp(ibDev->context, rCommDev->base.pd,
                                        ibDev->portNum, &rCommDev->ctrlQp));
       meta.ctrlQpn[i] = rCommDev->ctrlQp.qp->qp_num;
-      meta.ctrlLid[i] = ibDev->portAttr.lid;
+      meta.ctrlLid[i] = ibDev->lid;
       meta.ctrlGid[i] = rCommDev->base.gidInfo.localGid;
 
       TRACE(FLAGCX_NET,
@@ -1654,6 +1872,12 @@ ib_recv_ready:
 
 flagcxResult_t flagcxIbGetRequest(struct flagcxIbNetCommBase *base,
                                   struct flagcxIbRequest **req) {
+  if (base == NULL || req == NULL)
+    return flagcxInvalidArgument;
+  *req = NULL;
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   for (int i = 0; i < MAX_REQUESTS; i++) {
     struct flagcxIbRequest *r = base->reqs + i;
     if (r->type == FLAGCX_NET_IB_REQ_UNUSED) {
@@ -1998,6 +2222,9 @@ static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
 
 flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   struct flagcxIbRequest **reqs = comm->fifoReqs[slot];
   volatile struct flagcxIbSendFifo *slots = comm->fifo[slot];
   int nreqs = slots[0].nreqs;
@@ -2143,6 +2370,9 @@ flagcxResult_t flagcxIbIsend(void *sendComm, void *data, size_t size, int tag,
     WARN("NET/IB: flagcxIbIsend() called before the communicator is ready");
     return flagcxInternalError;
   }
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
 
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
 
@@ -2161,8 +2391,15 @@ flagcxResult_t flagcxIbIsend(void *sendComm, void *data, size_t size, int tag,
   nreqs = slots[0].nreqs;
   // Wait until all data has arrived
   for (int r = 1; r < nreqs; r++)
-    while (slots[r].idx != idx)
-      ;
+    while (slots[r].idx != idx) {
+      asyncResult = flagcxIbCommonGetCommError(&comm->base);
+      if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+        return asyncResult;
+      if (comm->base.sock.abortFlag != NULL &&
+          __atomic_load_n(comm->base.sock.abortFlag, __ATOMIC_ACQUIRE) != 0)
+        return flagcxRemoteError;
+      sched_yield();
+    }
   __sync_synchronize(); // order the nreqsPtr load against tag/rkey/addr loads
                         // below
   for (int r = 0; r < nreqs; r++) {
@@ -2262,6 +2499,9 @@ flagcxResult_t flagcxIbIrecv(void *recvComm, int n, void **data, size_t *sizes,
     WARN("NET/IB: flagcxIbIrecv() called before the communicator is ready");
     return flagcxInternalError;
   }
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   if (n <= 0 || n > FLAGCX_NET_IB_MAX_RECVS || data == NULL || sizes == NULL ||
       tags == NULL || mhandles == NULL)
     return flagcxInvalidArgument;
@@ -2316,6 +2556,9 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
   if (comm == NULL || comm->base.ready != 1)
     return comm == NULL ? flagcxInvalidArgument : flagcxInternalError;
+  flagcxResult_t asyncResult = flagcxIbCommonGetCommError(&comm->base);
+  if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+    return asyncResult;
   if (n < 0 || (n > 0 && (data == NULL || sizes == NULL || mhandles == NULL)))
     return flagcxInvalidArgument;
   int last = -1;

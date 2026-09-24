@@ -4,11 +4,34 @@
  * See LICENSE-NCCL.txt for license information
  ************************************************************************/
 
+#include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "ibvsymbols.h"
 #include "type.h"
+
+#if defined(USE_SHCA) || defined(FLAGCX_BUILD_RDMA_CORE)
+static int flagcxIbvQueryGidExPassthru(struct ibv_context *context,
+                                       uint32_t portNum, uint32_t gidIndex,
+                                       struct flagcxIbGidEntry *entry,
+                                       uint32_t flags, size_t entrySize) {
+  if (context == NULL || entry == NULL || entrySize < sizeof(*entry))
+    return EINVAL;
+
+  struct ibv_gid_entry nativeEntry = {};
+  int ret = ibv_query_gid_ex(context, portNum, gidIndex, &nativeEntry, flags);
+  if (ret != 0)
+    return ret;
+
+  entry->gid = nativeEntry.gid;
+  entry->gidIndex = nativeEntry.gid_index;
+  entry->portNum = nativeEntry.port_num;
+  entry->gidType = nativeEntry.gid_type;
+  entry->ndevIfindex = nativeEntry.ndev_ifindex;
+  return 0;
+}
+#endif
 
 #ifdef FLAGCX_BUILD_RDMA_CORE
 /* RDMA-core linking mode. Symbols are pointers to linked IB Verbs */
@@ -37,6 +60,7 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
   ASSIGN_SYM(ibvSymbols, ibv_ack_async_event, ibv_internal_ack_async_event);
   ASSIGN_SYM(ibvSymbols, ibv_query_device, ibv_internal_query_device);
   ASSIGN_SYM(ibvSymbols, ibv_query_gid, ibv_internal_query_gid);
+  ibvSymbols->ibv_internal_query_gid_ex = flagcxIbvQueryGidExPassthru;
   ASSIGN_SYM(ibvSymbols, ibv_query_qp, ibv_internal_query_qp);
   ASSIGN_SYM(ibvSymbols, ibv_alloc_pd, ibv_internal_alloc_pd);
   ASSIGN_SYM(ibvSymbols, ibv_dealloc_pd, ibv_internal_dealloc_pd);
@@ -124,6 +148,18 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
            ibvSymbols->ibv_internal_query_device);
   LOAD_SYM(ibvhandle, "ibv_query_port", ibvSymbols->ibv_internal_query_port);
   LOAD_SYM(ibvhandle, "ibv_query_gid", ibvSymbols->ibv_internal_query_gid);
+#ifdef USE_SHCA
+  // SHCA provides ibv_query_gid_ex through its vendor verbs header. Use a
+  // passthrough so the wrapper consumes the same FlagCX-owned entry layout as
+  // the portable dynamic-loading path.
+  ibvSymbols->ibv_internal_query_gid_ex = flagcxIbvQueryGidExPassthru;
+#else
+  // ibv_query_gid_ex is a verbs.h inline around this versioned ABI symbol.
+  // Keep it optional so older libibverbs installations retain legacy GID
+  // selection instead of failing the complete verbs initialization.
+  LOAD_SYM_VERSION(ibvhandle, "_ibv_query_gid_ex",
+                   ibvSymbols->ibv_internal_query_gid_ex, "IBVERBS_1.11");
+#endif
   LOAD_SYM(ibvhandle, "ibv_query_qp", ibvSymbols->ibv_internal_query_qp);
   LOAD_SYM(ibvhandle, "ibv_alloc_pd", ibvSymbols->ibv_internal_alloc_pd);
   LOAD_SYM(ibvhandle, "ibv_dealloc_pd", ibvSymbols->ibv_internal_dealloc_pd);
@@ -166,6 +202,7 @@ teardown:
   ibvSymbols->ibv_internal_query_device = NULL;
   ibvSymbols->ibv_internal_query_port = NULL;
   ibvSymbols->ibv_internal_query_gid = NULL;
+  ibvSymbols->ibv_internal_query_gid_ex = NULL;
   ibvSymbols->ibv_internal_query_qp = NULL;
   ibvSymbols->ibv_internal_alloc_pd = NULL;
   ibvSymbols->ibv_internal_dealloc_pd = NULL;

@@ -1005,6 +1005,43 @@ void FlagcxWorkerPool::performPostSend(int tid) {
   }
 }
 
+static const char *flagcxP2pWcStatusName(enum ibv_wc_status status) {
+  switch (status) {
+    case IBV_WC_SUCCESS:
+      return "SUCCESS";
+    case IBV_WC_LOC_LEN_ERR:
+      return "LOC_LEN_ERR";
+    case IBV_WC_LOC_QP_OP_ERR:
+      return "LOC_QP_OP_ERR";
+    case IBV_WC_LOC_PROT_ERR:
+      return "LOC_PROT_ERR";
+    case IBV_WC_WR_FLUSH_ERR:
+      return "WR_FLUSH_ERR";
+    case IBV_WC_BAD_RESP_ERR:
+      return "BAD_RESP_ERR";
+    case IBV_WC_LOC_ACCESS_ERR:
+      return "LOC_ACCESS_ERR";
+    case IBV_WC_REM_INV_REQ_ERR:
+      return "REM_INV_REQ_ERR";
+    case IBV_WC_REM_ACCESS_ERR:
+      return "REM_ACCESS_ERR";
+    case IBV_WC_REM_OP_ERR:
+      return "REM_OP_ERR";
+    case IBV_WC_RETRY_EXC_ERR:
+      return "RETRY_EXC_ERR";
+    case IBV_WC_RNR_RETRY_EXC_ERR:
+      return "RNR_RETRY_EXC_ERR";
+    case IBV_WC_FATAL_ERR:
+      return "FATAL_ERR";
+    case IBV_WC_RESP_TIMEOUT_ERR:
+      return "RESP_TIMEOUT_ERR";
+    case IBV_WC_GENERAL_ERR:
+      return "GENERAL_ERR";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 void FlagcxWorkerPool::performPollCq(int tid) {
   if (tid < 0 || static_cast<size_t>(tid) >= worker_cqs_.size() ||
       worker_cqs_[tid] == nullptr)
@@ -1034,8 +1071,17 @@ void FlagcxWorkerPool::performPollCq(int tid) {
     if (slice->qpDepth != NULL)
       qpDepthSet[slice->qpDepth]++;
     if (wcs[i].status != IBV_WC_SUCCESS) {
-      WARN("NET/IB_P2P : pool poll error status %d for slice %p", wcs[i].status,
-           slice);
+      WARN("NET/IB_P2P : CQ error pool=%d worker=%d cq=%p "
+           "status=%d(%s) vendor_err=%u opcode=%u wr_id=%llu qp_num=%u "
+           "byte_len=%u slice=%p operation=%s local_va=%p remote_va=%p "
+           "length=%u",
+           ibDevN_, tid, worker_cqs_[tid], wcs[i].status,
+           flagcxP2pWcStatusName(wcs[i].status), wcs[i].vendor_err,
+           (unsigned int)wcs[i].opcode, (unsigned long long)wcs[i].wr_id,
+           wcs[i].qp_num, wcs[i].byte_len, slice,
+           slice->opcode == FLAGCX_SLICE_OP_READ ? "READ" : "WRITE",
+           reinterpret_cast<void *>(slice->srcVa),
+           reinterpret_cast<void *>(slice->dstVa), slice->length);
       slice->markFailed();
     } else {
       slice->markSuccess();

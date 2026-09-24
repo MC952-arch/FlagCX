@@ -31,9 +31,11 @@ fi
 
 export FLAGCX_ADAPTOR=du
 export USE_DU=1
+export USE_SHCA=1
 
 FLAGCX_CI_COMMON_MAKE_ARGS=(
   USE_DU=1
+  USE_SHCA=1
   DEVICE_HOME="$CUDA_PATH"
   CCL_HOME="$CUDA_PATH"
 )
@@ -51,10 +53,28 @@ FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=8
 export NP=8
 
+# The Hygon CI host exposes two mutually reachable SHCA pairs. Keep the RDMA
+# integration suites on the verified shca_0 <-> shca_3 fabric until runtime
+# peer-compatible rail selection is available. Physical GPUs 0/7 are directly
+# adjacent to those HCAs; runner also uses the next-nearest GPU on each side.
+FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3
+FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7
+FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7
+
 flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    p2p|rma)
+      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"
+      export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+      ;;
+    runner)
+      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
+      export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+      FLAGCX_CI_RUNNER_NP=4
+      export NP=4
+      ;;
     device_api)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)

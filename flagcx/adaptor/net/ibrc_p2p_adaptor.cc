@@ -79,6 +79,7 @@ struct flagcxP2pConnMeta {
   uint8_t linkLayer;
   uint32_t lid;
   enum ibv_mtu mtu;
+  uint8_t maxDestRdAtomic;
 };
 
 struct flagcxP2pSliceReq {
@@ -184,6 +185,9 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
                                            int mrFlags, void **mhandle) {
   assert(size > 0);
   assert(comm != NULL);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
 
   int ibDevN = flagcxP2pGetIbDevN(comm);
   struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
@@ -202,8 +206,12 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
   }
 
   ibv_mr *mr = NULL;
-  FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(&devBase, data, size, type, offset,
-                                          fd, mrFlags, &mr));
+  flagcxResult_t result = flagcxIbRegMrDmaBufInternal(
+      &devBase, data, size, type, offset, fd, mrFlags, &mr);
+  if (result != flagcxSuccess) {
+    free(handle);
+    return result;
+  }
 
   handle->baseVa = (uintptr_t)data;
   handle->lkey = mr->lkey;
@@ -222,6 +230,8 @@ static flagcxResult_t flagcxP2pRegMr(void *comm, void *data, size_t size,
 }
 
 static flagcxResult_t flagcxP2pDeregMr(void *comm, void *mhandle) {
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
   struct flagcxP2pMrHandle *handle = (struct flagcxP2pMrHandle *)mhandle;
 
   // Build a temporary devBase for the internal deregistration call
@@ -373,9 +383,11 @@ static void flagcxP2pBuildConnMeta(struct flagcxP2pConnMeta *meta,
   meta->gid = base->gidInfo.localGid;
   meta->ibPort = ibDev->portNum;
   meta->linkLayer = ibDev->link;
-  meta->lid = ibDev->portAttr.lid;
+  meta->lid = ibDev->lid;
   meta->mtu = (enum ibv_mtu)std::min((int)ibDev->portAttr.active_mtu,
                                      (int)flagcxP2pConfiguredMtuCap());
+  meta->maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+      flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 }
 
 // Helper: transition QP to RTR+RTS using remote metadata
@@ -401,10 +413,11 @@ flagcxP2pTransitionQp(struct flagcxIbQp *qp,
   remoteInfo.mtu = mtu;
   remoteInfo.spn = remoteMeta->gid.global.subnet_prefix;
   remoteInfo.iid = remoteMeta->gid.global.interface_id;
+  remoteInfo.maxDestRdAtomic = remoteMeta->maxDestRdAtomic;
 
-  FLAGCXCHECK(flagcxIbRtrQp(qp->qp, base->gidInfo.localGidIndex,
-                            remoteMeta->qpn, &remoteInfo));
-  FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
+  FLAGCXCHECK(flagcxIbRtrQp(qp->qp, ibDev, &base->gidInfo, remoteMeta->qpn,
+                            &remoteInfo));
+  FLAGCXCHECK(flagcxIbRtsQp(qp->qp, ibDev, &remoteInfo));
   return flagcxSuccess;
 }
 

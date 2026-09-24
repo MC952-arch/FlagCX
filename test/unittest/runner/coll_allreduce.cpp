@@ -21,7 +21,7 @@ TEST_F(FlagCXCollTest, AllReduce) {
   devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
                           flagcxMemcpyDeviceToHost, stream);
 
-  devHandle->streamSynchronize(stream);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);
 

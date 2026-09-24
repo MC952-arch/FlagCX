@@ -7,12 +7,8 @@
 #ifndef FLAGCX_IBV_SYMBOLS_H_
 #define FLAGCX_IBV_SYMBOLS_H_
 
-#ifdef FLAGCX_BUILD_RDMA_CORE
-#include <infiniband/verbs.h>
-#else
-#include "ibvcore.h"
+#include "ibv_compat.h"
 #include "type.h"
-#endif
 
 /* IB Verbs Function Pointers*/
 struct flagcxIbvSymbols {
@@ -31,6 +27,10 @@ struct flagcxIbvSymbols {
                                  struct ibv_port_attr *port_attr);
   int (*ibv_internal_query_gid)(struct ibv_context *context, uint8_t port_num,
                                 int index, union ibv_gid *gid);
+  int (*ibv_internal_query_gid_ex)(struct ibv_context *context,
+                                   uint32_t port_num, uint32_t gid_index,
+                                   struct flagcxIbGidEntry *entry,
+                                   uint32_t flags, size_t entry_size);
   int (*ibv_internal_query_qp)(struct ibv_qp *qp, struct ibv_qp_attr *attr,
                                int attr_mask,
                                struct ibv_qp_init_attr *init_attr);
@@ -65,6 +65,8 @@ struct flagcxIbvSymbols {
       struct ibv_pd *pd, struct ibv_srq_init_attr *srq_init_attr);
   int (*ibv_internal_destroy_srq)(struct ibv_srq *srq);
 };
+
+extern struct flagcxIbvSymbols ibvSymbols;
 
 /* Constructs IB verbs symbols per rdma-core linking or dynamic loading mode */
 flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols);

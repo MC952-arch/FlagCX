@@ -358,6 +358,17 @@ run_suite() {
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
+      local platform_name
+      local -a runner_net_platform_env=()
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == "hygon" ]]; then
+        # A broken SHCA route otherwise consumes the default RC retry budget
+        # for several minutes before the completion reports RETRY_EXC_ERR.
+        runner_net_platform_env+=(
+          -x FLAGCX_IB_TIMEOUT=14
+          -x FLAGCX_IB_RETRY_CNT=1
+        )
+      fi
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       cd "$suite_dir"
@@ -376,6 +387,7 @@ run_suite() {
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+        "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests
       ;;
     symmem)

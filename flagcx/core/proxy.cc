@@ -403,6 +403,15 @@ static void flagcxProxyRetireFailedOp(
   free(op);
 }
 
+static void flagcxProxyRetireFailedQueue(
+    struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next>
+        *queue) {
+  while (!flagcxIntruQueueEmpty(queue)) {
+    struct flagcxProxyOp *op = flagcxIntruQueueHead(queue);
+    flagcxProxyRetireFailedOp(queue, op);
+  }
+}
+
 // process all the ProxyOps in the consumer queue
 // idle is set to 1 if no operations are pending
 // if idle is set to 0, it means there are pending operations
@@ -430,7 +439,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
-              flagcxProxyRetireFailedOp(queue, op);
+              flagcxProxyRetireFailedQueue(queue);
               op = NULL;
             }
             if (op != NULL && op->connection->transport == TRANSPORT_NET) {
@@ -440,7 +449,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                                                    op->nbytes, &op->args);
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedOp(queue, op);
+                flagcxProxyRetireFailedQueue(queue);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&
@@ -464,7 +473,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               }
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedOp(queue, op);
+                flagcxProxyRetireFailedQueue(queue);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&
@@ -483,7 +492,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
-              flagcxProxyRetireFailedOp(queue, op);
+              flagcxProxyRetireFailedQueue(queue);
               op = NULL;
             }
             if (op != NULL && op->connection->transport == TRANSPORT_NET) {
@@ -493,7 +502,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                                                    op->nbytes, &op->args);
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedOp(queue, op);
+                flagcxProxyRetireFailedQueue(queue);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&
@@ -511,7 +520,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                                                       op->nbytes, &op->args);
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedOp(queue, op);
+                flagcxProxyRetireFailedQueue(queue);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&
@@ -547,6 +556,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
 static flagcxResult_t
 flagcxProxyGetPostedOps(struct flagcxProxyState *proxyState, int *added) {
   struct flagcxProxyProgressState *state = &proxyState->progressState;
+  *added = 0;
   // No need to block waiting for the lock to be available. Exit, continue
   // progress, and come back later.
   if (pthread_mutex_trylock(&proxyState->mutex) != 0) {
@@ -570,13 +580,23 @@ flagcxProxyGetPostedOps(struct flagcxProxyState *proxyState, int *added) {
 
   // Put anything available right now in the producer queue into the consumer
   // queue.
+  flagcxResult_t asyncResult =
+      __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
+  const bool failed =
+      asyncResult != flagcxSuccess && asyncResult != flagcxInProgress;
   while (!flagcxProdProgChannelListEmpty(proxyState->prodProgChannelHead)) {
     struct flagcxProxyOps *proxyOps =
         flagcxProdProgChannelListDeList(&proxyState->prodProgChannelHead);
 
-    flagcxConsProgChannelListEnList(&proxyState->consProgChannelHead, proxyOps);
     struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next> *queue;
     queue = &proxyOps->prodPeers.sendQueue;
+    if (failed) {
+      flagcxProxyRetireFailedQueue(queue);
+      flagcxProxyRetireFailedQueue(&proxyOps->prodPeers.recvQueue);
+      continue;
+    }
+
+    flagcxConsProgChannelListEnList(&proxyState->consProgChannelHead, proxyOps);
     while (!flagcxIntruQueueEmpty(queue)) {
       struct flagcxProxyOp *op = flagcxIntruQueueDequeue(queue);
       flagcxProgPeerListEnList(&proxyOps->consProgPeerHead,

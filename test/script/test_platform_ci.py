@@ -7,9 +7,167 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
+HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_hygon_builds_ibrc_with_shca_abi(self):
+        hygon_env = HYGON_ENV.read_text()
+        makefile = (REPO_ROOT / "Makefile").read_text()
+        compat = (
+            REPO_ROOT / "flagcx/service/include/ibv_compat.h"
+        ).read_text()
+
+        self.assertIn("USE_SHCA=1", hygon_env)
+        self.assertIn("USE_SHCA ?= 0", makefile)
+        self.assertIn("NET_ADAPTOR_FLAG += -DUSE_SHCA", makefile)
+        self.assertIn("<infiniband/verbs.h>", compat)
+        self.assertIn("<infiniband/shca_17b_types.h>", compat)
+
+    def test_shca_ibrc_excludes_ud_ah_srq_provider_operations(self):
+        common_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans.cc"
+        ).read_text()
+        ud_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
+        ).read_text()
+        ibrc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ).read_text()
+
+        self.assertNotIn("ops.create_ah", common_retrans)
+        self.assertNotIn("ops.destroy_ah", common_retrans)
+        self.assertNotIn("flagcxWrapIbvPostSrqRecv", common_retrans)
+        self.assertIn("#ifndef USE_SHCA", ud_retrans)
+        self.assertIn(
+            "flagcxIbRetransUdSupported(void) { return false; }", ud_retrans
+        )
+        self.assertEqual(ibrc.count("flagcxIbRetransUdSupported()"), 2)
+
+    def test_shca_scope_does_not_extend_ibuc(self):
+        ibuc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibuc_adaptor.cc"
+        ).read_text()
+        ud_retrans = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
+        ).read_text()
+
+        self.assertNotIn("USE_SHCA", ibuc)
+        self.assertNotIn("flagcxIbPortLid", ibuc)
+        self.assertNotIn("flagcxIbSetAhDlid", ibuc)
+        self.assertNotIn("defined(USE_IBUC)", ud_retrans)
+
+    def test_hygon_service_checks_ibuc_with_standard_verbs_abi(self):
+        service_dir = REPO_ROOT / "test/unittest/service"
+        result = subprocess.run(
+            [
+                "make",
+                "-n",
+                "-C",
+                str(service_dir),
+                "compile-ibuc",
+                "USE_DU=1",
+                "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
+                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        compile_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if "ibuc_adaptor.cc -fsyntax-only" in line
+        )
+
+        self.assertIn("-DUSE_IBUC", compile_command)
+        self.assertNotIn("-DUSE_SHCA", compile_command)
+
+    def test_shca_ibrc_uses_gid_global_route(self):
+        ibrc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ).read_text()
+        p2p = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc"
+        ).read_text()
+
+        route_selector = ibrc[
+            ibrc.index("static bool flagcxIbUseGlobalRoute") :
+        ]
+        route_selector = route_selector[
+            : route_selector.index("flagcxResult_t flagcxIbRtrQp")
+        ]
+        self.assertIn("#ifdef USE_SHCA", route_selector)
+        self.assertIn("return true", route_selector)
+        self.assertNotIn("IB_SHCA_USE_GID", ibrc)
+        self.assertIn("qpAttr.ah_attr.is_global = 1", ibrc)
+        self.assertIn("qpAttr.ah_attr.grh.dgid.global.subnet_prefix", ibrc)
+        self.assertIn("flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid)", ibrc)
+        self.assertIn("flagcxIbUseGlobalRoute(devInfo->linkLayer)", ibrc)
+        self.assertIn("flagcxIbRtrQp(qp->qp", p2p)
+
+    def test_hygon_rdma_suites_use_connected_shca_fabric(self):
+        hygon_env = HYGON_ENV.read_text()
+
+        self.assertIn(
+            "FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3", hygon_env
+        )
+        self.assertIn(
+            "FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7", hygon_env
+        )
+        self.assertIn(
+            "FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7", hygon_env
+        )
+
+        configure = hygon_env[hygon_env.index("flagcx_ci_configure_suite() {") :]
+        configure = configure[: configure.index("flagcx_ci_prepare() {")]
+        self.assertIn("p2p|rma)", configure)
+        self.assertIn(
+            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"',
+            configure,
+        )
+        self.assertIn(
+            'export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"',
+            configure,
+        )
+        self.assertIn('runner)', configure)
+        self.assertIn(
+            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
+            configure,
+        )
+        self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
+        self.assertIn("export NP=4", configure)
+
+    def test_automatic_hardware_ci_covers_all_platforms(self):
+        matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
+        result = subprocess.run(
+            [
+                "ruby",
+                str(matrix_loader),
+                str(REPO_ROOT / ".github/configs"),
+                "all",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
+            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
+            '{"platform":"metax","display_name":"MetaX Tests"},'
+            '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
+        )
+
+        for workflow_name in ("test.yml", "torch-api-test.yml"):
+            workflow = (
+                REPO_ROOT / f".github/workflows/{workflow_name}"
+            ).read_text()
+            trigger = workflow[: workflow.index("\njobs:")]
+            self.assertIn("pull_request:", trigger)
+            self.assertIn("push:", trigger)
+
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         torch_workflow = (
@@ -143,6 +301,42 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("single_qp_status", p2p_runner)
         self.assertIn("mtu_2048_status", p2p_runner)
+
+    def test_runner_converges_async_errors_and_stops_new_communicators(self):
+        fixture = (
+            REPO_ROOT / "test/unittest/runner/include/runner_fixtures.hpp"
+        ).read_text()
+        runner = (
+            REPO_ROOT / "test/unittest/runner/main_mpi.cpp"
+        ).read_text()
+        runner_dir = REPO_ROOT / "test/unittest/runner"
+
+        self.assertIn("synchronizeAndCheckAsyncError", fixture)
+        self.assertIn("flagcxCommGetAsyncError", runner)
+        self.assertIn("MPI_Allreduce", runner)
+        self.assertIn("runnerTransportFailureObserved = true", runner)
+        self.assertIn("if (runnerTransportFailureObserved)", runner)
+
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        runner_case = unit_runner[unit_runner.index("    runner)") :]
+        runner_case = runner_case[: runner_case.index("    symmem)")]
+        self.assertIn('platform_name" == "hygon"', runner_case)
+        self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
+        self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
+        self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
+
+        for path in runner_dir.glob("coll_*.cpp"):
+            source = path.read_text()
+            if "streamSynchronize(stream)" in source:
+                self.fail(
+                    f"{path.name} bypasses collective async-error convergence"
+                )
+            if "TEST_F(FlagCXCollTest" in source:
+                self.assertIn(
+                    "synchronizeAndCheckAsyncError()", source, path.name
+                )
 
     def test_rma_transport_mode_uses_common_ib_and_p2p_switches(self):
         rma_makefile = (

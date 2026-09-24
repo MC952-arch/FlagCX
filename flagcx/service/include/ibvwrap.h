@@ -12,13 +12,8 @@
 #ifndef FLAGCX_IBVWRAP_H_
 #define FLAGCX_IBVWRAP_H_
 
-#ifdef FLAGCX_BUILD_RDMA_CORE
-#include <infiniband/verbs.h>
-#else
-#include "ibvcore.h"
-#endif
-
 #include "core.h"
+#include "ibv_compat.h"
 #include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -48,6 +43,10 @@ flagcxResult_t flagcxWrapIbvQueryPort(struct ibv_context *context,
 flagcxResult_t flagcxWrapIbvQueryGid(struct ibv_context *context,
                                      uint8_t port_num, int index,
                                      union ibv_gid *gid);
+flagcxResult_t flagcxWrapIbvQueryGidEx(struct ibv_context *context,
+                                       uint32_t portNum, uint32_t index,
+                                       struct flagcxIbGidEntry *entry,
+                                       uint32_t flags);
 flagcxResult_t flagcxWrapIbvQueryQp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
                                     int attr_mask,
                                     struct ibv_qp_init_attr *init_attr);

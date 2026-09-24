@@ -9,7 +9,7 @@
 #define FLAGCX_IB_COMMON_H_
 
 #include "flagcx_net.h"
-#include "ibvcore.h"
+#include "ibv_compat.h"
 #include "ibvwrap.h"
 #include "net.h"
 #include "onesided.h"
@@ -45,6 +45,26 @@ extern int64_t flagcxParamIbMergeVfs(void);
 extern int64_t flagcxParamIbAdaptiveRouting(void);
 extern int64_t flagcxParamIbMergeNics(void);
 
+static inline uint32_t flagcxIbPortLid(const struct ibv_port_attr *portAttr) {
+#ifdef USE_SHCA
+  return u17_to_32(portAttr->lid);
+#else
+  return portAttr->lid;
+#endif
+}
+
+static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
+                                               uint32_t lid) {
+#ifdef USE_SHCA
+  ahAttr->dlid = u32_to_17(lid);
+#else
+  if (lid > UINT16_MAX)
+    return flagcxInvalidArgument;
+  ahAttr->dlid = (uint16_t)lid;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxIbMr {
   uintptr_t addr;
   size_t pages;
@@ -67,6 +87,7 @@ struct flagcxIbDev {
   int ibProvider;
   uint64_t guid;
   struct ibv_port_attr portAttr;
+  uint32_t lid;
   int portNum;
   int link;
   int speed;
@@ -77,6 +98,10 @@ struct flagcxIbDev {
   char *pciPath;
   int realPort;
   int maxQp;
+  // Per-QP responder and initiator RDMA Read/Atomic limits reported by
+  // ibv_query_device().
+  int maxQpRdAtomic;
+  int maxQpInitRdAtomic;
   struct flagcxIbMrCache mrCache;
   struct flagcxIbStats stats;
   int ar; // ADAPTIVE_ROUTING
@@ -112,8 +137,36 @@ struct flagcxIbDevInfo {
   uint64_t spn;
   uint64_t iid;
   uint32_t fifoRkey;
+  // Responder credits selected by this peer for QPs on this physical HCA.
+  uint8_t maxDestRdAtomic;
   union ibv_gid remoteGid;
 };
+
+static inline uint8_t flagcxIbResponderAtomicDepth(int64_t requestedDepth,
+                                                   int localCap) {
+  if (requestedDepth <= 0 || localCap <= 0)
+    return 0;
+  uint64_t depth = (uint64_t)requestedDepth;
+  if (depth > (uint64_t)localCap)
+    depth = (uint64_t)localCap;
+  if (depth > UINT8_MAX)
+    depth = UINT8_MAX;
+  return (uint8_t)depth;
+}
+
+static inline uint8_t flagcxIbInitiatorAtomicDepth(int64_t requestedDepth,
+                                                   int localCap,
+                                                   int remoteResponderDepth) {
+  uint8_t depth = flagcxIbResponderAtomicDepth(requestedDepth, localCap);
+  if (remoteResponderDepth <= 0)
+    return 0;
+  uint8_t remoteDepth = remoteResponderDepth > UINT8_MAX
+                            ? UINT8_MAX
+                            : (uint8_t)remoteResponderDepth;
+  if (depth > remoteDepth)
+    depth = remoteDepth;
+  return depth;
+}
 
 struct flagcxIbGidInfo {
   uint8_t linkLayer;
@@ -339,6 +392,10 @@ struct alignas(32) flagcxIbNetCommBase {
   int devIndex;
   struct flagcxSocket sock;
   int ready;
+  // First permanent data-plane error observed on this communicator. Once a
+  // CQE fails, no later request may be posted or wait indefinitely for other
+  // completions from the failed QP.
+  flagcxResult_t asyncResult;
   // Track necessary remDevInfo here
   int nRemDevs;
   struct flagcxIbDevInfo remDevs[FLAGCX_IB_MAX_DEVS_PER_NIC];
@@ -440,6 +497,7 @@ extern int64_t flagcxParamIbAdaptiveRouting(void);
 extern int64_t flagcxParamIbMergeVfs(void);
 extern int64_t flagcxParamIbMergeNics(void);
 extern int64_t flagcxParamIbQpsPerConn(void);
+extern int64_t flagcxParamIbRdAtomicDepth(void);
 
 extern sa_family_t envIbAddrFamily(void);
 extern void *envIbAddrRange(sa_family_t af, int *mask);
@@ -503,6 +561,10 @@ flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
 flagcxResult_t
 flagcxIbCommonRecordUnsignaledCompletion(struct flagcxIbNetCommBase *base,
                                          uint64_t wrId, flagcxResult_t result);
+flagcxResult_t flagcxIbCommonRecordCommError(struct flagcxIbNetCommBase *base,
+                                             flagcxResult_t result);
+flagcxResult_t
+flagcxIbCommonGetCommError(const struct flagcxIbNetCommBase *base);
 
 static_assert((sizeof(struct flagcxIbNetCommBase) % 32) == 0,
               "flagcxIbNetCommBase size must be 32-byte multiple to ensure "
@@ -530,10 +592,14 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props);
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
                                 struct flagcxIbNetCommDevBase *base,
                                 int accessFlags, struct flagcxIbQp *qp);
-flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbGidInfo *localGidInfo,
                              uint32_t dest_qp_num,
-                             struct flagcxIbDevInfo *info);
-flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp);
+                             const struct flagcxIbDevInfo *info);
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
+                             const struct flagcxIbDev *localDev,
+                             const struct flagcxIbDevInfo *remoteInfo);
 flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            void *data, size_t size, int type,
                                            uint64_t offset, int fd, int mrFlags,

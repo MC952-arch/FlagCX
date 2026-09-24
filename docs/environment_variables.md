@@ -146,7 +146,7 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_IB_DISABLE` | 0 | When set to 1, disables InfiniBand |
 | `FLAGCX_IB_HCA` | None | Specifies which IB HCA devices to use |
-| `FLAGCX_IB_GID_INDEX` | -1 | GID index for RoCE. -1 means auto-detect |
+| `FLAGCX_IB_GID_INDEX` | -1 | GID index for IB/RoCE. The default `-1` automatically ranks `ibv_query_gid_ex()` candidates when supported and otherwise uses the legacy probe; a non-negative value selects that index explicitly |
 | `FLAGCX_IB_ROCE_VERSION_NUM` | 2 | RoCE version number to use |
 | `FLAGCX_IB_TIMEOUT` | 18 | IB timeout value (exponential, actual timeout = 4.096us * 2^value) |
 | `FLAGCX_IB_RETRY_CNT` | 7 | Number of IB retry attempts |
@@ -160,6 +160,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_IB_MERGE_VFS` | 1 | When set to 1, merges Virtual Functions |
 | `FLAGCX_IB_MERGE_NICS` | 1 | When set to 1, merges multiple NICs into one logical device |
 | `FLAGCX_IB_QPS_PER_CONNECTION` | 1 | Number of Queue Pairs per connection |
+| `FLAGCX_IB_RD_ATOMIC_DEPTH` | 16 | Requested per-QP RDMA Read/Atomic depth. The effective value is capped by the local HCA and the peer's advertised responder depth |
 | `FLAGCX_IB_SPLIT_DATA_ON_QPS` | 0 | When set to 1, splits data across QPs |
 | `FLAGCX_IB_ADDR_FAMILY` | None | Address family for IB. Values: AF_IB, AF_INET, AF_INET6 |
 | `FLAGCX_IB_ADDR_RANGE` | None | IP address range for IB connections |

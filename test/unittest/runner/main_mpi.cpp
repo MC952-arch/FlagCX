@@ -35,10 +35,17 @@ void FlagCXTest::SetUp() {
 
 // ---------- FlagCXCollTest ----------
 
+// A transport failure is communicator-local in the FlagCX runtime, so a user
+// may legitimately create another communicator after destroying the failed
+// one. This test process is different: continuing with the next GTest case
+// after a permanent hardware error only repeats the same route failure and can
+// consume the job timeout. Every rank sets this flag from a collective error
+// convergence before a later fixture decides to skip initialization.
+static bool runnerTransportFailureObserved = false;
+
 void FlagCXCollTest::SetUp() {
   FlagCXTest::SetUp();
 
-  flagcxDeviceHandleInit(&devHandle);
   sendbuff = nullptr;
   recvbuff = nullptr;
   hostsendbuff = nullptr;
@@ -46,6 +53,13 @@ void FlagCXCollTest::SetUp() {
   stream = nullptr;
   size = 4ULL * 1024 * 1024; // 4MB
   count = size / sizeof(float);
+
+  if (runnerTransportFailureObserved) {
+    GTEST_SKIP() << "A previous runner test observed a permanent asynchronous "
+                    "transport error";
+  }
+
+  flagcxDeviceHandleInit(&devHandle);
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);
@@ -100,6 +114,25 @@ void FlagCXCollTest::SetUp() {
   devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, NULL);
   devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, NULL);
   devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, NULL);
+}
+
+flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
+  flagcxResult_t localError = devHandle->streamSynchronize(stream);
+  flagcxResult_t asyncError = flagcxSuccess;
+  if (localError == flagcxSuccess) {
+    flagcxResult_t queryResult = flagcxCommGetAsyncError(comm, &asyncError);
+    localError = queryResult != flagcxSuccess ? queryResult : asyncError;
+  }
+
+  int localErrorCode = static_cast<int>(localError);
+  int globalErrorCode = static_cast<int>(flagcxSuccess);
+  MPI_Allreduce(&localErrorCode, &globalErrorCode, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  if (globalErrorCode != static_cast<int>(flagcxSuccess)) {
+    runnerTransportFailureObserved = true;
+    return static_cast<flagcxResult_t>(globalErrorCode);
+  }
+  return flagcxSuccess;
 }
 
 void FlagCXCollTest::TearDown() {
