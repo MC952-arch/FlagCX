@@ -129,6 +129,38 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(RMA_NET_PLATFORM_ENV)", rma_makefile)
         self.assertIn("$(RMA_NET_TEST_ARGS)", rma_makefile)
 
+    def test_hygon_rdma_suites_use_connected_shca_fabric(self):
+        hygon_env = HYGON_ENV.read_text()
+
+        self.assertIn(
+            "FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3", hygon_env
+        )
+        self.assertIn(
+            "FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7", hygon_env
+        )
+        self.assertIn(
+            "FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7", hygon_env
+        )
+
+        configure = hygon_env[hygon_env.index("flagcx_ci_configure_suite() {") :]
+        configure = configure[: configure.index("flagcx_ci_prepare() {")]
+        self.assertIn("p2p|rma)", configure)
+        self.assertIn(
+            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"',
+            configure,
+        )
+        self.assertIn(
+            'export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"',
+            configure,
+        )
+        self.assertIn('runner)', configure)
+        self.assertIn(
+            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
+            configure,
+        )
+        self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
+        self.assertIn("export NP=4", configure)
+
     def test_automatic_hardware_ci_is_limited_to_hygon_unittest(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
