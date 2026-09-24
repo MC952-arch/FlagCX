@@ -32,7 +32,7 @@ TEST_F(FlagCXCollTest, SkewedP2pTeardown) {
   ASSERT_EQ(devHandle->deviceMemcpy(hostrecvbuff, recvbuff, sizeof(float),
                                     flagcxMemcpyDeviceToHost, stream),
             flagcxSuccess);
-  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
   EXPECT_EQ(static_cast<float *>(hostrecvbuff)[0],
             static_cast<float>(recvPeer));
 

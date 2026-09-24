@@ -27,17 +27,49 @@ enum flagcxIbAutoGidCandidateClass {
   flagcxIbGidFallbackNonzero = 6,
 };
 
+enum flagcxIbIpv4Scope {
+  flagcxIbIpv4Routable = 0,
+  flagcxIbIpv4Private = 1,
+  flagcxIbIpv4LinkLocal = 2,
+};
+
 struct flagcxIbAutoGidCandidate {
   int gidIndex;
   uint32_t gidType;
   bool hasNetworkDevice;
   bool isIpv4Mapped;
+  bool isLinkLocalIpv4;
   bool isLinkLocalIpv6;
   bool isOverlayNetwork;
   bool isPrivateIpv4;
   bool isNullGid;
   bool querySucceeded;
 };
+
+// Preserve the existing filtered GID selection whenever the user explicitly
+// configures one of its selectors. The unconstrained extended-query ranking is
+// only the default when none of those overrides is present.
+static inline bool
+flagcxIbShouldUseAutoGidSelection(bool addressFamilyConfigured,
+                                  bool addressRangeConfigured,
+                                  bool roceVersionConfigured) {
+  return !addressFamilyConfigured && !addressRangeConfigured &&
+         !roceVersionConfigured;
+}
+
+// ipv4 is in host byte order.
+static inline enum flagcxIbIpv4Scope
+flagcxIbClassifyIpv4Address(uint32_t ipv4) {
+  const uint8_t octet1 = (ipv4 >> 24) & 0xff;
+  const uint8_t octet2 = (ipv4 >> 16) & 0xff;
+  if (octet1 == 169 && octet2 == 254)
+    return flagcxIbIpv4LinkLocal;
+  if (octet1 == 10 || (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
+      (octet1 == 192 && octet2 == 168) ||
+      (octet1 == 100 && octet2 >= 64 && octet2 <= 127))
+    return flagcxIbIpv4Private;
+  return flagcxIbIpv4Routable;
+}
 
 struct flagcxIbAutoGidSelection {
   int gidIndex;
@@ -82,7 +114,8 @@ static inline bool flagcxIbClassifyAutoGidCandidate(
   const bool isPrivateV4 = isRoceV2 && !isOverlay && candidate->isIpv4Mapped &&
                            candidate->isPrivateIpv4;
   const bool isLinkLocal =
-      isRoceV2 && !candidate->isIpv4Mapped && candidate->isLinkLocalIpv6;
+      isRoceV2 && ((candidate->isIpv4Mapped && candidate->isLinkLocalIpv4) ||
+                   (!candidate->isIpv4Mapped && candidate->isLinkLocalIpv6));
   const bool isDegraded = isOverlay || isLinkLocal;
 
   if (candidate->hasNetworkDevice) {

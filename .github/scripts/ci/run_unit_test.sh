@@ -305,6 +305,9 @@ run_suite() {
       local single_qp_status=0
       local mtu_2048_status=0
       local retry_status=0
+      local hca_pair_status=0
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       local read_diagnostic_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake:FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer:FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
       local host_read_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
       FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
@@ -337,10 +340,28 @@ run_suite() {
           FLAGCX_CI_TEST_LABEL="p2p host READ retry diagnostics" \
           "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
           retry_status=$?
+
+        # SHCA nodes expose multiple local HCAs, and same-HCA loopback does not
+        # prove that routes between every ordered HCA pair work. Keep this as a
+        # dedicated Hygon diagnostic with a short RC retry budget; the test
+        # itself remains platform-neutral and reports both HCA names/PCI paths.
+        if [[ "$platform_name" == "hygon" ]]; then
+          GTEST_FILTER="P2pAdaptorTest.HostWriteReadForEveryOrderedHcaPair" \
+            FLAGCX_CI_P2P_HCA_PAIR_MATRIX=1 \
+            FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048 \
+            FLAGCX_P2P_RETRY_CNT=1 FLAGCX_IB_TIMEOUT=14 \
+            FLAGCX_IB_RETRY_CNT=1 \
+            FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 \
+            FLAGCX_VMM_ENABLE=0 \
+            FLAGCX_CI_TEST_LABEL="p2p ordered HCA-pair matrix" \
+            "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+            hca_pair_status=$?
+        fi
       fi
       if ((default_status != 0 || single_qp_status != 0 ||
-           mtu_2048_status != 0 || retry_status != 0)); then
-        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status short-retry=$retry_status" >&2
+           mtu_2048_status != 0 || retry_status != 0 ||
+           hca_pair_status != 0)); then
+        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status short-retry=$retry_status HCA-pairs=$hca_pair_status" >&2
         return 1
       fi
       ;;
@@ -396,6 +417,17 @@ run_suite() {
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
+      local platform_name
+      local -a runner_net_platform_env=()
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == "hygon" ]]; then
+        # A broken SHCA route otherwise consumes the default RC retry budget
+        # for several minutes before the completion reports RETRY_EXC_ERR.
+        runner_net_platform_env+=(
+          -x FLAGCX_IB_TIMEOUT=14
+          -x FLAGCX_IB_RETRY_CNT=1
+        )
+      fi
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       cd "$suite_dir"
@@ -414,6 +446,7 @@ run_suite() {
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+        "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests
       ;;
     symmem)

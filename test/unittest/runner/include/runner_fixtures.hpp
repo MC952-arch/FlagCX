@@ -22,15 +22,16 @@ class FlagCXCollTest : public FlagCXTest {
 protected:
   void SetUp() override;
   void TearDown() override;
+  flagcxResult_t synchronizeAndCheckAsyncError();
 
   flagcxDeviceHandle_t devHandle = nullptr;
   flagcxComm_t comm = nullptr;
-  flagcxStream_t stream;
-  void *sendbuff;
-  void *recvbuff;
-  void *hostsendbuff;
-  void *hostrecvbuff;
-  size_t size;
-  size_t count;
+  flagcxStream_t stream = nullptr;
+  void *sendbuff = nullptr;
+  void *recvbuff = nullptr;
+  void *hostsendbuff = nullptr;
+  void *hostrecvbuff = nullptr;
+  size_t size = 0;
+  size_t count = 0;
   int teardownDelayMs = 0;
 };

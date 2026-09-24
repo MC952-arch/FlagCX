@@ -246,15 +246,12 @@ static bool flagcxIbOverlayNetwork(const char *name) {
   return false;
 }
 
-static bool flagcxIbPrivateIpv4(const union ibv_gid *gid) {
+static enum flagcxIbIpv4Scope
+flagcxIbIpv4AddressScope(const union ibv_gid *gid) {
   if (getGidAddrFamily((union ibv_gid *)gid) != AF_INET)
-    return false;
+    return flagcxIbIpv4Routable;
   const struct in6_addr *addr = (const struct in6_addr *)gid->raw;
-  uint32_t ipv4 = ntohl(addr->s6_addr32[3]);
-  uint8_t octet1 = (ipv4 >> 24) & 0xff;
-  uint8_t octet2 = (ipv4 >> 16) & 0xff;
-  return octet1 == 10 || (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
-         (octet1 == 100 && octet2 >= 64 && octet2 <= 127);
+  return flagcxIbClassifyIpv4Address(ntohl(addr->s6_addr32[3]));
 }
 
 static void flagcxIbReadGidNetworkDevice(const char *deviceName,
@@ -315,10 +312,14 @@ static flagcxResult_t flagcxIbFindBestGidIndexEx(struct ibv_context *context,
     candidate->hasNetworkDevice =
         entry.ndevIfindex != 0 || networkDevice[0] != '\0';
     candidate->isIpv4Mapped = getGidAddrFamily(&entry.gid) == AF_INET;
+    enum flagcxIbIpv4Scope ipv4Scope = flagcxIbIpv4AddressScope(&entry.gid);
+    candidate->isLinkLocalIpv4 =
+        candidate->isIpv4Mapped && ipv4Scope == flagcxIbIpv4LinkLocal;
     candidate->isLinkLocalIpv6 = IN6_IS_ADDR_LINKLOCAL(addr);
     candidate->isOverlayNetwork =
         candidate->hasNetworkDevice && flagcxIbOverlayNetwork(networkDevice);
-    candidate->isPrivateIpv4 = flagcxIbPrivateIpv4(&entry.gid);
+    candidate->isPrivateIpv4 =
+        candidate->isIpv4Mapped && ipv4Scope == flagcxIbIpv4Private;
     candidate->isNullGid = flagcxIbNullGid(&entry.gid);
     candidate->querySucceeded = true;
   }
@@ -425,19 +426,34 @@ flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
     return flagcxSuccess;
   }
 
-  // Prefer the richer gid_type and network-device metadata returned by
-  // ibv_query_gid_ex. The legacy family/range/version selector remains the
-  // compatibility fallback when the extended query is unavailable.
-  flagcxResult_t result =
-      flagcxIbFindBestGidIndexEx(context, portNum, gidTblLen, gidIndex);
-  if (result == flagcxSuccess)
-    return flagcxSuccess;
-  if (result != flagcxNotSupported)
-    return result;
-  INFO(FLAGCX_NET,
-       "NET/IB : ibv_query_gid_ex unavailable on %s port %u; using legacy "
-       "GID selection",
-       flagcxWrapIbvGetDeviceName(context->device), portNum);
+  const char *addressFamilyEnv = flagcxGetEnv("FLAGCX_IB_ADDR_FAMILY");
+  const char *addressRangeEnv = flagcxGetEnv("FLAGCX_IB_ADDR_RANGE");
+  const char *roceVersionEnv = flagcxGetEnv("FLAGCX_IB_ROCE_VERSION_NUM");
+  const bool useAutoSelection = flagcxIbShouldUseAutoGidSelection(
+      addressFamilyEnv != NULL && addressFamilyEnv[0] != '\0',
+      addressRangeEnv != NULL && addressRangeEnv[0] != '\0',
+      roceVersionEnv != NULL && roceVersionEnv[0] != '\0');
+
+  // Prefer the richer gid_type and network-device metadata when no explicit
+  // legacy selector is configured. Explicit constraints retain their existing
+  // semantics instead of being silently bypassed by auto-ranking.
+  if (useAutoSelection) {
+    flagcxResult_t result =
+        flagcxIbFindBestGidIndexEx(context, portNum, gidTblLen, gidIndex);
+    if (result == flagcxSuccess)
+      return flagcxSuccess;
+    if (result != flagcxNotSupported)
+      return result;
+    INFO(FLAGCX_NET,
+         "NET/IB : ibv_query_gid_ex unavailable on %s port %u; using legacy "
+         "GID selection",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
+  } else {
+    INFO(FLAGCX_NET,
+         "NET/IB : explicit GID selector configured on %s port %u; using "
+         "legacy filtered GID selection",
+         flagcxWrapIbvGetDeviceName(context->device), portNum);
+  }
 
   sa_family_t userAddrFamily = envIbAddrFamily();
   int userRoceVersion = flagcxParamIbRoceVersionNum();
