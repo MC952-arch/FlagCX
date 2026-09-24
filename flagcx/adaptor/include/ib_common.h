@@ -65,14 +65,6 @@ static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
   return flagcxSuccess;
 }
 
-static inline uint32_t flagcxIbAhDlid(const struct ibv_ah_attr *ahAttr) {
-#ifdef USE_SHCA
-  return u17_to_32(ahAttr->dlid);
-#else
-  return ahAttr->dlid;
-#endif
-}
-
 struct flagcxIbMr {
   uintptr_t addr;
   size_t pages;
@@ -138,7 +130,6 @@ struct flagcxIbQpInfo {
 };
 
 struct flagcxIbDevInfo {
-  char devName[MAXNAMESIZE];
   uint32_t lid;
   uint8_t ibPort;
   enum ibv_mtu mtu;
@@ -604,7 +595,7 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
 flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
                              const struct flagcxIbDev *localDev,
                              const struct flagcxIbGidInfo *localGidInfo,
-                             const char *remoteDevName, uint32_t dest_qp_num,
+                             uint32_t dest_qp_num,
                              const struct flagcxIbDevInfo *info);
 flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
                              const struct flagcxIbDev *localDev,

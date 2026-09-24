@@ -304,12 +304,7 @@ run_suite() {
       local default_status=0
       local single_qp_status=0
       local mtu_2048_status=0
-      local retry_status=0
-      local hca_pair_status=0
-      local platform_name
-      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       local read_diagnostic_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake:FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer:FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
-      local host_read_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
       FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
@@ -331,45 +326,16 @@ run_suite() {
           FLAGCX_CI_TEST_LABEL="p2p READ MTU-2048 diagnostics" \
           "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
           mtu_2048_status=$?
-        # Use a short RC timeout/retry budget so a broken cross-HCA route
-        # produces its real CQ completion status before the test deadline.
-        GTEST_FILTER="$host_read_filter" \
-          FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048 \
-          FLAGCX_P2P_RETRY_CNT=1 FLAGCX_IB_TIMEOUT=14 FLAGCX_IB_RETRY_CNT=1 \
-          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
-          FLAGCX_CI_TEST_LABEL="p2p host READ retry diagnostics" \
-          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
-          retry_status=$?
-
-        # SHCA nodes expose multiple local HCAs, and same-HCA loopback does not
-        # prove that routes between every ordered HCA pair work. Keep this as a
-        # dedicated Hygon diagnostic with a short RC retry budget; the test
-        # itself remains platform-neutral and reports both HCA names/PCI paths.
-        if [[ "$platform_name" == "hygon" ]]; then
-          GTEST_FILTER="P2pAdaptorTest.HostWriteReadForEveryOrderedHcaPair" \
-            FLAGCX_CI_P2P_HCA_PAIR_MATRIX=1 \
-            FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048 \
-            FLAGCX_P2P_RETRY_CNT=1 FLAGCX_IB_TIMEOUT=14 \
-            FLAGCX_IB_RETRY_CNT=1 \
-            FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 \
-            FLAGCX_VMM_ENABLE=0 \
-            FLAGCX_CI_TEST_LABEL="p2p ordered HCA-pair matrix" \
-            "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
-            hca_pair_status=$?
-        fi
       fi
       if ((default_status != 0 || single_qp_status != 0 ||
-           mtu_2048_status != 0 || retry_status != 0 ||
-           hca_pair_status != 0)); then
-        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status short-retry=$retry_status HCA-pairs=$hca_pair_status" >&2
+           mtu_2048_status != 0)); then
+        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status" >&2
         return 1
       fi
       ;;
     rma)
       local ipc_status=0
       local network_status=0
-      local platform_name
-      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       # Keep these as separate invocations so each transport has its own
@@ -379,34 +345,9 @@ run_suite() {
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" || ipc_status=$?
       if flagcx_ci_require_rdma "$SUITE"; then
-        if [[ "$platform_name" == "hygon" ]]; then
-          local global_route_status=0
-          local lid_route_status=0
-          local shca_rma_env="-x FLAGCX_IB_SHCA_USE_GID=1 -x FLAGCX_IB_TIMEOUT=14 -x FLAGCX_IB_RETRY_CNT=1"
-          FLAGCX_CI_MPI_LABEL="rma SHCA global-route GetSmall" \
-            make -C "$suite_dir" run-mpi-net "${args[@]}" \
-            MPIRUN="$MPI_RUNNER" \
-            RMA_NET_PLATFORM_ENV="$shca_rma_env" \
-            RMA_NET_TEST_ARGS="--gtest_filter=RmaTest.GetSmall" || \
-            global_route_status=$?
-
-          shca_rma_env="-x FLAGCX_IB_SHCA_USE_GID=0 -x FLAGCX_IB_TIMEOUT=14 -x FLAGCX_IB_RETRY_CNT=1"
-          FLAGCX_CI_MPI_LABEL="rma SHCA LID-route GetSmall" \
-            make -C "$suite_dir" run-mpi-net "${args[@]}" \
-            MPIRUN="$MPI_RUNNER" \
-            RMA_NET_PLATFORM_ENV="$shca_rma_env" \
-            RMA_NET_TEST_ARGS="--gtest_filter=RmaTest.GetSmall" || \
-            lid_route_status=$?
-
-          echo "SHCA RMA route diagnostics: global=$global_route_status LID=$lid_route_status"
-          if ((global_route_status != 0 && lid_route_status != 0)); then
-            network_status=1
-          fi
-        else
-          FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
-            make -C "$suite_dir" run-mpi-net "${args[@]}" \
-            MPIRUN="$MPI_RUNNER" || network_status=$?
-        fi
+        FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
+          make -C "$suite_dir" run-mpi-net "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" || network_status=$?
       else
         network_status=$?
       fi

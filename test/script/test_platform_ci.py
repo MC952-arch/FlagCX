@@ -92,42 +92,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc"
         ).read_text()
 
-        self.assertIn("static bool flagcxIbUseGlobalRoute", ibrc)
-        self.assertIn("#ifdef USE_SHCA", ibrc)
-        self.assertIn(
-            'FLAGCX_PARAM(IbShcaUseGid, "IB_SHCA_USE_GID", 1)', ibrc
-        )
-        self.assertIn("return flagcxParamIbShcaUseGid() != 0", ibrc)
+        route_selector = ibrc[
+            ibrc.index("static bool flagcxIbUseGlobalRoute") :
+        ]
+        route_selector = route_selector[
+            : route_selector.index("flagcxResult_t flagcxIbRtrQp")
+        ]
+        self.assertIn("#ifdef USE_SHCA", route_selector)
+        self.assertIn("return true", route_selector)
+        self.assertNotIn("IB_SHCA_USE_GID", ibrc)
         self.assertIn("qpAttr.ah_attr.is_global = 1", ibrc)
         self.assertIn("qpAttr.ah_attr.grh.dgid.global.subnet_prefix", ibrc)
         self.assertIn("flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid)", ibrc)
         self.assertIn("flagcxIbUseGlobalRoute(devInfo->linkLayer)", ibrc)
         self.assertIn("flagcxIbRtrQp(qp->qp", p2p)
-
-    def test_hygon_rma_compares_global_and_lid_routes(self):
-        unit_runner = (
-            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
-        ).read_text()
-        rma_makefile = (
-            REPO_ROOT / "test/unittest/rma/Makefile"
-        ).read_text()
-
-        rma_runner = unit_runner[unit_runner.index("    rma)") :]
-        rma_runner = rma_runner[: rma_runner.index("    runner)")]
-        self.assertIn('platform_name" == "hygon"', rma_runner)
-        self.assertIn("FLAGCX_IB_SHCA_USE_GID=1", rma_runner)
-        self.assertIn("FLAGCX_IB_SHCA_USE_GID=0", rma_runner)
-        self.assertIn("FLAGCX_IB_TIMEOUT=14", rma_runner)
-        self.assertIn("FLAGCX_IB_RETRY_CNT=1", rma_runner)
-        self.assertIn("--gtest_filter=RmaTest.GetSmall", rma_runner)
-        self.assertIn(
-            "global_route_status != 0 && lid_route_status != 0", rma_runner
-        )
-
-        self.assertIn("RMA_NET_PLATFORM_ENV ?=", rma_makefile)
-        self.assertIn("RMA_NET_TEST_ARGS ?=", rma_makefile)
-        self.assertIn("$(RMA_NET_PLATFORM_ENV)", rma_makefile)
-        self.assertIn("$(RMA_NET_TEST_ARGS)", rma_makefile)
 
     def test_hygon_rdma_suites_use_connected_shca_fabric(self):
         hygon_env = HYGON_ENV.read_text()
@@ -323,30 +301,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("single_qp_status", p2p_runner)
         self.assertIn("mtu_2048_status", p2p_runner)
-
-    def test_hygon_p2p_runs_ordered_hca_pair_matrix(self):
-        unit_runner = (
-            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
-        ).read_text()
-        p2p_test = (
-            REPO_ROOT / "test/unittest/p2p/test_p2p_adaptor.cpp"
-        ).read_text()
-        p2p_runner = unit_runner[unit_runner.index("    p2p)") :]
-        p2p_runner = p2p_runner[: p2p_runner.index("    rma)")]
-
-        self.assertIn('platform_name" == "hygon"', p2p_runner)
-        self.assertIn("FLAGCX_CI_P2P_HCA_PAIR_MATRIX=1", p2p_runner)
-        self.assertIn(
-            "P2pAdaptorTest.HostWriteReadForEveryOrderedHcaPair",
-            p2p_runner,
-        )
-        self.assertIn("FLAGCX_P2P_RETRY_CNT=1", p2p_runner)
-        self.assertIn("for (int sendDev = 0; sendDev < nDevs", p2p_test)
-        self.assertIn("for (int recvDev = 0; recvDev < nDevs", p2p_test)
-        self.assertIn("P2pPairOperation::Write", p2p_test)
-        self.assertIn("P2pPairOperation::Read", p2p_test)
-        self.assertIn("localSrc != remoteDst", p2p_test)
-        self.assertIn("remoteSrc != localDst", p2p_test)
 
     def test_runner_converges_async_errors_and_stops_new_communicators(self):
         fixture = (

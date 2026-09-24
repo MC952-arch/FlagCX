@@ -12,12 +12,6 @@
 #include "type.h"
 
 #if defined(USE_SHCA) || defined(FLAGCX_BUILD_RDMA_CORE)
-static int flagcxIbvQueryPkeyPassthru(struct ibv_context *context,
-                                      uint8_t portNum, int index,
-                                      uint16_t *pkey) {
-  return ibv_query_pkey(context, portNum, index, pkey);
-}
-
 static int flagcxIbvQueryGidExPassthru(struct ibv_context *context,
                                        uint32_t portNum, uint32_t gidIndex,
                                        struct flagcxIbGidEntry *entry,
@@ -66,7 +60,6 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
   ASSIGN_SYM(ibvSymbols, ibv_ack_async_event, ibv_internal_ack_async_event);
   ASSIGN_SYM(ibvSymbols, ibv_query_device, ibv_internal_query_device);
   ASSIGN_SYM(ibvSymbols, ibv_query_gid, ibv_internal_query_gid);
-  ibvSymbols->ibv_internal_query_pkey = flagcxIbvQueryPkeyPassthru;
   ibvSymbols->ibv_internal_query_gid_ex = flagcxIbvQueryGidExPassthru;
   ASSIGN_SYM(ibvSymbols, ibv_query_qp, ibv_internal_query_qp);
   ASSIGN_SYM(ibvSymbols, ibv_alloc_pd, ibv_internal_alloc_pd);
@@ -156,16 +149,6 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
   LOAD_SYM(ibvhandle, "ibv_query_port", ibvSymbols->ibv_internal_query_port);
   LOAD_SYM(ibvhandle, "ibv_query_gid", ibvSymbols->ibv_internal_query_gid);
 #ifdef USE_SHCA
-  // SHCA is compiled and linked against the vendor verbs ABI, so use its
-  // public header entry point instead of assuming rdma-core symbol versions.
-  ibvSymbols->ibv_internal_query_pkey = flagcxIbvQueryPkeyPassthru;
-#else
-  // P_Key introspection is diagnostic. Keep it optional so a legacy verbs
-  // library that omits the public symbol can still initialize.
-  LOAD_SYM_VERSION(ibvhandle, "ibv_query_pkey",
-                   ibvSymbols->ibv_internal_query_pkey, "IBVERBS_1.1");
-#endif
-#ifdef USE_SHCA
   // SHCA provides ibv_query_gid_ex through its vendor verbs header. Use a
   // passthrough so the wrapper consumes the same FlagCX-owned entry layout as
   // the portable dynamic-loading path.
@@ -219,7 +202,6 @@ teardown:
   ibvSymbols->ibv_internal_query_device = NULL;
   ibvSymbols->ibv_internal_query_port = NULL;
   ibvSymbols->ibv_internal_query_gid = NULL;
-  ibvSymbols->ibv_internal_query_pkey = NULL;
   ibvSymbols->ibv_internal_query_gid_ex = NULL;
   ibvSymbols->ibv_internal_query_qp = NULL;
   ibvSymbols->ibv_internal_alloc_pd = NULL;

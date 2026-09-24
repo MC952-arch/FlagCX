@@ -181,23 +181,6 @@ flagcxResult_t flagcxWrapIbvQueryGid(struct ibv_context *context,
                           0, "ibv_query_gid");
 }
 
-flagcxResult_t flagcxWrapIbvQueryPkey(struct ibv_context *context,
-                                      uint8_t port_num, int index,
-                                      uint16_t *pkey) {
-  if (context == NULL || pkey == NULL || index < 0)
-    return flagcxInvalidArgument;
-  if (ibvSymbols.ibv_internal_query_pkey == NULL)
-    return flagcxNotSupported;
-  errno = 0;
-  int ret = ibvSymbols.ibv_internal_query_pkey(context, port_num, index, pkey);
-  if (ret == 0)
-    return flagcxSuccess;
-  int error = ret == -1 ? errno : (ret < 0 ? -ret : ret);
-  WARN("Call to ibv_query_pkey() failed with error %s errno %d",
-       strerror(error), error);
-  return flagcxSystemError;
-}
-
 static flagcxResult_t flagcxIbQueryGidExResult(int ret, int savedErrno) {
   if (ret == 0)
     return flagcxSuccess;

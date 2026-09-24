@@ -27,8 +27,6 @@ struct flagcxIbvSymbols {
                                  struct ibv_port_attr *port_attr);
   int (*ibv_internal_query_gid)(struct ibv_context *context, uint8_t port_num,
                                 int index, union ibv_gid *gid);
-  int (*ibv_internal_query_pkey)(struct ibv_context *context, uint8_t port_num,
-                                 int index, uint16_t *pkey);
   int (*ibv_internal_query_gid_ex)(struct ibv_context *context,
                                    uint32_t port_num, uint32_t gid_index,
                                    struct flagcxIbGidEntry *entry,

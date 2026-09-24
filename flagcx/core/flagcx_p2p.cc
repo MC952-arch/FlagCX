@@ -1071,47 +1071,17 @@ void FlagcxWorkerPool::performPollCq(int tid) {
     if (slice->qpDepth != NULL)
       qpDepthSet[slice->qpDepth]++;
     if (wcs[i].status != IBV_WC_SUCCESS) {
-      int qpState = -1;
-      int qpTimeout = -1;
-      int qpRetryCnt = -1;
-      int qpRnrRetry = -1;
-      int qpMaxRdAtomic = -1;
-      {
-        std::lock_guard<std::mutex> lk(qp_mu_);
-        auto qpIt = qpNumToIdx_.find(wcs[i].qp_num);
-        if (qpIt != qpNumToIdx_.end()) {
-          PoolQpEntry *entry = qpEntries_[qpIt->second].get();
-          if (entry != nullptr && entry->qp != nullptr) {
-            struct ibv_qp_attr attr;
-            struct ibv_qp_init_attr initAttr;
-            memset(&attr, 0, sizeof(attr));
-            memset(&initAttr, 0, sizeof(initAttr));
-            int mask = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-                       IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
-            if (flagcxWrapIbvQueryQp(entry->qp, &attr, mask, &initAttr) ==
-                flagcxSuccess) {
-              qpState = attr.qp_state;
-              qpTimeout = attr.timeout;
-              qpRetryCnt = attr.retry_cnt;
-              qpRnrRetry = attr.rnr_retry;
-              qpMaxRdAtomic = attr.max_rd_atomic;
-            }
-          }
-        }
-      }
       WARN("NET/IB_P2P : CQ error pool=%d worker=%d cq=%p "
            "status=%d(%s) vendor_err=%u opcode=%u wr_id=%llu qp_num=%u "
            "byte_len=%u slice=%p operation=%s local_va=%p remote_va=%p "
-           "length=%u qp_state=%d timeout=%d retry_cnt=%d rnr_retry=%d "
-           "max_rd_atomic=%d",
+           "length=%u",
            ibDevN_, tid, worker_cqs_[tid], wcs[i].status,
            flagcxP2pWcStatusName(wcs[i].status), wcs[i].vendor_err,
            (unsigned int)wcs[i].opcode, (unsigned long long)wcs[i].wr_id,
            wcs[i].qp_num, wcs[i].byte_len, slice,
            slice->opcode == FLAGCX_SLICE_OP_READ ? "READ" : "WRITE",
            reinterpret_cast<void *>(slice->srcVa),
-           reinterpret_cast<void *>(slice->dstVa), slice->length, qpState,
-           qpTimeout, qpRetryCnt, qpRnrRetry, qpMaxRdAtomic);
+           reinterpret_cast<void *>(slice->dstVa), slice->length);
       slice->markFailed();
     } else {
       slice->markSuccess();
