@@ -823,8 +823,10 @@ static flagcxResult_t flagcxIbucCreateQpWithTypeCq(
   qpInitAttr.send_cq = sendCq;
   qpInitAttr.recv_cq = recvCq;
   qpInitAttr.qp_type = qp_type;
-  qpInitAttr.cap.max_recv_wr =
-      qp_type == IBV_QPT_UC ? FLAGCX_IB_SRQ_SIZE : MAX_REQUESTS;
+  // One zero-SGE receive credit is consumed per live logical request on each
+  // UC data QP. The request pool bounds that number, so asking providers for
+  // the larger legacy SRQ depth only wastes QP resources and is not portable.
+  qpInitAttr.cap.max_recv_wr = MAX_REQUESTS;
 
   // We might send 2 messages per send (RDMA and RDMA_WITH_IMM)
   qpInitAttr.cap.max_send_wr = 2 * MAX_REQUESTS;
@@ -1565,8 +1567,11 @@ ib_recv:
   // data QP; completions are routed by the request slot and generation encoded
   // in immediate data, not by the lifetime of the WQE.
   for (int q = 0; q < rComm->base.nqps; q++) {
-    for (int credit = 0; credit < FLAGCX_IB_SRQ_SIZE; credit++)
-      FLAGCXCHECK(flagcxIbucPostDataRecv(rComm, q));
+    for (int credit = 0; credit < MAX_REQUESTS; credit++) {
+      flagcxResult_t postResult = flagcxIbucPostDataRecv(rComm, q);
+      if (postResult != flagcxSuccess)
+        return flagcxIbucAbortAccept(lComm, rComm, postResult);
+    }
   }
 
   rComm->flushEnabled = 1;

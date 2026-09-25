@@ -202,7 +202,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("#define FLAGCX_IBUC_RETRANS_RECV_DEPTH 16", common)
         self.assertIn("retransQpn", common)
         self.assertIn("flagcxIbucPostDataRecv", ibuc)
-        self.assertIn("FLAGCX_IB_SRQ_SIZE; credit++", ibuc)
+        self.assertIn("MAX_REQUESTS; credit++", ibuc)
+        self.assertIn(
+            "flagcxIbucAbortAccept(lComm, rComm, postResult)", ibuc
+        )
         self.assertIn("flagcxIbucPostRetransRecv", ibuc)
         self.assertIn("flagcxIbucCreateQpWithTypeCq", ibuc)
         self.assertIn("&commDev->retransCq", ibuc)
