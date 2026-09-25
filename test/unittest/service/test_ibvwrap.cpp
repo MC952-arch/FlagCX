@@ -139,7 +139,7 @@ TEST(IbvCompatLid, ConnectionMetadataPreservesExtendedControlLid) {
 }
 
 TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {
-#if defined(USE_SHCA) && !defined(USE_IBUC)
+#ifdef USE_SHCA
   EXPECT_FALSE(flagcxIbRetransUdSupported());
 #else
   EXPECT_TRUE(flagcxIbRetransUdSupported());

@@ -355,6 +355,33 @@ flagcxResult_t flagcxWrapIbvDestroySrq(struct ibv_srq *srq) {
                           ibv_internal_destroy_srq(srq), 0, "ibv_destroy_srq");
 }
 
+flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret, struct ibv_pd *pd,
+                                     struct ibv_ah_attr *attr) {
+  if (ret == NULL || pd == NULL || attr == NULL)
+    return flagcxInvalidArgument;
+  if (ibvSymbols.ibv_internal_create_ah == NULL)
+    return flagcxNotSupported;
+  *ret = ibvSymbols.ibv_internal_create_ah(pd, attr);
+  if (*ret == NULL) {
+    WARN("ibv_create_ah() failed with error %s", strerror(errno));
+    return flagcxSystemError;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxWrapIbvDestroyAh(struct ibv_ah *ah) {
+  if (ah == NULL)
+    return flagcxSuccess;
+  if (ibvSymbols.ibv_internal_destroy_ah == NULL)
+    return flagcxNotSupported;
+  int ret = ibvSymbols.ibv_internal_destroy_ah(ah);
+  if (ret != IBV_SUCCESS) {
+    WARN("ibv_destroy_ah() failed with error %s", strerror(ret));
+    return flagcxSystemError;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxWrapIbvEventTypeStr(char **ret,
                                          enum ibv_event_type event) {
   *ret = (char *)ibvSymbols.ibv_internal_event_type_str(event);

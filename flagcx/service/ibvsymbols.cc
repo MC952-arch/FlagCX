@@ -50,6 +50,17 @@ int ibv_internal_query_port(struct ibv_context *context, uint8_t port_num,
   return ibv_query_port(context, port_num, port_attr);
 }
 
+#ifndef USE_SHCA
+static struct ibv_ah *flagcxIbvCreateAhPassthru(struct ibv_pd *pd,
+                                                struct ibv_ah_attr *attr) {
+  return ibv_create_ah(pd, attr);
+}
+
+static int flagcxIbvDestroyAhPassthru(struct ibv_ah *ah) {
+  return ibv_destroy_ah(ah);
+}
+#endif
+
 flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
   ASSIGN_SYM(ibvSymbols, ibv_get_device_list, ibv_internal_get_device_list);
   ASSIGN_SYM(ibvSymbols, ibv_free_device_list, ibv_internal_free_device_list);
@@ -82,6 +93,13 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
 
   ASSIGN_SYM(ibvSymbols, ibv_create_srq, ibv_internal_create_srq);
   ASSIGN_SYM(ibvSymbols, ibv_destroy_srq, ibv_internal_destroy_srq);
+#ifdef USE_SHCA
+  ibvSymbols->ibv_internal_create_ah = NULL;
+  ibvSymbols->ibv_internal_destroy_ah = NULL;
+#else
+  ibvSymbols->ibv_internal_create_ah = flagcxIbvCreateAhPassthru;
+  ibvSymbols->ibv_internal_destroy_ah = flagcxIbvDestroyAhPassthru;
+#endif
 
   ibvSymbols->ibv_internal_reg_mr = &ibv_internal_reg_mr;
   ibvSymbols->ibv_internal_query_port = &ibv_internal_query_port;
@@ -189,6 +207,16 @@ flagcxResult_t buildIbvSymbols(struct flagcxIbvSymbols *ibvSymbols) {
   LOAD_SYM(ibvhandle, "ibv_create_srq", ibvSymbols->ibv_internal_create_srq);
   LOAD_SYM(ibvhandle, "ibv_destroy_srq", ibvSymbols->ibv_internal_destroy_srq);
 
+#ifdef USE_SHCA
+  // SHCA builds support the existing IBRC data path only. Do not require the
+  // UD address-handle API that is used by IBUC software retransmission.
+  ibvSymbols->ibv_internal_create_ah = NULL;
+  ibvSymbols->ibv_internal_destroy_ah = NULL;
+#else
+  LOAD_SYM(ibvhandle, "ibv_create_ah", ibvSymbols->ibv_internal_create_ah);
+  LOAD_SYM(ibvhandle, "ibv_destroy_ah", ibvSymbols->ibv_internal_destroy_ah);
+#endif
+
   return flagcxSuccess;
 
 teardown:
@@ -221,6 +249,8 @@ teardown:
   ibvSymbols->ibv_internal_set_ece = NULL;
   ibvSymbols->ibv_internal_create_srq = NULL;
   ibvSymbols->ibv_internal_destroy_srq = NULL;
+  ibvSymbols->ibv_internal_create_ah = NULL;
+  ibvSymbols->ibv_internal_destroy_ah = NULL;
 
   if (ibvhandle != NULL)
     dlclose(ibvhandle);

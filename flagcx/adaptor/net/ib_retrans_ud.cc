@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(USE_SHCA) || defined(USE_IBUC)
+#ifndef USE_SHCA
 
 bool flagcxIbRetransUdSupported(void) { return true; }
 
@@ -141,7 +141,7 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
   memset(&ahAttr, 0, sizeof(ahAttr));
   ahAttr.port_num = port_num;
 
-  if (flagcxIbUseGlobalRoute(link_layer)) {
+  if (link_layer == IBV_LINK_LAYER_ETHERNET) {
     if (!remote_gid) {
       WARN("remote_gid is NULL for RoCE");
       return flagcxInternalError;
@@ -162,9 +162,8 @@ flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
     TRACE(FLAGCX_NET, "Creating AH for IB: remote_lid=%u, port=%u", remote_lid,
           port_num);
     ahAttr.is_global = 0;
+    ahAttr.dlid = remote_lid;
   }
-
-  FLAGCXCHECK(flagcxIbSetAhDlid(&ahAttr, remote_lid));
 
   ahAttr.sl = 0;
   ahAttr.src_path_bits = 0;

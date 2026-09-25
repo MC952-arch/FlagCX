@@ -83,13 +83,9 @@ static inline flagcxResult_t flagcxWrapIbvPollCq(struct ibv_cq *cq,
                                                  int num_entries,
                                                  struct ibv_wc *wc,
                                                  int *num_done) {
-#if defined(USE_SHCA) && defined(USE_IBUC)
-  int done = ibv_poll_cq(cq, num_entries, wc);
-#else
   int done = cq->context->ops.poll_cq(
       cq, num_entries, wc); /*returns the number of wcs or 0 on success, a
                                negative number otherwise*/
-#endif
   if (done < 0) {
     WARN("Call to ibv_poll_cq() returned %d", done);
     return flagcxSystemError;
@@ -111,48 +107,16 @@ flagcxResult_t flagcxWrapIbvCreateSrq(struct ibv_srq **ret, struct ibv_pd *pd,
                                       struct ibv_srq_init_attr *srq_init_attr);
 flagcxResult_t flagcxWrapIbvDestroySrq(struct ibv_srq *srq);
 
-static inline flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret,
-                                                   struct ibv_pd *pd,
-                                                   struct ibv_ah_attr *attr) {
-  if (ret == NULL || pd == NULL || attr == NULL)
-    return flagcxInvalidArgument;
-#ifdef USE_SHCA
-  *ret = ibv_create_ah(pd, attr);
-#else
-  *ret = pd->context->ops.create_ah(pd, attr);
-#endif
-  if (*ret == NULL) {
-    WARN("ibv_create_ah() failed with error %s", strerror(errno));
-    return flagcxSystemError;
-  }
-  return flagcxSuccess;
-}
-
-static inline flagcxResult_t flagcxWrapIbvDestroyAh(struct ibv_ah *ah) {
-  if (ah == NULL)
-    return flagcxSuccess;
-#ifdef USE_SHCA
-  int ret = ibv_destroy_ah(ah);
-#else
-  int ret = ah->context->ops.destroy_ah(ah);
-#endif
-  if (ret != IBV_SUCCESS) {
-    WARN("ibv_destroy_ah() failed with error %s", strerror(ret));
-    return flagcxSystemError;
-  }
-  return flagcxSuccess;
-}
+flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret, struct ibv_pd *pd,
+                                     struct ibv_ah_attr *attr);
+flagcxResult_t flagcxWrapIbvDestroyAh(struct ibv_ah *ah);
 
 static inline flagcxResult_t
 flagcxWrapIbvPostSrqRecv(struct ibv_srq *srq, struct ibv_recv_wr *wr,
                          struct ibv_recv_wr **bad_wr) {
-#if defined(USE_SHCA) && defined(USE_IBUC)
-  int ret = ibv_post_srq_recv(srq, wr, bad_wr);
-#else
   int ret = srq->context->ops.post_srq_recv(
       srq, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
-#endif
   if (ret != IBV_SUCCESS) {
     WARN("ibv_post_srq_recv() failed with error %s", strerror(ret));
     return flagcxSystemError;
@@ -163,13 +127,9 @@ flagcxWrapIbvPostSrqRecv(struct ibv_srq *srq, struct ibv_recv_wr *wr,
 static inline int flagcxWrapIbvPostSendRaw(struct ibv_qp *qp,
                                            struct ibv_send_wr *wr,
                                            struct ibv_send_wr **bad_wr) {
-#if defined(USE_SHCA) && defined(USE_IBUC)
-  return ibv_post_send(qp, wr, bad_wr);
-#else
   return qp->context->ops.post_send(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
-#endif
 }
 
 static inline flagcxResult_t
@@ -223,13 +183,9 @@ flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
 static inline flagcxResult_t
 flagcxWrapIbvPostRecv(struct ibv_qp *qp, struct ibv_recv_wr *wr,
                       struct ibv_recv_wr **bad_wr) {
-#if defined(USE_SHCA) && defined(USE_IBUC)
-  int ret = ibv_post_recv(qp, wr, bad_wr);
-#else
   int ret = qp->context->ops.post_recv(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
-#endif
   if (ret != IBV_SUCCESS) {
     WARN("ibv_post_recv() failed with error %s", strerror(ret));
     return flagcxSystemError;

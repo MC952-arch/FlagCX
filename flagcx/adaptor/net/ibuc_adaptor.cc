@@ -454,7 +454,7 @@ flagcxResult_t flagcxIbucInit() {
           flagcxIbDevs[flagcxNIbDevs].device = d;
           flagcxIbDevs[flagcxNIbDevs].guid = devAttr.sys_image_guid;
           flagcxIbDevs[flagcxNIbDevs].portAttr = portAttr;
-          flagcxIbDevs[flagcxNIbDevs].lid = flagcxIbPortLid(&portAttr);
+          flagcxIbDevs[flagcxNIbDevs].lid = portAttr.lid;
           flagcxIbDevs[flagcxNIbDevs].portNum = port_num;
           flagcxIbDevs[flagcxNIbDevs].link = portAttr.link_layer;
           flagcxIbDevs[flagcxNIbDevs].speed =
@@ -882,7 +882,7 @@ flagcxResult_t flagcxIbucRtrQpWithType(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.max_dest_rd_atomic = 1;
     qpAttr.min_rnr_timer = 12;
   }
-  if (flagcxIbUseGlobalRoute(info->linkLayer)) {
+  if (info->linkLayer == IBV_LINK_LAYER_ETHERNET) {
     qpAttr.ah_attr.is_global = 1;
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = info->iid;
@@ -892,8 +892,8 @@ flagcxResult_t flagcxIbucRtrQpWithType(struct ibv_qp *qp, uint8_t sGidIndex,
     qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
   } else {
     qpAttr.ah_attr.is_global = 0;
+    qpAttr.ah_attr.dlid = info->lid;
   }
-  FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
   qpAttr.ah_attr.sl = flagcxParamIbSl();
   qpAttr.ah_attr.src_path_bits = 0;
   qpAttr.ah_attr.port_num = info->ibPort;
@@ -1104,11 +1104,10 @@ ibuc_connect_check:
                                IBV_ACCESS_REMOTE_READ));
     devInfo->fifoRkey = commDev->fifoMr->rkey;
 
-    // Standard RoCE and SHCA both use a GID/GRH route. SHCA ports report an
-    // InfiniBand link layer, so link-layer checks alone are insufficient.
+    // RoCE uses a GID/GRH route; native InfiniBand uses the LID route above.
     devInfo->linkLayer = commDev->base.gidInfo.linkLayer =
         ibucDev->portAttr.link_layer;
-    if (flagcxIbUseGlobalRoute(devInfo->linkLayer)) {
+    if (devInfo->linkLayer == IBV_LINK_LAYER_ETHERNET) {
       FLAGCXCHECK(flagcxIbGetGidIndex(ibucDev->context, ibucDev->portNum,
                                       ibucDev->portAttr.gid_tbl_len,
                                       &commDev->base.gidInfo.localGidIndex));
