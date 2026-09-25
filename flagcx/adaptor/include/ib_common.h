@@ -436,13 +436,11 @@ struct flagcxIbSendCommDev {
   struct ibv_mr *putSignalScratchpadMr;
 
   struct flagcxIbCtrlQp ctrlQp;
-#ifdef USE_IBUC
   struct flagcxIbQp retransQp;
   // Keep retransmission SEND completions and reliable ACK receives off the
   // data CQ. Data-QP SQ recovery is allowed to poll the data CQ directly.
   struct ibv_cq *retransCq;
   struct ibv_mr *retransHdrMr;
-#endif
   struct ibv_mr *ackMr;
   void *ackBuffer;
 };
@@ -493,12 +491,10 @@ struct flagcxIbSendComm {
   int outstandingSends;
   int outstandingRetrans;
   int maxOutstanding;
-#ifdef USE_IBUC
   bool retransUsesRc;
   int retransWindowNreqs;
   uint8_t retransWindowDevIndex;
   struct flagcxIbRequest *retransWindowRequests[FLAGCX_NET_IB_MAX_RECVS];
-#endif
 
   struct flagcxIbRetransHdr retransHdrPool[32];
   struct ibv_mr *retransHdrMr;
@@ -525,9 +521,7 @@ struct alignas(16) flagcxIbRecvCommDev {
   struct ibv_sge fifoSge;
   struct ibv_mr *sizesFifoMr;
   struct flagcxIbCtrlQp ctrlQp;
-#ifdef USE_IBUC
   struct flagcxIbQp retransQp;
-#endif
   struct ibv_mr *ackMr;
   void *ackBuffer;
 

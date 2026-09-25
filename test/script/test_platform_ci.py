@@ -226,8 +226,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
             common.index("struct flagcxIbConnectionMetadata {") :
             common.index("struct flagcxIbNetCommDevBase {")
         ]
+        send_comm_dev = common[
+            common.index("struct flagcxIbSendCommDev {") :
+            common.index("struct alignas(32) flagcxIbNetCommBase {")
+        ]
+        send_comm = common[
+            common.index("struct flagcxIbSendComm {") :
+            common.index("struct flagcxIbGpuFlush {")
+        ]
+        recv_comm_dev = common[
+            common.index("struct alignas(16) flagcxIbRecvCommDev {") :
+            common.index("struct alignas(32) flagcxIbRecvComm {")
+        ]
         self.assertNotIn("#ifdef USE_IBUC", fifo)
         self.assertNotIn("#ifdef USE_IBUC", metadata)
+        self.assertNotIn("#ifdef USE_IBUC", send_comm_dev)
+        self.assertNotIn("#ifdef USE_IBUC", send_comm)
+        self.assertNotIn("#ifdef USE_IBUC", recv_comm_dev)
+        self.assertIn("struct flagcxIbQp retransQp", send_comm_dev)
+        self.assertIn("struct ibv_cq *retransCq", send_comm_dev)
+        self.assertIn("struct ibv_mr *retransHdrMr", send_comm_dev)
+        self.assertIn("bool retransUsesRc", send_comm)
+        self.assertIn("struct flagcxIbQp retransQp", recv_comm_dev)
         self.assertNotIn("#ifdef USE_IBUC", common_impl)
         self.assertLess(fifo.index("requestSlot"), fifo.index("uint64_t idx"))
         self.assertLess(fifo.index("generation"), fifo.index("uint64_t idx"))

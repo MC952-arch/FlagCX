@@ -1197,6 +1197,7 @@ TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
     EXPECT_NE(send->devs[i].ctrlQp.cq, nullptr);
     EXPECT_NE(send->devs[i].ctrlQp.ah, nullptr);
     EXPECT_NE(send->devs[i].retransQp.qp, nullptr);
+    EXPECT_NE(send->devs[i].retransCq, nullptr);
     EXPECT_NE(send->devs[i].retransHdrMr, nullptr);
     EXPECT_NE(recv->devs[i].ctrlQp.qp, nullptr);
     EXPECT_NE(recv->devs[i].ctrlQp.cq, nullptr);
