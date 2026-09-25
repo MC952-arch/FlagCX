@@ -1138,6 +1138,7 @@ ib_connect_check:
   }
 
   struct flagcxIbConnectionMetadata meta;
+  memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.ndevs;
 
   // IBRC retransmission: default disabled, can be enabled via

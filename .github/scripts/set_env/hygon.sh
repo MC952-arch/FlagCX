@@ -47,6 +47,7 @@ FLAGCX_CI_PROJECT_MAKE_ARGS=(
   PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
 )
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
+FLAGCX_CI_ENABLE_IBUC=1
 
 FLAGCX_CI_INTRA_NP=8
 FLAGCX_CI_NODE_NP=4
@@ -60,6 +61,10 @@ export NP=8
 FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3
 FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7
 FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7
+FLAGCX_CI_IBUC_ENV=(
+  "CUDA_VISIBLE_DEVICES=$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"
+  "FLAGCX_IB_HCA=$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+)
 
 flagcx_ci_configure_suite() {
   local suite=$1
@@ -70,14 +75,6 @@ flagcx_ci_configure_suite() {
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       ;;
     runner)
-      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
-      export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
-      FLAGCX_CI_RUNNER_NP=4
-      export NP=4
-      ;;
-    ibuc)
-      FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_IBUC=1)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(USE_IBUC=1)
       export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       FLAGCX_CI_RUNNER_NP=4
@@ -99,8 +96,7 @@ flagcx_ci_prepare() {
   nvcc --version
   hy-smi --showproductname || true
 
-  if [[ "$suite" == "adaptor" || "$suite" == "ibuc" ||
-        "$suite" == "p2p" ||
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
         "$suite" == "rma" || "$suite" == "runner" ||
         "$suite" == "symmem" ]]; then
     echo "Network interfaces visible inside the CI container:"

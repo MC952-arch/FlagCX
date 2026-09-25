@@ -291,7 +291,6 @@ template <typename T>
 float flagcxTimer<T>::getRecord(const flagcxRecordKey<T> &recordKey,
                                 bool blocking) {
   flagcxRecord<T> *found_record = nullptr;
-  int iter = 0;
   do {
     std::queue<flagcxRecord<T> *> remaining_records;
     pthread_mutex_lock(&this->mutexProfiled);
@@ -307,9 +306,6 @@ float flagcxTimer<T>::getRecord(const flagcxRecordKey<T> &recordKey,
     this->profiledRecords.swap(remaining_records);
     pthread_mutex_unlock(&this->mutexProfiled);
     // TODO: add a timeout to avoid infinite loop
-    // INFO(FLAGCX_TUNING, "Searched %d times for getRecord %s.", iter,
-    // recordKey.value.toString().c_str());
-    iter++;
   } while (blocking && !found_record);
 
   if (found_record) {

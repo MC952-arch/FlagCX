@@ -45,6 +45,10 @@ declare -p FLAGCX_CI_TEST_MAKE_ARGS >/dev/null 2>&1 || {
   echo "The platform set_env script must define FLAGCX_CI_TEST_MAKE_ARGS" >&2
   exit 1
 }
+if ! declare -p FLAGCX_CI_IBUC_ENV >/dev/null 2>&1; then
+  FLAGCX_CI_IBUC_ENV=()
+fi
+: "${FLAGCX_CI_ENABLE_IBUC:=0}"
 
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
@@ -62,7 +66,7 @@ flagcx_ci_require_rdma() {
   # Symmem currently runs its explicit IPC-fallback invocation with the RDMA
   # class disabled, so it must not be gated by an RDMA preflight.
   case "$suite" in
-    adaptor|ibuc|p2p|rma|runner) ;;
+    adaptor|p2p|rma|runner) ;;
     *) return 0 ;;
   esac
 
@@ -103,14 +107,6 @@ build_suite() {
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
-
-  if [[ "$SUITE" == ibuc ]]; then
-    make -C "$PROJECT_ROOT/test/unittest/adaptor" --jobs="$(nproc)" \
-      "${args[@]}"
-    make -C "$PROJECT_ROOT/test/unittest/runner" --jobs="$(nproc)" \
-      "${args[@]}"
-    return
-  fi
 
   if declare -F flagcx_ci_build_suite_override >/dev/null; then
     FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
@@ -280,6 +276,7 @@ run_suite() {
   case "$SUITE" in
     adaptor)
       local unit_status=0
+      local ibuc_status=0
       local ipc_status=0
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
@@ -288,6 +285,42 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
+
+      if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
+        # IBUC is another implementation of the net-adaptor contract, not an
+        # independent test suite. Build it in isolated output directories so
+        # the regular IBRC binary remains available, then run its contract.
+        local ibuc_project_build="$PROJECT_ROOT/build-ibuc"
+        local ibuc_test_build="$suite_dir/build-ibuc"
+        local -a ibuc_project_args=(
+          "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+          USE_IBUC=1
+          BUILDDIR="$ibuc_project_build"
+        )
+        local -a ibuc_test_args=(
+          "${args[@]}"
+          USE_IBUC=1
+          BUILDDIR="$ibuc_test_build"
+          FLAGCX_LIB="$ibuc_project_build/lib"
+        )
+        make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
+          "${ibuc_project_args[@]}" || ibuc_status=$?
+        if ((ibuc_status == 0)); then
+          make -C "$suite_dir" --jobs="$(nproc)" \
+            "${ibuc_test_args[@]}" || ibuc_status=$?
+        fi
+        if ((ibuc_status == 0)); then
+          env "${FLAGCX_CI_IBUC_ENV[@]}" \
+            LD_LIBRARY_PATH="$ibuc_project_build/lib:$LD_LIBRARY_PATH" \
+            FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
+            FLAGCX_IB_QPS_PER_CONNECTION=2 \
+            FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1 \
+            GTEST_FILTER="NetAdaptorInterface.IbucAdvertisesTwoSidedContract:NetAdaptorLoopback.SendRecv:NetAdaptorLoopback.RegisterGpuMr:NetAdaptorLoopback.Ibuc*:IbucOwnershipTest.*:IbucRetransmissionTest.*" \
+            FLAGCX_CI_TEST_LABEL="IBUC net adaptor tests" \
+            "$TEST_RUNNER" make -C "$suite_dir" run-unit \
+              "${ibuc_test_args[@]}" || ibuc_status=$?
+        fi
+      fi
       # Exercise device IPC handles across processes and physical devices. Use
       # exactly two ranks so GPU 0 and GPU 1 exercise both exporter/importer
       # directions and the full-mesh mapping setup used by RMA, with an
@@ -299,44 +332,8 @@ run_suite() {
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \
         MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
-      if ((unit_status != 0 || ipc_status != 0)); then
-        echo "Adaptor failures: unit=$unit_status IPC=$ipc_status" >&2
-        return 1
-      fi
-      ;;
-    ibuc)
-      : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
-      local adaptor_status=0
-      local runner_status=0
-      local -a ibuc_runner_platform_env=()
-      local platform_name
-      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
-      if [[ "$platform_name" == "hygon" ]]; then
-        ibuc_runner_platform_env+=(
-          -x FLAGCX_IB_TIMEOUT=14
-          -x FLAGCX_IB_RETRY_CNT=1
-        )
-      fi
-
-      FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
-        GTEST_FILTER="NetAdaptorInterface.IbucAdvertisesTwoSidedContract:NetAdaptorLoopback.SendRecv:NetAdaptorLoopback.RegisterGpuMr:NetAdaptorLoopback.Ibuc*:IbucOwnershipTest.*" \
-        FLAGCX_CI_TEST_LABEL="IBUC adaptor tests" \
-        "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/unittest/adaptor" \
-          run-unit "${args[@]}" || adaptor_status=$?
-
-      cd "$PROJECT_ROOT/test/unittest/runner"
-      FLAGCX_CI_MPI_LABEL="IBUC forced NET runner" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_P2P_DISABLE=1 \
-        -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
-        "${ibuc_runner_platform_env[@]}" \
-        ./build/bin/runner_mpi_tests || runner_status=$?
-
-      if ((adaptor_status != 0 || runner_status != 0)); then
-        echo "IBUC failures: adaptor=$adaptor_status runner=$runner_status" >&2
+      if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0)); then
+        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status" >&2
         return 1
       fi
       ;;
@@ -454,7 +451,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api_host|ibuc|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_api|device_api_unified_ir)

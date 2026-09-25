@@ -57,6 +57,28 @@ flagcxResult_t waitRequest(struct flagcxNetAdaptor *net, void *request,
   return done ? flagcxSuccess : flagcxSystemError;
 }
 
+flagcxResult_t waitRequests(struct flagcxNetAdaptor *net, int count,
+                            void **requests, int **sizes = nullptr) {
+  std::vector<int> done(count, 0);
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    bool allDone = true;
+    for (int i = 0; i < count; i++) {
+      if (done[i])
+        continue;
+      flagcxResult_t result = net->test(requests[i], &done[i],
+                                        sizes == nullptr ? nullptr : sizes[i]);
+      if (result != flagcxSuccess)
+        return result;
+      allDone &= done[i] != 0;
+    }
+    if (allDone)
+      return flagcxSuccess;
+    std::this_thread::yield();
+  }
+  return flagcxSystemError;
+}
+
 struct ConnectionResult {
   flagcxResult_t connectResult = flagcxSystemError;
   flagcxResult_t acceptResult = flagcxSystemError;
@@ -662,6 +684,134 @@ TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
   // ownership. Only the MR whose first deregistration failed is retried.
   EXPECT_EQ(ibucDeregisteredMrs[2], retransMr);
 }
+
+TEST(IbucRetransmissionTest, BatchAckReleasesEverySourceRequest) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  struct flagcxIbRequest requests[2] = {};
+  struct flagcxIbRequest *requestPtrs[2] = {&requests[0], &requests[1]};
+  uint8_t source0[8] = {};
+  uint8_t source1[16] = {};
+  for (int i = 0; i < 2; i++) {
+    requests[i].type = FLAGCX_NET_IB_REQ_SEND;
+    requests[i].send.data =
+        i == 0 ? static_cast<void *>(source0) : static_cast<void *>(source1);
+    requests[i].send.size = i == 0 ? sizeof(source0) : sizeof(source1);
+  }
+
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 0, 7, 0x345, 0, 2, requestPtrs),
+            flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 1);
+  EXPECT_EQ(requests[1].events[0], 1);
+  ASSERT_EQ(state.bufferCount, 1);
+  EXPECT_EQ(state.buffer[0].nreqs, 2);
+  EXPECT_EQ(state.buffer[0].remoteRequestSlot, 7);
+  EXPECT_EQ(state.buffer[0].remoteGeneration, 0x345);
+
+  struct flagcxIbAckMsg ack = {};
+  ack.ackSeq = 0;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 0);
+  EXPECT_EQ(requests[1].events[0], 0);
+  EXPECT_EQ(state.bufferCount, 0);
+}
+
+TEST(IbucRetransmissionTest, SackKeepsEntriesUntilCumulativeAck) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  struct flagcxIbRequest requests[2] = {};
+  struct flagcxIbRequest *request0 = &requests[0];
+  struct flagcxIbRequest *request1 = &requests[1];
+  for (auto &request : requests)
+    request.type = FLAGCX_NET_IB_REQ_SEND;
+
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 0, 3, 1, 0, 1, &request0),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 1, 4, 1, 0, 1, &request1),
+            flagcxSuccess);
+  ASSERT_EQ(requests[0].events[0], 1);
+  ASSERT_EQ(requests[1].events[0], 1);
+
+  // recvSeq is still 0, but sequence 1 arrived out of order. The receiver
+  // reports ackSeq=mask and bit 0 for sequence 1; sequence 0 must remain live.
+  struct flagcxIbAckMsg ack = {};
+  ack.ackSeq = FLAGCX_IB_RETRANS_SEQ_MASK;
+  ack.sackBitmap = 1;
+  ack.sackBitmapCount = 1;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+
+  EXPECT_EQ(requests[0].events[0], 1);
+  EXPECT_EQ(requests[1].events[0], 1);
+  EXPECT_TRUE(state.buffer[0].valid);
+  EXPECT_TRUE(state.buffer[1].valid);
+
+  // Once the receiver has filled the gap and cumulatively acknowledged both
+  // sequences, their source buffers can be released together.
+  ack = {};
+  ack.ackSeq = 1;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 0);
+  EXPECT_EQ(requests[1].events[0], 0);
+  EXPECT_EQ(state.bufferCount, 0);
+}
+
+TEST(IbucRetransmissionTest, ImmediateDataCarriesSequenceAndRequestSlot) {
+  constexpr uint32_t seq = 0xabcd;
+  constexpr uint8_t requestSlot = 0xef;
+  constexpr uint16_t generation = 0x789;
+  uint32_t decodedSeq = 0;
+  uint8_t decodedSlot = 0;
+  uint16_t decodedGeneration = 0;
+  flagcxIbucDecodeImmData(flagcxIbucEncodeImmData(seq, requestSlot, generation),
+                          &decodedSeq, &decodedSlot, &decodedGeneration);
+  EXPECT_EQ(decodedSeq, seq & FLAGCX_IB_RETRANS_SEQ_MASK);
+  EXPECT_EQ(decodedSlot, requestSlot);
+  EXPECT_EQ(decodedGeneration, generation);
+}
+
+TEST(IbucRetransmissionTest, ReusedRequestSlotRejectsStaleGeneration) {
+  struct flagcxIbRequest request = {};
+  request.type = FLAGCX_NET_IB_REQ_RECV;
+  request.retransGeneration = 0x124;
+
+  EXPECT_TRUE(flagcxIbucRequestMatchesGeneration(&request, 0x124));
+  EXPECT_FALSE(flagcxIbucRequestMatchesGeneration(&request, 0x123));
+  request.type = FLAGCX_NET_IB_REQ_UNUSED;
+  EXPECT_FALSE(flagcxIbucRequestMatchesGeneration(&request, 0x124));
+}
+
+TEST(IbucRetransmissionTest, LargePayloadUsesBoundedReceiveChunks) {
+  EXPECT_EQ(flagcxIbucRetransChunkCount(0), 1u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE), 1u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE + 1U),
+            2u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(64U * 1024 * 1024), 8u);
+}
+
+TEST(IbucRetransmissionTest, OutstandingRcWindowPreservesChunkCursor) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  state.rtoUs = 1;
+  state.maxRetry = 3;
+  state.bufferCount = 1;
+  state.buffer[0].valid = 1;
+  state.buffer[0].seq = 5;
+  state.buffer[0].sendTimeUs = 0;
+  state.buffer[0].nreqs = 2;
+  state.buffer[0].retransSegment = 1;
+  state.buffer[0].retransOffset = 4096;
+  state.buffer[0].retransAllPosted = true;
+
+  struct flagcxIbSendComm comm = {};
+  comm.retransUsesRc = true;
+  comm.outstandingRetrans = 1;
+
+  ASSERT_EQ(flagcxIbRetransCheckTimeout(&state, &comm), flagcxSuccess);
+  EXPECT_EQ(state.buffer[0].retransSegment, 1);
+  EXPECT_EQ(state.buffer[0].retransOffset, 4096u);
+  EXPECT_TRUE(state.buffer[0].retransAllPosted);
+  EXPECT_EQ(state.buffer[0].retryCount, 0);
+}
 #endif
 
 TEST(IbRequestCompletionTest, SharedCqUpdatesTheWrIdRequestAndDrainsBatch) {
@@ -963,11 +1113,70 @@ TEST_F(NetAdaptorLoopback, SendRecv) {
       std::this_thread::yield();
   }
   ASSERT_NE(sendRequest, nullptr);
-  ASSERT_EQ(waitRequest(net_, sendRequest), flagcxSuccess);
-  ASSERT_EQ(waitRequest(net_, recvRequest), flagcxSuccess);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
   EXPECT_EQ(source, destination);
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, destinationMr);
+}
+
+TEST_F(NetAdaptorLoopback, IbucMultiReceivePreservesSizesAndRequests) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  std::vector<uint8_t> source0(96 * 1024, 0x31);
+  std::vector<uint8_t> source1(130 * 1024, 0x7c);
+  std::vector<uint8_t> destination0(source0.size(), 0);
+  std::vector<uint8_t> destination1(source1.size(), 0);
+  void *sourceMrs[2] = {};
+  void *destinationMrs[2] = {};
+  ASSERT_REGISTER_MR(sendComm_, source0.data(), source0.size(), FLAGCX_PTR_HOST,
+                     sourceMrs[0]);
+  ASSERT_REGISTER_MR(sendComm_, source1.data(), source1.size(), FLAGCX_PTR_HOST,
+                     sourceMrs[1]);
+  ASSERT_REGISTER_MR(recvComm_, destination0.data(), destination0.size(),
+                     FLAGCX_PTR_HOST, destinationMrs[0]);
+  ASSERT_REGISTER_MR(recvComm_, destination1.data(), destination1.size(),
+                     FLAGCX_PTR_HOST, destinationMrs[1]);
+
+  void *recvData[2] = {destination0.data(), destination1.data()};
+  size_t recvSizes[2] = {destination0.size(), destination1.size()};
+  int tags[2] = {41, 42};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 2, recvData, recvSizes, tags, destinationMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+
+  void *sendRequests[2] = {};
+  void *sources[2] = {source0.data(), source1.data()};
+  size_t sourceSizes[2] = {source0.size(), source1.size()};
+  for (int i = 0; i < 2; i++) {
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (sendRequests[i] == nullptr &&
+           std::chrono::steady_clock::now() < deadline) {
+      ASSERT_EQ(net_->isend(sendComm_, sources[i], sourceSizes[i], tags[i],
+                            sourceMrs[i], nullptr, &sendRequests[i]),
+                flagcxSuccess);
+      if (sendRequests[i] == nullptr)
+        std::this_thread::yield();
+    }
+    ASSERT_NE(sendRequests[i], nullptr);
+  }
+
+  int completedSizes[2] = {};
+  void *requests[3] = {sendRequests[0], sendRequests[1], recvRequest};
+  int *requestSizes[3] = {nullptr, nullptr, completedSizes};
+  ASSERT_EQ(waitRequests(net_, 3, requests, requestSizes), flagcxSuccess);
+  EXPECT_EQ(completedSizes[0], static_cast<int>(source0.size()));
+  EXPECT_EQ(completedSizes[1], static_cast<int>(source1.size()));
+  EXPECT_EQ(source0, destination0);
+  EXPECT_EQ(source1, destination1);
+
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMrs[0]);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMrs[1]);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMrs[0]);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMrs[1]);
 }
 
 TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
@@ -978,17 +1187,24 @@ TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
   auto *recv = static_cast<flagcxIbRecvComm *>(recvComm_);
   ASSERT_TRUE(send->retrans.enabled);
   ASSERT_TRUE(recv->retrans.enabled);
-  ASSERT_NE(send->retransHdrMr, nullptr);
-  ASSERT_NE(recv->srqMgr.srq, nullptr);
+  EXPECT_TRUE(send->retransUsesRc);
+  EXPECT_EQ(send->retransHdrMr, nullptr);
+  EXPECT_EQ(recv->srqMgr.srq, nullptr);
   ASSERT_GT(send->base.ndevs, 0);
   ASSERT_EQ(send->base.ndevs, recv->base.ndevs);
   for (int i = 0; i < send->base.ndevs; ++i) {
     EXPECT_NE(send->devs[i].ctrlQp.qp, nullptr);
     EXPECT_NE(send->devs[i].ctrlQp.cq, nullptr);
     EXPECT_NE(send->devs[i].ctrlQp.ah, nullptr);
+    EXPECT_NE(send->devs[i].retransQp.qp, nullptr);
+    EXPECT_NE(send->devs[i].retransHdrMr, nullptr);
     EXPECT_NE(recv->devs[i].ctrlQp.qp, nullptr);
     EXPECT_NE(recv->devs[i].ctrlQp.cq, nullptr);
     EXPECT_NE(recv->devs[i].ctrlQp.ah, nullptr);
+    EXPECT_NE(recv->devs[i].retransQp.qp, nullptr);
+    EXPECT_NE(recv->devs[i].retransRecvMr, nullptr);
+    EXPECT_EQ(recv->devs[i].retransRecvBufCount,
+              FLAGCX_IBUC_RETRANS_RECV_DEPTH);
   }
 }
 
@@ -1056,8 +1272,8 @@ TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {
       std::this_thread::yield();
   }
   ASSERT_NE(sendRequest, nullptr);
-  ASSERT_EQ(waitRequest(net_, sendRequest), flagcxSuccess);
-  ASSERT_EQ(waitRequest(net_, recvRequest), flagcxSuccess);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
 
   void *flushRequest = nullptr;
   ASSERT_EQ(

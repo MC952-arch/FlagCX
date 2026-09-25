@@ -9,6 +9,7 @@
 #include "flagcx_common.h"
 #include "ibvwrap.h"
 #include "param.h"
+#include <algorithm>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,7 +30,7 @@ flagcxResult_t flagcxIbRetransInit(struct flagcxIbRetransState *state) {
   state->enabled = requested && flagcxIbRetransUdSupported();
   if (requested && !state->enabled) {
     INFO(FLAGCX_INIT | FLAGCX_NET,
-         "IB retransmission requires UD AH/SRQ support and is unavailable "
+         "IB retransmission control-channel support is unavailable "
          "with the selected verbs ABI; disabling it");
   }
   state->maxRetry = flagcxParamIbRetransMaxRetry();
@@ -121,6 +122,7 @@ flagcxResult_t flagcxIbRetransAddPacket(struct flagcxIbRetransState *state,
 
   int idx = state->bufferTail;
   struct flagcxIbRetransEntry *entry = &state->buffer[idx];
+  memset(entry, 0, sizeof(*entry));
 
   entry->seq = seq;
   entry->size = size;
@@ -144,6 +146,76 @@ flagcxResult_t flagcxIbRetransAddPacket(struct flagcxIbRetransState *state,
 
   return flagcxSuccess;
 }
+
+#ifdef USE_IBUC
+flagcxResult_t flagcxIbRetransAddBatch(struct flagcxIbRetransState *state,
+                                       uint32_t seq, uint8_t remoteRequestSlot,
+                                       uint16_t remoteGeneration,
+                                       uint8_t ackDevIndex, int nreqs,
+                                       struct flagcxIbRequest **reqs) {
+  if (state == NULL || reqs == NULL || nreqs <= 0 ||
+      nreqs > FLAGCX_NET_IB_MAX_RECVS ||
+      ackDevIndex >= FLAGCX_IB_MAX_DEVS_PER_NIC)
+    return flagcxInvalidArgument;
+  if (!state->enabled)
+    return flagcxSuccess;
+  // An ACK-held request cannot be recycled, so MAX_REQUESTS bounds the number
+  // of live IBUC entries below this larger retransmission ring. Reaching the
+  // limit indicates corrupted lifecycle accounting; it is not retryable after
+  // the original UC WRs have already been posted.
+  if (state->bufferCount >= FLAGCX_IB_RETRANS_MAX_INFLIGHT)
+    return flagcxInternalError;
+  for (int i = 0; i < nreqs; i++) {
+    if (reqs[i] == NULL || reqs[i]->type != FLAGCX_NET_IB_REQ_SEND)
+      return flagcxInternalError;
+  }
+
+  struct flagcxIbRetransEntry *entry = &state->buffer[state->bufferTail];
+  memset(entry, 0, sizeof(*entry));
+  entry->seq = seq;
+  entry->sendTimeUs = flagcxIbGetTimeUs();
+  entry->nreqs = nreqs;
+  entry->remoteRequestSlot = remoteRequestSlot;
+  entry->remoteGeneration = remoteGeneration;
+  entry->ackDevIndex = ackDevIndex;
+  // The original UC transfer is still awaiting its first timeout. A timeout
+  // resets this cursor and starts one bounded RC retransmission attempt.
+  entry->retransAllPosted = true;
+  entry->valid = 1;
+
+  for (int i = 0; i < nreqs; i++) {
+    entry->requests[i] = reqs[i];
+    entry->segments[i].size = reqs[i]->send.size;
+    entry->segments[i].data = reqs[i]->send.data;
+    memcpy(entry->segments[i].lkeys, reqs[i]->send.lkeys,
+           sizeof(entry->segments[i].lkeys));
+
+    // Keep the public request pending until the remote peer acknowledges the
+    // logical transfer. This preserves the source-buffer lifetime required by
+    // a later RC retransmission.
+    reqs[i]->events[ackDevIndex]++;
+  }
+
+  state->bufferTail = (state->bufferTail + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
+  state->bufferCount++;
+  state->totalSent++;
+  return flagcxSuccess;
+}
+
+static void flagcxIbRetransReleaseRequests(struct flagcxIbRetransEntry *entry) {
+  if (entry == NULL || entry->nreqs <= 0)
+    return;
+  for (int i = 0; i < entry->nreqs; i++) {
+    struct flagcxIbRequest *req = entry->requests[i];
+    if (req != NULL && req->type == FLAGCX_NET_IB_REQ_SEND &&
+        entry->ackDevIndex < FLAGCX_IB_MAX_DEVS_PER_NIC &&
+        req->events[entry->ackDevIndex] > 0)
+      req->events[entry->ackDevIndex]--;
+    entry->requests[i] = NULL;
+  }
+  entry->nreqs = 0;
+}
+#endif
 
 static void flagcxIbUpdateRTO(struct flagcxIbRetransState *state,
                               uint64_t rtt_us) {
@@ -205,6 +277,9 @@ flagcxResult_t flagcxIbRetransProcessAck(struct flagcxIbRetransState *state,
           (state->bufferHead + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
       state->bufferCount--;
     } else if (flagcxIbSeqLeq(entry->seq, ackSeq)) {
+#ifdef USE_IBUC
+      flagcxIbRetransReleaseRequests(entry);
+#endif
       entry->valid = 0;
       state->bufferHead =
           (state->bufferHead + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
@@ -212,7 +287,7 @@ flagcxResult_t flagcxIbRetransProcessAck(struct flagcxIbRetransState *state,
       state->totalAcked++;
       freed++;
 
-      state->sendUna = entry->seq + 1;
+      state->sendUna = (entry->seq + 1) & FLAGCX_IB_RETRANS_SEQ_MASK;
     } else {
       break;
     }
@@ -224,37 +299,11 @@ flagcxResult_t flagcxIbRetransProcessAck(struct flagcxIbRetransState *state,
   if (sackBitmap != 0 && sackCount > 0) {
     TRACE(FLAGCX_NET, "Processing SACK: bitmap=0x%lx, count=%u",
           (unsigned long)sackBitmap, sackCount);
-
-    int idx = state->bufferHead;
-    for (int i = 0; i < state->bufferCount && i < 64; i++) {
-      struct flagcxIbRetransEntry *entry = &state->buffer[idx];
-
-      if (entry->valid) {
-        uint32_t entryOffset = entry->seq - state->sendUna;
-
-        if (entryOffset < 64) {
-          if (sackBitmap & (1ULL << entryOffset)) {
-            TRACE(FLAGCX_NET, "SACK confirmed packet: seq=%u", entry->seq);
-            entry->valid = 0;
-            state->totalAcked++;
-            freed++;
-          }
-        }
-      }
-
-      idx = (idx + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
-    }
-
-    while (state->bufferCount > 0) {
-      struct flagcxIbRetransEntry *entry = &state->buffer[state->bufferHead];
-      if (!entry->valid) {
-        state->bufferHead =
-            (state->bufferHead + 1) % FLAGCX_IB_RETRANS_MAX_INFLIGHT;
-        state->bufferCount--;
-      } else {
-        break;
-      }
-    }
+    // The receiver currently has no out-of-order scoreboard. A SACK therefore
+    // cannot retire the sender entry: after the missing sequence arrives, the
+    // receiver still needs the out-of-order packet to be retransmitted before
+    // its cumulative receive sequence can advance. Keep every SACKed entry and
+    // its source request live until a cumulative ACK covers it.
   }
 
   if (freed > 0) {
@@ -272,8 +321,12 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
   if (!comm || !comm->retrans.enabled)
     return flagcxSuccess;
 
-  // Check if retrans_hdr_mr is initialized (required for retransmission)
+    // The legacy SEND retransmission path requires a registered header.
+#ifdef USE_IBUC
+  if (!comm->retransUsesRc && !comm->retransHdrMr) {
+#else
   if (!comm->retransHdrMr) {
+#endif
     // retrans_hdr_mr not initialized, likely due to initialization failure
     // Disable retransmission to prevent further attempts
     comm->retrans.enabled = 0;
@@ -298,6 +351,124 @@ flagcxResult_t flagcxIbRetransResendViaSend(struct flagcxIbSendComm *comm,
           seq);
     return flagcxSuccess;
   }
+
+#ifdef USE_IBUC
+  // IBUC retransmits into a bounded set of receiver-owned bounce buffers over
+  // a dedicated RC QP. The receiver validates the request generation before
+  // copying the payload, so a lost ACK can never rewrite memory that has
+  // already been returned to the application.
+  if (comm->retransUsesRc && entry->nreqs > 0) {
+    // Only one bounded receive-credit window is in flight at a time. Larger
+    // logical messages are split into 8 MiB chunks and advanced after the
+    // signaled tail completion retires the preceding window.
+    if (comm->outstandingRetrans > 0)
+      return flagcxInProgress;
+
+    const int devIndex = entry->ackDevIndex % comm->base.ndevs;
+    struct flagcxIbQp *retransQp = &comm->devs[devIndex].retransQp;
+    if (retransQp->qp == NULL || comm->devs[devIndex].retransHdrMr == NULL)
+      return flagcxInternalError;
+
+    struct ibv_send_wr wrs[FLAGCX_IBUC_RETRANS_RECV_DEPTH];
+    struct ibv_sge sges[FLAGCX_IBUC_RETRANS_RECV_DEPTH][2];
+    int nextSegments[FLAGCX_IBUC_RETRANS_RECV_DEPTH];
+    uint32_t nextOffsets[FLAGCX_IBUC_RETRANS_RECV_DEPTH];
+    memset(wrs, 0, sizeof(wrs));
+    memset(sges, 0, sizeof(sges));
+
+    int segment = entry->retransSegment;
+    uint32_t offset = entry->retransOffset;
+    int wrCount = 0;
+    while (segment < entry->nreqs && wrCount < FLAGCX_IBUC_RETRANS_RECV_DEPTH) {
+      const uint32_t totalSize = entry->segments[segment].size;
+      if (offset > totalSize)
+        return flagcxInternalError;
+      const uint32_t chunkSize =
+          totalSize == 0 ? 0
+                         : std::min<uint32_t>(FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE,
+                                              totalSize - offset);
+      struct flagcxIbRetransHdr *hdr = &comm->retransHdrPool[wrCount];
+      hdr->magic = FLAGCX_RETRANS_MAGIC;
+      hdr->seq = entry->seq;
+      hdr->size = chunkSize;
+      hdr->rkey = totalSize;
+      hdr->remoteAddr = ((uint64_t)offset << 16) | entry->remoteGeneration;
+      hdr->immData = (uint32_t)entry->remoteRequestSlot |
+                     ((uint32_t)segment << 8) | ((uint32_t)entry->nreqs << 16);
+
+      sges[wrCount][0].addr = (uint64_t)hdr;
+      sges[wrCount][0].length = sizeof(*hdr);
+      sges[wrCount][0].lkey = comm->devs[devIndex].retransHdrMr->lkey;
+      sges[wrCount][1].addr =
+          (uint64_t)((char *)entry->segments[segment].data + offset);
+      sges[wrCount][1].length = chunkSize;
+      sges[wrCount][1].lkey = entry->segments[segment].lkeys[devIndex];
+      wrs[wrCount].wr_id = FLAGCX_RETRANS_WR_ID;
+      wrs[wrCount].sg_list = sges[wrCount];
+      wrs[wrCount].num_sge = chunkSize == 0 ? 1 : 2;
+      wrs[wrCount].opcode = IBV_WR_SEND;
+      if (wrCount > 0)
+        wrs[wrCount - 1].next = &wrs[wrCount];
+      wrCount++;
+
+      offset += chunkSize;
+      if (totalSize == 0 || offset == totalSize) {
+        segment++;
+        offset = 0;
+      }
+      nextSegments[wrCount - 1] = segment;
+      nextOffsets[wrCount - 1] = offset;
+    }
+    if (wrCount == 0)
+      return flagcxInternalError;
+
+    const bool firstAttempt =
+        entry->retransSegment == 0 && entry->retransOffset == 0;
+    int posted = 0;
+    for (; posted < wrCount; posted++) {
+      // Submit retransmission chunks individually. Apart from making every
+      // accepted chunk observable through its own CQE, this removes verbs'
+      // linked-list partial-post ambiguity: ENOMEM means this one WR was not
+      // accepted, while every preceding cursor advance has a matching CQE.
+      wrs[posted].next = NULL;
+      wrs[posted].send_flags = IBV_SEND_SIGNALED;
+      struct ibv_send_wr *badWr = NULL;
+      flagcxResult_t result =
+          flagcxWrapIbvPostSendRetryable(retransQp->qp, &wrs[posted], &badWr);
+      if (result == flagcxInProgress)
+        break;
+      if (result != flagcxSuccess)
+        return result;
+
+      if (comm->retransWindowNreqs == 0) {
+        // An ACK can race these RC completions. Hold every source request for
+        // the accepted prefix so processing that ACK cannot let the
+        // application recycle memory still referenced by the QP.
+        comm->retransWindowNreqs = entry->nreqs;
+        comm->retransWindowDevIndex = devIndex;
+        for (int i = 0; i < entry->nreqs; i++) {
+          comm->retransWindowRequests[i] = entry->requests[i];
+          if (entry->requests[i] != NULL)
+            entry->requests[i]->events[devIndex]++;
+        }
+      }
+
+      entry->retransSegment = nextSegments[posted];
+      entry->retransOffset = nextOffsets[posted];
+      entry->retransAllPosted = entry->retransSegment == entry->nreqs;
+      comm->outstandingRetrans++;
+    }
+
+    if (posted == 0)
+      return flagcxInProgress;
+    if (firstAttempt) {
+      entry->retryCount++;
+      comm->retrans.totalRetrans++;
+    }
+    entry->sendTimeUs = flagcxIbGetTimeUs();
+    return flagcxSuccess;
+  }
+#endif
 
   // Validate entry data
   if (!entry->data || entry->size == 0) {
@@ -445,6 +616,23 @@ flagcxResult_t flagcxIbRetransCheckTimeout(struct flagcxIbRetransState *state,
     if (entry->valid) {
       uint64_t elapsedUs = nowUs - entry->sendTimeUs;
 
+#ifdef USE_IBUC
+      // Continue a large retransmission immediately after the previous
+      // signaled window completes. retryCount counts complete attempts, not
+      // the number of receive-credit windows needed by one attempt.
+      if (comm->retransUsesRc && entry->nreqs > 0 && !entry->retransAllPosted) {
+        flagcxResult_t retransResult =
+            flagcxIbRetransResendViaSend(comm, entry->seq);
+        if (retransResult == flagcxSuccess) {
+          retransCount++;
+          continue;
+        }
+        if (retransResult == flagcxInProgress)
+          break;
+        return retransResult;
+      }
+#endif
+
       if (elapsedUs >= state->rtoUs) {
         if (entry->retryCount >= state->maxRetry) {
           WARN("Packet exceeded max retries: seq=%u, retry=%d, max=%d. "
@@ -453,6 +641,19 @@ flagcxResult_t flagcxIbRetransCheckTimeout(struct flagcxIbRetransState *state,
           return flagcxRemoteError;
         }
 
+#ifdef USE_IBUC
+        if (comm->retransUsesRc && entry->nreqs > 0) {
+          // A signaled RC tail still owns the current window. Do not reset the
+          // cursor merely because its completion took longer than the RTO;
+          // doing so would restart a multi-window retransmission at segment 0
+          // after that completion arrives.
+          if (comm->outstandingRetrans > 0)
+            break;
+          entry->retransSegment = 0;
+          entry->retransOffset = 0;
+          entry->retransAllPosted = false;
+        }
+#endif
         flagcxResult_t retransResult =
             flagcxIbRetransResendViaSend(comm, entry->seq);
         if (retransResult == flagcxSuccess) {
@@ -462,8 +663,10 @@ flagcxResult_t flagcxIbRetransCheckTimeout(struct flagcxIbRetransState *state,
           state->rtoUs = (state->rtoUs * 2 > state->maxRtoUs)
                              ? state->maxRtoUs
                              : state->rtoUs * 2;
-        } else {
+        } else if (retransResult == flagcxInProgress) {
           break;
+        } else {
+          return retransResult;
         }
       }
     }
@@ -496,9 +699,10 @@ flagcxResult_t flagcxIbRetransRecvPacket(struct flagcxIbRetransState *state,
       (state->ackInterval > 0) ? (uint32_t)state->ackInterval : 1;
 
   if (seq == state->recvSeq) {
-    state->recvSeq = (state->recvSeq + 1) & 0xFFFF;
+    state->recvSeq = (state->recvSeq + 1) & FLAGCX_IB_RETRANS_SEQ_MASK;
 
-    uint16_t delta = (uint16_t)((state->recvSeq - state->lastAckSeq) & 0xFFFF);
+    uint16_t delta = (uint16_t)((state->recvSeq - state->lastAckSeq) &
+                                FLAGCX_IB_RETRANS_SEQ_MASK);
     if (delta >= ack_interval || nowUs - state->lastAckSendTimeUs >= 1000 ||
         state->recvSeq == 1) {
       *should_ack = 1;
@@ -508,7 +712,7 @@ flagcxResult_t flagcxIbRetransRecvPacket(struct flagcxIbRetransState *state,
   } else {
     *should_ack = 1;
 
-    int gap = seq - state->recvSeq;
+    int gap = (seq - state->recvSeq) & FLAGCX_IB_RETRANS_SEQ_MASK;
     if (gap > 0 && gap < 64) {
       ack_msg->sackBitmap |= (1ULL << (gap - 1));
 
@@ -525,7 +729,7 @@ flagcxResult_t flagcxIbRetransRecvPacket(struct flagcxIbRetransState *state,
   }
 
   if (*should_ack) {
-    ack_msg->ackSeq = (state->recvSeq - 1) & 0xFFFF;
+    ack_msg->ackSeq = (state->recvSeq - 1) & FLAGCX_IB_RETRANS_SEQ_MASK;
     ack_msg->timestampUs = nowUs;
     ack_msg->peerId = 0;
     ack_msg->flowId = 0;
@@ -597,11 +801,14 @@ flagcxResult_t flagcxIbRetransSendAckViaUd(struct flagcxIbRecvComm *comm,
     TRACE(FLAGCX_NET, "Polled %d ACK completions before sending", totalPolled);
   }
 
-  struct flagcxIbAckMsg *ackBuf = (struct flagcxIbAckMsg *)commDev->ackBuffer;
-  if (!ackBuf) {
+  if (commDev->ackBuffer == NULL) {
     WARN("IBUC Retrans: ackBuffer is NULL for devIndex=%d", devIndex);
     return flagcxInternalError;
   }
+  // The control message is sent inline, so verbs consumes its bytes during
+  // ibv_post_send() and the single registered staging slot is immediately
+  // reusable after the call returns.
+  struct flagcxIbAckMsg *ackBuf = (struct flagcxIbAckMsg *)commDev->ackBuffer;
 
   memcpy(ackBuf, ack_msg, sizeof(struct flagcxIbAckMsg));
 
@@ -630,13 +837,11 @@ flagcxResult_t flagcxIbRetransSendAckViaUd(struct flagcxIbRecvComm *comm,
   // If send queue is full, try more aggressive polling and retry
   if (result != flagcxSuccess) {
     // More aggressive polling with multiple rounds
-    int retryPolled = 0;
     for (int retry_round = 0; retry_round < 3; retry_round++) {
       for (int i = 0; i < 8; i++) {
         struct ibv_wc wcs[64];
         int n = 0;
         flagcxWrapIbvPollCq(ctrlQp->cq, 64, wcs, &n);
-        retryPolled += n;
         if (n == 0)
           break;
       }

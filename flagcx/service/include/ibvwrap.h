@@ -116,7 +116,7 @@ static inline flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret,
                                                    struct ibv_ah_attr *attr) {
   if (ret == NULL || pd == NULL || attr == NULL)
     return flagcxInvalidArgument;
-#if defined(USE_SHCA) && defined(USE_IBUC)
+#ifdef USE_SHCA
   *ret = ibv_create_ah(pd, attr);
 #else
   *ret = pd->context->ops.create_ah(pd, attr);
@@ -131,7 +131,7 @@ static inline flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret,
 static inline flagcxResult_t flagcxWrapIbvDestroyAh(struct ibv_ah *ah) {
   if (ah == NULL)
     return flagcxSuccess;
-#if defined(USE_SHCA) && defined(USE_IBUC)
+#ifdef USE_SHCA
   int ret = ibv_destroy_ah(ah);
 #else
   int ret = ah->context->ops.destroy_ah(ah);
@@ -196,11 +196,12 @@ static inline flagcxResult_t flagcxIbOneSidedPostResult(int ret) {
   return flagcxSystemError;
 }
 
-// One-sided callers must distinguish temporary send-queue pressure from a
-// permanent verbs failure. Keep the legacy two-sided behavior unchanged.
+// Callers with an explicit progress/retry loop must distinguish temporary
+// send-queue pressure from permanent verbs failures. Keep the legacy
+// two-sided wrapper behavior unchanged for callers without that contract.
 static inline flagcxResult_t
-flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
-                              struct ibv_send_wr **bad_wr) {
+flagcxWrapIbvPostSendRetryable(struct ibv_qp *qp, struct ibv_send_wr *wr,
+                               struct ibv_send_wr **bad_wr) {
   int ret = flagcxWrapIbvPostSendRaw(qp, wr, bad_wr);
   flagcxResult_t result = flagcxIbOneSidedPostResult(ret);
   if (result == flagcxSystemError) {
@@ -208,6 +209,15 @@ flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
          strerror(ret), bad_wr == NULL ? NULL : *bad_wr, wr);
   }
   return result;
+}
+
+// One-sided callers use the retryable post contract above. Preserve the
+// one-sided name so existing call sites and the public adaptor contract remain
+// unchanged.
+static inline flagcxResult_t
+flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
+                              struct ibv_send_wr **bad_wr) {
+  return flagcxWrapIbvPostSendRetryable(qp, wr, bad_wr);
 }
 
 static inline flagcxResult_t

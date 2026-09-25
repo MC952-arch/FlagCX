@@ -56,13 +56,6 @@ int parseStringList(const char *string, struct netIf *ifList, int maxList);
 bool matchIfList(const char *string, int port, struct netIf *ifList,
                  int listSize, bool matchExact);
 
-static long log2i(long n) {
-  long l = 0;
-  while (n >>= 1)
-    l++;
-  return l;
-}
-
 inline uint64_t clockNano() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
