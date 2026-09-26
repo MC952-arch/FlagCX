@@ -123,6 +123,21 @@ TEST(IbvCompatLid, ConvertsPortableMetadataToAhDlid) {
 #endif
 }
 
+TEST(IbvCompatRoute, SelectsGlobalRouteForTheActiveVerbsAbi) {
+  EXPECT_TRUE(flagcxIbUseGlobalRoute(IBV_LINK_LAYER_ETHERNET));
+#ifdef USE_SHCA
+  EXPECT_TRUE(flagcxIbUseGlobalRoute(IBV_LINK_LAYER_INFINIBAND));
+#else
+  EXPECT_FALSE(flagcxIbUseGlobalRoute(IBV_LINK_LAYER_INFINIBAND));
+#endif
+}
+
+TEST(IbvCompatLid, ConnectionMetadataPreservesExtendedControlLid) {
+  flagcxIbConnectionMetadata metadata = {};
+  metadata.ctrlLid[0] = 91972;
+  EXPECT_EQ(metadata.ctrlLid[0], 91972U);
+}
+
 TEST(IbvCompatRetrans, ReportsUdControlChannelCapability) {
 #ifdef USE_SHCA
   EXPECT_FALSE(flagcxIbRetransUdSupported());

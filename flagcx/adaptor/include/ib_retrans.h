@@ -18,15 +18,23 @@
   0xDEADBEEF // Magic number for retransmission header
 #define FLAGCX_RETRANS_WR_ID                                                   \
   0xFFFFFFFEULL // WR ID for retransmission completions
+#ifdef USE_IBUC
+#define FLAGCX_IBUC_DATA_RECV_WR_ID_PREFIX 0x4000000000000000ULL
+#define FLAGCX_IBUC_RETRANS_RECV_WR_ID_PREFIX 0x8000000000000000ULL
+#define FLAGCX_IB_RETRANS_SEQ_MASK 0x0FFFu
+#define FLAGCX_IBUC_GENERATION_MASK 0x0FFFu
+#else
+#define FLAGCX_IB_RETRANS_SEQ_MASK 0xFFFFu
+#endif
 
 extern int64_t flagcxParamIbRetransEnable(void);
 extern int64_t flagcxParamIbRetransTimeout(void);
 extern int64_t flagcxParamIbRetransMaxRetry(void);
 extern int64_t flagcxParamIbRetransAckInterval(void);
 
-// The retransmission ACK channel requires UD address handles and SRQ receive
-// posting. Some verbs ABI variants do not expose those operations even though
-// their regular RC data path is usable.
+// The retransmission ACK channel requires UD address-handle support. The
+// payload retransmission itself uses a dedicated RC QP in IBUC; legacy IBRC
+// retransmission may additionally use SRQ operations.
 bool flagcxIbRetransUdSupported(void);
 extern int64_t flagcxParamIbMaxOutstanding(void);
 
@@ -37,15 +45,12 @@ static inline uint64_t flagcxIbGetTimeUs(void) {
 }
 
 static inline int flagcxIbSeqLess(uint32_t a, uint32_t b) {
-  uint16_t a16 = a & 0xFFFF;
-  uint16_t b16 = b & 0xFFFF;
-  return (int16_t)(a16 - b16) < 0;
+  uint32_t diff = (a - b) & FLAGCX_IB_RETRANS_SEQ_MASK;
+  return diff != 0 && diff > (FLAGCX_IB_RETRANS_SEQ_MASK >> 1);
 }
 
 static inline int flagcxIbSeqLeq(uint32_t a, uint32_t b) {
-  uint16_t a16 = a & 0xFFFF;
-  uint16_t b16 = b & 0xFFFF;
-  return (int16_t)(a16 - b16) <= 0;
+  return a == b || flagcxIbSeqLess(a, b);
 }
 
 flagcxResult_t flagcxIbRetransInit(struct flagcxIbRetransState *state);
@@ -56,6 +61,14 @@ flagcxResult_t flagcxIbRetransAddPacket(struct flagcxIbRetransState *state,
                                         uint32_t seq, uint32_t size, void *data,
                                         uint64_t remote_addr, uint32_t *lkeys,
                                         uint32_t *rkeys);
+
+#ifdef USE_IBUC
+flagcxResult_t flagcxIbRetransAddBatch(struct flagcxIbRetransState *state,
+                                       uint32_t seq, uint8_t remoteRequestSlot,
+                                       uint16_t remoteGeneration,
+                                       uint8_t ackDevIndex, int nreqs,
+                                       struct flagcxIbRequest **reqs);
+#endif
 
 flagcxResult_t flagcxIbRetransProcessAck(struct flagcxIbRetransState *state,
                                          struct flagcxIbAckMsg *ack_msg);
@@ -84,6 +97,31 @@ static inline void flagcxIbDecodeImmData(uint32_t imm_data, uint32_t *seq,
   *size = imm_data & 0xFFFF;
 }
 
+#ifdef USE_IBUC
+static inline uint32_t flagcxIbucEncodeImmData(uint32_t seq,
+                                               uint8_t requestSlot,
+                                               uint16_t generation) {
+  return ((seq & FLAGCX_IB_RETRANS_SEQ_MASK) << 20) |
+         ((generation & FLAGCX_IBUC_GENERATION_MASK) << 8) | requestSlot;
+}
+
+static inline void flagcxIbucDecodeImmData(uint32_t immData, uint32_t *seq,
+                                           uint8_t *requestSlot,
+                                           uint16_t *generation) {
+  *seq = (immData >> 20) & FLAGCX_IB_RETRANS_SEQ_MASK;
+  *generation = (immData >> 8) & FLAGCX_IBUC_GENERATION_MASK;
+  *requestSlot = immData & 0xFF;
+}
+
+static inline bool
+flagcxIbucRequestMatchesGeneration(const struct flagcxIbRequest *request,
+                                   uint16_t generation) {
+  return request != NULL && request->type == FLAGCX_NET_IB_REQ_RECV &&
+         request->retransGeneration ==
+             (generation & FLAGCX_IBUC_GENERATION_MASK);
+}
+#endif
+
 void flagcxIbRetransPrintStats(struct flagcxIbRetransState *state,
                                const char *prefix);
 
@@ -97,7 +135,7 @@ flagcxResult_t
 flagcxIbSetupCtrlQpConnection(struct ibv_context *context, struct ibv_pd *pd,
                               struct flagcxIbCtrlQp *ctrlQp,
                               uint32_t remote_qpn, union ibv_gid *remote_gid,
-                              uint16_t remote_lid, uint8_t port_num,
+                              uint32_t remote_lid, uint8_t port_num,
                               uint8_t link_layer, uint8_t local_gid_index);
 
 flagcxResult_t flagcxIbRetransSendAckViaUd(struct flagcxIbRecvComm *comm,

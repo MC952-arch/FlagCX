@@ -2,6 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  ************************************************************************/
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -22,6 +23,8 @@
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 #include "ib_common.h"
+#include "ib_retrans.h"
+#include "ibvsymbols.h"
 #include "net.h"
 #include "net_test_utils.h"
 #include "onesided.h"
@@ -52,6 +55,28 @@ flagcxResult_t waitRequest(struct flagcxNetAdaptor *net, void *request,
       std::this_thread::yield();
   }
   return done ? flagcxSuccess : flagcxSystemError;
+}
+
+flagcxResult_t waitRequests(struct flagcxNetAdaptor *net, int count,
+                            void **requests, int **sizes = nullptr) {
+  std::vector<int> done(count, 0);
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    bool allDone = true;
+    for (int i = 0; i < count; i++) {
+      if (done[i])
+        continue;
+      flagcxResult_t result = net->test(requests[i], &done[i],
+                                        sizes == nullptr ? nullptr : sizes[i]);
+      if (result != flagcxSuccess)
+        return result;
+      allDone &= done[i] != 0;
+    }
+    if (allDone)
+      return flagcxSuccess;
+    std::this_thread::yield();
+  }
+  return flagcxSystemError;
 }
 
 struct ConnectionResult {
@@ -164,6 +189,69 @@ int batchPostResult = IBV_SUCCESS;
 int batchRejectedIndex = -1;
 int batchPostCalls = 0;
 
+#ifdef USE_IBUC
+int ibucCreateCqCalls = 0;
+int ibucDeregisterCalls = 0;
+int ibucDestroySrqCalls = 0;
+int ibucDestroyCqCalls = 0;
+int ibucDeregisterFailuresRemaining = 0;
+int ibucDestroySrqFailuresRemaining = 0;
+ibv_mr *ibucDeregisterFailure = nullptr;
+std::vector<ibv_mr *> ibucDeregisteredMrs;
+
+ibv_cq *fakeIbucCreateCq(ibv_context *, int, void *, ibv_comp_channel *, int) {
+  ++ibucCreateCqCalls;
+  errno = EIO;
+  return nullptr;
+}
+
+int fakeIbucDeregisterMr(ibv_mr *mr) {
+  ++ibucDeregisterCalls;
+  ibucDeregisteredMrs.push_back(mr);
+  if (mr == ibucDeregisterFailure && ibucDeregisterFailuresRemaining > 0) {
+    --ibucDeregisterFailuresRemaining;
+    return EIO;
+  }
+  return 0;
+}
+
+int fakeIbucDestroySrq(ibv_srq *) {
+  ++ibucDestroySrqCalls;
+  if (ibucDestroySrqFailuresRemaining > 0) {
+    --ibucDestroySrqFailuresRemaining;
+    return EIO;
+  }
+  return 0;
+}
+
+int fakeIbucDestroyCq(ibv_cq *) {
+  ++ibucDestroyCqCalls;
+  return 0;
+}
+
+class ScopedIbucVerbsSymbols {
+public:
+  ScopedIbucVerbsSymbols()
+      : createCq_(ibvSymbols.ibv_internal_create_cq),
+        deregMr_(ibvSymbols.ibv_internal_dereg_mr),
+        destroySrq_(ibvSymbols.ibv_internal_destroy_srq),
+        destroyCq_(ibvSymbols.ibv_internal_destroy_cq) {}
+
+  ~ScopedIbucVerbsSymbols() {
+    ibvSymbols.ibv_internal_create_cq = createCq_;
+    ibvSymbols.ibv_internal_dereg_mr = deregMr_;
+    ibvSymbols.ibv_internal_destroy_srq = destroySrq_;
+    ibvSymbols.ibv_internal_destroy_cq = destroyCq_;
+  }
+
+private:
+  decltype(ibvSymbols.ibv_internal_create_cq) createCq_;
+  decltype(ibvSymbols.ibv_internal_dereg_mr) deregMr_;
+  decltype(ibvSymbols.ibv_internal_destroy_srq) destroySrq_;
+  decltype(ibvSymbols.ibv_internal_destroy_cq) destroyCq_;
+};
+#endif
+
 flagcxResult_t fakeDeregisterMr(flagcxIbNetCommDevBase *, ibv_mr *mr) {
   deregisterCalls.push_back(mr);
   if (mr == deregisterFailure && deregisterFailuresRemaining > 0) {
@@ -240,12 +328,19 @@ protected:
   }
 
   void TearDown() override {
-    if (deviceBuffer_ != nullptr && deviceAdaptor != nullptr &&
-        deviceAdaptor->deviceFree != nullptr) {
-      EXPECT_EQ(
-          deviceAdaptor->deviceFree(deviceBuffer_, flagcxMemDevice, nullptr),
-          flagcxSuccess);
-      deviceBuffer_ = nullptr;
+    if (deviceAdaptor != nullptr && deviceAdaptor->deviceFree != nullptr) {
+      if (deviceBuffer_ != nullptr) {
+        EXPECT_EQ(
+            deviceAdaptor->deviceFree(deviceBuffer_, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+        deviceBuffer_ = nullptr;
+      }
+      if (secondDeviceBuffer_ != nullptr) {
+        EXPECT_EQ(deviceAdaptor->deviceFree(secondDeviceBuffer_,
+                                            flagcxMemDevice, nullptr),
+                  flagcxSuccess);
+        secondDeviceBuffer_ = nullptr;
+      }
     }
     if (net_ == nullptr)
       return;
@@ -275,6 +370,7 @@ protected:
   void *sendComm_ = nullptr;
   void *recvComm_ = nullptr;
   void *deviceBuffer_ = nullptr;
+  void *secondDeviceBuffer_ = nullptr;
 };
 
 #define ASSERT_REGISTER_MR(comm, buffer, size, type, handle)                   \
@@ -328,6 +424,42 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
     EXPECT_EQ(net->iputSignal, nullptr);
     EXPECT_EQ(net->regMrDmaBuf, nullptr);
   }
+}
+
+TEST(NetAdaptorInterface, IbucAdvertisesTwoSidedContract) {
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  const char *expected = getenv("FLAGCX_CI_EXPECT_NET_ADAPTOR");
+  if (net->name == nullptr || strcmp(net->name, "IBUC") != 0) {
+    if (expected != nullptr && strcmp(expected, "IBUC") == 0)
+      FAIL() << "IBUC CI selected "
+             << (net->name != nullptr ? net->name : "<unnamed>");
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+  }
+
+  EXPECT_NE(net->init, nullptr);
+  EXPECT_NE(net->devices, nullptr);
+  EXPECT_NE(net->getProperties, nullptr);
+  EXPECT_NE(net->listen, nullptr);
+  EXPECT_NE(net->connect, nullptr);
+  EXPECT_NE(net->accept, nullptr);
+  EXPECT_NE(net->regMr, nullptr);
+  EXPECT_NE(net->deregMr, nullptr);
+  EXPECT_NE(net->isend, nullptr);
+  EXPECT_NE(net->irecv, nullptr);
+  EXPECT_NE(net->iflush, nullptr);
+  EXPECT_NE(net->test, nullptr);
+  EXPECT_NE(net->closeSend, nullptr);
+  EXPECT_NE(net->closeRecv, nullptr);
+  EXPECT_NE(net->closeListen, nullptr);
+
+  EXPECT_EQ(net->getMrInfo, nullptr);
+  EXPECT_EQ(net->iput, nullptr);
+  EXPECT_EQ(net->iget, nullptr);
+  EXPECT_EQ(net->iputSignal, nullptr);
+  EXPECT_EQ(net->iputBatch, nullptr);
+  EXPECT_EQ(net->testBatch, nullptr);
+  EXPECT_EQ(net->igetBatch, nullptr);
 }
 
 TEST(IbDefensiveContractTest, RejectsNullAndUnreadyCommunicators) {
@@ -453,6 +585,234 @@ TEST_F(IbMrCleanupTest, FailedPublicCleanupIsDeferredAndRemainsRetryable) {
   ASSERT_EQ(deregisterCalls.size(), 1u);
   EXPECT_EQ(deregisterCalls[0], mr);
 }
+
+#ifdef USE_IBUC
+TEST(IbucOwnershipTest, CqFailureDropsOnlyTheAttemptedSharedPdReference) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_create_cq = fakeIbucCreateCq;
+  ibucCreateCqCalls = 0;
+
+  const int savedDeviceCount = flagcxNIbDevs;
+  const int testDevice = savedDeviceCount < 0 ? 0 : savedDeviceCount;
+  if (testDevice >= MAX_IB_DEVS)
+    GTEST_SKIP() << "No unused IB device slot is available";
+
+  flagcxIbDev *device = &flagcxIbDevs[testDevice];
+  memset(device, 0, sizeof(*device));
+  ASSERT_EQ(pthread_mutex_init(&device->lock, nullptr), 0);
+  ibv_pd sharedPd = {};
+  device->pd = &sharedPd;
+  device->pdRefs = 1;
+  flagcxNIbDevs = testDevice + 1;
+
+  flagcxIbNetCommDevBase base = {};
+  EXPECT_EQ(flagcxIbucInitCommDevBase(testDevice, &base), flagcxSystemError);
+  EXPECT_EQ(ibucCreateCqCalls, 2);
+  EXPECT_EQ(device->pdRefs, 1);
+  EXPECT_EQ(device->pd, &sharedPd);
+  EXPECT_EQ(base.pd, nullptr);
+  EXPECT_EQ(base.cq, nullptr);
+
+  EXPECT_EQ(pthread_mutex_destroy(&device->lock), 0);
+  memset(device, 0, sizeof(*device));
+  flagcxNIbDevs = savedDeviceCount;
+}
+
+TEST(IbucOwnershipTest, SrqCleanupPreservesPostedBuffersUntilDestroySucceeds) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_destroy_srq = fakeIbucDestroySrq;
+  ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
+  ibvSymbols.ibv_internal_destroy_cq = fakeIbucDestroyCq;
+  ibucDestroySrqCalls = 0;
+  ibucDestroyCqCalls = 0;
+  ibucDeregisterCalls = 0;
+  ibucDestroySrqFailuresRemaining = 1;
+  ibucDeregisterFailuresRemaining = 0;
+  ibucDeregisterFailure = nullptr;
+  ibucDeregisteredMrs.clear();
+
+  flagcxIbSrqMgr manager = {};
+  manager.srq = reinterpret_cast<void *>(0x1000);
+  manager.cq = reinterpret_cast<ibv_cq *>(0x2000);
+  manager.bufCount = 1;
+  manager.bufs[0].buffer = malloc(64);
+  ASSERT_NE(manager.bufs[0].buffer, nullptr);
+  manager.bufs[0].mr = reinterpret_cast<ibv_mr *>(0x3000);
+
+  EXPECT_EQ(flagcxIbDestroySrq(&manager), flagcxSystemError);
+  EXPECT_EQ(manager.srq, reinterpret_cast<void *>(0x1000));
+  EXPECT_EQ(manager.bufs[0].mr, reinterpret_cast<ibv_mr *>(0x3000));
+  EXPECT_NE(manager.bufs[0].buffer, nullptr);
+  EXPECT_EQ(ibucDeregisterCalls, 0);
+  EXPECT_EQ(ibucDestroyCqCalls, 0);
+
+  EXPECT_EQ(flagcxIbDestroySrq(&manager), flagcxSuccess);
+  EXPECT_EQ(manager.srq, nullptr);
+  EXPECT_EQ(manager.cq, nullptr);
+  EXPECT_EQ(manager.bufs[0].mr, nullptr);
+  EXPECT_EQ(manager.bufs[0].buffer, nullptr);
+  EXPECT_EQ(manager.bufCount, 0);
+  EXPECT_EQ(ibucDestroySrqCalls, 2);
+  EXPECT_EQ(ibucDeregisterCalls, 1);
+  EXPECT_EQ(ibucDestroyCqCalls, 1);
+}
+
+TEST(IbucOwnershipTest, SendCloseRetriesNewlyDeferredCleanup) {
+  ScopedIbucVerbsSymbols symbols;
+  ibvSymbols.ibv_internal_dereg_mr = fakeIbucDeregisterMr;
+  ibucDeregisterCalls = 0;
+  ibucDeregisteredMrs.clear();
+  ibucDeregisterFailuresRemaining = 1;
+
+  auto *comm =
+      static_cast<flagcxIbSendComm *>(calloc(1, sizeof(flagcxIbSendComm)));
+  ASSERT_NE(comm, nullptr);
+  comm->base.isSend = true;
+  comm->base.ndevs = 1;
+  comm->base.sock.fd = -1;
+  ibv_mr *fifoMr = reinterpret_cast<ibv_mr *>(0x4000);
+  ibv_mr *retransMr = reinterpret_cast<ibv_mr *>(0x5000);
+  comm->devs[0].fifoMr = fifoMr;
+  comm->retransHdrMr = retransMr;
+  ibucDeregisterFailure = retransMr;
+
+  EXPECT_EQ(flagcxIbucCloseSend(comm), flagcxSystemError);
+  ASSERT_EQ(ibucDeregisteredMrs.size(), 3u);
+  EXPECT_EQ(ibucDeregisteredMrs[0], fifoMr);
+  EXPECT_EQ(ibucDeregisteredMrs[1], retransMr);
+  // closeSend consumes the handle and immediately retries newly deferred
+  // ownership. Only the MR whose first deregistration failed is retried.
+  EXPECT_EQ(ibucDeregisteredMrs[2], retransMr);
+}
+
+TEST(IbucRetransmissionTest, BatchAckReleasesEverySourceRequest) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  struct flagcxIbRequest requests[2] = {};
+  struct flagcxIbRequest *requestPtrs[2] = {&requests[0], &requests[1]};
+  uint8_t source0[8] = {};
+  uint8_t source1[16] = {};
+  for (int i = 0; i < 2; i++) {
+    requests[i].type = FLAGCX_NET_IB_REQ_SEND;
+    requests[i].send.data =
+        i == 0 ? static_cast<void *>(source0) : static_cast<void *>(source1);
+    requests[i].send.size = i == 0 ? sizeof(source0) : sizeof(source1);
+  }
+
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 0, 7, 0x345, 0, 2, requestPtrs),
+            flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 1);
+  EXPECT_EQ(requests[1].events[0], 1);
+  ASSERT_EQ(state.bufferCount, 1);
+  EXPECT_EQ(state.buffer[0].nreqs, 2);
+  EXPECT_EQ(state.buffer[0].remoteRequestSlot, 7);
+  EXPECT_EQ(state.buffer[0].remoteGeneration, 0x345);
+
+  struct flagcxIbAckMsg ack = {};
+  ack.ackSeq = 0;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 0);
+  EXPECT_EQ(requests[1].events[0], 0);
+  EXPECT_EQ(state.bufferCount, 0);
+}
+
+TEST(IbucRetransmissionTest, SackKeepsEntriesUntilCumulativeAck) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  struct flagcxIbRequest requests[2] = {};
+  struct flagcxIbRequest *request0 = &requests[0];
+  struct flagcxIbRequest *request1 = &requests[1];
+  for (auto &request : requests)
+    request.type = FLAGCX_NET_IB_REQ_SEND;
+
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 0, 3, 1, 0, 1, &request0),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxIbRetransAddBatch(&state, 1, 4, 1, 0, 1, &request1),
+            flagcxSuccess);
+  ASSERT_EQ(requests[0].events[0], 1);
+  ASSERT_EQ(requests[1].events[0], 1);
+
+  // recvSeq is still 0, but sequence 1 arrived out of order. The receiver
+  // reports ackSeq=mask and bit 0 for sequence 1; sequence 0 must remain live.
+  struct flagcxIbAckMsg ack = {};
+  ack.ackSeq = FLAGCX_IB_RETRANS_SEQ_MASK;
+  ack.sackBitmap = 1;
+  ack.sackBitmapCount = 1;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+
+  EXPECT_EQ(requests[0].events[0], 1);
+  EXPECT_EQ(requests[1].events[0], 1);
+  EXPECT_TRUE(state.buffer[0].valid);
+  EXPECT_TRUE(state.buffer[1].valid);
+
+  // Once the receiver has filled the gap and cumulatively acknowledged both
+  // sequences, their source buffers can be released together.
+  ack = {};
+  ack.ackSeq = 1;
+  ASSERT_EQ(flagcxIbRetransProcessAck(&state, &ack), flagcxSuccess);
+  EXPECT_EQ(requests[0].events[0], 0);
+  EXPECT_EQ(requests[1].events[0], 0);
+  EXPECT_EQ(state.bufferCount, 0);
+}
+
+TEST(IbucRetransmissionTest, ImmediateDataCarriesSequenceAndRequestSlot) {
+  constexpr uint32_t seq = 0xabcd;
+  constexpr uint8_t requestSlot = 0xef;
+  constexpr uint16_t generation = 0x789;
+  uint32_t decodedSeq = 0;
+  uint8_t decodedSlot = 0;
+  uint16_t decodedGeneration = 0;
+  flagcxIbucDecodeImmData(flagcxIbucEncodeImmData(seq, requestSlot, generation),
+                          &decodedSeq, &decodedSlot, &decodedGeneration);
+  EXPECT_EQ(decodedSeq, seq & FLAGCX_IB_RETRANS_SEQ_MASK);
+  EXPECT_EQ(decodedSlot, requestSlot);
+  EXPECT_EQ(decodedGeneration, generation);
+}
+
+TEST(IbucRetransmissionTest, ReusedRequestSlotRejectsStaleGeneration) {
+  struct flagcxIbRequest request = {};
+  request.type = FLAGCX_NET_IB_REQ_RECV;
+  request.retransGeneration = 0x124;
+
+  EXPECT_TRUE(flagcxIbucRequestMatchesGeneration(&request, 0x124));
+  EXPECT_FALSE(flagcxIbucRequestMatchesGeneration(&request, 0x123));
+  request.type = FLAGCX_NET_IB_REQ_UNUSED;
+  EXPECT_FALSE(flagcxIbucRequestMatchesGeneration(&request, 0x124));
+}
+
+TEST(IbucRetransmissionTest, LargePayloadUsesBoundedReceiveChunks) {
+  EXPECT_EQ(flagcxIbucRetransChunkCount(0), 1u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE), 1u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE + 1U),
+            2u);
+  EXPECT_EQ(flagcxIbucRetransChunkCount(64U * 1024 * 1024), 8u);
+}
+
+TEST(IbucRetransmissionTest, OutstandingRcWindowPreservesChunkCursor) {
+  struct flagcxIbRetransState state = {};
+  state.enabled = 1;
+  state.rtoUs = 1;
+  state.maxRetry = 3;
+  state.bufferCount = 1;
+  state.buffer[0].valid = 1;
+  state.buffer[0].seq = 5;
+  state.buffer[0].sendTimeUs = 0;
+  state.buffer[0].nreqs = 2;
+  state.buffer[0].retransSegment = 1;
+  state.buffer[0].retransOffset = 4096;
+  state.buffer[0].retransAllPosted = true;
+
+  struct flagcxIbSendComm comm = {};
+  comm.retransUsesRc = true;
+  comm.outstandingRetrans = 1;
+
+  ASSERT_EQ(flagcxIbRetransCheckTimeout(&state, &comm), flagcxSuccess);
+  EXPECT_EQ(state.buffer[0].retransSegment, 1);
+  EXPECT_EQ(state.buffer[0].retransOffset, 4096u);
+  EXPECT_TRUE(state.buffer[0].retransAllPosted);
+  EXPECT_EQ(state.buffer[0].retryCount, 0);
+}
+#endif
 
 TEST(IbRequestCompletionTest, SharedCqUpdatesTheWrIdRequestAndDrainsBatch) {
   auto base = std::make_unique<flagcxIbNetCommBase>();
@@ -753,9 +1113,185 @@ TEST_F(NetAdaptorLoopback, SendRecv) {
       std::this_thread::yield();
   }
   ASSERT_NE(sendRequest, nullptr);
-  ASSERT_EQ(waitRequest(net_, sendRequest), flagcxSuccess);
-  ASSERT_EQ(waitRequest(net_, recvRequest), flagcxSuccess);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
   EXPECT_EQ(source, destination);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMr);
+}
+
+TEST_F(NetAdaptorLoopback, IbucMultiReceivePreservesSizesAndRequests) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  std::vector<uint8_t> source0(96 * 1024, 0x31);
+  std::vector<uint8_t> source1(130 * 1024, 0x7c);
+  std::vector<uint8_t> destination0(source0.size(), 0);
+  std::vector<uint8_t> destination1(source1.size(), 0);
+  void *sourceMrs[2] = {};
+  void *destinationMrs[2] = {};
+  ASSERT_REGISTER_MR(sendComm_, source0.data(), source0.size(), FLAGCX_PTR_HOST,
+                     sourceMrs[0]);
+  ASSERT_REGISTER_MR(sendComm_, source1.data(), source1.size(), FLAGCX_PTR_HOST,
+                     sourceMrs[1]);
+  ASSERT_REGISTER_MR(recvComm_, destination0.data(), destination0.size(),
+                     FLAGCX_PTR_HOST, destinationMrs[0]);
+  ASSERT_REGISTER_MR(recvComm_, destination1.data(), destination1.size(),
+                     FLAGCX_PTR_HOST, destinationMrs[1]);
+
+  void *recvData[2] = {destination0.data(), destination1.data()};
+  size_t recvSizes[2] = {destination0.size(), destination1.size()};
+  int tags[2] = {41, 42};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 2, recvData, recvSizes, tags, destinationMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+
+  void *sendRequests[2] = {};
+  void *sources[2] = {source0.data(), source1.data()};
+  size_t sourceSizes[2] = {source0.size(), source1.size()};
+  for (int i = 0; i < 2; i++) {
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (sendRequests[i] == nullptr &&
+           std::chrono::steady_clock::now() < deadline) {
+      ASSERT_EQ(net_->isend(sendComm_, sources[i], sourceSizes[i], tags[i],
+                            sourceMrs[i], nullptr, &sendRequests[i]),
+                flagcxSuccess);
+      if (sendRequests[i] == nullptr)
+        std::this_thread::yield();
+    }
+    ASSERT_NE(sendRequests[i], nullptr);
+  }
+
+  int completedSizes[2] = {};
+  void *requests[3] = {sendRequests[0], sendRequests[1], recvRequest};
+  int *requestSizes[3] = {nullptr, nullptr, completedSizes};
+  ASSERT_EQ(waitRequests(net_, 3, requests, requestSizes), flagcxSuccess);
+  EXPECT_EQ(completedSizes[0], static_cast<int>(source0.size()));
+  EXPECT_EQ(completedSizes[1], static_cast<int>(source1.size()));
+  EXPECT_EQ(source0, destination0);
+  EXPECT_EQ(source1, destination1);
+
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMrs[0]);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMrs[1]);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMrs[0]);
+  EXPECT_DEREGISTER_MR(recvComm_, destinationMrs[1]);
+}
+
+TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  auto *send = static_cast<flagcxIbSendComm *>(sendComm_);
+  auto *recv = static_cast<flagcxIbRecvComm *>(recvComm_);
+  ASSERT_TRUE(send->retrans.enabled);
+  ASSERT_TRUE(recv->retrans.enabled);
+  EXPECT_TRUE(send->retransUsesRc);
+  EXPECT_EQ(send->retransHdrMr, nullptr);
+  EXPECT_EQ(recv->srqMgr.srq, nullptr);
+  ASSERT_GT(send->base.ndevs, 0);
+  ASSERT_EQ(send->base.ndevs, recv->base.ndevs);
+  for (int i = 0; i < send->base.ndevs; ++i) {
+    EXPECT_NE(send->devs[i].ctrlQp.qp, nullptr);
+    EXPECT_NE(send->devs[i].ctrlQp.cq, nullptr);
+    EXPECT_NE(send->devs[i].ctrlQp.ah, nullptr);
+    EXPECT_NE(send->devs[i].retransQp.qp, nullptr);
+    EXPECT_NE(send->devs[i].retransCq, nullptr);
+    EXPECT_NE(send->devs[i].retransHdrMr, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.qp, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.cq, nullptr);
+    EXPECT_NE(recv->devs[i].ctrlQp.ah, nullptr);
+    EXPECT_NE(recv->devs[i].retransQp.qp, nullptr);
+    EXPECT_NE(recv->devs[i].retransRecvMr, nullptr);
+    EXPECT_EQ(recv->devs[i].retransRecvBufCount,
+              FLAGCX_IBUC_RETRANS_RECV_DEPTH);
+  }
+}
+
+TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {
+  if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
+    GTEST_SKIP() << "Runs only in the build-selected IBUC suite";
+
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->setDevice, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceMalloc, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceFree, nullptr);
+  ASSERT_NE(deviceAdaptor->deviceMemcpy, nullptr);
+  ASSERT_NE(net_->getProperties, nullptr);
+  flagcxNetProperties_t properties = {};
+  ASSERT_EQ(net_->getProperties(netDev_, &properties), flagcxSuccess);
+  ASSERT_NE(properties.ptrSupport & FLAGCX_PTR_CUDA, 0)
+      << "IBUC collective data path requires GPU MR support";
+
+  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceMalloc(&deviceBuffer_, kBufferSize,
+                                        flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceMalloc(&secondDeviceBuffer_, kBufferSize,
+                                        flagcxMemDevice, nullptr),
+            flagcxSuccess);
+
+  std::vector<uint8_t> expected(kBufferSize);
+  std::vector<uint8_t> actual(kBufferSize, 0);
+  for (size_t i = 0; i < expected.size(); ++i)
+    expected[i] = static_cast<uint8_t>((i * 17 + 3) & 0xff);
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(
+                deviceBuffer_, expected.data(), expected.size(),
+                flagcxMemcpyHostToDevice, nullptr, nullptr),
+            flagcxSuccess);
+
+  void *sourceMr = nullptr;
+  void *destinationMr = nullptr;
+  ASSERT_REGISTER_MR(sendComm_, deviceBuffer_, kBufferSize, FLAGCX_PTR_CUDA,
+                     sourceMr);
+  ASSERT_REGISTER_MR(recvComm_, secondDeviceBuffer_, kBufferSize,
+                     FLAGCX_PTR_CUDA, destinationMr);
+
+  constexpr size_t kOffset = 128;
+  constexpr size_t kTransferSize = kBufferSize - 2 * kOffset;
+  void *recvData[1] = {static_cast<char *>(secondDeviceBuffer_) + kOffset};
+  size_t recvSizes[1] = {kTransferSize};
+  int flushSizes[1] = {static_cast<int>(kTransferSize)};
+  int tags[1] = {17};
+  void *recvMrs[1] = {destinationMr};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 1, recvData, recvSizes, tags, recvMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+
+  void *sendRequest = nullptr;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (sendRequest == nullptr &&
+         std::chrono::steady_clock::now() < deadline) {
+    ASSERT_EQ(
+        net_->isend(sendComm_, static_cast<char *>(deviceBuffer_) + kOffset,
+                    kTransferSize, tags[0], sourceMr, nullptr, &sendRequest),
+        flagcxSuccess);
+    if (sendRequest == nullptr)
+      std::this_thread::yield();
+  }
+  ASSERT_NE(sendRequest, nullptr);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
+
+  void *flushRequest = nullptr;
+  ASSERT_EQ(
+      net_->iflush(recvComm_, 1, recvData, flushSizes, recvMrs, &flushRequest),
+      flagcxSuccess);
+  if (flushRequest != nullptr) {
+    ASSERT_EQ(waitRequest(net_, flushRequest), flagcxSuccess);
+  }
+
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(actual.data(), secondDeviceBuffer_,
+                                        actual.size(), flagcxMemcpyDeviceToHost,
+                                        nullptr, nullptr),
+            flagcxSuccess);
+  EXPECT_TRUE(std::equal(expected.begin() + kOffset,
+                         expected.begin() + kOffset + kTransferSize,
+                         actual.begin() + kOffset));
+
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, destinationMr);
 }

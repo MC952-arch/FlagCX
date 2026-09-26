@@ -79,6 +79,7 @@ USE_MUSA           ?= 0
 USE_KUNLUNXIN      ?= 0
 USE_DU             ?= 0
 USE_SHCA           ?= 0
+USE_IBUC           ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 USE_PPU            ?= 0
@@ -116,6 +117,10 @@ SHCA_HOME ?= /usr
 SHCA_INCLUDE ?= $(SHCA_HOME)/include
 CXXFLAGS += -DUSE_SHCA
 FLAGCX_INCLUDES += -I$(SHCA_INCLUDE)
+endif
+
+ifeq ($(USE_IBUC), 1)
+CXXFLAGS += -DUSE_IBUC
 endif
 
 # Test-specific overrides (format for compiler flags)

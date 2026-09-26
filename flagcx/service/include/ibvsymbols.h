@@ -64,6 +64,9 @@ struct flagcxIbvSymbols {
   struct ibv_srq *(*ibv_internal_create_srq)(
       struct ibv_pd *pd, struct ibv_srq_init_attr *srq_init_attr);
   int (*ibv_internal_destroy_srq)(struct ibv_srq *srq);
+  struct ibv_ah *(*ibv_internal_create_ah)(struct ibv_pd *pd,
+                                           struct ibv_ah_attr *attr);
+  int (*ibv_internal_destroy_ah)(struct ibv_ah *ah);
 };
 
 extern struct flagcxIbvSymbols ibvSymbols;

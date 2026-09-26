@@ -998,16 +998,6 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   return flagcxSuccess;
 }
 
-static bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
-#ifdef USE_SHCA
-  // SHCA programs a GID/GRH route together with its extended 17-bit DLID.
-  (void)linkLayer;
-  return true;
-#else
-  return linkLayer == IBV_LINK_LAYER_ETHERNET;
-#endif
-}
-
 flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
                              const struct flagcxIbDev *localDev,
                              const struct flagcxIbGidInfo *localGidInfo,
@@ -1148,6 +1138,7 @@ ib_connect_check:
   }
 
   struct flagcxIbConnectionMetadata meta;
+  memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.ndevs;
 
   // IBRC retransmission: default disabled, can be enabled via
@@ -2909,10 +2900,11 @@ flagcxResult_t flagcxIbGdrSupport() {
 // (GPU, netDev) result: normal rank-per-GPU operation repeatedly queries the
 // topology-selected device, while a process that switches either endpoint is
 // re-probed instead of reusing a stale capability result.
-flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported) {
+flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, int access, bool *supported) {
   static pthread_mutex_t probeLock = PTHREAD_MUTEX_INITIALIZER;
   static int probedGpu = -1;
   static int probedNetDev = -1;
+  static int probedAccess = 0;
   static int gpuMrSupported = -1;
   const size_t probeSize = 64 * 1024;
 
@@ -2929,7 +2921,8 @@ flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported) {
     return flagcxSuccess;
 
   pthread_mutex_lock(&probeLock);
-  if (gpuMrSupported != -1 && probedGpu == gpu && probedNetDev == dev) {
+  if (gpuMrSupported != -1 && probedGpu == gpu && probedNetDev == dev &&
+      probedAccess == access) {
     *supported = gpuMrSupported != 0;
     pthread_mutex_unlock(&probeLock);
     return flagcxSuccess;
@@ -2951,8 +2944,6 @@ flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported) {
     const size_t pages =
         ((uintptr_t)gpuPtr + probeSize - addr + pageSize - 1) / pageSize;
     const size_t registrationSize = pages * pageSize;
-    const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
     struct flagcxIbMergedDev *mergedDev = flagcxIbMergedDevs + dev;
 
     if (mergedDev->ndevs <= 0)
@@ -3003,6 +2994,7 @@ flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported) {
 
   probedGpu = gpu;
   probedNetDev = dev;
+  probedAccess = access;
   gpuMrSupported = probeSucceeded ? 1 : 0;
   *supported = probeSucceeded;
   INFO(FLAGCX_INIT | FLAGCX_NET,
@@ -3069,7 +3061,9 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->ptrSupport = FLAGCX_PTR_HOST;
 
   bool gpuMrSupported = false;
-  FLAGCXCHECK(flagcxIbProbeGpuMrSupport(dev, &gpuMrSupported));
+  const int gpuMrAccess = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                          IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  FLAGCXCHECK(flagcxIbProbeGpuMrSupport(dev, gpuMrAccess, &gpuMrSupported));
   if (gpuMrSupported)
     properties->ptrSupport |= FLAGCX_PTR_CUDA;
   properties->regIsGlobal = 1;

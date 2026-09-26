@@ -6,6 +6,7 @@
 #include "timer.h"
 
 #include <arpa/inet.h>
+#include <inttypes.h>
 #include <sched.h>
 
 flagcxResult_t
@@ -131,7 +132,7 @@ flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
                                    flagcxResult_t result) {
   if (base == NULL)
     return flagcxInvalidArgument;
-  uint8_t reqIndex = wrId & 0xff;
+  uint32_t reqIndex = wrId & 0xffu;
   if (reqIndex >= MAX_REQUESTS)
     return flagcxInternalError;
 
@@ -143,7 +144,7 @@ flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
     if (req->nreqs <= 0 || req->nreqs > FLAGCX_NET_IB_MAX_RECVS)
       return flagcxInternalError;
     for (int j = 0; j < req->nreqs; j++) {
-      uint8_t sendReqIndex = (wrId >> (j * 8)) & 0xff;
+      uint32_t sendReqIndex = (wrId >> (j * 8)) & 0xffu;
       if (sendReqIndex >= MAX_REQUESTS)
         return flagcxInternalError;
       struct flagcxIbRequest *sendReq = base->reqs + sendReqIndex;
@@ -213,7 +214,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
 
     for (int i = 0; i < FLAGCX_IB_MAX_DEVS_PER_NIC; i++) {
       TIME_START(3);
-      if (r->events[i]) {
+      if (r->events[i] || (ops && ops->pollAllCqs && r->devBases[i] != NULL)) {
         int wrDone = 0;
         FLAGCXCHECK(flagcxWrapIbvPollCq(r->devBases[i]->cq, 4, wcs, &wrDone));
         totalWrDone += wrDone;
@@ -286,7 +287,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
             return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
           }
 
-          uint8_t req_idx = wc->wr_id & 0xff;
+          uint32_t req_idx = wc->wr_id & 0xffu;
           if (req_idx >= MAX_REQUESTS)
             continue;
 
@@ -298,7 +299,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
           char line[SOCKET_NAME_MAXLEN + 1];
           TRACE(FLAGCX_NET,
                 "Got completion from peer %s with status=%d opcode=%d len=%d "
-                "wr_id=%ld r=%p type=%d events={%d,%d}, i=%d",
+                "wr_id=%" PRIu64 " r=%p type=%d events={%d,%d}, i=%d",
                 flagcxSocketToString(&addr, line), wc->status, wc->opcode,
                 wc->byte_len, wc->wr_id, req, req->type, req->events[0],
                 req->events[1], i);

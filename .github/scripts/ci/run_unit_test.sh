@@ -45,6 +45,10 @@ declare -p FLAGCX_CI_TEST_MAKE_ARGS >/dev/null 2>&1 || {
   echo "The platform set_env script must define FLAGCX_CI_TEST_MAKE_ARGS" >&2
   exit 1
 }
+if ! declare -p FLAGCX_CI_IBUC_ENV >/dev/null 2>&1; then
+  FLAGCX_CI_IBUC_ENV=()
+fi
+: "${FLAGCX_CI_ENABLE_IBUC:=0}"
 
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
@@ -272,6 +276,7 @@ run_suite() {
   case "$SUITE" in
     adaptor)
       local unit_status=0
+      local ibuc_status=0
       local ipc_status=0
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
@@ -280,6 +285,42 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
+
+      if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
+        # IBUC is another implementation of the net-adaptor contract, not an
+        # independent test suite. Build it in isolated output directories so
+        # the regular IBRC binary remains available, then run its contract.
+        local ibuc_project_build="$PROJECT_ROOT/build-ibuc"
+        local ibuc_test_build="$suite_dir/build-ibuc"
+        local -a ibuc_project_args=(
+          "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+          USE_IBUC=1
+          BUILDDIR="$ibuc_project_build"
+        )
+        local -a ibuc_test_args=(
+          "${args[@]}"
+          USE_IBUC=1
+          BUILDDIR="$ibuc_test_build"
+          FLAGCX_LIB="$ibuc_project_build/lib"
+        )
+        make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
+          "${ibuc_project_args[@]}" || ibuc_status=$?
+        if ((ibuc_status == 0)); then
+          make -C "$suite_dir" --jobs="$(nproc)" \
+            "${ibuc_test_args[@]}" || ibuc_status=$?
+        fi
+        if ((ibuc_status == 0)); then
+          env "${FLAGCX_CI_IBUC_ENV[@]}" \
+            LD_LIBRARY_PATH="$ibuc_project_build/lib:$LD_LIBRARY_PATH" \
+            FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC \
+            FLAGCX_IB_QPS_PER_CONNECTION=2 \
+            FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1 \
+            GTEST_FILTER="NetAdaptorInterface.IbucAdvertisesTwoSidedContract:NetAdaptorLoopback.SendRecv:NetAdaptorLoopback.RegisterGpuMr:NetAdaptorLoopback.Ibuc*:IbucOwnershipTest.*:IbucRetransmissionTest.*" \
+            FLAGCX_CI_TEST_LABEL="IBUC net adaptor tests" \
+            "$TEST_RUNNER" make -C "$suite_dir" run-unit \
+              "${ibuc_test_args[@]}" || ibuc_status=$?
+        fi
+      fi
       # Exercise device IPC handles across processes and physical devices. Use
       # exactly two ranks so GPU 0 and GPU 1 exercise both exporter/importer
       # directions and the full-mesh mapping setup used by RMA, with an
@@ -291,8 +332,8 @@ run_suite() {
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \
         MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
-      if ((unit_status != 0 || ipc_status != 0)); then
-        echo "Adaptor failures: unit=$unit_status IPC=$ipc_status" >&2
+      if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0)); then
+        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status" >&2
         return 1
       fi
       ;;

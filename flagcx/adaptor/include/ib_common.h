@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2023 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * This file contains common InfiniBand structures and constants
  * shared between IBRC and UCX adaptors.
@@ -63,6 +63,16 @@ static inline flagcxResult_t flagcxIbSetAhDlid(struct ibv_ah_attr *ahAttr,
   ahAttr->dlid = (uint16_t)lid;
 #endif
   return flagcxSuccess;
+}
+
+static inline bool flagcxIbUseGlobalRoute(uint8_t linkLayer) {
+#ifdef USE_SHCA
+  // SHCA programs a GID/GRH route together with its extended 17-bit DLID.
+  (void)linkLayer;
+  return true;
+#else
+  return linkLayer == IBV_LINK_LAYER_ETHERNET;
+#endif
 }
 
 struct flagcxIbMr {
@@ -177,6 +187,9 @@ struct flagcxIbGidInfo {
 struct flagcxIbMrHandle {
   ibv_mr *mrs[FLAGCX_IB_MAX_DEVS_PER_NIC];
   struct flagcxIbMrHandle *nextDeferred;
+#ifdef USE_IBUC
+  int type;
+#endif
 };
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
@@ -202,6 +215,11 @@ extern const char *reqTypeStr[];
 #define FLAGCX_IB_RETRANS_BUFFER_SIZE 1024
 #define FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE (8 * 1024 * 1024)
 #define FLAGCX_IB_SRQ_SIZE 1024
+#define FLAGCX_IBUC_RETRANS_RECV_DEPTH 16
+
+static inline uint32_t flagcxIbucRetransChunkCount(uint32_t size) {
+  return size == 0 ? 1 : 1 + (size - 1) / FLAGCX_IB_RETRANS_MAX_CHUNK_SIZE;
+}
 
 #define FLAGCX_IB_ACK_BUF_PADDING 40
 #define FLAGCX_IB_ACK_BUF_COUNT 64
@@ -263,6 +281,25 @@ struct flagcxIbRetransEntry {
   uint32_t rkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int retryCount;
   int valid;
+
+#ifdef USE_IBUC
+  // IBUC retransmits a whole logical receive over a dedicated RC QP. Keep the
+  // segment and request association until the receiver acknowledges the
+  // sequence so the source buffers cannot be recycled prematurely.
+  int nreqs;
+  uint8_t remoteRequestSlot;
+  uint16_t remoteGeneration;
+  uint8_t ackDevIndex;
+  struct flagcxIbRequest *requests[FLAGCX_NET_IB_MAX_RECVS];
+  struct {
+    uint32_t size;
+    void *data;
+    uint32_t lkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  } segments[FLAGCX_NET_IB_MAX_RECVS];
+  uint8_t retransSegment;
+  uint32_t retransOffset;
+  bool retransAllPosted;
+#endif
 };
 
 struct flagcxIbRetransState {
@@ -307,8 +344,13 @@ struct flagcxIbSendFifo {
   uint32_t rkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
   uint32_t nreqs;
   uint32_t tag;
+  uint32_t requestSlot;
+  uint16_t generation;
+  char padding[18];
+  // The sender treats idx as the publication marker for the complete FIFO
+  // record. Keep it after every field consumed by the sender so observing a
+  // new idx cannot expose request metadata from a previous slot generation.
   uint64_t idx;
-  char padding[24];
 };
 
 struct flagcxIbRequest {
@@ -320,6 +362,16 @@ struct flagcxIbRequest {
   flagcxResult_t result;
   struct flagcxSocket *sock;
   int events[FLAGCX_IB_MAX_DEVS_PER_NIC];
+#ifdef USE_IBUC
+  uint32_t retransSeq;
+  uint16_t retransGeneration;
+  uint8_t retransSegmentMask;
+  uint32_t retransSegmentBytes[FLAGCX_NET_IB_MAX_RECVS];
+  // Receive requests also own a FIFO-write completion. Track UC data
+  // notifications separately so ACK generation is independent of that CQE's
+  // arrival order.
+  int dataEvents[FLAGCX_IB_MAX_DEVS_PER_NIC];
+#endif
   struct flagcxIbNetCommDevBase *devBases[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int nreqs;
   union {
@@ -331,6 +383,11 @@ struct flagcxIbRequest {
     } send;
     struct {
       int *sizes;
+#ifdef USE_IBUC
+      void *data[FLAGCX_NET_IB_MAX_RECVS];
+      int types[FLAGCX_NET_IB_MAX_RECVS];
+      size_t capacities[FLAGCX_NET_IB_MAX_RECVS];
+#endif
     } recv;
   };
 };
@@ -349,8 +406,9 @@ struct flagcxIbConnectionMetadata {
   int ndevs;
 
   uint32_t ctrlQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  uint32_t retransQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
   union ibv_gid ctrlGid[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  uint16_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  uint32_t ctrlLid[FLAGCX_IB_MAX_DEVS_PER_NIC];
   int retransEnabled;
 };
 
@@ -378,6 +436,11 @@ struct flagcxIbSendCommDev {
   struct ibv_mr *putSignalScratchpadMr;
 
   struct flagcxIbCtrlQp ctrlQp;
+  struct flagcxIbQp retransQp;
+  // Keep retransmission SEND completions and reliable ACK receives off the
+  // data CQ. Data-QP SQ recovery is allowed to poll the data CQ directly.
+  struct ibv_cq *retransCq;
+  struct ibv_mr *retransHdrMr;
   struct ibv_mr *ackMr;
   void *ackBuffer;
 };
@@ -402,6 +465,11 @@ struct alignas(32) flagcxIbNetCommBase {
   // A registration rollback can itself fail. Retain partially cleaned
   // wrappers until close retries them before destroying their QPs and PDs.
   struct flagcxIbMrHandle *deferredMrHandles;
+  // IBUC setup or close can fail after partially releasing a communicator.
+  // closeSend/closeRecv consume their handles, so retain any unreleased
+  // resources on an adaptor-owned retry list.
+  struct flagcxIbNetCommBase *nextDeferredCleanup;
+  bool cleanupDeferred;
 };
 
 struct flagcxIbSendComm {
@@ -423,6 +491,10 @@ struct flagcxIbSendComm {
   int outstandingSends;
   int outstandingRetrans;
   int maxOutstanding;
+  bool retransUsesRc;
+  int retransWindowNreqs;
+  uint8_t retransWindowDevIndex;
+  struct flagcxIbRequest *retransWindowRequests[FLAGCX_NET_IB_MAX_RECVS];
 
   struct flagcxIbRetransHdr retransHdrPool[32];
   struct ibv_mr *retransHdrMr;
@@ -449,10 +521,11 @@ struct alignas(16) flagcxIbRecvCommDev {
   struct ibv_sge fifoSge;
   struct ibv_mr *sizesFifoMr;
   struct flagcxIbCtrlQp ctrlQp;
+  struct flagcxIbQp retransQp;
   struct ibv_mr *ackMr;
   void *ackBuffer;
 
-  void *retransRecvBufs[32];
+  void *retransRecvBufs[FLAGCX_IBUC_RETRANS_RECV_DEPTH];
   struct ibv_mr *retransRecvMr;
   int retransRecvBufCount;
 };
@@ -533,7 +606,8 @@ extern int firstBitSet(int val, int max);
 
 extern flagcxResult_t flagcxIbDevices(int *ndev);
 extern flagcxResult_t flagcxIbGdrSupport(void);
-extern flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported);
+extern flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, int access,
+                                                bool *supported);
 extern flagcxResult_t flagcxIbDmaBufSupport(int dev);
 extern flagcxResult_t flagcxIbFreeRequest(struct flagcxIbRequest *r);
 
@@ -542,6 +616,10 @@ struct flagcxIbCommonTestOps {
   flagcxResult_t (*pre_check)(struct flagcxIbRequest *req);
   flagcxResult_t (*process_wc)(struct flagcxIbRequest *req, struct ibv_wc *wc,
                                int devIndex, bool *handled);
+  // Some transports place control completions on the data CQ. Poll every CQ
+  // associated with the request even when that device has no remaining data
+  // events; wr_id still routes each completion to its owning request.
+  bool pollAllCqs;
 };
 
 flagcxResult_t
@@ -573,6 +651,10 @@ static_assert((offsetof(struct flagcxIbSendComm, fifo) % 32) == 0,
               "flagcxIbSendComm fifo must be 32-byte aligned");
 static_assert((sizeof(struct flagcxIbSendFifo) % 32) == 0,
               "flagcxIbSendFifo element size must be 32-byte multiples");
+static_assert(sizeof(struct flagcxIbSendFifo) == 64,
+              "flagcxIbSendFifo wire record must remain 64 bytes");
+static_assert(offsetof(struct flagcxIbSendFifo, idx) == 56,
+              "flagcxIbSendFifo publication marker must remain last");
 static_assert((offsetof(struct flagcxIbSendComm, sges) % 32) == 0,
               "sges must be 32-byte aligned");
 static_assert((offsetof(struct flagcxIbSendComm, wrs) % 32) == 0,
@@ -617,5 +699,14 @@ flagcxIbDeregMrOrDeferWithCallback(struct flagcxIbNetCommBase *base,
 flagcxResult_t
 flagcxIbDrainDeferredMrsWithCallback(struct flagcxIbNetCommBase *base,
                                      flagcxIbDeregMrCallback callback);
+
+#ifdef USE_IBUC
+// Internal IBUC lifetime helpers exposed for transport-level ownership tests.
+flagcxResult_t flagcxIbucInitCommDevBase(int ibDevN,
+                                         struct flagcxIbNetCommDevBase *base);
+flagcxResult_t flagcxIbucDestroyBase(struct flagcxIbNetCommDevBase *base);
+flagcxResult_t flagcxIbucCloseSend(void *sendComm);
+flagcxResult_t flagcxIbucCloseRecv(void *recvComm);
+#endif
 
 #endif // FLAGCX_IB_COMMON_H_

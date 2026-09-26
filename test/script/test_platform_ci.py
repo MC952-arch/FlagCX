@@ -31,18 +31,31 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ud_retrans = (
             REPO_ROOT / "flagcx/adaptor/net/ib_retrans_ud.cc"
         ).read_text()
-        ibrc = (
-            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        symbols = (
+            REPO_ROOT / "flagcx/service/ibvsymbols.cc"
+        ).read_text()
+        ibvwrap = (
+            REPO_ROOT / "flagcx/service/include/ibvwrap.h"
         ).read_text()
 
         self.assertNotIn("ops.create_ah", common_retrans)
         self.assertNotIn("ops.destroy_ah", common_retrans)
         self.assertNotIn("flagcxWrapIbvPostSrqRecv", common_retrans)
         self.assertIn("#ifndef USE_SHCA", ud_retrans)
+        self.assertNotIn("defined(USE_IBUC)", ud_retrans)
         self.assertIn(
             "flagcxIbRetransUdSupported(void) { return false; }", ud_retrans
         )
-        self.assertEqual(ibrc.count("flagcxIbRetransUdSupported()"), 2)
+        self.assertIn("ibvSymbols->ibv_internal_create_ah = NULL", symbols)
+        self.assertIn("ibvSymbols->ibv_internal_destroy_ah = NULL", symbols)
+        self.assertNotIn("ops.create_ah", ibvwrap)
+        self.assertNotIn("ops.destroy_ah", ibvwrap)
+        self.assertIn(
+            'LOAD_SYM(ibvhandle, "ibv_create_ah"', symbols
+        )
+        self.assertIn(
+            'LOAD_SYM(ibvhandle, "ibv_destroy_ah"', symbols
+        )
 
     def test_shca_scope_does_not_extend_ibuc(self):
         ibuc = (
@@ -55,6 +68,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("USE_SHCA", ibuc)
         self.assertNotIn("flagcxIbPortLid", ibuc)
         self.assertNotIn("flagcxIbSetAhDlid", ibuc)
+        self.assertNotIn("flagcxIbUseGlobalRoute", ibuc)
         self.assertNotIn("defined(USE_IBUC)", ud_retrans)
 
     def test_hygon_service_checks_ibuc_with_standard_verbs_abi(self):
@@ -92,11 +106,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc"
         ).read_text()
 
-        route_selector = ibrc[
-            ibrc.index("static bool flagcxIbUseGlobalRoute") :
-        ]
+        route_selector = (
+            REPO_ROOT / "flagcx/adaptor/include/ib_common.h"
+        ).read_text()
         route_selector = route_selector[
-            : route_selector.index("flagcxResult_t flagcxIbRtrQp")
+            route_selector.index("flagcxIbUseGlobalRoute") :
         ]
         self.assertIn("#ifdef USE_SHCA", route_selector)
         self.assertIn("return true", route_selector)
@@ -138,6 +152,120 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
         self.assertIn("export NP=4", configure)
+
+    def test_cuda_runs_ibuc_after_ibrc_in_adaptor_suite(self):
+        cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
+        cuda_env = (
+            REPO_ROOT / ".github/scripts/set_env/cuda.sh"
+        ).read_text()
+        self.assertIn("  - adaptor", cuda_config)
+        self.assertNotIn("  - ibuc", cuda_config)
+        self.assertNotIn("ibuc)", cuda_env)
+        self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", cuda_env)
+
+        metax_env = METAX_ENV.read_text()
+        self.assertNotIn("FLAGCX_CI_ENABLE_IBUC=1", metax_env)
+
+        ppu_env = (REPO_ROOT / ".github/scripts/set_env/ppu.sh").read_text()
+        self.assertNotIn("FLAGCX_CI_ENABLE_IBUC=1", ppu_env)
+
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        adaptor_case = unit_runner[unit_runner.index("    adaptor)") :]
+        adaptor_case = adaptor_case[: adaptor_case.index("    core|service)")]
+        self.assertLess(
+            adaptor_case.index('FLAGCX_CI_TEST_LABEL="$SUITE unit tests"'),
+            adaptor_case.index('FLAGCX_CI_TEST_LABEL="IBUC net adaptor tests"'),
+        )
+        self.assertIn('BUILDDIR="$ibuc_project_build"', adaptor_case)
+        self.assertIn('BUILDDIR="$ibuc_test_build"', adaptor_case)
+        self.assertIn('FLAGCX_LIB="$ibuc_project_build/lib"', adaptor_case)
+        self.assertIn(
+            'LD_LIBRARY_PATH="$ibuc_project_build/lib:$LD_LIBRARY_PATH"',
+            adaptor_case,
+        )
+        self.assertIn("USE_IBUC=1", adaptor_case)
+        self.assertIn("FLAGCX_CI_ENABLE_IBUC", adaptor_case)
+        self.assertIn('env "${FLAGCX_CI_IBUC_ENV[@]}"', adaptor_case)
+        self.assertIn("IbucRetransmissionTest.*", adaptor_case)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", adaptor_case)
+        self.assertIn("FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1", adaptor_case)
+        self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC", unit_runner)
+        self.assertNotIn('FLAGCX_CI_MPI_LABEL="IBUC forced NET runner"', unit_runner)
+
+        hygon_env = HYGON_ENV.read_text()
+        self.assertNotIn("FLAGCX_CI_ENABLE_IBUC=1", hygon_env)
+        self.assertNotIn("FLAGCX_CI_IBUC_ENV=(", hygon_env)
+
+    def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
+        common = (
+            REPO_ROOT / "flagcx/adaptor/include/ib_common.h"
+        ).read_text()
+        common_impl = (
+            REPO_ROOT / "flagcx/adaptor/net/ib_common.cc"
+        ).read_text()
+        ibuc = (
+            REPO_ROOT / "flagcx/adaptor/net/ibuc_adaptor.cc"
+        ).read_text()
+        self.assertIn("#define FLAGCX_IB_SRQ_SIZE 1024", common)
+        self.assertIn("#define FLAGCX_IBUC_RETRANS_RECV_DEPTH 16", common)
+        self.assertIn("retransQpn", common)
+        self.assertIn("flagcxIbucPostDataRecv", ibuc)
+        self.assertIn("MAX_REQUESTS; credit++", ibuc)
+        self.assertIn(
+            "flagcxIbucAbortAccept(lComm, rComm, postResult)", ibuc
+        )
+        self.assertIn("flagcxIbucPostRetransRecv", ibuc)
+        self.assertIn("flagcxIbucCreateQpWithTypeCq", ibuc)
+        self.assertIn("&commDev->retransCq", ibuc)
+        self.assertIn("flagcxIbucPostAckRecv", ibuc)
+        self.assertIn("flagcxIbucSendAckRc", ibuc)
+        ack_sender = ibuc[
+            ibuc.index("static flagcxResult_t flagcxIbucSendAckRc") :
+            ibuc.index("static flagcxResult_t flagcxIbucAckSequence")
+        ]
+        self.assertIn("IBV_SEND_INLINE | IBV_SEND_SIGNALED", ack_sender)
+        self.assertIn("pendingDataEvents", ibuc)
+        self.assertIn("target->dataEvents[devIndex]--", ibuc)
+        self.assertIn("FLAGCX_IBUC_RETRANS_RECV_DEPTH", ibuc)
+        self.assertNotIn("flagcxIbCreateSrq(", ibuc)
+
+        fifo = common[
+            common.index("struct flagcxIbSendFifo {") :
+            common.index("struct flagcxIbRequest {")
+        ]
+        metadata = common[
+            common.index("struct flagcxIbConnectionMetadata {") :
+            common.index("struct flagcxIbNetCommDevBase {")
+        ]
+        send_comm_dev = common[
+            common.index("struct flagcxIbSendCommDev {") :
+            common.index("struct alignas(32) flagcxIbNetCommBase {")
+        ]
+        send_comm = common[
+            common.index("struct flagcxIbSendComm {") :
+            common.index("struct flagcxIbGpuFlush {")
+        ]
+        recv_comm_dev = common[
+            common.index("struct alignas(16) flagcxIbRecvCommDev {") :
+            common.index("struct alignas(32) flagcxIbRecvComm {")
+        ]
+        self.assertNotIn("#ifdef USE_IBUC", fifo)
+        self.assertNotIn("#ifdef USE_IBUC", metadata)
+        self.assertNotIn("#ifdef USE_IBUC", send_comm_dev)
+        self.assertNotIn("#ifdef USE_IBUC", send_comm)
+        self.assertNotIn("#ifdef USE_IBUC", recv_comm_dev)
+        self.assertIn("struct flagcxIbQp retransQp", send_comm_dev)
+        self.assertIn("struct ibv_cq *retransCq", send_comm_dev)
+        self.assertIn("struct ibv_mr *retransHdrMr", send_comm_dev)
+        self.assertIn("bool retransUsesRc", send_comm)
+        self.assertIn("struct flagcxIbQp retransQp", recv_comm_dev)
+        self.assertNotIn("#ifdef USE_IBUC", common_impl)
+        self.assertLess(fifo.index("requestSlot"), fifo.index("uint64_t idx"))
+        self.assertLess(fifo.index("generation"), fifo.index("uint64_t idx"))
+        self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
+        self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
     def test_automatic_hardware_ci_covers_all_platforms(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"

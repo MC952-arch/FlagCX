@@ -107,6 +107,10 @@ flagcxResult_t flagcxWrapIbvCreateSrq(struct ibv_srq **ret, struct ibv_pd *pd,
                                       struct ibv_srq_init_attr *srq_init_attr);
 flagcxResult_t flagcxWrapIbvDestroySrq(struct ibv_srq *srq);
 
+flagcxResult_t flagcxWrapIbvCreateAh(struct ibv_ah **ret, struct ibv_pd *pd,
+                                     struct ibv_ah_attr *attr);
+flagcxResult_t flagcxWrapIbvDestroyAh(struct ibv_ah *ah);
+
 static inline flagcxResult_t
 flagcxWrapIbvPostSrqRecv(struct ibv_srq *srq, struct ibv_recv_wr *wr,
                          struct ibv_recv_wr **bad_wr) {
@@ -120,12 +124,18 @@ flagcxWrapIbvPostSrqRecv(struct ibv_srq *srq, struct ibv_recv_wr *wr,
   return flagcxSuccess;
 }
 
+static inline int flagcxWrapIbvPostSendRaw(struct ibv_qp *qp,
+                                           struct ibv_send_wr *wr,
+                                           struct ibv_send_wr **bad_wr) {
+  return qp->context->ops.post_send(
+      qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
+                          (which indicates the failure reason)*/
+}
+
 static inline flagcxResult_t
 flagcxWrapIbvPostSend(struct ibv_qp *qp, struct ibv_send_wr *wr,
                       struct ibv_send_wr **bad_wr) {
-  int ret = qp->context->ops.post_send(
-      qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
-                          (which indicates the failure reason)*/
+  int ret = flagcxWrapIbvPostSendRaw(qp, wr, bad_wr);
   if (ret != IBV_SUCCESS) {
     // Don't warn on ENOMEM (Cannot allocate memory) as it's expected when send
     // queue is full
@@ -146,18 +156,28 @@ static inline flagcxResult_t flagcxIbOneSidedPostResult(int ret) {
   return flagcxSystemError;
 }
 
-// One-sided callers must distinguish temporary send-queue pressure from a
-// permanent verbs failure. Keep the legacy two-sided behavior unchanged.
+// Callers with an explicit progress/retry loop must distinguish temporary
+// send-queue pressure from permanent verbs failures. Keep the legacy
+// two-sided wrapper behavior unchanged for callers without that contract.
 static inline flagcxResult_t
-flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
-                              struct ibv_send_wr **bad_wr) {
-  int ret = qp->context->ops.post_send(qp, wr, bad_wr);
+flagcxWrapIbvPostSendRetryable(struct ibv_qp *qp, struct ibv_send_wr *wr,
+                               struct ibv_send_wr **bad_wr) {
+  int ret = flagcxWrapIbvPostSendRaw(qp, wr, bad_wr);
   flagcxResult_t result = flagcxIbOneSidedPostResult(ret);
   if (result == flagcxSystemError) {
     WARN("ibv_post_send() failed with error %s, Bad WR %p, First WR %p",
          strerror(ret), bad_wr == NULL ? NULL : *bad_wr, wr);
   }
   return result;
+}
+
+// One-sided callers use the retryable post contract above. Preserve the
+// one-sided name so existing call sites and the public adaptor contract remain
+// unchanged.
+static inline flagcxResult_t
+flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
+                              struct ibv_send_wr **bad_wr) {
+  return flagcxWrapIbvPostSendRetryable(qp, wr, bad_wr);
 }
 
 static inline flagcxResult_t
