@@ -2,8 +2,10 @@
 #include "adaptor.h"
 #include "adaptor_plugin_load.h"
 #include "device.h"
+#include "net_transport.h"
 #include "proxy.h"
 #include "reg_pool.h"
+#include "transport.h"
 
 #include <errno.h>
 #include <string.h>
@@ -12,6 +14,57 @@
 int64_t flagcxNetBufferSize;
 int64_t flagcxNetChunkSize;
 int64_t flagcxNetChunks;
+
+flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
+                                       struct flagcxProxyOp *op, void *buffer,
+                                       size_t size, int peer,
+                                       flagcxDataType_t dtype) {
+  (void)dtype;
+  if (comm == NULL || op == NULL || op->connection == NULL)
+    return flagcxInvalidArgument;
+
+  op->args.chunkSize = flagcxNetChunkSize;
+  op->args.chunkSteps = (size + flagcxNetChunkSize - 1) / flagcxNetChunkSize;
+  op->args.sendStepMask = flagcxNetChunks - 1;
+  flagcxConnector *peerConns[] = {
+      op->pattern == flagcxPatternRecv
+          ? comm->channels[op->channelId].peers[peer]->recv
+          : comm->channels[op->channelId].peers[peer]->send};
+  return flagcxNetRegisterBuffer(comm, buffer, size, peerConns, 1,
+                                 &op->args.regBufFlag, &op->args.regHandle);
+}
+
+flagcxResult_t
+flagcxNetProgressProxyOp(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyOp *op) {
+  if (connection == NULL || op == NULL ||
+      connection->transportResources == NULL)
+    return flagcxInvalidArgument;
+  return connection->send
+             ? flagcxProxySend(
+                   (struct sendNetResources *)connection->transportResources,
+                   op->recvbuff, op->nbytes, &op->args)
+             : flagcxProxyRecv(
+                   (struct recvNetResources *)connection->transportResources,
+                   op->recvbuff, op->nbytes, &op->args);
+}
+
+flagcxResult_t
+flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
+                                int cleanupPhase) {
+  if (connection == NULL)
+    return flagcxInvalidArgument;
+  if (connection->transportResources == NULL ||
+      cleanupPhase == flagcxTransportCleanupCloseImports)
+    return flagcxSuccess;
+  if (cleanupPhase != flagcxTransportCleanupReleaseResources)
+    return flagcxInvalidArgument;
+  return connection->send
+             ? flagcxSendProxyFree(
+                   (struct sendNetResources *)connection->transportResources)
+             : flagcxRecvProxyFree(
+                   (struct recvNetResources *)connection->transportResources);
+}
 
 static pthread_mutex_t netLock = PTHREAD_MUTEX_INITIALIZER;
 // Use adaptor system for all network types
@@ -194,13 +247,13 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       int step = args->posted & stepMask;
       int done = 0;
       if (!args->regBufFlag) {
-        flagcxResult_t queryRes =
-            deviceAdaptor->eventQuery(resources->cpEvents[step]);
-        if (queryRes == flagcxSuccess) {
+        int completed = 0;
+        FLAGCXCHECK(flagcxTransportClassifyCompletion(
+            deviceAdaptor->eventQuery(resources->cpEvents[step]), &completed));
+        if (completed) {
           args->copied++;
           done = 1;
-        } else if (queryRes != flagcxInProgress)
-          return queryRes;
+        }
       } else {
         done = 1;
       }
@@ -369,12 +422,12 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     if (args->copied < args->waitCopy) {
       int step = args->copied & stepMask;
       if (!args->regBufFlag) {
-        flagcxResult_t queryRes =
-            deviceAdaptor->eventQuery(resources->cpEvents[step]);
-        if (queryRes == flagcxSuccess) {
+        int completed = 0;
+        FLAGCXCHECK(flagcxTransportClassifyCompletion(
+            deviceAdaptor->eventQuery(resources->cpEvents[step]), &completed));
+        if (completed) {
           args->copied++;
-        } else if (queryRes != flagcxInProgress)
-          return queryRes;
+        }
       } else {
         args->copied++;
       }

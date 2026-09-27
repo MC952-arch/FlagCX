@@ -145,6 +145,16 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args);
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args);
+flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
+                                       struct flagcxProxyOp *op, void *buffer,
+                                       size_t size, int peer,
+                                       flagcxDataType_t dtype);
+flagcxResult_t
+flagcxNetProgressProxyOp(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyOp *op);
+flagcxResult_t
+flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
+                                int cleanupPhase);
 flagcxResult_t flagcxSend(flagcxHeteroComm_t comm, void *data, size_t size,
                           int peer, int channel);
 flagcxResult_t flagcxRecv(flagcxHeteroComm_t comm, void *data, size_t size,

@@ -153,6 +153,8 @@ struct flagcxProxyArgs {
   size_t p2pPeerSlotIdx = 0;
   void *p2pRmtAddr = nullptr; // remote addr for zero-copy P2P (send side reads,
                               // recv side writes)
+  int p2pPlan = 0; // flagcxP2pTransferPlan, resolved after both offers arrive
+  int p2pFallbackRequired = 0;
 
   union flagcxProxyOpSpecifics specifics;
 };

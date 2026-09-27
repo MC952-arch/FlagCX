@@ -303,45 +303,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                    comm->rank, peer, op->channelId);
               return flagcxInternalError;
             }
-            if (op->connection->transport == TRANSPORT_P2P) {
-              op->args.chunkSize = computeP2pChunkSize(p2p->bytes);
-              op->args.chunkSteps =
-                  (p2p->bytes + op->args.chunkSize - 1) / (op->args.chunkSize);
-              op->args.sendStepMask = flagcxP2pChunks - 1;
-              setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 1,
-                             &op->args.p2pOpHash, &op->args.p2pSlotIdx);
-              setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 0,
-                             &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
-              TRACE_CALL("Receiver: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
-                         "opHash(%ld)]",
-                         comm->rank, peer, op->args.p2pSlotIdx,
-                         op->args.p2pOpHash);
-              TRACE_CALL("Receiver: [peerRank(%d), rank(%d)] -> "
-                         "[peerSlotIdx(%ld), peerOpHash(%ld)]",
-                         peer, comm->rank, op->args.p2pPeerSlotIdx,
-                         op->args.p2pPeerOpHash);
-
-              int peerRanks[] = {peer};
-              uintptr_t regOffset = 0;
-              uintptr_t *peerRmtAddr = NULL;
-              op->args.regBufFlag = 0;
-              FLAGCXCHECK(flagcxP2pRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerRanks, 1,
-                  &op->args.regBufFlag, &regOffset, &peerRmtAddr));
-              if (op->args.regBufFlag && peerRmtAddr) {
-                op->args.p2pRmtAddr = (void *)peerRmtAddr;
-              }
-            } else if (op->connection->transport == TRANSPORT_NET) {
-              op->args.chunkSize = flagcxNetChunkSize;
-              op->args.chunkSteps =
-                  (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
-              op->args.sendStepMask = flagcxNetChunks - 1;
-              flagcxConnector *peerConns[] = {
-                  comm->channels[op->channelId].peers[peer]->recv};
-              FLAGCXCHECK(flagcxNetRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerConns, 1,
-                  &op->args.regBufFlag, &op->args.regHandle));
-            }
+            FLAGCXCHECK(flagcxTransportPrepareProxyOp(
+                comm, op, p2p->buff, p2p->bytes, peer, p2p->dtype));
             op->args.semaphore = semaphore;
             op->args.opId =
                 p2p->opId == INT_MAX
@@ -393,47 +356,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                    comm->rank, peer, op->channelId);
               return flagcxInternalError;
             }
-            if (op->connection->transport == TRANSPORT_P2P) {
-              op->args.chunkSize = computeP2pChunkSize(p2p->bytes);
-              op->args.chunkSteps =
-                  (p2p->bytes + op->args.chunkSize - 1) / (op->args.chunkSize);
-              op->args.sendStepMask = flagcxP2pChunks - 1;
-              setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 0,
-                             &op->args.p2pOpHash, &op->args.p2pSlotIdx);
-              setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 1,
-                             &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
-              TRACE_CALL("Sender: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
-                         "opHash(%ld)]",
-                         comm->rank, peer, op->args.p2pSlotIdx,
-                         op->args.p2pOpHash);
-              TRACE_CALL(
-                  "Sender: [peerRank(%d), rank(%d)] -> [peerSlotIdx(%ld), "
-                  "peerOpHash(%ld)]",
-                  peer, comm->rank, op->args.p2pPeerSlotIdx,
-                  op->args.p2pPeerOpHash);
-              // Send side: register own buffer to peer's proxy for READ mode.
-              // The actual IPC address comes from SHM at proxy time.
-              int peerRanks[] = {peer};
-              uintptr_t regOffset = 0;
-              uintptr_t *peerRmtAddr = NULL;
-              op->args.regBufFlag = 0;
-              FLAGCXCHECK(flagcxP2pRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerRanks, 1,
-                  &op->args.regBufFlag, &regOffset, &peerRmtAddr));
-              if (op->args.regBufFlag && peerRmtAddr) {
-                op->args.p2pRmtAddr = (void *)peerRmtAddr;
-              }
-            } else if (op->connection->transport == TRANSPORT_NET) {
-              op->args.chunkSize = flagcxNetChunkSize;
-              op->args.chunkSteps =
-                  (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
-              op->args.sendStepMask = flagcxNetChunks - 1;
-              flagcxConnector *peerConns[] = {
-                  comm->channels[op->channelId].peers[peer]->send};
-              FLAGCXCHECK(flagcxNetRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerConns, 1,
-                  &op->args.regBufFlag, &op->args.regHandle));
-            }
+            FLAGCXCHECK(flagcxTransportPrepareProxyOp(
+                comm, op, p2p->buff, p2p->bytes, peer, p2p->dtype));
             op->args.semaphore = semaphore;
             op->args.opId = p2p->opId == INT_MAX
                                 ? (p2pScheduleDisable ? defaultOpId : roundOpId)
