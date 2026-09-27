@@ -161,6 +161,92 @@ struct flagcxProxyInitResp {
   flagcxProxyConnection *connection;
 };
 
+static flagcxResult_t
+flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
+                      struct flagcxProxyState *proxyState, void *reqBuff,
+                      int reqSize, void *respBuff, int respSize, int *done);
+static flagcxResult_t
+flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
+                       struct flagcxProxyState *proxyState, void *reqBuff,
+                       int reqSize, void *respBuff, int respSize, int *done);
+static flagcxResult_t
+flagcxNetProxyDeregister(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyState *proxyState, void *reqBuff,
+                         int reqSize, int *done);
+
+static struct flagcxTransportComm flagcxP2pSendTransportComm = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    flagcxP2pSendProxySetup,
+    flagcxP2pSendProxyConnect,
+    NULL,
+    NULL,
+    flagcxP2pProxyRegister,
+    flagcxP2pProxyDeregister,
+    flagcxP2pPrepareProxyOp,
+    flagcxP2pProgressProxyOp,
+    flagcxP2pCleanupProxyConnection,
+};
+
+static struct flagcxTransportComm flagcxP2pRecvTransportComm = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    flagcxP2pRecvProxySetup,
+    flagcxP2pRecvProxyConnect,
+    NULL,
+    NULL,
+    flagcxP2pProxyRegister,
+    flagcxP2pProxyDeregister,
+    flagcxP2pPrepareProxyOp,
+    flagcxP2pProgressProxyOp,
+    flagcxP2pCleanupProxyConnection,
+};
+
+static struct flagcxTransportComm flagcxNetSendTransportComm = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    flagcxNetProxyConnect,
+    NULL,
+    NULL,
+    flagcxNetProxyRegister,
+    flagcxNetProxyDeregister,
+    flagcxNetPrepareProxyOp,
+    flagcxNetProgressProxyOp,
+    flagcxNetCleanupProxyConnection,
+};
+
+static struct flagcxTransportComm flagcxNetRecvTransportComm = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    flagcxNetProxyConnect,
+    NULL,
+    NULL,
+    flagcxNetProxyRegister,
+    flagcxNetProxyDeregister,
+    flagcxNetPrepareProxyOp,
+    flagcxNetProgressProxyOp,
+    flagcxNetCleanupProxyConnection,
+};
+
+static struct flagcxTransportComm *flagcxProxyTransportComm(int transport,
+                                                            int send) {
+  if (transport == TRANSPORT_P2P)
+    return send ? &flagcxP2pSendTransportComm : &flagcxP2pRecvTransportComm;
+  if (transport == TRANSPORT_NET)
+    return send ? &flagcxNetSendTransportComm : &flagcxNetRecvTransportComm;
+  return NULL;
+}
+
 // ============================================================
 // Connection Pool
 // ============================================================
@@ -214,6 +300,9 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
   (*connection)->sock = &peer->sock;
   (*connection)->transport = req->transport;
   (*connection)->send = req->send;
+  (*connection)->tcomm = flagcxProxyTransportComm(req->transport, req->send);
+  if ((*connection)->tcomm == NULL)
+    return flagcxNotSupported;
   (*connection)->tpLocalRank = req->tpLocalRank;
   (*connection)->sameProcess = req->sameProcess;
   (*connection)->cudaDev = comm->cudaDev;
@@ -235,25 +324,13 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
 static flagcxResult_t
 proxyFreeConnection(struct flagcxProxyConnection *connection,
                     struct flagcxHeteroComm *comm, bool closeP2pImports) {
-  if (connection->transportResources) {
-    if (connection->transport == TRANSPORT_P2P) {
-      if (closeP2pImports && connection->send)
-        return flagcxP2pSendProxyFree(
-            (struct flagcxP2pResources *)connection->transportResources);
-      if (!closeP2pImports && !connection->send)
-        return flagcxP2pRecvProxyFree(
-            (struct flagcxP2pResources *)connection->transportResources);
-    } else if (!closeP2pImports && connection->transport == TRANSPORT_NET) {
-      if (connection->send) {
-        return flagcxSendProxyFree(
-            (struct sendNetResources *)connection->transportResources);
-      } else {
-        return flagcxRecvProxyFree(
-            (struct recvNetResources *)connection->transportResources);
-      }
-    }
-  }
-  return flagcxSuccess;
+  (void)comm;
+  if (connection == NULL || connection->tcomm == NULL ||
+      connection->tcomm->cleanupProxyConnection == NULL)
+    return flagcxSuccess;
+  return connection->tcomm->cleanupProxyConnection(
+      connection, closeP2pImports ? flagcxTransportCleanupCloseImports
+                                  : flagcxTransportCleanupReleaseResources);
 }
 
 static void flagcxProxyCaptureCleanupResult(flagcxResult_t nextResult,
@@ -442,35 +519,13 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               flagcxProxyRetireFailedQueue(queue);
               op = NULL;
             }
-            if (op != NULL && op->connection->transport == TRANSPORT_NET) {
-              struct sendNetResources *resources =
-                  (sendNetResources *)op->connection->transportResources;
-              flagcxResult_t res = flagcxProxySend(resources, op->recvbuff,
-                                                   op->nbytes, &op->args);
-              if (res != flagcxSuccess && res != flagcxInProgress) {
-                flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedQueue(queue);
-                op = NULL;
-              }
-              if (op != NULL && op->args.done == 1 &&
-                  op->args.semaphore->pollEnd()) {
-                op->args.semaphore.reset();
-                flagcxIntruQueueDelete(queue, op);
-                free(op);
-              }
-            } else if (op != NULL &&
-                       op->connection->transport == TRANSPORT_P2P) {
-              struct flagcxP2pResources *resources =
-                  (flagcxP2pResources *)op->connection->transportResources;
-              flagcxResult_t res;
-              if (op->selfCopy == 0) {
-                res = flagcxP2pProxySend(resources, op->recvbuff, op->nbytes,
-                                         &op->args);
-              } else {
-                res =
-                    flagcxP2pProxySelfCopy(resources, op->sendbuff,
-                                           op->recvbuff, op->nbytes, &op->args);
-              }
+            if (op != NULL) {
+              flagcxResult_t res =
+                  op->connection->tcomm == NULL ||
+                          op->connection->tcomm->progressProxyOp == NULL
+                      ? flagcxNotSupported
+                      : op->connection->tcomm->progressProxyOp(op->connection,
+                                                               op);
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
                 flagcxProxyRetireFailedQueue(queue);
@@ -495,29 +550,13 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               flagcxProxyRetireFailedQueue(queue);
               op = NULL;
             }
-            if (op != NULL && op->connection->transport == TRANSPORT_NET) {
-              struct recvNetResources *resources =
-                  (recvNetResources *)op->connection->transportResources;
-              flagcxResult_t res = flagcxProxyRecv(resources, op->recvbuff,
-                                                   op->nbytes, &op->args);
-              if (res != flagcxSuccess && res != flagcxInProgress) {
-                flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedQueue(queue);
-                op = NULL;
-              }
-              if (op != NULL && op->args.done == 1 &&
-                  op->args.semaphore->pollEnd()) {
-                // update refcount and delete semaphore when refcount = 0
-                op->args.semaphore.reset();
-                flagcxIntruQueueDelete(queue, op);
-                free(op);
-              }
-            } else if (op != NULL &&
-                       op->connection->transport == TRANSPORT_P2P) {
-              struct flagcxP2pResources *resources =
-                  (flagcxP2pResources *)op->connection->transportResources;
-              flagcxResult_t res = flagcxP2pProxyRecv(resources, op->recvbuff,
-                                                      op->nbytes, &op->args);
+            if (op != NULL) {
+              flagcxResult_t res =
+                  op->connection->tcomm == NULL ||
+                          op->connection->tcomm->progressProxyOp == NULL
+                      ? flagcxNotSupported
+                      : op->connection->tcomm->progressProxyOp(op->connection,
+                                                               op);
               if (res != flagcxSuccess && res != flagcxInProgress) {
                 flagcxProxyRecordAsyncError(proxyState, res);
                 flagcxProxyRetireFailedQueue(queue);
@@ -827,6 +866,161 @@ flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
   return res;
 }
 
+static bool flagcxProxyDmaBufferSupport() {
+  const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
+  bool enabled = dmaBufEnable != NULL && strcmp(dmaBufEnable, "1") == 0;
+  bool supported = false;
+  if (deviceAdaptor->dmaSupport != NULL)
+    deviceAdaptor->dmaSupport(&supported);
+  return enabled && supported;
+}
+
+static flagcxResult_t
+flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
+                      struct flagcxProxyState *proxyState, void *reqBuff,
+                      int reqSize, void *respBuff, int respSize, int *done) {
+  (void)proxyState;
+  (void)reqSize;
+  (void)respBuff;
+  (void)respSize;
+  if (connection == NULL || connection->transportResources == NULL ||
+      done == NULL)
+    return flagcxInvalidArgument;
+
+  bool dmaBufferSupport = flagcxProxyDmaBufferSupport();
+  if (connection->send) {
+    struct sendNetResources *resources =
+        (struct sendNetResources *)connection->transportResources;
+    if (resources->netSendComm == NULL) {
+      FLAGCXCHECK(resources->netAdaptor->connect(resources->netDev, reqBuff,
+                                                 &resources->netSendComm));
+      return flagcxSuccess;
+    }
+
+    if (dmaBufferSupport && resources->netAdaptor == getNetAdaptor(RDMA)) {
+      int dmabufFd;
+      FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+          &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
+      flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
+          resources->netSendComm, resources->buffers[0],
+          resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
+          &resources->mhandles[0]);
+      (void)close(dmabufFd);
+      FLAGCXCHECK(result);
+    } else {
+      int type = resources->netAdaptor == getNetAdaptor(SOCKET)
+                     ? FLAGCX_PTR_HOST
+                     : ((resources->netAdaptor == getNetAdaptor(RDMA) ||
+                         (resources->ptrSupport & FLAGCX_PTR_CUDA))
+                            ? FLAGCX_PTR_CUDA
+                            : FLAGCX_PTR_HOST);
+      FLAGCXCHECK(resources->netAdaptor->regMr(
+          resources->netSendComm, resources->buffers[0],
+          resources->buffSizes[0], type, 0, &resources->mhandles[0]));
+    }
+  } else {
+    struct recvNetResources *resources =
+        (struct recvNetResources *)connection->transportResources;
+    if (resources->netRecvComm == NULL) {
+      FLAGCXCHECK(resources->netAdaptor->accept(resources->netListenComm,
+                                                &resources->netRecvComm));
+      return flagcxSuccess;
+    }
+
+    if (dmaBufferSupport) {
+      int dmabufFd;
+      FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+          &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
+      flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
+          resources->netRecvComm, resources->buffers[0],
+          resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
+          &resources->mhandles[0]);
+      (void)close(dmabufFd);
+      FLAGCXCHECK(result);
+    } else {
+      int type = resources->netAdaptor == getNetAdaptor(SOCKET)
+                     ? FLAGCX_PTR_HOST
+                     : ((resources->netAdaptor == getNetAdaptor(RDMA) ||
+                         (resources->ptrSupport & FLAGCX_PTR_CUDA))
+                            ? FLAGCX_PTR_CUDA
+                            : FLAGCX_PTR_HOST);
+      FLAGCXCHECK(resources->netAdaptor->regMr(
+          resources->netRecvComm, resources->buffers[0],
+          resources->buffSizes[0], type, 0, &resources->mhandles[0]));
+    }
+  }
+  *done = 1;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
+                       struct flagcxProxyState *proxyState, void *reqBuff,
+                       int reqSize, void *respBuff, int respSize, int *done) {
+  (void)proxyState;
+  if (connection == NULL || connection->transportResources == NULL ||
+      reqBuff == NULL || respBuff == NULL || done == NULL ||
+      reqSize != (int)sizeof(struct netRegInfo) ||
+      respSize != (int)sizeof(void *))
+    return flagcxInvalidArgument;
+
+  struct netRegInfo *info = (struct netRegInfo *)reqBuff;
+  void *handle = NULL;
+  bool dmaBufferSupport = flagcxProxyDmaBufferSupport();
+  void *netComm =
+      connection->send
+          ? ((struct sendNetResources *)connection->transportResources)
+                ->netSendComm
+          : ((struct recvNetResources *)connection->transportResources)
+                ->netRecvComm;
+  struct flagcxNetAdaptor *netAdaptor =
+      connection->send
+          ? ((struct sendNetResources *)connection->transportResources)
+                ->netAdaptor
+          : ((struct recvNetResources *)connection->transportResources)
+                ->netAdaptor;
+
+  if (dmaBufferSupport) {
+    int dmabufFd;
+    FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+        &dmabufFd, (void *)info->buffer, info->size, 0));
+    flagcxResult_t result =
+        netAdaptor->regMrDmaBuf(netComm, (void *)info->buffer, info->size,
+                                FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0, &handle);
+    (void)close(dmabufFd);
+    FLAGCXCHECK(result);
+  } else {
+    FLAGCXCHECK(netAdaptor->regMr(netComm, (void *)info->buffer, info->size,
+                                  FLAGCX_PTR_CUDA, 0, &handle));
+  }
+  memcpy(respBuff, &handle, sizeof(handle));
+  *done = 1;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxNetProxyDeregister(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyState *proxyState, void *reqBuff,
+                         int reqSize, int *done) {
+  (void)proxyState;
+  if (connection == NULL || connection->transportResources == NULL ||
+      reqBuff == NULL || done == NULL || reqSize != (int)sizeof(void *))
+    return flagcxInvalidArgument;
+  void *handle = NULL;
+  memcpy(&handle, reqBuff, sizeof(handle));
+  if (connection->send) {
+    struct sendNetResources *resources =
+        (struct sendNetResources *)connection->transportResources;
+    FLAGCXCHECK(resources->netAdaptor->deregMr(resources->netSendComm, handle));
+  } else {
+    struct recvNetResources *resources =
+        (struct recvNetResources *)connection->transportResources;
+    FLAGCXCHECK(resources->netAdaptor->deregMr(resources->netRecvComm, handle));
+  }
+  *done = 1;
+  return flagcxSuccess;
+}
+
 static flagcxResult_t
 proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
                    int *asyncOpCount,
@@ -841,18 +1035,6 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     if (connectionResult != flagcxSuccess)
       return connectionResult;
   }
-  const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
-  bool dmaEnabled = false; // disabled by default
-  if (dmaBufEnable != NULL) {
-    if (strcmp(dmaBufEnable, "1") == 0) {
-      dmaEnabled = true;
-    }
-  }
-  bool dmaBufferSupport = false;
-  if (deviceAdaptor->dmaSupport != NULL) {
-    deviceAdaptor->dmaSupport(&dmaBufferSupport);
-  }
-  dmaBufferSupport = dmaEnabled && dmaBufferSupport;
   if (op->type == flagcxProxyMsgInit) {
     // Allocate connection from pool
     res = proxyConnInit(
@@ -861,215 +1043,53 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     if (res != flagcxSuccess)
       return res;
     done = 1;
-  } else if (op->type == flagcxProxyMsgConnect) {
+  } else {
     TRACE(FLAGCX_PROXY,
-          "proxyProgressAsync::flagcxProxyMsgConnect opId=%p op.reqBuff=%p, "
-          "op->reqSize=%d, op->respSize=%d, transport=%d",
-          op->opId, op->reqBuff, op->reqSize, op->respSize,
+          "proxyProgressAsync opId=%p type=%d reqBuff=%p reqSize=%d "
+          "respSize=%d transport=%d",
+          op->opId, op->type, op->reqBuff, op->reqSize, op->respSize,
           op->connection->transport);
 
-    if (op->connection->transport == TRANSPORT_P2P) {
-      // P2P transport
-      if (op->connection->send) {
-        FLAGCXCHECK(flagcxP2pSendProxyConnect(op->connection, NULL, op->reqBuff,
-                                              op->reqSize, op->respBuff,
-                                              op->respSize, &done));
-      } else {
-        FLAGCXCHECK(flagcxP2pRecvProxyConnect(op->connection, NULL, op->reqBuff,
-                                              op->reqSize, op->respBuff,
-                                              op->respSize, &done));
-      }
-    } else if (op->connection->transport == TRANSPORT_NET) {
-      // NET transport (original logic)
-      if (op->connection->send) {
-        struct sendNetResources *resources =
-            (struct sendNetResources *)op->connection->transportResources;
-        if (!resources->netSendComm) {
-          FLAGCXCHECK(resources->netAdaptor->connect(
-              resources->netDev, (void *)op->reqBuff, &resources->netSendComm));
-        } else {
-          if (dmaBufferSupport &&
-              resources->netAdaptor == getNetAdaptor(RDMA)) {
-            INFO(FLAGCX_PROXY,
-                 "Registering memory region with DMA-BUF support");
-            int dmabuf_fd;
-            FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-                (void *)&dmabuf_fd, resources->buffers[0],
-                resources->buffSizes[0], 0));
-            FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-                resources->netSendComm, resources->buffers[0],
-                resources->buffSizes[0], 2, 0ULL, dmabuf_fd, 0,
-                &resources->mhandles[0]));
-            (void)close(dmabuf_fd);
-          } else {
-            if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netSendComm, resources->buffers[0],
-                  resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
-            } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netSendComm, resources->buffers[0],
-                  resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
-            } else {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netSendComm, resources->buffers[0],
-                  resources->buffSizes[0],
-                  (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
-                                                            : FLAGCX_PTR_HOST,
-                  0, &resources->mhandles[0]));
-            }
-          }
-          done = 1;
-        }
-      } else {
-        struct recvNetResources *resources =
-            (struct recvNetResources *)op->connection->transportResources;
-        if (!resources->netRecvComm) {
-          FLAGCXCHECK(resources->netAdaptor->accept(resources->netListenComm,
-                                                    &resources->netRecvComm));
-        } else {
-          if (dmaBufferSupport) {
-            INFO(FLAGCX_PROXY,
-                 "Registering memory region with DMA-BUF support");
-            int dmabuf_fd;
-            FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-                (void *)&dmabuf_fd, resources->buffers[0],
-                resources->buffSizes[0], 0));
-            FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-                resources->netRecvComm, resources->buffers[0],
-                resources->buffSizes[0], 2, 0ULL, dmabuf_fd, 0,
-                &resources->mhandles[0]));
-            (void)close(dmabuf_fd);
-          } else {
-            if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netRecvComm, resources->buffers[0],
-                  resources->buffSizes[0], 2, 0, &resources->mhandles[0]));
-            } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netRecvComm, resources->buffers[0],
-                  resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
-            } else {
-              FLAGCXCHECK(resources->netAdaptor->regMr(
-                  resources->netRecvComm, resources->buffers[0],
-                  resources->buffSizes[0],
-                  (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
-                                                            : FLAGCX_PTR_HOST,
-                  0, &resources->mhandles[0]));
-            }
-          }
-          done = 1;
-        }
-      }
-    }
-  } else if (op->type == flagcxProxyMsgRegister) {
-    TRACE(FLAGCX_PROXY,
-          "proxyProgressAsync::flagcxProxyMsgRegister opId=%p op.reqBuff=%p, "
-          "op->reqSize=%d, op->respSize=%d",
-          op->opId, op->reqBuff, op->reqSize, op->respSize);
-    if (op->connection->transport == TRANSPORT_P2P) {
-      FLAGCXCHECK(flagcxP2pProxyRegister(op->connection, NULL, op->reqBuff,
-                                         op->reqSize, op->respBuff,
-                                         op->respSize, &done));
-    } else if (op->connection->transport == TRANSPORT_NET) {
-      void *handle;
-      struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
-      assert(op->reqSize == sizeof(struct netRegInfo));
-      assert(op->respSize == sizeof(void *));
-      if (op->connection->send) {
-        // send side
-        struct sendNetResources *resources =
-            (struct sendNetResources *)(op->connection->transportResources);
-        if (dmaBufferSupport) {
-          int dmabuf_fd;
-          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-              resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
-              dmabuf_fd, 0, &handle));
-          (void)close(dmabuf_fd);
-        } else {
-          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
-                                                   (void *)info->buffer,
-                                                   info->size, 2, 0, &handle));
-        }
-      } else {
-        // recv side
-        struct recvNetResources *resources =
-            (struct recvNetResources *)(op->connection->transportResources);
-        if (dmaBufferSupport) {
-          int dmabuf_fd;
-          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-              resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
-              dmabuf_fd, 0, &handle));
-          (void)close(dmabuf_fd);
-        } else {
-          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
-                                                   (void *)info->buffer,
-                                                   info->size, 2, 0, &handle));
-        }
-      }
-      memcpy(op->respBuff, (void *)&handle, sizeof(void *));
-      done = 1;
-    }
-  } else if (op->type == flagcxProxyMsgDeregister) {
-    TRACE(FLAGCX_PROXY,
-          "proxyProgressAsync::flagcxProxyMsgDeregister opId=%p op.reqBuff=%p, "
-          "op->reqSize=%d, op->respSize=%d",
-          op->opId, op->reqBuff, op->reqSize, op->respSize);
-    if (op->connection->transport == TRANSPORT_P2P) {
-      FLAGCXCHECK(flagcxP2pProxyDeregister(op->connection, NULL, op->reqBuff,
-                                           op->reqSize, &done));
-    } else if (op->connection->transport == TRANSPORT_NET) {
-      void *handle;
-      assert(op->reqSize == sizeof(void *));
-      memcpy(&handle, op->reqBuff, sizeof(void *));
-      if (op->connection->send) {
-        // send side
-        struct sendNetResources *resources =
-            (struct sendNetResources *)(op->connection->transportResources);
-        FLAGCXCHECK(
-            resources->netAdaptor->deregMr(resources->netSendComm, handle));
-      } else {
-        // recv side
-        struct recvNetResources *resources =
-            (struct recvNetResources *)(op->connection->transportResources);
-        FLAGCXCHECK(
-            resources->netAdaptor->deregMr(resources->netRecvComm, handle));
-      }
-      done = 1;
-    }
-  } else if (op->type == flagcxProxyMsgSetup &&
-             op->connection->transport == TRANSPORT_P2P) {
-    if (op->connection->send) {
-      // P2P Send side setup
-      FLAGCXCHECK(flagcxP2pSendProxySetup(op->connection, NULL, op->reqBuff,
-                                          op->reqSize, op->respBuff,
-                                          op->respSize, &done));
+    struct flagcxTransportComm *tcomm = op->connection->tcomm;
+    if (tcomm == NULL)
+      return flagcxNotSupported;
+
+    if (op->type == flagcxProxyMsgSetup) {
+      if (tcomm->proxySetup == NULL)
+        return flagcxNotSupported;
+      FLAGCXCHECK(tcomm->proxySetup(op->connection, NULL, op->reqBuff,
+                                    op->reqSize, op->respBuff, op->respSize,
+                                    &done));
+    } else if (op->type == flagcxProxyMsgConnect) {
+      if (tcomm->proxyConnect == NULL)
+        return flagcxNotSupported;
+      FLAGCXCHECK(tcomm->proxyConnect(op->connection, NULL, op->reqBuff,
+                                      op->reqSize, op->respBuff, op->respSize,
+                                      &done));
+    } else if (op->type == flagcxProxyMsgRegister) {
+      if (tcomm->proxyRegister == NULL)
+        return flagcxNotSupported;
+      FLAGCXCHECK(tcomm->proxyRegister(op->connection, NULL, op->reqBuff,
+                                       op->reqSize, op->respBuff, op->respSize,
+                                       &done));
+    } else if (op->type == flagcxProxyMsgDeregister) {
+      if (tcomm->proxyDeregister == NULL)
+        return flagcxNotSupported;
+      FLAGCXCHECK(tcomm->proxyDeregister(op->connection, NULL, op->reqBuff,
+                                         op->reqSize, &done));
     } else {
-      // P2P Recv side setup
-      FLAGCXCHECK(flagcxP2pRecvProxySetup(op->connection, NULL, op->reqBuff,
-                                          op->reqSize, op->respBuff,
-                                          op->respSize, &done));
+      return flagcxInternalError;
     }
-  } else {
-    return flagcxInternalError;
   }
   if (done) {
     INFO(FLAGCX_PROXY,
          "proxyProgressAsync opId=%p op.type=%d op.reqBuff=%p op.respSize=%d "
          "done",
          op->opId, op->type, op->reqBuff, op->respSize);
-    if (op->connection->transport == TRANSPORT_NET) {
-      if (op->type == flagcxProxyMsgSetup)
-        __atomic_store_n(&op->connection->state, connSetupDone,
-                         __ATOMIC_RELEASE);
-      else if (op->type == flagcxProxyMsgConnect)
-        __atomic_store_n(&op->connection->state, connConnected,
-                         __ATOMIC_RELEASE);
-    }
+    if (op->type == flagcxProxyMsgSetup)
+      __atomic_store_n(&op->connection->state, connSetupDone, __ATOMIC_RELEASE);
+    else if (op->type == flagcxProxyMsgConnect)
+      __atomic_store_n(&op->connection->state, connConnected, __ATOMIC_RELEASE);
 
     /* if setup or connect is done, we should not return any error at this point
      * since flagcxSocketSend might already send the respBuff to the requester.

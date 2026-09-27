@@ -12,6 +12,18 @@
 
 FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
 
+flagcxResult_t flagcxTransportPrepareProxyOp(struct flagcxHeteroComm *comm,
+                                             struct flagcxProxyOp *op,
+                                             void *buffer, size_t size,
+                                             int peer, flagcxDataType_t dtype) {
+  if (comm == NULL || op == NULL || op->connection == NULL ||
+      op->connection->tcomm == NULL ||
+      op->connection->tcomm->prepareProxyOp == NULL)
+    return flagcxInvalidArgument;
+  return op->connection->tcomm->prepareProxyOp(comm, op, buffer, size, peer,
+                                               dtype);
+}
+
 static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
   // Self is always same node (self-copy uses P2P memcpy, not NET)
   if (peer == comm->rank)

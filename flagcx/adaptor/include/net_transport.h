@@ -21,6 +21,14 @@ struct flagcxNetLane {
   int remoteDevIndex;
 };
 
+// Canonical transport-neutral names.  The flagcxNet* spellings below remain
+// compatibility interfaces for existing adaptor implementations; new core
+// transports should use these aliases so SHM/IPC, verbs, BAREX, and Socket can
+// share request and scheduling machinery without pretending every backend is
+// a network device.
+typedef struct flagcxNetLane flagcxTransportLane;
+typedef struct flagcxNetLaneSet flagcxTransportLaneSet;
+
 struct flagcxNetLaneSet {
   uint32_t count;
   uint32_t unorderedCursor;
@@ -30,6 +38,18 @@ enum flagcxNetLaneMode {
   FLAGCX_NET_LANE_ORDERED = 0,
   FLAGCX_NET_LANE_UNORDERED = 1,
 };
+typedef enum flagcxNetLaneMode flagcxTransportLaneMode;
+
+#define FLAGCX_TRANSPORT_LANE_ORDERED FLAGCX_NET_LANE_ORDERED
+#define FLAGCX_TRANSPORT_LANE_UNORDERED FLAGCX_NET_LANE_UNORDERED
+
+flagcxResult_t flagcxTransportSelectLane(flagcxTransportLaneSet *lanes,
+                                         flagcxTransportLaneMode mode,
+                                         uint64_t orderingKey,
+                                         uint32_t *laneIndex);
+flagcxResult_t flagcxTransportCommitLane(flagcxTransportLaneSet *lanes,
+                                         flagcxTransportLaneMode mode,
+                                         uint32_t laneIndex);
 
 // orderingKey is reserved for a future order-domain identifier. Existing
 // compatibility paths pass zero, which maps to lane zero exactly as today.
@@ -47,6 +67,17 @@ struct flagcxNetCredit {
   uint32_t capacity;
   uint32_t inUse;
 };
+typedef struct flagcxNetCredit flagcxTransportCredit;
+
+flagcxResult_t flagcxTransportCreditInit(flagcxTransportCredit *credit,
+                                         uint32_t capacity);
+flagcxResult_t flagcxTransportCreditAcquire(flagcxTransportCredit *credit,
+                                            uint32_t count);
+flagcxResult_t flagcxTransportCreditRelease(flagcxTransportCredit *credit,
+                                            uint32_t count);
+flagcxResult_t
+flagcxTransportCreditAvailable(const flagcxTransportCredit *credit,
+                               uint32_t *available);
 
 flagcxResult_t flagcxNetCreditInit(struct flagcxNetCredit *credit,
                                    uint32_t capacity);
@@ -62,6 +93,11 @@ enum flagcxNetRequestState {
   FLAGCX_NET_REQUEST_PENDING = 1,
   FLAGCX_NET_REQUEST_COMPLETE = 2,
 };
+typedef enum flagcxNetRequestState flagcxTransportRequestState;
+
+#define FLAGCX_TRANSPORT_REQUEST_FREE FLAGCX_NET_REQUEST_FREE
+#define FLAGCX_TRANSPORT_REQUEST_PENDING FLAGCX_NET_REQUEST_PENDING
+#define FLAGCX_TRANSPORT_REQUEST_COMPLETE FLAGCX_NET_REQUEST_COMPLETE
 
 // Common request state only. Backends keep their native progress metadata,
 // such as per-CQ event counts, UCP workers, and callback ownership.
@@ -70,6 +106,26 @@ struct flagcxNetRequestCore {
   uint32_t pending;
   flagcxResult_t result;
 };
+typedef struct flagcxNetRequestCore flagcxTransportRequest;
+
+void flagcxTransportRequestInit(flagcxTransportRequest *request);
+flagcxResult_t flagcxTransportRequestAcquire(flagcxTransportRequest *request);
+flagcxResult_t flagcxTransportRequestAddPending(flagcxTransportRequest *request,
+                                                uint32_t count);
+flagcxResult_t flagcxTransportRequestComplete(flagcxTransportRequest *request,
+                                              uint32_t count,
+                                              flagcxResult_t result);
+flagcxResult_t flagcxTransportRequestFinish(flagcxTransportRequest *request,
+                                            flagcxResult_t result);
+flagcxResult_t flagcxTransportRequestTest(const flagcxTransportRequest *request,
+                                          int *done);
+flagcxResult_t flagcxTransportRequestRelease(flagcxTransportRequest *request);
+
+// Normalize an asynchronous backend completion without losing terminal
+// errors. Pending is progress, not success; all other non-success results are
+// permanent and must be propagated to the proxy's async result.
+flagcxResult_t flagcxTransportClassifyCompletion(flagcxResult_t result,
+                                                 int *completed);
 
 void flagcxNetRequestCoreInit(struct flagcxNetRequestCore *core);
 flagcxResult_t flagcxNetRequestCoreAcquire(struct flagcxNetRequestCore *core);
@@ -89,6 +145,11 @@ struct flagcxNetPostResult {
   int requested;
   int accepted;
 };
+typedef struct flagcxNetPostResult flagcxTransportPostResult;
+
+flagcxResult_t flagcxTransportPostResultInit(flagcxTransportPostResult *post,
+                                             int requested, int accepted,
+                                             flagcxResult_t result);
 
 flagcxResult_t flagcxNetPostResultInit(struct flagcxNetPostResult *post,
                                        int requested, int accepted,

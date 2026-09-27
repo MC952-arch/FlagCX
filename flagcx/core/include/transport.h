@@ -34,6 +34,7 @@ int64_t flagcxParamP2pDisable(void);
 struct flagcxRing;
 struct flagcxConnector;
 struct flagcxHeteroComm;
+struct flagcxProxyOp;
 
 struct flagcxPeerInfo {
   int rank;
@@ -119,7 +120,31 @@ struct flagcxTransportComm {
   flagcxResult_t (*proxyDeregister)(struct flagcxProxyConnection *connection,
                                     struct flagcxProxyState *proxyState,
                                     void *reqBuff, int reqSize, int *done);
+
+  // Unified data-path callbacks.  The proxy owns scheduling, first-error
+  // propagation, and waiter retirement; the selected backend owns only its
+  // private connection resources and protocol progress.
+  flagcxResult_t (*prepareProxyOp)(struct flagcxHeteroComm *comm,
+                                   struct flagcxProxyOp *op, void *buffer,
+                                   size_t size, int peer,
+                                   flagcxDataType_t dtype);
+  flagcxResult_t (*progressProxyOp)(struct flagcxProxyConnection *connection,
+                                    struct flagcxProxyOp *op);
+  flagcxResult_t (*cleanupProxyConnection)(
+      struct flagcxProxyConnection *connection, int cleanupPhase);
 };
+
+enum flagcxTransportCleanupPhase {
+  // Importers must be closed for every connection before any exporter is
+  // released.  Backends without imported mappings treat this as a no-op.
+  flagcxTransportCleanupCloseImports = 0,
+  flagcxTransportCleanupReleaseResources = 1,
+};
+
+flagcxResult_t flagcxTransportPrepareProxyOp(struct flagcxHeteroComm *comm,
+                                             struct flagcxProxyOp *op,
+                                             void *buffer, size_t size,
+                                             int peer, flagcxDataType_t dtype);
 
 struct flagcxTransport {
   const char name[8];

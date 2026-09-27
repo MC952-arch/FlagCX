@@ -8,6 +8,93 @@
 
 #include <limits.h>
 
+flagcxResult_t flagcxTransportSelectLane(flagcxTransportLaneSet *lanes,
+                                         flagcxTransportLaneMode mode,
+                                         uint64_t orderingKey,
+                                         uint32_t *laneIndex) {
+  return flagcxNetSelectLane(lanes, mode, orderingKey, laneIndex);
+}
+
+flagcxResult_t flagcxTransportCommitLane(flagcxTransportLaneSet *lanes,
+                                         flagcxTransportLaneMode mode,
+                                         uint32_t laneIndex) {
+  return flagcxNetCommitLane(lanes, mode, laneIndex);
+}
+
+flagcxResult_t flagcxTransportCreditInit(flagcxTransportCredit *credit,
+                                         uint32_t capacity) {
+  return flagcxNetCreditInit(credit, capacity);
+}
+
+flagcxResult_t flagcxTransportCreditAcquire(flagcxTransportCredit *credit,
+                                            uint32_t count) {
+  return flagcxNetCreditAcquire(credit, count);
+}
+
+flagcxResult_t flagcxTransportCreditRelease(flagcxTransportCredit *credit,
+                                            uint32_t count) {
+  return flagcxNetCreditRelease(credit, count);
+}
+
+flagcxResult_t
+flagcxTransportCreditAvailable(const flagcxTransportCredit *credit,
+                               uint32_t *available) {
+  return flagcxNetCreditAvailable(credit, available);
+}
+
+void flagcxTransportRequestInit(flagcxTransportRequest *request) {
+  flagcxNetRequestCoreInit(request);
+}
+
+flagcxResult_t flagcxTransportRequestAcquire(flagcxTransportRequest *request) {
+  return flagcxNetRequestCoreAcquire(request);
+}
+
+flagcxResult_t flagcxTransportRequestAddPending(flagcxTransportRequest *request,
+                                                uint32_t count) {
+  return flagcxNetRequestCoreAddPending(request, count);
+}
+
+flagcxResult_t flagcxTransportRequestComplete(flagcxTransportRequest *request,
+                                              uint32_t count,
+                                              flagcxResult_t result) {
+  return flagcxNetRequestCoreComplete(request, count, result);
+}
+
+flagcxResult_t flagcxTransportRequestFinish(flagcxTransportRequest *request,
+                                            flagcxResult_t result) {
+  return flagcxNetRequestCoreFinish(request, result);
+}
+
+flagcxResult_t flagcxTransportRequestTest(const flagcxTransportRequest *request,
+                                          int *done) {
+  return flagcxNetRequestCoreTest(request, done);
+}
+
+flagcxResult_t flagcxTransportRequestRelease(flagcxTransportRequest *request) {
+  return flagcxNetRequestCoreRelease(request);
+}
+
+flagcxResult_t flagcxTransportClassifyCompletion(flagcxResult_t result,
+                                                 int *completed) {
+  if (completed == NULL)
+    return flagcxInvalidArgument;
+  *completed = 0;
+  if (result == flagcxSuccess) {
+    *completed = 1;
+    return flagcxSuccess;
+  }
+  if (result == flagcxInProgress)
+    return flagcxSuccess;
+  return result;
+}
+
+flagcxResult_t flagcxTransportPostResultInit(flagcxTransportPostResult *post,
+                                             int requested, int accepted,
+                                             flagcxResult_t result) {
+  return flagcxNetPostResultInit(post, requested, accepted, result);
+}
+
 flagcxResult_t flagcxNetSelectLane(struct flagcxNetLaneSet *lanes,
                                    enum flagcxNetLaneMode mode,
                                    uint64_t orderingKey, uint32_t *laneIndex) {

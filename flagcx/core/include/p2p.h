@@ -5,6 +5,7 @@
 #include "check.h"
 #include "comm.h"
 #include "device.h"
+#include "p2p_transport.h"
 #include "register.h"
 #include "shmutils.h"
 #include "transport.h"
@@ -59,13 +60,14 @@ struct flagcxP2pSyncSlot {
 struct p2pRegInfo {
   int copyDone;    // Indicates if the copy operation is complete
   int copyStarted; // Indicates if the copy operation has started
-  // WRITE mode: recv publishes into sender's slot
-  int ipcRecvRegReady;      // 1 = ipcRecvRmtAddr valid; recv sets
-  uintptr_t ipcRecvRmtAddr; // Recv's buffer mapped in sender's address space
-  // READ mode: sender publishes into receiver's slot
-  int ipcSendRegReady; // 1 = ipcSendRmtAddr valid; sender sets
-  uintptr_t
-      ipcSendRmtAddr; // Sender's buffer mapped in receiver's address space
+  // Each side publishes one offer in its own operation slot.  remoteAddr is
+  // the local buffer imported into the peer proxy and is therefore only
+  // dereferenced by that peer.  Publishing both offers before resolving a
+  // plan prevents mixed-registration peers from choosing different paths.
+  int offerReady;
+  int registered;
+  int forceFifo;
+  uintptr_t remoteAddr;
 };
 
 enum flagcxP2pFifoTeardownState {
@@ -132,6 +134,19 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
                                       size_t size,
                                       struct flagcxProxyArgs *args);
 
+flagcxResult_t flagcxP2pPrepareProxyOp(struct flagcxHeteroComm *comm,
+                                       struct flagcxProxyOp *op, void *buffer,
+                                       size_t size, int peer,
+                                       flagcxDataType_t dtype);
+
+flagcxResult_t
+flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyOp *op);
+
+flagcxResult_t
+flagcxP2pCleanupProxyConnection(struct flagcxProxyConnection *connection,
+                                int cleanupPhase);
+
 flagcxResult_t flagcxP2pSendProxySetup(struct flagcxProxyConnection *connection,
                                        struct flagcxProxyState *proxyState,
                                        void *reqBuff, int reqSize,
@@ -175,7 +190,8 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
                                        const void *userbuff, size_t buffSize,
                                        int *peerRanks, int nPeers,
                                        int *regBufFlag, uintptr_t *offsetOut,
-                                       uintptr_t **peerRmtAddrsOut);
+                                       uintptr_t **peerRmtAddrsOut,
+                                       int *fallbackRequired);
 
 flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
                                          struct flagcxIpcRegInfo *info);
