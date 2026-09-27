@@ -454,6 +454,29 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
+        self.assertEqual(
+            runner_case.count("./build/bin/runner_mpi_tests"), 3
+        )
+        self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
+        self.assertEqual(
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 2
+        )
+        self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)
+        self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", runner_case)
+        self.assertNotIn("--gtest_filter=FlagCXCollTest.Scatter", runner_case)
+        self.assertNotIn("--gtest_filter=FlagCXCollTest.AllToAllV", runner_case)
+
+        sendrecv = (runner_dir / "coll_sendrecv.cpp").read_text()
+        self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT", sendrecv)
+        self.assertIn("connector->proxyConn.transport", sendrecv)
+        self.assertIn("TRANSPORT_P2P", sendrecv)
+        self.assertIn("TRANSPORT_NET", sendrecv)
+        self.assertNotIn("connector->transportComm", sendrecv)
+
+        proxy = (REPO_ROOT / "flagcx/core/proxy.cc").read_text()
+        self.assertIn("proxyConn->transport = -1", proxy)
+        self.assertIn("proxyConn->transport = transport", proxy)
+        self.assertTrue((runner_dir / "coll_alltoallv.cpp").is_file())
 
         for path in runner_dir.glob("coll_*.cpp"):
             source = path.read_text()

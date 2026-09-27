@@ -91,6 +91,7 @@ flagcx_ci_run_suite_override() {
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
       -u FLAGCX_P2P_TRANSPORT -u FLAGCX_P2P_DISABLE \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
       ./build/bin/runner_mpi_tests
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous SendRecv smoke" \
       "$MPI_RUNNER" -np 2 --allow-run-as-root \
@@ -99,6 +100,9 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
+      -x FLAGCX_P2P_DISABLE=0 \
+      -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+      -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
       ./build/bin/runner_mpi_tests \
       --gtest_filter=FlagCXCollTest.SendRecv
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous" \
@@ -108,6 +112,9 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
+      -x FLAGCX_P2P_DISABLE=0 \
+      -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+      -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
       ./build/bin/runner_mpi_tests
     FLAGCX_CI_MPI_LABEL="runner BAREX forced NET" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
@@ -117,6 +124,8 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
       -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+      -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
       -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
       ./build/bin/runner_mpi_tests
     return

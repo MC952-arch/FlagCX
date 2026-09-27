@@ -19,3 +19,16 @@ TEST(C2cPeerMapping, RejectsLayoutsWithoutEnoughReceiveSlots) {
   EXPECT_EQ(flagcxC2cGetPeerHomoRank(0, 2, 0, 2), -1);
   EXPECT_EQ(flagcxC2cGetPeerHomoRank(0, 0, 0, 2), -1);
 }
+
+TEST(C2cScatterScratch, SeedsOnlyGeneralMultiNicInterRankZeroRoot) {
+  EXPECT_TRUE(flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOpScatter, false,
+                                                   3, 3, 0));
+  EXPECT_FALSE(flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOpAllGather,
+                                                    false, 3, 3, 0));
+  EXPECT_FALSE(
+      flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOpScatter, true, 3, 3, 0));
+  EXPECT_FALSE(flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOpScatter, false,
+                                                    2, 3, 0));
+  EXPECT_FALSE(flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOpScatter, false,
+                                                    3, 3, 1));
+}

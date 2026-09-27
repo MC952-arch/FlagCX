@@ -1,5 +1,6 @@
 #include "c2c_algo.h"
 #include "c2c_ir.h"
+#include "runner_result.h"
 #include <cstdint>
 #include <cstdlib>
 #include <stdlib.h>
@@ -350,105 +351,126 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           count_, datatype, (rootRank_ == -1) ? root : rootRank_,
           homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpSend:
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-      if (homoType_ == 0) {
-        // send from root to inter-ranks
-        if (comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
-          int clusterId = comm->clusterIds[comm->rank];
-          for (size_t i = 0; i < comm->clusterInterRankList[clusterId].size();
-               ++i) {
-            if (comm->homoInterMyRank != int(i)) {
-              cclAdaptors[flagcxCCLAdaptorDevice]->send(
-                  const_cast<const void *>(static_cast<void *>(
-                      static_cast<char *>(actualSendbuff) +
-                      sendOffset_ * getFlagcxDataTypeSize(datatype))),
-                  count_, datatype,
-                  comm->globalRank2HomoRank
-                      [comm->clusterInterRankList[clusterId][i]],
-                  comm->homoComm, stream);
+      return flagcxRunnerRunGroup(
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+          [&]() {
+            if (homoType_ == 0) {
+              // send from root to inter-ranks
+              if (comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
+                int clusterId = comm->clusterIds[comm->rank];
+                for (size_t i = 0;
+                     i < comm->clusterInterRankList[clusterId].size(); ++i) {
+                  if (comm->homoInterMyRank != int(i)) {
+                    flagcxResult_t result =
+                        cclAdaptors[flagcxCCLAdaptorDevice]->send(
+                            const_cast<const void *>(static_cast<void *>(
+                                static_cast<char *>(actualSendbuff) +
+                                sendOffset_ * getFlagcxDataTypeSize(datatype))),
+                            count_, datatype,
+                            comm->globalRank2HomoRank
+                                [comm->clusterInterRankList[clusterId][i]],
+                            comm->homoComm, stream);
+                    if (!flagcxRunnerResultAccepted(result))
+                      return result;
+                  }
+                }
+              }
+            } else if (homoType_ == 1) {
+              // send from inter-rank 1,2,...,n to inter-rank 0
+              if (comm->homoInterMyRank > 0) {
+                int clusterId = comm->clusterIds[comm->rank];
+                auto &buffList = interRankBufferInfoManager_.getBufferInfoList(
+                    clusterId, comm->rank);
+                for (auto it = buffList.begin(); it != buffList.end(); it++) {
+                  if (it->isRecv_) {
+                    flagcxResult_t result =
+                        cclAdaptors[flagcxCCLAdaptorDevice]->send(
+                            const_cast<const void *>(static_cast<void *>(
+                                static_cast<char *>(actualSendbuff) +
+                                it->offset_ * getFlagcxDataTypeSize(datatype))),
+                            it->count_, datatype, 0, comm->homoInterComm,
+                            stream);
+                    if (!flagcxRunnerResultAccepted(result))
+                      return result;
+                  }
+                }
+              }
+            } else if (homoType_ == 2) {
+              // send from inter-rank 0 to root
+              if (comm->homoInterMyRank == 0 &&
+                  (comm->homoRank != ((rootRank_ == -1) ? root : rootRank_))) {
+                return cclAdaptors[flagcxCCLAdaptorDevice]->send(
+                    const_cast<const void *>(static_cast<void *>(
+                        static_cast<char *>(actualSendbuff) +
+                        sendOffset_ * getFlagcxDataTypeSize(datatype))),
+                    count_, datatype, (rootRank_ == -1) ? root : rootRank_,
+                    comm->homoComm, stream);
+              }
             }
-          }
-        }
-      } else if (homoType_ == 1) {
-        // send from inter-rank 1,2,...,n to inter-rank 0
-        if (comm->homoInterMyRank > 0) {
-          int clusterId = comm->clusterIds[comm->rank];
-          auto &buffList = interRankBufferInfoManager_.getBufferInfoList(
-              clusterId, comm->rank);
-          for (auto it = buffList.begin(); it != buffList.end(); it++) {
-            if (it->isRecv_) {
-              cclAdaptors[flagcxCCLAdaptorDevice]->send(
-                  const_cast<const void *>(static_cast<void *>(
-                      static_cast<char *>(actualSendbuff) +
-                      it->offset_ * getFlagcxDataTypeSize(datatype))),
-                  it->count_, datatype, 0, comm->homoInterComm, stream);
-            }
-          }
-        }
-      } else if (homoType_ == 2) {
-        // send from inter-rank 0 to root
-        if (comm->homoInterMyRank == 0 &&
-            (comm->homoRank != ((rootRank_ == -1) ? root : rootRank_))) {
-          cclAdaptors[flagcxCCLAdaptorDevice]->send(
-              const_cast<const void *>(static_cast<void *>(
-                  static_cast<char *>(actualSendbuff) +
-                  sendOffset_ * getFlagcxDataTypeSize(datatype))),
-              count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-              comm->homoComm, stream);
-        }
-      }
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-      return flagcxSuccess;
+            return flagcxSuccess;
+          },
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     case flagcxCommOpRecv:
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-      if (homoType_ == 0) {
-        // recv at inter-rank from root
-        if (comm->homoInterMyRank != -1 &&
-            comm->homoRank != ((rootRank_ == -1) ? root : rootRank_)) {
-          cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-              static_cast<void *>(
-                  static_cast<char *>(const_cast<void *>(actualRecvbuff)) +
-                  recvOffset_ * getFlagcxDataTypeSize(datatype)),
-              count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-              comm->homoComm, stream);
-        }
-      } else if (homoType_ == 1) {
-        // recv at inter-rank 0 from inter-rank 1,2,...,n
-        if (comm->homoInterMyRank == 0) {
-          int clusterId = comm->clusterIds[comm->rank];
-          for (size_t i = 1; i < comm->clusterInterRankList[clusterId].size();
-               ++i) {
-            auto &buffList = interRankBufferInfoManager_.getBufferInfoList(
-                clusterId, comm->clusterInterRankList[clusterId][i]);
-            for (auto it = buffList.begin(); it != buffList.end(); it++) {
-              if (it->isRecv_) {
-                cclAdaptors[flagcxCCLAdaptorDevice]->recv(
+      return flagcxRunnerRunGroup(
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+          [&]() {
+            if (homoType_ == 0) {
+              // recv at inter-rank from root
+              if (comm->homoInterMyRank != -1 &&
+                  comm->homoRank != ((rootRank_ == -1) ? root : rootRank_)) {
+                return cclAdaptors[flagcxCCLAdaptorDevice]->recv(
                     static_cast<void *>(
                         static_cast<char *>(
                             const_cast<void *>(actualRecvbuff)) +
-                        it->offset_ * getFlagcxDataTypeSize(datatype)),
-                    it->count_, datatype, i, comm->homoInterComm, stream);
+                        recvOffset_ * getFlagcxDataTypeSize(datatype)),
+                    count_, datatype, (rootRank_ == -1) ? root : rootRank_,
+                    comm->homoComm, stream);
+              }
+            } else if (homoType_ == 1) {
+              // recv at inter-rank 0 from inter-rank 1,2,...,n
+              if (comm->homoInterMyRank == 0) {
+                int clusterId = comm->clusterIds[comm->rank];
+                for (size_t i = 1;
+                     i < comm->clusterInterRankList[clusterId].size(); ++i) {
+                  auto &buffList =
+                      interRankBufferInfoManager_.getBufferInfoList(
+                          clusterId, comm->clusterInterRankList[clusterId][i]);
+                  for (auto it = buffList.begin(); it != buffList.end(); it++) {
+                    if (it->isRecv_) {
+                      flagcxResult_t result =
+                          cclAdaptors[flagcxCCLAdaptorDevice]->recv(
+                              static_cast<void *>(
+                                  static_cast<char *>(
+                                      const_cast<void *>(actualRecvbuff)) +
+                                  it->offset_ *
+                                      getFlagcxDataTypeSize(datatype)),
+                              it->count_, datatype, i, comm->homoInterComm,
+                              stream);
+                      if (!flagcxRunnerResultAccepted(result))
+                        return result;
+                    }
+                  }
+                }
+              }
+            } else if (homoType_ == 2) {
+              // recv at root from inter-rank 0
+              if (comm->homoInterMyRank != 0 &&
+                  comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
+                int clusterId = comm->clusterIds[comm->rank];
+                return cclAdaptors[flagcxCCLAdaptorDevice]->recv(
+                    static_cast<void *>(
+                        static_cast<char *>(
+                            const_cast<void *>(actualRecvbuff)) +
+                        recvOffset_ * getFlagcxDataTypeSize(datatype)),
+                    count_, datatype,
+                    comm->globalRank2HomoRank
+                        [comm->clusterInterRankList[clusterId][0]],
+                    comm->homoComm, stream);
               }
             }
-          }
-        }
-      } else if (homoType_ == 2) {
-        // recv at root from inter-rank 0
-        if (comm->homoInterMyRank != 0 &&
-            comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
-          int clusterId = comm->clusterIds[comm->rank];
-          cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-              static_cast<void *>(
-                  static_cast<char *>(const_cast<void *>(actualRecvbuff)) +
-                  recvOffset_ * getFlagcxDataTypeSize(datatype)),
-              count_, datatype,
-              comm->globalRank2HomoRank[comm->clusterInterRankList[clusterId]
-                                                                  [0]],
-              comm->homoComm, stream);
-        }
-      }
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-      return flagcxSuccess;
+            return flagcxSuccess;
+          },
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     case flagcxCommOpBroadcast:
       return cclAdaptors[flagcxCCLAdaptorDevice]->broadcast(
           const_cast<const void *>(static_cast<void *>(
@@ -468,31 +490,38 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           count_, datatype,
           homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpAlltoAllv:
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-      for (size_t i = 0; i < comm->nranks; ++i) {
-        if (flagcxCCLAdaptorNeedSendrecv(sendCounts[i])) {
-          if (comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
-            FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->send(
-                const_cast<const void *>(static_cast<void *>(
-                    static_cast<char *>(actualSendbuff) +
-                    sDispls[i] * getFlagcxDataTypeSize(datatype))),
-                sendCounts[i], datatype, comm->globalRank2HomoRank[i],
-                comm->homoComm, stream));
-          }
-        }
-        if (flagcxCCLAdaptorNeedSendrecv(recvCounts[i])) {
-          if (comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
-            FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-                static_cast<void *>(static_cast<char *>(actualRecvbuff) +
-                                    rDispls[i] *
-                                        getFlagcxDataTypeSize(datatype)),
-                recvCounts[i], datatype, comm->globalRank2HomoRank[i],
-                comm->homoComm, stream));
-          }
-        }
-      }
-      cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-      return flagcxSuccess;
+      return flagcxRunnerRunGroup(
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+          [&]() {
+            for (size_t i = 0; i < comm->nranks; ++i) {
+              if (flagcxCCLAdaptorNeedSendrecv(sendCounts[i]) &&
+                  comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
+                flagcxResult_t result =
+                    cclAdaptors[flagcxCCLAdaptorDevice]->send(
+                        const_cast<const void *>(static_cast<void *>(
+                            static_cast<char *>(actualSendbuff) +
+                            sDispls[i] * getFlagcxDataTypeSize(datatype))),
+                        sendCounts[i], datatype, comm->globalRank2HomoRank[i],
+                        comm->homoComm, stream);
+                if (!flagcxRunnerResultAccepted(result))
+                  return result;
+              }
+              if (flagcxCCLAdaptorNeedSendrecv(recvCounts[i]) &&
+                  comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
+                flagcxResult_t result =
+                    cclAdaptors[flagcxCCLAdaptorDevice]->recv(
+                        static_cast<void *>(
+                            static_cast<char *>(actualRecvbuff) +
+                            rDispls[i] * getFlagcxDataTypeSize(datatype)),
+                        recvCounts[i], datatype, comm->globalRank2HomoRank[i],
+                        comm->homoComm, stream);
+                if (!flagcxRunnerResultAccepted(result))
+                  return result;
+              }
+            }
+            return flagcxSuccess;
+          },
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); });
     default:
       return flagcxSuccess;
   }
@@ -543,16 +572,19 @@ flagcxResult_t flagcxC2cHeteroFunc::run(void *sendbuff, void *recvbuff,
                                         flagcxDataType_t datatype,
                                         flagcxComm_t comm,
                                         flagcxStream_t stream) {
-  flagcxHeteroGroupStart();
-  for (auto op : p2pOps_) {
-    if (op.isRecv_) {
-      FLAGCXCHECK(op.run(recvbuff, datatype, comm, stream));
-    } else {
-      FLAGCXCHECK(op.run(sendbuff, datatype, comm, stream));
-    }
-  }
-  flagcxHeteroGroupEnd();
-  return flagcxSuccess;
+  return flagcxRunnerRunGroup(
+      []() { return flagcxHeteroGroupStart(); },
+      [&]() {
+        for (auto op : p2pOps_) {
+          flagcxResult_t result =
+              op.isRecv_ ? op.run(recvbuff, datatype, comm, stream)
+                         : op.run(sendbuff, datatype, comm, stream);
+          if (!flagcxRunnerResultAccepted(result))
+            return result;
+        }
+        return flagcxSuccess;
+      },
+      []() { return flagcxHeteroGroupEnd(); });
 }
 
 flagcxC2cRefreshFunc::flagcxC2cRefreshFunc()
@@ -582,15 +614,15 @@ flagcxResult_t flagcxC2cRefreshFunc::run(void *recvbuff, void *scratchbuff,
       "datatype = %d, redOp = %d",
       offset_, count_, totalCount_, datatype, redOp_);
   if (redOp_ == flagcxSum) {
-    deviceAdaptor->deviceMemset(refreshbuff, 0,
-                                offset_ * getFlagcxDataTypeSize(datatype),
-                                flagcxMemDevice, stream);
-    deviceAdaptor->deviceMemset(
+    FLAGCXCHECK(deviceAdaptor->deviceMemset(
+        refreshbuff, 0, offset_ * getFlagcxDataTypeSize(datatype),
+        flagcxMemDevice, stream));
+    FLAGCXCHECK(deviceAdaptor->deviceMemset(
         static_cast<void *>(static_cast<char *>(refreshbuff) +
                             (offset_ + count_) *
                                 getFlagcxDataTypeSize(datatype)),
         0, (totalCount_ - offset_ - count_) * getFlagcxDataTypeSize(datatype),
-        flagcxMemDevice, stream);
+        flagcxMemDevice, stream));
   }
   return flagcxSuccess;
 }
@@ -2368,200 +2400,246 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     strategyFound_ = 1;
   }
 
-  // init scratch buffer if need
-  if (commOp_ == flagcxCommOpReduceScatter ||
-      (commOp_ == flagcxCommOpScatter &&
-       (isRootCluster_ || !eachNicPerRank_)) ||
-      (commOp_ == flagcxCommOpGather &&
-       ((eachNicPerRank_ && isRootCluster_) ||
-        (!eachNicPerRank_ && rank_ != rootRank_)))) {
-    FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-        &scratchBuffer_, totalCount_ * getFlagcxDataTypeSize(datatype),
-        flagcxMemDevice, stream));
-  } else {
-    scratchBuffer_ = nullptr;
-  }
-
-  // In general multi-NIC scatter, the root sends the full input to the other
-  // inter-ranks before the local post-scatter. If the root is itself inter-rank
-  // 0, that send intentionally skips self, so seed its scratch buffer here.
-  if (commOp_ == flagcxCommOpScatter && !eachNicPerRank_ &&
-      rank_ == rootRank_ && homoInterMyRank_ == 0) {
-    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-        scratchBuffer_, const_cast<void *>(sendbuff),
-        totalCount_ * getFlagcxDataTypeSize(datatype),
-        flagcxMemcpyDeviceToDevice, stream, nullptr));
-  }
-
-  void *recvTmpBuff = (scratchBuffer_ == nullptr) ? recvbuff : scratchBuffer_;
-  void *sendTmpBuff =
-      (commOp_ == flagcxCommOpAlltoAll || commOp_ == flagcxCommOpAlltoAllv ||
-       (commOp_ == flagcxCommOpScatter && rank_ == rootRank_) ||
-       (commOp_ == flagcxCommOpGather && eachNicPerRank_) ||
-       (commOp_ == flagcxCommOpAllGather && eachNicPerRank_ && multiNic_))
-          ? const_cast<void *>(sendbuff)
-          : recvTmpBuff;
-
-  flagcxStream_t het_stream;
-  deviceAdaptor->streamCreate(&het_stream);
-
-  // execute sequential preHomoFunc steps
-  cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-  for (int s = 0; s < nSeqPreSteps_; ++s) {
-    for (int i = 0; i < preHomoFuncSteps_[s].size(); ++i) {
-      preHomoFuncSteps_[s][i].run(sendbuff, recvbuff, scratchBuffer_, datatype,
-                                  redOp_, comm_->globalRank2HomoRank[root],
-                                  comm_, stream, sendCounts_, sDispls_,
-                                  recvCounts_, rDispls_);
+  scratchBuffer_ = nullptr;
+  flagcxStream_t hetStream = nullptr;
+  const int homoRoot = root >= 0 ? comm_->globalRank2HomoRank[root] : -1;
+  flagcxResult_t result = [&]() -> flagcxResult_t {
+    // init scratch buffer if need
+    if (commOp_ == flagcxCommOpReduceScatter ||
+        (commOp_ == flagcxCommOpScatter &&
+         (isRootCluster_ || !eachNicPerRank_)) ||
+        (commOp_ == flagcxCommOpGather &&
+         ((eachNicPerRank_ && isRootCluster_) ||
+          (!eachNicPerRank_ && rank_ != rootRank_)))) {
+      FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+          &scratchBuffer_, totalCount_ * getFlagcxDataTypeSize(datatype),
+          flagcxMemDevice, stream));
+    } else {
+      scratchBuffer_ = nullptr;
     }
-  }
-  cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-  deviceAdaptor->streamSynchronize(stream);
 
-  // execute pipelined preHomoFunc and heteroFunc steps
-  // execute refreshFunc
-  if (refreshFunc_.bufftype_ == -1) {
-    refreshFunc_.bufftype_ = scratchBuffer_ == nullptr ? 1 : 2;
-    if ((commOp_ == flagcxCommOpReduceScatter ||
-         commOp_ == flagcxCommOpAllReduce) &&
-        algorithm_ == flagcxAlgoPipeline) {
-      refreshFunc_.start_ = clusterOffset_ * totalCount_ / comm_->nranks;
+    // In general multi-NIC scatter, the root sends the full input to the other
+    // inter-ranks before the local post-scatter. If the root is itself
+    // inter-rank 0, that send intentionally skips self, so seed its scratch
+    // buffer here.
+    if (flagcxC2cNeedsScatterRootScratchSeed(commOp_, eachNicPerRank_, rank_,
+                                             rootRank_, homoInterMyRank_)) {
+      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+          scratchBuffer_, const_cast<void *>(sendbuff),
+          totalCount_ * getFlagcxDataTypeSize(datatype),
+          flagcxMemcpyDeviceToDevice, stream, nullptr));
     }
-  }
-  refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
-  deviceAdaptor->streamSynchronize(stream);
-  for (int s = 0; s < nPipePreSteps_; ++s) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-    for (int i = 0; i < preHomoFuncSteps_[nSeqPreSteps_ + s].size(); ++i) {
-      preHomoFuncSteps_[nSeqPreSteps_ + s][i].run(
-          sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-          comm_->globalRank2HomoRank[root], comm_, stream, sendCounts_,
-          sDispls_, recvCounts_, rDispls_);
-    }
-    cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-    flagcxHeteroGroupStart();
-    for (int i = 0; i < heteroFuncSteps_[s].size(); ++i) {
-      // TODO: use stream wait rather than stream sync to avoid cpu blocking
-      // deviceAdaptor->streamSynchronize(stream);
 
-      // execute heteroFuncs
-      heteroFuncSteps_[s][i].run(sendTmpBuff, recvTmpBuff, datatype, comm_,
-                                 het_stream);
+    void *recvTmpBuff = (scratchBuffer_ == nullptr) ? recvbuff : scratchBuffer_;
+    void *sendTmpBuff =
+        (commOp_ == flagcxCommOpAlltoAll || commOp_ == flagcxCommOpAlltoAllv ||
+         (commOp_ == flagcxCommOpScatter && rank_ == rootRank_) ||
+         (commOp_ == flagcxCommOpGather && eachNicPerRank_) ||
+         (commOp_ == flagcxCommOpAllGather && eachNicPerRank_ && multiNic_))
+            ? const_cast<void *>(sendbuff)
+            : recvTmpBuff;
 
-      if (homoInterFuncSteps_[s].size() > i) {
-        // TODO: use stream wait rather than stream sync to avoid cpu blocking
-        deviceAdaptor->streamSynchronize(het_stream);
+    flagcxStream_t createdStream = nullptr;
+    FLAGCXCHECK(deviceAdaptor->streamCreate(&createdStream));
+    hetStream = createdStream;
 
-        // execute homoInterFuncs
-        homoInterFuncSteps_[s][i].run(
-            sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalRank2HomoRank[root], comm_, het_stream);
-        refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
+    // execute sequential preHomoFunc steps
+    FLAGCXCHECK(flagcxRunnerRunGroup(
+        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+        [&]() {
+          for (int s = 0; s < nSeqPreSteps_; ++s) {
+            for (size_t i = 0; i < preHomoFuncSteps_[s].size(); ++i) {
+              flagcxResult_t stepResult = preHomoFuncSteps_[s][i].run(
+                  sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                  homoRoot, comm_, stream, sendCounts_, sDispls_, recvCounts_,
+                  rDispls_);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
+            }
+          }
+          return flagcxSuccess;
+        },
+        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+    FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
+
+    if (refreshFunc_.bufftype_ == -1) {
+      refreshFunc_.bufftype_ = scratchBuffer_ == nullptr ? 1 : 2;
+      if ((commOp_ == flagcxCommOpReduceScatter ||
+           commOp_ == flagcxCommOpAllReduce) &&
+          algorithm_ == flagcxAlgoPipeline) {
+        refreshFunc_.start_ = clusterOffset_ * totalCount_ / comm_->nranks;
       }
     }
-    flagcxHeteroGroupEnd();
-    // todo: double-check the synchronization logic
-    deviceAdaptor->streamSynchronize(stream);
-    deviceAdaptor->streamSynchronize(het_stream);
-  }
+    FLAGCXCHECK(refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream));
+    FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
 
-  // execute sequential heteroFunc steps
-  for (int s = 0; s < nSeqInterSteps_; ++s) {
-    for (int i = 0; i < heteroFuncSteps_[nPipePreSteps_ + s].size(); ++i) {
-      // execute refreshFunc
-      if (algorithm_ == flagcxAlgoSequential ||
-          (nPipePreSteps_ == 0 && nPipePostSteps_ == 0)) {
-        refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
-      }
+    // execute pipelined preHomoFunc and heteroFunc steps
+    for (int s = 0; s < nPipePreSteps_; ++s) {
+      FLAGCXCHECK(flagcxRunnerRunGroup(
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+          [&]() {
+            for (size_t i = 0; i < preHomoFuncSteps_[nSeqPreSteps_ + s].size();
+                 ++i) {
+              flagcxResult_t stepResult =
+                  preHomoFuncSteps_[nSeqPreSteps_ + s][i].run(
+                      sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                      homoRoot, comm_, stream, sendCounts_, sDispls_,
+                      recvCounts_, rDispls_);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
+            }
+            return flagcxSuccess;
+          },
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
 
-      // TODO: use stream wait rather than stream sync to avoid cpu blocking
-      // deviceAdaptor->streamSynchronize(stream);
+      FLAGCXCHECK(flagcxRunnerRunGroup(
+          []() { return flagcxHeteroGroupStart(); },
+          [&]() {
+            for (size_t i = 0; i < heteroFuncSteps_[s].size(); ++i) {
+              flagcxResult_t stepResult = heteroFuncSteps_[s][i].run(
+                  sendTmpBuff, recvTmpBuff, datatype, comm_, hetStream);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
 
-      // execute heteroFuncs
-      heteroFuncSteps_[nPipePreSteps_ + s][i].run(sendTmpBuff, recvTmpBuff,
-                                                  datatype, comm_, stream);
+              if (homoInterFuncSteps_[s].size() > i) {
+                stepResult = deviceAdaptor->streamSynchronize(hetStream);
+                if (stepResult != flagcxSuccess)
+                  return stepResult;
+                stepResult = homoInterFuncSteps_[s][i].run(
+                    sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                    homoRoot, comm_, hetStream);
+                if (!flagcxRunnerResultAccepted(stepResult))
+                  return stepResult;
+                stepResult = refreshFunc_.run(recvbuff, scratchBuffer_,
+                                              datatype, stream);
+                if (stepResult != flagcxSuccess)
+                  return stepResult;
+              }
+            }
+            return flagcxSuccess;
+          },
+          []() { return flagcxHeteroGroupEnd(); }));
+      FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
+      FLAGCXCHECK(deviceAdaptor->streamSynchronize(hetStream));
+    }
 
-      if (homoInterFuncSteps_[nPipePreSteps_ + s].size() > i) {
-        // TODO: use stream wait rather than stream sync to avoid cpu blocking
-        deviceAdaptor->streamSynchronize(stream);
+    // execute sequential heteroFunc steps
+    for (int s = 0; s < nSeqInterSteps_; ++s) {
+      for (size_t i = 0; i < heteroFuncSteps_[nPipePreSteps_ + s].size(); ++i) {
+        if (algorithm_ == flagcxAlgoSequential ||
+            (nPipePreSteps_ == 0 && nPipePostSteps_ == 0)) {
+          FLAGCXCHECK(
+              refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream));
+        }
 
-        // execute homoInterFuncs
-        homoInterFuncSteps_[nPipePreSteps_ + s][i].run(
-            sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalRank2HomoRank[root], comm_, stream);
-        if (algorithm_ == flagcxAlgoPipeline &&
-            (nPipePreSteps_ > 0 || nPipePostSteps_ > 0)) {
-          refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
+        FLAGCXCHECK(heteroFuncSteps_[nPipePreSteps_ + s][i].run(
+            sendTmpBuff, recvTmpBuff, datatype, comm_, stream));
+
+        if (homoInterFuncSteps_[nPipePreSteps_ + s].size() > i) {
+          FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
+          FLAGCXCHECK(homoInterFuncSteps_[nPipePreSteps_ + s][i].run(
+              sendbuff, recvbuff, scratchBuffer_, datatype, redOp_, homoRoot,
+              comm_, stream));
+          if (algorithm_ == flagcxAlgoPipeline &&
+              (nPipePreSteps_ > 0 || nPipePostSteps_ > 0)) {
+            FLAGCXCHECK(
+                refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream));
+          }
         }
       }
     }
-  }
-  deviceAdaptor->streamSynchronize(stream);
+    FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
 
-  // execute pipelined heteroFunc and postHomoFunc steps
-  for (int s = 0; s < nPipePostSteps_; ++s) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-    // execute postHomoFunc
-    for (int i = 0; i < postHomoFuncSteps_[s].size(); ++i) {
-      postHomoFuncSteps_[s][i].run(sendbuff, recvbuff, scratchBuffer_, datatype,
-                                   redOp_, comm_->globalRank2HomoRank[root],
-                                   comm_, stream);
+    // execute pipelined heteroFunc and postHomoFunc steps
+    for (int s = 0; s < nPipePostSteps_; ++s) {
+      FLAGCXCHECK(flagcxRunnerRunGroup(
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+          [&]() {
+            for (size_t i = 0; i < postHomoFuncSteps_[s].size(); ++i) {
+              flagcxResult_t stepResult = postHomoFuncSteps_[s][i].run(
+                  sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                  homoRoot, comm_, stream);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
+            }
+            return flagcxSuccess;
+          },
+          [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
+
+      const int step = nPipePreSteps_ + nSeqInterSteps_ + s;
+      FLAGCXCHECK(flagcxRunnerRunGroup(
+          []() { return flagcxHeteroGroupStart(); },
+          [&]() {
+            for (size_t i = 0; i < heteroFuncSteps_[step].size(); ++i) {
+              flagcxResult_t stepResult = heteroFuncSteps_[step][i].run(
+                  sendTmpBuff, recvTmpBuff, datatype, comm_, hetStream);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
+              if (homoInterFuncSteps_[step].size() > i) {
+                stepResult = deviceAdaptor->streamSynchronize(hetStream);
+                if (stepResult != flagcxSuccess)
+                  return stepResult;
+                stepResult = homoInterFuncSteps_[step][i].run(
+                    sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                    homoRoot, comm_, hetStream);
+                if (!flagcxRunnerResultAccepted(stepResult))
+                  return stepResult;
+              }
+            }
+            return flagcxSuccess;
+          },
+          []() { return flagcxHeteroGroupEnd(); }));
+
+      FLAGCXCHECK(deviceAdaptor->streamSynchronize(stream));
+      FLAGCXCHECK(deviceAdaptor->streamSynchronize(hetStream));
     }
-    cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
 
-    flagcxHeteroGroupStart();
-    for (int i = 0;
-         i < heteroFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s].size();
-         ++i) {
-      // TODO: use stream wait rather than stream sync to avoid cpu blocking
-      // deviceAdaptor->streamSynchronize(stream);
+    // execute sequential postHomoFunc steps
+    FLAGCXCHECK(flagcxRunnerRunGroup(
+        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupStart(); },
+        [&]() {
+          for (int s = 0; s < nSeqPostSteps_; ++s) {
+            for (size_t i = 0;
+                 i < postHomoFuncSteps_[nPipePostSteps_ + s].size(); ++i) {
+              if (algorithm_ == flagcxAlgoSequential ||
+                  (nPipePreSteps_ == 0 && nPipePostSteps_ == 0)) {
+                flagcxResult_t stepResult = refreshFunc_.run(
+                    recvbuff, scratchBuffer_, datatype, stream);
+                if (stepResult != flagcxSuccess)
+                  return stepResult;
+              }
+              flagcxResult_t stepResult =
+                  postHomoFuncSteps_[nPipePostSteps_ + s][i].run(
+                      sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
+                      homoRoot, comm_, stream);
+              if (!flagcxRunnerResultAccepted(stepResult))
+                return stepResult;
+            }
+          }
+          return flagcxSuccess;
+        },
+        [&]() { return cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd(); }));
 
-      // execute heteroFuncs
-      heteroFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s][i].run(
-          sendTmpBuff, recvTmpBuff, datatype, comm_, het_stream);
+    return flagcxSuccess;
+  }();
 
-      if (homoInterFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s].size() >
-          i) {
-        // TODO: use stream wait rather than stream sync to avoid cpu blocking
-        deviceAdaptor->streamSynchronize(het_stream);
-
-        // execute homoInterFuncs
-        homoInterFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s][i].run(
-            sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalRank2HomoRank[root], comm_, het_stream);
-      }
-    }
-    flagcxHeteroGroupEnd();
-
-    deviceAdaptor->streamSynchronize(stream);
-    deviceAdaptor->streamSynchronize(het_stream);
-  }
-
-  // execute sequential postHomoFunc steps
-  cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
-  for (int s = 0; s < nSeqPostSteps_; ++s) {
-    for (int i = 0; i < postHomoFuncSteps_[nPipePostSteps_ + s].size(); ++i) {
-      // execute refresh func
-      if (algorithm_ == flagcxAlgoSequential ||
-          (nPipePreSteps_ == 0 && nPipePostSteps_ == 0)) {
-        refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
-      }
-
-      // execute postHomoFunc
-      postHomoFuncSteps_[nPipePostSteps_ + s][i].run(
-          sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-          comm_->globalRank2HomoRank[root], comm_, stream);
+  if (result != flagcxSuccess) {
+    flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(stream),
+                                 &result);
+    if (hetStream != nullptr) {
+      flagcxRunnerRecordFirstError(deviceAdaptor->streamSynchronize(hetStream),
+                                   &result);
     }
   }
-  cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
-
-  // free scratch buffer if needed
   if (scratchBuffer_ != nullptr) {
-    deviceAdaptor->deviceFree(scratchBuffer_, flagcxMemDevice, stream);
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->deviceFree(scratchBuffer_, flagcxMemDevice, stream),
+        &result);
+    scratchBuffer_ = nullptr;
   }
-
-  // destroy temporary hetero comm stream
-  deviceAdaptor->streamDestroy(het_stream);
-
-  return flagcxSuccess;
+  if (hetStream != nullptr) {
+    flagcxRunnerRecordFirstError(deviceAdaptor->streamDestroy(hetStream),
+                                 &result);
+  }
+  return result;
 }

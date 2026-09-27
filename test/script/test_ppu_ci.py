@@ -19,6 +19,14 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertNotIn("NCCL_P2P_DISABLE", source)
         self.assertNotIn("NCCL_SHM_DISABLE", source)
         self.assertEqual(source.count("FLAGCX_USE_HETERO_COMM=1"), 1)
+        self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", source)
+        self.assertGreaterEqual(
+            source.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
+        )
+        self.assertGreaterEqual(
+            source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 2
+        )
+        self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", source)
         full_heterogeneous = source[
             source.index('FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous"'):
         ]

@@ -82,6 +82,26 @@ void FlagCXCollTest::SetUp() {
       << "flagcxCommInitRank failed on at least one rank; local result="
       << commInitResult;
 
+  // Each CI invocation declares the runner mode it intends to exercise.  Do
+  // not let an ignored environment variable or a topology fallback turn a
+  // heterogeneous run into another homogeneous pass (or vice versa).
+  const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
+  if (expectedRunnerMode != nullptr && expectedRunnerMode[0] != '\0') {
+    int localModeMatches = 0;
+    if (std::strcmp(expectedRunnerMode, "HOMO") == 0) {
+      localModeMatches = comm->commType == flagcxCommunicatorHomo;
+    } else if (std::strcmp(expectedRunnerMode, "HYBRID") == 0) {
+      localModeMatches = comm->commType == flagcxCommunicatorHybrid;
+    }
+    int allModesMatch = 0;
+    MPI_Allreduce(&localModeMatches, &allModesMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allModesMatch, 1)
+        << "Runner expected communicator mode " << expectedRunnerMode
+        << " on every rank, but rank " << rank << " initialized mode "
+        << static_cast<int>(comm->commType);
+  }
+
   // Forced-NET CI invocations must prove that they selected the intended
   // hardware adaptor. FLAGCX_P2P_DISABLE only disables the IPC transport; it
   // does not prevent flagcxNetInit() from falling back to Socket when RDMA is
@@ -142,8 +162,9 @@ void FlagCXCollTest::TearDown() {
   // Collective work is asynchronous with respect to the host.  Drain the
   // stream before communicator teardown so no runtime callback can retain an
   // IPC mapping after the communicator starts releasing transport resources.
-  if (devHandle != nullptr && stream != nullptr)
+  if (devHandle != nullptr && stream != nullptr) {
     EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  }
 
   if (comm != nullptr) {
     EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
@@ -151,20 +172,25 @@ void FlagCXCollTest::TearDown() {
   }
 
   if (devHandle != nullptr) {
-    if (stream != nullptr)
+    if (stream != nullptr) {
       EXPECT_EQ(devHandle->streamDestroy(stream), flagcxSuccess);
-    if (sendbuff != nullptr)
+    }
+    if (sendbuff != nullptr) {
       EXPECT_EQ(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL),
                 flagcxSuccess);
-    if (recvbuff != nullptr)
+    }
+    if (recvbuff != nullptr) {
       EXPECT_EQ(devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL),
                 flagcxSuccess);
-    if (hostsendbuff != nullptr)
+    }
+    if (hostsendbuff != nullptr) {
       EXPECT_EQ(devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL),
                 flagcxSuccess);
-    if (hostrecvbuff != nullptr)
+    }
+    if (hostrecvbuff != nullptr) {
       EXPECT_EQ(devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL),
                 flagcxSuccess);
+    }
 
     EXPECT_EQ(flagcxDeviceHandleFree(devHandle), flagcxSuccess);
   }

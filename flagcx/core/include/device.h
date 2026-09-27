@@ -120,6 +120,10 @@ struct flagcxProxyConnector {
   int tpRank;
   int tpLocalRank;
   int sameProcess;
+  // Locally selected transport. Unlike connection, this metadata is owned by
+  // the caller and remains safe to inspect when the proxy service lives in a
+  // different process.
+  int transport;
   bool initialized;
   // Handle owned by the target proxy service. It may refer to another process;
   // generic RPC code must treat it as opaque and only forward its value.

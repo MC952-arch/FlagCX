@@ -7,6 +7,7 @@
 #include "net.h"
 #include "p2p.h"
 #include "proxy.h"
+#include "runner_result.h"
 #include "socket.h"
 #include "transport.h"
 #define ENABLE_TIMER 0
@@ -14,6 +15,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <new>
 #include <string>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -1582,21 +1584,42 @@ static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
 
 // Initialize P2P event pool
 static flagcxResult_t initP2pEvents(flagcxUniRunnerState *runnerState) {
+  flagcxResult_t result = flagcxSuccess;
+  runnerState->p2pEvents = nullptr;
+  runnerState->p2pEventsCreated = 0;
+  runnerState->p2pEventMap.bits = nullptr;
   runnerState->p2pEventMap.nextIdx = 0;
   runnerState->p2pEventMap.size = runnerState->p2pEventPoolSize;
-  FLAGCXCHECK(
-      flagcxCalloc(&runnerState->p2pEvents,
-                   runnerState->p2pEventMap.size * sizeof(flagcxEvent_t)));
+  result = flagcxCalloc(&runnerState->p2pEvents,
+                        runnerState->p2pEventMap.size * sizeof(flagcxEvent_t));
+  if (result != flagcxSuccess)
+    return result;
   for (int i = 0; i < runnerState->p2pEventMap.size; i++) {
-    FLAGCXCHECK(deviceAdaptor->eventCreate(&runnerState->p2pEvents[i],
-                                           flagcxEventDisableTiming));
+    result = deviceAdaptor->eventCreate(&runnerState->p2pEvents[i],
+                                        flagcxEventDisableTiming);
+    if (result != flagcxSuccess)
+      goto fail;
+    runnerState->p2pEventsCreated++;
   }
-  FLAGCXCHECK(flagcxCalloc(&runnerState->p2pEventMap.bits,
-                           ((runnerState->p2pEventMap.size + 63) / 64) *
-                               sizeof(uint64_t)));
+  result = flagcxCalloc(&runnerState->p2pEventMap.bits,
+                        ((runnerState->p2pEventMap.size + 63) / 64) *
+                            sizeof(uint64_t));
+  if (result != flagcxSuccess)
+    goto fail;
   memset(runnerState->p2pEventMap.bits, 0,
          ((runnerState->p2pEventMap.size + 63) / 64) * sizeof(uint64_t));
   return flagcxSuccess;
+
+fail:
+  for (size_t i = 0; i < runnerState->p2pEventsCreated; ++i) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->eventDestroy(runnerState->p2pEvents[i]), &result);
+  }
+  free(runnerState->p2pEvents);
+  runnerState->p2pEvents = nullptr;
+  runnerState->p2pEventsCreated = 0;
+  runnerState->p2pEventMap.size = 0;
+  return result;
 }
 
 // Clean up P2P events
@@ -1604,12 +1627,20 @@ static flagcxResult_t cleanupP2pEvents(flagcxUniRunnerState *runnerState) {
   if (!runnerState) {
     return flagcxSuccess;
   }
-  for (int i = 0; i < runnerState->p2pEventPoolSize; i++) {
-    FLAGCXCHECK(deviceAdaptor->eventDestroy(runnerState->p2pEvents[i]));
+  flagcxResult_t result = flagcxSuccess;
+  for (size_t i = 0; i < runnerState->p2pEventsCreated; i++) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->eventDestroy(runnerState->p2pEvents[i]), &result);
+    runnerState->p2pEvents[i] = nullptr;
   }
   free(runnerState->p2pEvents);
+  runnerState->p2pEvents = nullptr;
+  runnerState->p2pEventsCreated = 0;
   free(runnerState->p2pEventMap.bits);
-  return flagcxSuccess;
+  runnerState->p2pEventMap.bits = nullptr;
+  runnerState->p2pEventMap.nextIdx = 0;
+  runnerState->p2pEventMap.size = 0;
+  return result;
 }
 
 static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
@@ -1625,38 +1656,62 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
     // Prepare ops list
     struct uniRunnerP2pOpData *ops = current->nodeData.p2p.ops;
 
-    // Start Group P2P
-    FLAGCXCHECK(flagcxHeteroGroupStart());
-    for (int i = 0; i < current->nodeData.p2p.numOps; i++) {
-      struct uniRunnerP2pOpData *op = &ops[i];
-      if (op->type == flagcxDevicePrimSend) {
-        FLAGCXCHECK(flagcxHeteroSend(op->addr, op->count, op->datatype,
-                                     op->peerRank, comm,
-                                     runnerState->commStream));
-      } else if (op->type == flagcxDevicePrimRecv) {
-        FLAGCXCHECK(flagcxHeteroRecv(op->addr, op->count, op->datatype,
-                                     op->peerRank, comm,
-                                     runnerState->commStream));
-      }
+    flagcxResult_t result = flagcxRunnerRunGroup(
+        []() { return flagcxHeteroGroupStart(); },
+        [&]() {
+          for (int i = 0; i < current->nodeData.p2p.numOps; i++) {
+            struct uniRunnerP2pOpData *op = &ops[i];
+            flagcxResult_t opResult = flagcxSuccess;
+            if (op->type == flagcxDevicePrimSend) {
+              opResult =
+                  flagcxHeteroSend(op->addr, op->count, op->datatype,
+                                   op->peerRank, comm, runnerState->commStream);
+            } else if (op->type == flagcxDevicePrimRecv) {
+              opResult =
+                  flagcxHeteroRecv(op->addr, op->count, op->datatype,
+                                   op->peerRank, comm, runnerState->commStream);
+            } else {
+              return flagcxInvalidArgument;
+            }
+            if (!flagcxRunnerResultAccepted(opResult))
+              return opResult;
+          }
+          return flagcxSuccess;
+        },
+        []() { return flagcxHeteroGroupEnd(); });
+    if (result != flagcxSuccess) {
+      runnerState->resetEvent(eventIdx);
+      return result;
     }
-    FLAGCXCHECK(flagcxHeteroGroupEnd());
 
     // Record event
-    FLAGCXCHECK(deviceAdaptor->eventRecord(event, runnerState->commStream));
+    result = deviceAdaptor->eventRecord(event, runnerState->commStream);
+    if (result != flagcxSuccess) {
+      runnerState->resetEvent(eventIdx);
+      return result;
+    }
     TRACE(FLAGCX_UNIRUNNER, "rank %d p2p event %d recorded on stream 0x%016lx",
           comm->rank, eventIdx, (uintptr_t)runnerState->commStream);
 
     current->nodeData.p2p.eventIdx = eventIdx;
   } else if (current->nodeType == uniRunnerDagNodeTypeCpy) {
     // Launch copy
-    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+    flagcxResult_t result = deviceAdaptor->deviceMemcpy(
         current->nodeData.cpy.dst, current->nodeData.cpy.src,
         current->nodeData.cpy.count *
             getFlagcxDataTypeSize(current->nodeData.cpy.datatype),
-        flagcxMemcpyDeviceToDevice, runnerState->cpyStream, NULL));
+        flagcxMemcpyDeviceToDevice, runnerState->cpyStream, NULL);
+    if (result != flagcxSuccess) {
+      runnerState->resetEvent(eventIdx);
+      return result;
+    }
 
     // Record event
-    FLAGCXCHECK(deviceAdaptor->eventRecord(event, runnerState->cpyStream));
+    result = deviceAdaptor->eventRecord(event, runnerState->cpyStream);
+    if (result != flagcxSuccess) {
+      runnerState->resetEvent(eventIdx);
+      return result;
+    }
     TRACE(FLAGCX_UNIRUNNER, "rank %d cpy event %d recorded on stream 0x%016lx",
           comm->rank, eventIdx, (uintptr_t)runnerState->cpyStream);
 
@@ -1731,9 +1786,12 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
   uniRunnerDagNode *curr = flagcxIntruQueueHead(&runnerState->p2pInflightQueue);
   while (curr) {
     if (curr->nodeType == uniRunnerDagNodeTypeP2p) {
-      if (deviceAdaptor->eventQuery(
-              runnerState->p2pEvents[curr->nodeData.p2p.eventIdx]) ==
-          flagcxSuccess) {
+      bool completed = false;
+      FLAGCXCHECK(flagcxRunnerClassifyEventQuery(
+          deviceAdaptor->eventQuery(
+              runnerState->p2pEvents[curr->nodeData.p2p.eventIdx]),
+          &completed));
+      if (completed) {
         runnerState->resetEvent(curr->nodeData.p2p.eventIdx);
         curr->nodeData.p2p.eventIdx = -1;
         for (int i = 0; i < curr->numChildren; i++) {
@@ -1748,9 +1806,12 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
         curr = curr->next;
       }
     } else if (curr->nodeType == uniRunnerDagNodeTypeCpy) {
-      if (deviceAdaptor->eventQuery(
-              runnerState->p2pEvents[curr->nodeData.cpy.eventIdx]) ==
-          flagcxSuccess) {
+      bool completed = false;
+      FLAGCXCHECK(flagcxRunnerClassifyEventQuery(
+          deviceAdaptor->eventQuery(
+              runnerState->p2pEvents[curr->nodeData.cpy.eventIdx]),
+          &completed));
+      if (completed) {
         runnerState->resetEvent(curr->nodeData.cpy.eventIdx);
         curr->nodeData.cpy.eventIdx = -1;
         for (int i = 0; i < curr->numChildren; i++) {
@@ -1797,6 +1858,9 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxResult_t result = flagcxSuccess;
+  flagcxStream_t redStream = nullptr;
+  flagcxStream_t cpyStream = nullptr;
 
   runnerState->p2pEventPoolSize = flagcxParamP2pEventPoolSize();
   runnerState->uniRunnerNSlices = flagcxParamUniRunnerNSlices();
@@ -1806,15 +1870,37 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   runnerState->uniRunnerRedSliceSize = flagcxParamUniRunnerRedSliceSize();
 
   // Set device context
-  FLAGCXCHECK(deviceAdaptor->setDevice(hcomm->cudaDev));
+  result = deviceAdaptor->setDevice(hcomm->cudaDev);
+  if (result != flagcxSuccess)
+    return result;
+
+  runnerState->fifo = nullptr;
+  runnerState->commStream = stream;
+  runnerState->redStream = nullptr;
+  runnerState->cpyStream = nullptr;
+  runnerState->dagNodes = nullptr;
+  runnerState->numDagNodes = 0;
+  runnerState->p2pEvents = nullptr;
+  runnerState->p2pEventsCreated = 0;
+  runnerState->p2pEventMap.bits = nullptr;
+  hcomm->uniRunnerFifoBuffer = nullptr;
 
   // Create FIFO
-  runnerState->fifo = new flagcxFifo();
-  FLAGCXCHECK(runnerState->fifo->flagcxRedFifoInit());
+  runnerState->fifo = new (std::nothrow) flagcxFifo();
+  if (runnerState->fifo == nullptr)
+    return flagcxSystemError;
+  result = runnerState->fifo->flagcxRedFifoInit();
+  if (result != flagcxSuccess) {
+    delete runnerState->fifo;
+    runnerState->fifo = nullptr;
+    return result;
+  }
   // hcomm->proxyState->uniRunnerState.fifo->buffer is the host pointer
   // hcomm->uniRunnerFifoBuffer stores the device pointer to fifo buffer
-  FLAGCXCHECK(deviceAdaptor->hostGetDevicePointer(
-      &hcomm->uniRunnerFifoBuffer, (void *)runnerState->fifo->buffer));
+  result = deviceAdaptor->hostGetDevicePointer(
+      &hcomm->uniRunnerFifoBuffer, (void *)runnerState->fifo->buffer);
+  if (result != flagcxSuccess)
+    goto fail;
 
   // Initialize queues
   flagcxIntruQueueConstruct(&runnerState->p2pReadyQueue);
@@ -1824,48 +1910,79 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   runnerState->numPendingNodes = 0;
 
   // Initialize P2P event pool
-  FLAGCXCHECK(initP2pEvents(runnerState));
+  result = initP2pEvents(runnerState);
+  if (result != flagcxSuccess)
+    goto fail;
 
   // Create dedicated reduce and copy streams
-  flagcxStream_t redStream;
-  FLAGCXCHECK(deviceAdaptor->streamCreate(&redStream));
-  flagcxStream_t cpyStream;
-  FLAGCXCHECK(deviceAdaptor->streamCreate(&cpyStream));
+  result = deviceAdaptor->streamCreate(&redStream);
+  if (result != flagcxSuccess)
+    goto fail;
   runnerState->redStream = redStream;
+  result = deviceAdaptor->streamCreate(&cpyStream);
+  if (result != flagcxSuccess)
+    goto fail;
   runnerState->cpyStream = cpyStream;
-  runnerState->commStream = stream;
 
   return flagcxSuccess;
+
+fail:
+  flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &result);
+  return result;
 }
 
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
-  flagcxStream_t redStream = hcomm->proxyState->uniRunnerState.redStream;
-  flagcxStream_t cpyStream = hcomm->proxyState->uniRunnerState.cpyStream;
+  flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxResult_t result = flagcxSuccess;
 
-  // Clean up DAG scheduler
-  FLAGCXCHECK(cleanupDagScheduler(&hcomm->proxyState->uniRunnerState));
-  // Clean up P2P events
-  FLAGCXCHECK(cleanupP2pEvents(&hcomm->proxyState->uniRunnerState));
+  // Drain work before destroying events referenced by those streams.  Keep
+  // cleaning after a failed synchronize, but preserve that first failure.
+  if (runnerState->redStream != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(runnerState->redStream), &result);
+  }
+  if (runnerState->cpyStream != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(runnerState->cpyStream), &result);
+  }
+  if (runnerState->commStream != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(runnerState->commStream), &result);
+  }
 
-  // Destroy streams
-  FLAGCXCHECK(deviceAdaptor->streamSynchronize(redStream));
-  FLAGCXCHECK(deviceAdaptor->streamDestroy(redStream));
-  FLAGCXCHECK(deviceAdaptor->streamSynchronize(cpyStream));
-  FLAGCXCHECK(deviceAdaptor->streamDestroy(cpyStream));
+  flagcxRunnerRecordFirstError(cleanupDagScheduler(runnerState), &result);
+  flagcxRunnerRecordFirstError(cleanupP2pEvents(runnerState), &result);
+
+  if (runnerState->redStream != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamDestroy(runnerState->redStream), &result);
+    runnerState->redStream = nullptr;
+  }
+  if (runnerState->cpyStream != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamDestroy(runnerState->cpyStream), &result);
+    runnerState->cpyStream = nullptr;
+  }
+  runnerState->commStream = nullptr;
 
   // Destroy fifo
-  FLAGCXCHECK(hcomm->proxyState->uniRunnerState.fifo->flagcxRedFifoDestroy());
-  delete hcomm->proxyState->uniRunnerState.fifo;
+  if (runnerState->fifo != nullptr) {
+    flagcxRunnerRecordFirstError(runnerState->fifo->flagcxRedFifoDestroy(),
+                                 &result);
+    delete runnerState->fifo;
+    runnerState->fifo = nullptr;
+  }
   hcomm->uniRunnerFifoBuffer = NULL;
 
-  return flagcxSuccess;
+  return result;
 }
 
 flagcxResult_t runUniRunner(flagcxComm_t comm) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxFifo_t fifo = hcomm->proxyState->uniRunnerState.fifo;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  flagcxResult_t result = flagcxSuccess;
   TRACE(FLAGCX_UNIRUNNER, "runUniRunner called");
 
 #ifdef COMPILE_KERNEL_HOST
@@ -1893,14 +2010,31 @@ flagcxResult_t runUniRunner(flagcxComm_t comm) {
     }
 
     // Step 1: Process ready queue - write triggers to FIFO
-    FLAGCXCHECK(processReadyQueue(runnerState, hcomm));
+    result = processReadyQueue(runnerState, hcomm);
+    if (result != flagcxSuccess && result != flagcxInProgress)
+      goto fail;
 
     // Step 2: Process inflight queue - check completion and update dependencies
-    FLAGCXCHECK(processInflightQueue(runnerState));
+    result = processInflightQueue(runnerState);
+    if (result != flagcxSuccess && result != flagcxInProgress)
+      goto fail;
   }
-  deviceAdaptor->streamSynchronize(runnerState->redStream);
-  deviceAdaptor->streamSynchronize(runnerState->cpyStream);
-  deviceAdaptor->streamSynchronize(runnerState->commStream);
+  result = deviceAdaptor->streamSynchronize(runnerState->redStream);
+  flagcxRunnerRecordFirstError(
+      deviceAdaptor->streamSynchronize(runnerState->cpyStream), &result);
+  flagcxRunnerRecordFirstError(
+      deviceAdaptor->streamSynchronize(runnerState->commStream), &result);
+  if (result != flagcxSuccess && result != flagcxInProgress)
+    goto fail;
+  return result;
 
-  return flagcxSuccess;
+fail:
+  // A device-event failure otherwise leaves the reduction kernel waiting on
+  // its FIFO forever.  Publish termination before poisoning the proxy so both
+  // device and host waiters can leave their progress loops.
+  if (fifo != nullptr && fifo->buffer != nullptr) {
+    __atomic_store_n(flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxTerminate),
+                     flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
+  }
+  return flagcxProxyRecordAsyncError(hcomm->proxyState, result);
 }

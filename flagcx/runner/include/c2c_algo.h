@@ -20,6 +20,14 @@ typedef enum {
   flagcxAlgoInput = 2
 } flagcxAlgorithm_t;
 
+static inline bool flagcxC2cNeedsScatterRootScratchSeed(flagcxCommOp_t commOp,
+                                                        bool eachNicPerRank,
+                                                        int rank, int rootRank,
+                                                        int homoInterMyRank) {
+  return commOp == flagcxCommOpScatter && !eachNicPerRank && rank == rootRank &&
+         homoInterMyRank == 0;
+}
+
 // Select the destination-cluster homo rank that receives a partial result from
 // sourceClusterId. Cluster ids are compacted after excluding the destination
 // cluster so that the destination's local reduction representative is never
