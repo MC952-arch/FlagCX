@@ -4,6 +4,7 @@
 
 #include "c2c_algo.h"
 #include "runner.h"
+#include "runner_result.h"
 
 #define FLAGCX_CACHE_CAPACITY 16
 static flagcxLRUCache<C2cPatternKey, flagcxC2cPlanner, C2cPatternKeyHash>
@@ -242,26 +243,13 @@ flagcxResult_t hybridRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                      size_t *recvcounts, size_t *rdispls,
                                      flagcxDataType_t datatype,
                                      flagcxComm_t comm, flagcxStream_t stream) {
-  flagcxC2cPlanner planner;
-  C2cPatternKey key = {1, 1, flagcxCommOpAlltoAllv, flagcxRedNoOp,
-                       (uintptr_t)comm};
-  if (!planCache.get(key, planner)) {
-    INFO(FLAGCX_COLL,
-         "No available plan is found, create a new one with "
-         "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
-         "%ld)",
-         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
-    planner =
-        flagcxC2cPlanner(1, 1, -1, comm, flagcxCommOpAlltoAllv, flagcxRedNoOp);
-    planCache.put(key, planner);
-  } else {
-    INFO(FLAGCX_COLL,
-         "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
-         "%ld)",
-         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
-  }
+  // AlltoAllv plans contain the per-peer counts and displacements. The
+  // existing C2cPatternKey only identifies the communicator and operation, so
+  // caching here would replay stale offsets when a later call uses a different
+  // layout. Rebuild until the cache key includes the complete variable-count
+  // pattern.
+  flagcxC2cPlanner planner(1, 1, -1, comm, flagcxCommOpAlltoAllv,
+                           flagcxRedNoOp);
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream,
                               sendcounts, sdispls, recvcounts, rdispls));
   return flagcxSuccess;
@@ -296,15 +284,23 @@ flagcxResult_t hybridRunnerRecv(void *recvbuff, size_t count,
 }
 
 flagcxResult_t hybridRunnerGroupStart() {
-  FLAGCXCHECK(flagcxHeteroGroupStart());
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupStart());
+  flagcxResult_t result = flagcxHeteroGroupStart();
+  if (result != flagcxSuccess)
+    return result;
+  result = cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
+  if (result != flagcxSuccess) {
+    // Roll back the group that was already opened, but preserve the CCL
+    // start failure returned to the caller.
+    flagcxHeteroGroupEnd();
+    return result;
+  }
   return flagcxSuccess;
 }
 
 flagcxResult_t hybridRunnerGroupEnd() {
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd());
-  FLAGCXCHECK(flagcxHeteroGroupEnd());
-  return flagcxSuccess;
+  flagcxResult_t result = cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
+  flagcxRunnerRecordFirstError(flagcxHeteroGroupEnd(), &result);
+  return result;
 }
 
 struct flagcxRunner hybridRunner = {

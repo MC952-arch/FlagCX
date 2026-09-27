@@ -133,6 +133,7 @@ typedef struct {
 
   // P2P event pool
   flagcxEvent_t *p2pEvents;
+  size_t p2pEventsCreated;
   uniRunnerP2pEventBitmap p2pEventMap;
 
   // get an available event

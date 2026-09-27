@@ -1262,6 +1262,7 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
                                ? 1
                                : 0;
   proxyConn->connection = NULL;
+  proxyConn->transport = -1;
   proxyConn->tpRank = proxyRank;
   proxyConn->tpLocalRank = 0;
 
@@ -1306,6 +1307,7 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
          comm->rank, proxyRank);
     return flagcxInternalError;
   }
+  proxyConn->transport = transport;
   INFO(FLAGCX_PROXY,
        "flagcxProxyConnect rank %d -> peer %d connection %p sameProcess %d",
        comm->rank, proxyRank, proxyConn->connection, proxyConn->sameProcess);

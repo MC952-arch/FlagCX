@@ -415,11 +415,15 @@ run_suite() {
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
         ./build/bin/runner_mpi_tests
       FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_P2P_DISABLE=0 \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
         ./build/bin/runner_mpi_tests
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
@@ -427,6 +431,8 @@ run_suite() {
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests
