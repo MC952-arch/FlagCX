@@ -8,6 +8,62 @@
 
 #include <limits.h>
 
+static void flagcxNetTransportLock(uint32_t *lock) {
+  while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE) != 0) {
+    while (__atomic_load_n(lock, __ATOMIC_RELAXED) != 0) {
+    }
+  }
+}
+
+static void flagcxNetTransportUnlock(uint32_t *lock) {
+  __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
+}
+
+static bool
+flagcxNetSubmitContextMatches(const struct flagcxNetSubmitContext *lhs,
+                              const struct flagcxNetSubmitContext *rhs) {
+  return lhs->orderingKey == rhs->orderingKey && lhs->groupId == rhs->groupId &&
+         lhs->generation == rhs->generation && lhs->sequence == rhs->sequence &&
+         lhs->flags == rhs->flags;
+}
+
+static void
+flagcxNetCompletionEntryReset(struct flagcxNetCompletionEntry *entry) {
+  entry->context = {};
+  entry->releaseGroup = NULL;
+  entry->result = flagcxSuccess;
+  entry->state = FLAGCX_NET_COMPLETION_ENTRY_FREE;
+}
+
+static flagcxResult_t
+flagcxNetReleaseGroupTrackLocked(struct flagcxNetReleaseGroup *group,
+                                 const struct flagcxNetSubmitContext *context) {
+  if (group->state != FLAGCX_NET_RELEASE_GROUP_OPEN ||
+      group->groupId != context->groupId ||
+      group->generation != context->generation ||
+      group->pending == UINT32_MAX || group->members == UINT32_MAX)
+    return flagcxInvalidArgument;
+  group->pending++;
+  group->members++;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxNetReleaseGroupCompleteLocked(struct flagcxNetReleaseGroup *group,
+                                    flagcxResult_t result) {
+  if (group->state == FLAGCX_NET_RELEASE_GROUP_COMPLETE || group->pending == 0)
+    return flagcxInvalidArgument;
+  if (result != flagcxSuccess && group->firstError == flagcxSuccess)
+    group->firstError = result;
+  group->pending--;
+  if (group->pending == 0 && group->state == FLAGCX_NET_RELEASE_GROUP_SEALED) {
+    group->releaseAllowed = group->firstError == flagcxSuccess;
+    __atomic_store_n(&group->state, FLAGCX_NET_RELEASE_GROUP_COMPLETE,
+                     __ATOMIC_RELEASE);
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxTransportSelectLane(flagcxTransportLaneSet *lanes,
                                          flagcxTransportLaneMode mode,
                                          uint64_t orderingKey,
@@ -127,6 +183,251 @@ flagcxResult_t flagcxNetCommitLane(struct flagcxNetLaneSet *lanes,
   if (laneIndex != current)
     return flagcxInvalidArgument;
   lanes->unorderedCursor = (current + 1) % lanes->count;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetReleaseGroupInit(struct flagcxNetReleaseGroup *group,
+                                         uint64_t groupId,
+                                         uint64_t generation) {
+  if (group == NULL || groupId == 0)
+    return flagcxInvalidArgument;
+  group->groupId = groupId;
+  group->generation = generation;
+  group->pending = 0;
+  group->members = 0;
+  group->releaseAllowed = 0;
+  group->firstError = flagcxSuccess;
+  group->lock = 0;
+  __atomic_store_n(&group->state, FLAGCX_NET_RELEASE_GROUP_OPEN,
+                   __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetReleaseGroupSeal(struct flagcxNetReleaseGroup *group) {
+  if (group == NULL || group->groupId == 0)
+    return flagcxInvalidArgument;
+  flagcxNetTransportLock(&group->lock);
+  flagcxResult_t result = flagcxSuccess;
+  if (group->state != FLAGCX_NET_RELEASE_GROUP_OPEN) {
+    result = flagcxInvalidArgument;
+  } else if (group->pending == 0) {
+    group->releaseAllowed = group->firstError == flagcxSuccess;
+    __atomic_store_n(&group->state, FLAGCX_NET_RELEASE_GROUP_COMPLETE,
+                     __ATOMIC_RELEASE);
+  } else {
+    __atomic_store_n(&group->state, FLAGCX_NET_RELEASE_GROUP_SEALED,
+                     __ATOMIC_RELEASE);
+  }
+  flagcxNetTransportUnlock(&group->lock);
+  return result;
+}
+
+flagcxResult_t flagcxNetReleaseGroupTest(struct flagcxNetReleaseGroup *group,
+                                         int *done, int *releaseAllowed) {
+  if (group == NULL || group->groupId == 0 || done == NULL ||
+      releaseAllowed == NULL)
+    return flagcxInvalidArgument;
+  flagcxNetTransportLock(&group->lock);
+  *done = group->state == FLAGCX_NET_RELEASE_GROUP_COMPLETE;
+  *releaseAllowed = *done ? (int)group->releaseAllowed : 0;
+  const flagcxResult_t result = *done ? group->firstError : flagcxSuccess;
+  flagcxNetTransportUnlock(&group->lock);
+  return result;
+}
+
+flagcxResult_t flagcxNetReleaseGroupReset(struct flagcxNetReleaseGroup *group,
+                                          uint64_t groupId,
+                                          uint64_t generation) {
+  if (group == NULL || group->groupId == 0 || groupId == 0)
+    return flagcxInvalidArgument;
+  flagcxNetTransportLock(&group->lock);
+  if (group->state != FLAGCX_NET_RELEASE_GROUP_COMPLETE ||
+      generation <= group->generation) {
+    flagcxNetTransportUnlock(&group->lock);
+    return flagcxInvalidArgument;
+  }
+  group->groupId = groupId;
+  group->generation = generation;
+  group->pending = 0;
+  group->members = 0;
+  group->releaseAllowed = 0;
+  group->firstError = flagcxSuccess;
+  __atomic_store_n(&group->state, FLAGCX_NET_RELEASE_GROUP_OPEN,
+                   __ATOMIC_RELEASE);
+  flagcxNetTransportUnlock(&group->lock);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetCompletionScoreboardInit(
+    struct flagcxNetCompletionScoreboard *scoreboard,
+    struct flagcxNetCompletionEntry *entries, uint32_t capacity,
+    uint64_t generation, uint64_t initialSequence) {
+  if (scoreboard == NULL || entries == NULL || capacity == 0 ||
+      initialSequence == UINT64_MAX)
+    return flagcxInvalidArgument;
+  scoreboard->entries = entries;
+  scoreboard->capacity = capacity;
+  scoreboard->inFlight = 0;
+  scoreboard->generation = generation;
+  scoreboard->nextSequence = initialSequence;
+  scoreboard->firstError = flagcxSuccess;
+  scoreboard->lock = 0;
+  for (uint32_t i = 0; i < capacity; ++i)
+    flagcxNetCompletionEntryReset(&entries[i]);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetCompletionScoreboardReset(
+    struct flagcxNetCompletionScoreboard *scoreboard, uint64_t generation,
+    uint64_t initialSequence) {
+  if (scoreboard == NULL || scoreboard->entries == NULL ||
+      scoreboard->capacity == 0 || initialSequence == UINT64_MAX)
+    return flagcxInvalidArgument;
+  flagcxNetTransportLock(&scoreboard->lock);
+  if (scoreboard->inFlight != 0 || generation <= scoreboard->generation) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxInvalidArgument;
+  }
+  for (uint32_t i = 0; i < scoreboard->capacity; ++i) {
+    if (scoreboard->entries[i].state != FLAGCX_NET_COMPLETION_ENTRY_FREE) {
+      flagcxNetTransportUnlock(&scoreboard->lock);
+      return flagcxInternalError;
+    }
+  }
+  scoreboard->generation = generation;
+  scoreboard->nextSequence = initialSequence;
+  scoreboard->firstError = flagcxSuccess;
+  flagcxNetTransportUnlock(&scoreboard->lock);
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetTrackSubmit(struct flagcxNetCompletionScoreboard *scoreboard,
+                     const struct flagcxNetSubmitContext *context,
+                     struct flagcxNetReleaseGroup *releaseGroup) {
+  if (scoreboard == NULL || context == NULL || scoreboard->entries == NULL ||
+      scoreboard->capacity == 0 || context->sequence == UINT64_MAX)
+    return flagcxInvalidArgument;
+
+  flagcxNetTransportLock(&scoreboard->lock);
+  flagcxResult_t result = flagcxSuccess;
+  struct flagcxNetCompletionEntry *entry = NULL;
+  if (context->generation != scoreboard->generation ||
+      context->sequence < scoreboard->nextSequence) {
+    result = flagcxInvalidArgument;
+    goto exit;
+  }
+  if (context->sequence - scoreboard->nextSequence >= scoreboard->capacity) {
+    result = flagcxInProgress;
+    goto exit;
+  }
+
+  entry = &scoreboard->entries[context->sequence % scoreboard->capacity];
+  if (entry->state != FLAGCX_NET_COMPLETION_ENTRY_FREE) {
+    result = flagcxInvalidArgument;
+    goto exit;
+  }
+  if ((releaseGroup == NULL && context->groupId != 0) ||
+      (releaseGroup != NULL && context->groupId == 0)) {
+    result = flagcxInvalidArgument;
+    goto exit;
+  }
+
+  if (releaseGroup != NULL) {
+    flagcxNetTransportLock(&releaseGroup->lock);
+    result = flagcxNetReleaseGroupTrackLocked(releaseGroup, context);
+    if (result == flagcxSuccess) {
+      entry->context = *context;
+      entry->releaseGroup = releaseGroup;
+      entry->result = flagcxSuccess;
+      entry->state = FLAGCX_NET_COMPLETION_ENTRY_PENDING;
+      scoreboard->inFlight++;
+    }
+    flagcxNetTransportUnlock(&releaseGroup->lock);
+  } else {
+    entry->context = *context;
+    entry->releaseGroup = NULL;
+    entry->result = flagcxSuccess;
+    entry->state = FLAGCX_NET_COMPLETION_ENTRY_PENDING;
+    scoreboard->inFlight++;
+  }
+
+exit:
+  flagcxNetTransportUnlock(&scoreboard->lock);
+  return result;
+}
+
+flagcxResult_t
+flagcxNetTrackCompletion(struct flagcxNetCompletionScoreboard *scoreboard,
+                         const struct flagcxNetSubmitContext *context,
+                         flagcxResult_t result, uint32_t *advanced) {
+  if (scoreboard == NULL || context == NULL || advanced == NULL ||
+      scoreboard->entries == NULL || scoreboard->capacity == 0)
+    return flagcxInvalidArgument;
+  *advanced = 0;
+
+  flagcxNetTransportLock(&scoreboard->lock);
+  if (context->generation != scoreboard->generation ||
+      context->sequence < scoreboard->nextSequence ||
+      context->sequence - scoreboard->nextSequence >= scoreboard->capacity) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxInvalidArgument;
+  }
+  struct flagcxNetCompletionEntry *entry =
+      &scoreboard->entries[context->sequence % scoreboard->capacity];
+  if (entry->state != FLAGCX_NET_COMPLETION_ENTRY_PENDING ||
+      !flagcxNetSubmitContextMatches(&entry->context, context)) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxInvalidArgument;
+  }
+  if (result == flagcxInProgress) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxSuccess;
+  }
+
+  if (entry->releaseGroup != NULL) {
+    flagcxNetTransportLock(&entry->releaseGroup->lock);
+    const flagcxResult_t groupResult =
+        flagcxNetReleaseGroupCompleteLocked(entry->releaseGroup, result);
+    flagcxNetTransportUnlock(&entry->releaseGroup->lock);
+    if (groupResult != flagcxSuccess) {
+      flagcxNetTransportUnlock(&scoreboard->lock);
+      return groupResult;
+    }
+  }
+  if (result != flagcxSuccess && scoreboard->firstError == flagcxSuccess)
+    scoreboard->firstError = result;
+  entry->result = result;
+  entry->state = FLAGCX_NET_COMPLETION_ENTRY_COMPLETE;
+
+  while (scoreboard->inFlight != 0) {
+    struct flagcxNetCompletionEntry *next =
+        &scoreboard->entries[scoreboard->nextSequence % scoreboard->capacity];
+    if (next->state != FLAGCX_NET_COMPLETION_ENTRY_COMPLETE ||
+        next->context.generation != scoreboard->generation ||
+        next->context.sequence != scoreboard->nextSequence)
+      break;
+    flagcxNetCompletionEntryReset(next);
+    scoreboard->inFlight--;
+    scoreboard->nextSequence++;
+    (*advanced)++;
+  }
+  flagcxNetTransportUnlock(&scoreboard->lock);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetCompletionScoreboardQuery(
+    struct flagcxNetCompletionScoreboard *scoreboard, uint64_t *nextSequence,
+    uint32_t *inFlight, flagcxResult_t *firstError) {
+  if (scoreboard == NULL || nextSequence == NULL || inFlight == NULL ||
+      firstError == NULL || scoreboard->entries == NULL ||
+      scoreboard->capacity == 0)
+    return flagcxInvalidArgument;
+  flagcxNetTransportLock(&scoreboard->lock);
+  *nextSequence = scoreboard->nextSequence;
+  *inFlight = scoreboard->inFlight;
+  *firstError = scoreboard->firstError;
+  flagcxNetTransportUnlock(&scoreboard->lock);
   return flagcxSuccess;
 }
 

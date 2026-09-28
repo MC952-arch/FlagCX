@@ -51,7 +51,7 @@ flagcxResult_t flagcxTransportCommitLane(flagcxTransportLaneSet *lanes,
                                          flagcxTransportLaneMode mode,
                                          uint32_t laneIndex);
 
-// orderingKey is reserved for a future order-domain identifier. Existing
+// Ordered submissions deterministically map orderingKey to one lane. Existing
 // compatibility paths pass zero, which maps to lane zero exactly as today.
 flagcxResult_t flagcxNetSelectLane(struct flagcxNetLaneSet *lanes,
                                    enum flagcxNetLaneMode mode,
@@ -59,6 +59,93 @@ flagcxResult_t flagcxNetSelectLane(struct flagcxNetLaneSet *lanes,
 flagcxResult_t flagcxNetCommitLane(struct flagcxNetLaneSet *lanes,
                                    enum flagcxNetLaneMode mode,
                                    uint32_t laneIndex);
+
+// Submission identity used by transport consumers that need deterministic
+// lane selection and completion ordering.  The structure is internal to
+// FlagCX and deliberately does not extend the net adaptor ABI.
+struct flagcxNetSubmitContext {
+  uint64_t orderingKey;
+  uint64_t groupId;
+  uint64_t generation;
+  uint64_t sequence;
+  uint32_t flags;
+};
+
+enum flagcxNetReleaseGroupState {
+  FLAGCX_NET_RELEASE_GROUP_OPEN = 0,
+  FLAGCX_NET_RELEASE_GROUP_SEALED = 1,
+  FLAGCX_NET_RELEASE_GROUP_COMPLETE = 2,
+};
+
+// A release group is a completion gate, not an API submission group.  It can
+// outlive flagcxGroupEnd() and is updated by transport progress threads.  A
+// release is allowed only after the group is sealed and every tracked member
+// completes successfully.
+struct flagcxNetReleaseGroup {
+  uint64_t groupId;
+  uint64_t generation;
+  uint32_t state;
+  uint32_t pending;
+  uint32_t members;
+  uint32_t releaseAllowed;
+  flagcxResult_t firstError;
+  uint32_t lock;
+};
+
+enum flagcxNetCompletionEntryState {
+  FLAGCX_NET_COMPLETION_ENTRY_FREE = 0,
+  FLAGCX_NET_COMPLETION_ENTRY_PENDING = 1,
+  FLAGCX_NET_COMPLETION_ENTRY_COMPLETE = 2,
+};
+
+struct flagcxNetCompletionEntry {
+  struct flagcxNetSubmitContext context;
+  struct flagcxNetReleaseGroup *releaseGroup;
+  flagcxResult_t result;
+  uint32_t state;
+};
+
+// Fixed-capacity completion scoreboard.  Callers own the entry storage, so
+// progress paths never allocate.  Entries are indexed by sequence modulo
+// capacity; completions may arrive out of order, while nextSequence advances
+// only over a contiguous completed prefix.
+struct flagcxNetCompletionScoreboard {
+  struct flagcxNetCompletionEntry *entries;
+  uint32_t capacity;
+  uint32_t inFlight;
+  uint64_t generation;
+  uint64_t nextSequence;
+  flagcxResult_t firstError;
+  uint32_t lock;
+};
+
+flagcxResult_t flagcxNetReleaseGroupInit(struct flagcxNetReleaseGroup *group,
+                                         uint64_t groupId, uint64_t generation);
+flagcxResult_t flagcxNetReleaseGroupSeal(struct flagcxNetReleaseGroup *group);
+flagcxResult_t flagcxNetReleaseGroupTest(struct flagcxNetReleaseGroup *group,
+                                         int *done, int *releaseAllowed);
+flagcxResult_t flagcxNetReleaseGroupReset(struct flagcxNetReleaseGroup *group,
+                                          uint64_t groupId,
+                                          uint64_t generation);
+
+flagcxResult_t flagcxNetCompletionScoreboardInit(
+    struct flagcxNetCompletionScoreboard *scoreboard,
+    struct flagcxNetCompletionEntry *entries, uint32_t capacity,
+    uint64_t generation, uint64_t initialSequence);
+flagcxResult_t flagcxNetCompletionScoreboardReset(
+    struct flagcxNetCompletionScoreboard *scoreboard, uint64_t generation,
+    uint64_t initialSequence);
+flagcxResult_t
+flagcxNetTrackSubmit(struct flagcxNetCompletionScoreboard *scoreboard,
+                     const struct flagcxNetSubmitContext *context,
+                     struct flagcxNetReleaseGroup *releaseGroup);
+flagcxResult_t
+flagcxNetTrackCompletion(struct flagcxNetCompletionScoreboard *scoreboard,
+                         const struct flagcxNetSubmitContext *context,
+                         flagcxResult_t result, uint32_t *advanced);
+flagcxResult_t flagcxNetCompletionScoreboardQuery(
+    struct flagcxNetCompletionScoreboard *scoreboard, uint64_t *nextSequence,
+    uint32_t *inFlight, flagcxResult_t *firstError);
 
 // A bounded credit counter for SQ entries, callback slots, or backend request
 // objects. Exhaustion is transient backpressure and is reported as

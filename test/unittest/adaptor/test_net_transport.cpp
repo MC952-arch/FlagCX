@@ -11,6 +11,8 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -82,6 +84,257 @@ TEST(NetTransportLaneTest, RejectsInvalidLaneSetsAndCommits) {
       flagcxInvalidArgument);
   EXPECT_EQ(flagcxNetCommitLane(&lanes, FLAGCX_NET_LANE_UNORDERED, 1),
             flagcxInvalidArgument);
+}
+
+flagcxNetSubmitContext makeSubmitContext(uint64_t sequence, uint64_t generation,
+                                         uint64_t groupId = 0,
+                                         uint64_t orderingKey = 0) {
+  flagcxNetSubmitContext context = {};
+  context.orderingKey = orderingKey;
+  context.groupId = groupId;
+  context.generation = generation;
+  context.sequence = sequence;
+  return context;
+}
+
+TEST(NetTransportScoreboardTest, AdvancesOnlyContiguousCompletedSequence) {
+  flagcxNetCompletionEntry entries[4] = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, entries, 4, 7, 10),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 19, 7), flagcxSuccess);
+
+  flagcxNetSubmitContext first = makeSubmitContext(10, 7, 19, 1);
+  flagcxNetSubmitContext second = makeSubmitContext(11, 7, 19, 2);
+  flagcxNetSubmitContext third = makeSubmitContext(12, 7, 19, 1);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &first, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &second, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &third, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+
+  int done = -1;
+  int releaseAllowed = -1;
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxSuccess);
+  EXPECT_EQ(done, 0);
+  EXPECT_EQ(releaseAllowed, 0);
+
+  uint32_t advanced = UINT32_MAX;
+  ASSERT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &third, flagcxSuccess, &advanced),
+      flagcxSuccess);
+  EXPECT_EQ(advanced, 0u);
+  ASSERT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &first, flagcxSuccess, &advanced),
+      flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  ASSERT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &second, flagcxSuccess, &advanced),
+      flagcxSuccess);
+  EXPECT_EQ(advanced, 2u);
+
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxSuccess);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(releaseAllowed, 1);
+
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = UINT32_MAX;
+  flagcxResult_t firstError = flagcxInternalError;
+  ASSERT_EQ(flagcxNetCompletionScoreboardQuery(&scoreboard, &nextSequence,
+                                               &inFlight, &firstError),
+            flagcxSuccess);
+  EXPECT_EQ(nextSequence, 13u);
+  EXPECT_EQ(inFlight, 0u);
+  EXPECT_EQ(firstError, flagcxSuccess);
+}
+
+TEST(NetTransportReleaseGroupTest, SuppressesReleaseAndKeepsFirstError) {
+  flagcxNetCompletionEntry entries[2] = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, entries, 2, 4, 0),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 8, 4), flagcxSuccess);
+  flagcxNetSubmitContext first = makeSubmitContext(0, 4, 8);
+  flagcxNetSubmitContext second = makeSubmitContext(1, 4, 8);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &first, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &second, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+
+  uint32_t advanced = 0;
+  ASSERT_EQ(flagcxNetTrackCompletion(&scoreboard, &second, flagcxRemoteError,
+                                     &advanced),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 0u);
+  ASSERT_EQ(flagcxNetTrackCompletion(&scoreboard, &first, flagcxSystemError,
+                                     &advanced),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 2u);
+
+  int done = 0;
+  int releaseAllowed = 1;
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxRemoteError);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(releaseAllowed, 0);
+
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = 0;
+  flagcxResult_t firstError = flagcxSuccess;
+  ASSERT_EQ(flagcxNetCompletionScoreboardQuery(&scoreboard, &nextSequence,
+                                               &inFlight, &firstError),
+            flagcxSuccess);
+  EXPECT_EQ(firstError, flagcxRemoteError);
+}
+
+TEST(NetTransportReleaseGroupTest, AggregatesConcurrentCompletions) {
+  constexpr uint32_t count = 32;
+  flagcxNetCompletionEntry entries[count] = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(
+      flagcxNetCompletionScoreboardInit(&scoreboard, entries, count, 2, 0),
+      flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 6, 2), flagcxSuccess);
+
+  flagcxNetSubmitContext contexts[count] = {};
+  for (uint32_t i = 0; i < count; ++i) {
+    contexts[i] = makeSubmitContext(i, 2, 6, i % 4);
+    ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &contexts[i], &group),
+              flagcxSuccess);
+  }
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+
+  flagcxResult_t completionResults[count] = {};
+  std::vector<std::thread> threads;
+  threads.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    threads.emplace_back([&, i] {
+      uint32_t advanced = 0;
+      const flagcxResult_t terminal =
+          i == 7 ? flagcxRemoteError : flagcxSuccess;
+      completionResults[i] = flagcxNetTrackCompletion(&scoreboard, &contexts[i],
+                                                      terminal, &advanced);
+    });
+  }
+  for (std::thread &thread : threads)
+    thread.join();
+  for (flagcxResult_t result : completionResults)
+    EXPECT_EQ(result, flagcxSuccess);
+
+  int done = 0;
+  int releaseAllowed = 1;
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxRemoteError);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(releaseAllowed, 0);
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = count;
+  flagcxResult_t firstError = flagcxSuccess;
+  ASSERT_EQ(flagcxNetCompletionScoreboardQuery(&scoreboard, &nextSequence,
+                                               &inFlight, &firstError),
+            flagcxSuccess);
+  EXPECT_EQ(nextSequence, count);
+  EXPECT_EQ(inFlight, 0u);
+  EXPECT_EQ(firstError, flagcxRemoteError);
+}
+
+TEST(NetTransportReleaseGroupTest, EmptySealedGroupCanRelease) {
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 1, 3), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+  int done = 0;
+  int releaseAllowed = 0;
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxSuccess);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(releaseAllowed, 1);
+}
+
+TEST(NetTransportScoreboardTest, InProgressDoesNotCompleteMember) {
+  flagcxNetCompletionEntry entry = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, &entry, 1, 1, 0),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 1, 1), flagcxSuccess);
+  flagcxNetSubmitContext context = makeSubmitContext(0, 1, 1);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &context, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+
+  uint32_t advanced = 1;
+  EXPECT_EQ(flagcxNetTrackCompletion(&scoreboard, &context, flagcxInProgress,
+                                     &advanced),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 0u);
+  int done = 1;
+  int releaseAllowed = 1;
+  EXPECT_EQ(flagcxNetReleaseGroupTest(&group, &done, &releaseAllowed),
+            flagcxSuccess);
+  EXPECT_EQ(done, 0);
+  EXPECT_EQ(releaseAllowed, 0);
+}
+
+TEST(NetTransportScoreboardTest, RejectsStaleGenerationAndCapacityOverflow) {
+  flagcxNetCompletionEntry entries[2] = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, entries, 2, 5, 20),
+            flagcxSuccess);
+  flagcxNetSubmitContext stale = makeSubmitContext(20, 4);
+  flagcxNetSubmitContext outsideWindow = makeSubmitContext(22, 5);
+  EXPECT_EQ(flagcxNetTrackSubmit(&scoreboard, &stale, nullptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxNetTrackSubmit(&scoreboard, &outsideWindow, nullptr),
+            flagcxInProgress);
+}
+
+TEST(NetTransportOrderingGenerationTest, ReusesOnlyCompletedNewGeneration) {
+  flagcxNetCompletionEntry entry = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, &entry, 1, 9, 0),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 7, 9), flagcxSuccess);
+  EXPECT_EQ(flagcxNetReleaseGroupReset(&group, 7, 10), flagcxInvalidArgument);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupReset(&group, 7, 10), flagcxSuccess);
+  ASSERT_EQ(flagcxNetCompletionScoreboardReset(&scoreboard, 10, 0),
+            flagcxSuccess);
+
+  flagcxNetSubmitContext stale = makeSubmitContext(0, 9, 7);
+  flagcxNetSubmitContext current = makeSubmitContext(0, 10, 7);
+  EXPECT_EQ(flagcxNetTrackSubmit(&scoreboard, &stale, &group),
+            flagcxInvalidArgument);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &current, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+  uint32_t advanced = 0;
+  EXPECT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &stale, flagcxSuccess, &advanced),
+      flagcxInvalidArgument);
+  ASSERT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &current, flagcxSuccess, &advanced),
+      flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+}
+
+TEST(NetTransportScoreboardTest, UngroupedSubmissionRequiresGroupIdZero) {
+  flagcxNetCompletionEntry entry = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, &entry, 1, 2, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext grouped = makeSubmitContext(0, 2, 4);
+  EXPECT_EQ(flagcxNetTrackSubmit(&scoreboard, &grouped, nullptr),
+            flagcxInvalidArgument);
+  flagcxNetSubmitContext ungrouped = makeSubmitContext(0, 2);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &ungrouped, nullptr),
+            flagcxSuccess);
+  uint32_t advanced = 0;
+  ASSERT_EQ(flagcxNetTrackCompletion(&scoreboard, &ungrouped, flagcxSuccess,
+                                     &advanced),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
 }
 
 TEST(NetTransportCreditTest, ReportsBackpressureAndRejectsUnderflow) {
