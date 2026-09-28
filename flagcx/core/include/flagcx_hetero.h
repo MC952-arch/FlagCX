@@ -9,12 +9,27 @@
 
 template <typename T, T *T::*next>
 struct flagcxIntruQueue;
+struct flagcxNetReleaseGroup;
+struct flagcxRmaReleaseGroup;
+struct flagcxNetCompletionScoreboard;
+struct flagcxNetCompletionEntry;
 
 enum flagcxRmaDescType {
   FLAGCX_RMA_PUT = 0,
   FLAGCX_RMA_PUT_SIGNAL = 1,
   FLAGCX_RMA_GET = 2,
   FLAGCX_RMA_PUT_VALUE = 3,
+  // A release is deliberately a separate transport submission.  The proxy
+  // posts it only after every data member in releaseGroup has completed.
+  FLAGCX_RMA_RELEASE = 4,
+};
+
+enum flagcxRmaSubmitFlags {
+  FLAGCX_RMA_SUBMIT_DATA = 1u << 0,
+  FLAGCX_RMA_SUBMIT_RELEASE = 1u << 1,
+  // This flag is an explicit assertion by an internal caller.  Different
+  // addresses are never used to infer independence.
+  FLAGCX_RMA_SUBMIT_INDEPENDENT = 1u << 2,
 };
 
 // One-sided adaptors report request-pool or send-queue pressure exclusively as
@@ -40,11 +55,22 @@ struct flagcxRmaDesc {
   size_t size;
   int srcMrIdx; // -1 when not used (e.g. signal-only PutSignal)
   int dstMrIdx;
-  uint64_t signalOff;         // PUT_SIGNAL only
-  uint64_t signalValue;       // PUT_SIGNAL only
-  uint64_t putValue;          // PUT_VALUE only (value embedded in desc)
-  void *request;              // filled by progress thread after posting IB op
-  uint64_t opSeq;             // per-peer monotonic sequence number
+  uint64_t signalOff;   // PUT_SIGNAL only
+  uint64_t signalValue; // PUT_SIGNAL only
+  uint64_t putValue;    // PUT_VALUE only (value embedded in desc)
+  void *request;        // filled by progress thread after posting IB op
+  uint64_t opSeq;       // per-peer monotonic sequence number
+  // Shared-transport ordering identity. Public APIs use orderingKey 0.
+  uint64_t orderingKey;
+  uint64_t groupId;
+  uint64_t generation;
+  uint64_t sequence;
+  uint32_t submitFlags;
+  flagcxResult_t completionResult;
+  // Every descriptor in a release group holds a reference. The transport
+  // scoreboard may retain the embedded completion gate until that descriptor
+  // retires, so the release descriptor cannot be its sole owner.
+  struct flagcxRmaReleaseGroup *releaseGroup;
   struct flagcxRmaDesc *next; // intrusive link for inProgressQueues
 };
 
@@ -74,6 +100,14 @@ struct flagcxRmaProxyState {
   volatile uint64_t *doneSeqs;  // [nRanks]
   volatile uint32_t *inFlights; // [nRanks]
 
+  // One bounded scoreboard per peer. Entries are allocated with the proxy and
+  // indexed by the descriptor sequence, so the progress loop never allocates.
+  struct flagcxNetCompletionScoreboard *completionScoreboards; // [nRanks]
+  struct flagcxNetCompletionEntry
+      *completionEntries;       // [nRanks * 2 * queueSize]
+  volatile uint64_t *groupSeqs; // [nRanks]
+  uint64_t generation;
+
   // GPU-visible done sequence counters for STREAM_OPS mode.
   // GPU stream waits on doneSeqsDev via streamWaitValue64.
   uint64_t *doneSeqsDev; // [nRanks] device pointer (GPU-visible)
@@ -98,6 +132,15 @@ struct flagcxRmaProxyState {
   // Set to 1 by the progress thread when an IB op fails (test error, post
   // error, or missing sendComm). Wait functions check this and return an error.
   volatile int rmaError;
+
+  // Stops new submissions immediately after a terminal transport error. The
+  // public rmaError is published only after accepted native requests retire,
+  // so stream waiters cannot release their source buffers prematurely.
+  volatile int pendingError;
+
+  // Set before communicator teardown starts. Producers fail fast while the
+  // progress thread drains already-published descriptors and native requests.
+  volatile int quiesced;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
@@ -150,11 +193,13 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 
-flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx,
-                               bool streamSyncReady = false,
-                               uint64_t *assignedSeq = nullptr);
+flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm);
+
+flagcxResult_t
+flagcxHeteroPut(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                size_t dstOffset, size_t size, int srcMrIdx, int dstMrIdx,
+                bool streamSyncReady = false, uint64_t *assignedSeq = nullptr,
+                uint64_t orderingKey = 0, bool independent = false);
 
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
@@ -162,21 +207,35 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *sizes, const int *srcMrIdxs,
                                     const int *dstMrIdxs, size_t count);
 
+// Internal explicit release group. Each data member supplies its order domain
+// and independence marker; the signal-only release is submitted only after
+// every member completes successfully. This is intentionally not a public RMA
+// API and never infers independence from addresses.
+flagcxResult_t flagcxHeteroBatchPutSignal(
+    flagcxHeteroComm_t comm, int peer, const size_t *srcOffsets,
+    const size_t *dstOffsets, const size_t *sizes, const int *srcMrIdxs,
+    const int *dstMrIdxs, const uint64_t *orderingKeys,
+    const uint8_t *independent, size_t count, size_t signalOffset,
+    uint64_t signalValue, uint64_t releaseOrderingKey, bool releaseIndependent,
+    uint64_t *assignedSeq = nullptr);
+
 // RDMA READ: pull data from remote peer's srcMrIdx buffer into local dstMrIdx
 // buffer
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
-                               int srcMrIdx, int dstMrIdx);
+                               int srcMrIdx, int dstMrIdx,
+                               uint64_t orderingKey = 0,
+                               bool independent = false);
 
 // Data + signal combined (chained WRITE + ATOMIC in IB backend)
 // When size == 0, only signal ATOMIC is posted (signal-only mode)
-flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, size_t signalOffset,
-                                     int srcMrIdx, int dstMrIdx,
-                                     uint64_t signalValue,
-                                     bool streamSyncReady = false,
-                                     uint64_t *assignedSeq = nullptr);
+flagcxResult_t
+flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                      size_t dstOffset, size_t size, size_t signalOffset,
+                      int srcMrIdx, int dstMrIdx, uint64_t signalValue,
+                      bool streamSyncReady = false,
+                      uint64_t *assignedSeq = nullptr, uint64_t orderingKey = 0,
+                      bool independent = false);
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);
@@ -184,6 +243,13 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+
+// Internal deterministic progress hook used by host-only RMA tests. Production
+// progress uses the same pass from the proxy thread.
+flagcxResult_t
+flagcxHeteroRmaProxyProgressOnce(struct flagcxRmaProxyState *proxy,
+                                 bool stopping, int *madeProgress,
+                                 int *hasOutstanding);
 
 // Publish the stable fullSendComms pointer to the proxy.
 flagcxResult_t flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,

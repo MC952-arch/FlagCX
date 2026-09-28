@@ -8,6 +8,7 @@
 #define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
 #include "comm.h"
+#include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "mem_alloc_registry.h"
 #include "p2p.h"
@@ -24,6 +25,16 @@
 // DevComm lifecycle
 // ==========================================================================
 
+flagcxResult_t flagcxDevCommRetryPendingCleanup(flagcxComm_t comm) {
+  if (comm == nullptr || comm->pendingDevCommCleanup == nullptr)
+    return flagcxSuccess;
+  flagcxDevComm_t pending = comm->pendingDevCommCleanup;
+  flagcxResult_t result = flagcxDevCommDestroy(comm, pending);
+  if (result == flagcxSuccess)
+    comm->pendingDevCommCleanup = nullptr;
+  return result;
+}
+
 static flagcxResult_t
 flagcxDevCommCreateInternal(flagcxComm_t comm,
                             const struct flagcxDevCommRequirements *reqs,
@@ -32,6 +43,7 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommRetryPendingCleanup(comm));
 
   flagcxDevComm_t handle =
       (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
@@ -77,6 +89,10 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       if (cleanupRet != flagcxSuccess) {
         WARN("flagcxDevCommCreate: %s backend rollback failed (%d)",
              devApiBackend->name, cleanupRet);
+        // The output remains NULL because creation failed, but the outer
+        // communicator retains the partially-created owner for a later retry.
+        comm->pendingDevCommCleanup = handle;
+        return ret;
       }
       pthread_mutex_destroy(&handle->cachedPtrMutex);
       free(handle);
@@ -120,14 +136,20 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
-  // The proxy owns no reference to DevComm. Stop publishing this handle before
-  // backend resources are released instead of leaving a stale pointer behind.
-  if (comm != nullptr && comm->heteroComm != nullptr &&
-      comm->heteroComm->devCommHandle == devComm) {
+  // Stop the proxy from acquiring a new reference while the backend tears
+  // down fields reachable through DevComm. Restore publication on failure so
+  // the still-owned object remains retryable.
+  const bool wasPublished = comm != nullptr && comm->heteroComm != nullptr &&
+                            comm->heteroComm->devCommHandle == devComm;
+  if (wasPublished)
     comm->heteroComm->devCommHandle = nullptr;
-  }
 
-  devApiBackend->devCommDestroy(comm, devComm);
+  flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
+  if (result != flagcxSuccess) {
+    if (wasPublished && comm->heteroComm->devCommHandle == nullptr)
+      comm->heteroComm->devCommHandle = devComm;
+    return result;
+  }
 
   // Free cached device pointers (thin-layer responsibility)
   if (devComm->cachedNetContextsPtr) {
@@ -261,6 +283,20 @@ extern "C" flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
 
 extern "C" flagcxResult_t flagcxCommCleanup(flagcxComm_t comm) {
   return devApiBackend->commCleanup(comm);
+}
+
+flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+  // Backend producers (notably device FIFOs) feed the common RMA proxy. Drain
+  // them first so already-accepted device work can still be enqueued.
+  if (devApiBackend->commQuiesce != nullptr)
+    FLAGCXCHECK(devApiBackend->commQuiesce(comm));
+  if (comm->heteroComm != nullptr) {
+    FLAGCXCHECK(flagcxHeteroRmaProxyQuiesce(comm->heteroComm));
+    comm->heteroComm->oneSideQuiesced = true;
+  }
+  return flagcxSuccess;
 }
 
 // ==========================================================================

@@ -7,6 +7,7 @@
 #include "cluster.h"
 #include "comm.h"
 #include "cost_model.h"
+#include "dev_api_backend.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
@@ -356,6 +357,25 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator) {
 // On success, stores sendComms[peer] and recvComms[peer] arrays into
 // *outSend/*outRecv.
 static flagcxResult_t
+flagcxOneSideConvergeStatus(struct bootstrapState *bootstrap, int rank,
+                            int nranks, flagcxResult_t localStatus) {
+  if (bootstrap == NULL || rank < 0 || rank >= nranks)
+    return flagcxInvalidArgument;
+  std::vector<int> statuses(nranks, static_cast<int>(flagcxSuccess));
+  statuses[rank] = static_cast<int>(localStatus);
+  flagcxResult_t gatherResult =
+      bootstrapCollAllGather(bootstrap, statuses.data(), sizeof(int));
+  if (gatherResult != flagcxSuccess)
+    return gatherResult;
+  for (int peer = 0; peer < nranks; peer++) {
+    flagcxResult_t peerStatus = static_cast<flagcxResult_t>(statuses[peer]);
+    if (peerStatus != flagcxSuccess)
+      return peerStatus;
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
 flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
                              int rank, int contextIdx, void ***outSend,
                              void ***outRecv) {
@@ -365,22 +385,35 @@ flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
   void **sendComms = NULL;
   void **recvComms = NULL;
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&sendComms, nranks), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&recvComms, nranks), res, fail);
+  res = flagcxCalloc(&sendComms, nranks);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&recvComms, nranks);
+
+  flagcxNetHandle_t myListenHandle = {};
+  if (res == flagcxSuccess)
+    res = heteroComm->netAdaptor->listen(heteroComm->netDev,
+                                         (void *)myListenHandle, &listenComm);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&allHandles, nranks);
+
+  // No rank enters the listen-handle collective until every rank completed
+  // local allocation/listen preparation successfully.
+  {
+    flagcxResult_t common =
+        flagcxOneSideConvergeStatus(heteroComm->bootstrap, rank, nranks, res);
+    if (common != flagcxSuccess) {
+      res = common;
+      goto fail_handles;
+    }
+  }
 
   {
-    flagcxNetHandle_t myListenHandle = {};
-    FLAGCXCHECKGOTO(heteroComm->netAdaptor->listen(heteroComm->netDev,
-                                                   (void *)myListenHandle,
-                                                   &listenComm),
-                    res, fail);
-
-    FLAGCXCHECKGOTO(flagcxCalloc(&allHandles, nranks), res, fail_listen);
     memcpy(&allHandles[rank], &myListenHandle, sizeof(flagcxNetHandle_t));
-    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
-                                           (void *)allHandles,
-                                           sizeof(flagcxNetHandle_t)),
-                    res, fail_handles);
+    res = bootstrapCollAllGather(heteroComm->bootstrap, (void *)allHandles,
+                                 sizeof(flagcxNetHandle_t));
+    res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, rank, nranks, res);
+    if (res != flagcxSuccess)
+      goto fail_handles;
 
     // Deadlock-free full-mesh connection (NCCL GIN pattern)
     for (int i = 0; i < nranks; i++) {
@@ -431,15 +464,14 @@ flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
 
 fail_handles:
   for (int i = 0; i < nranks; i++) {
-    if (sendComms[i])
+    if (sendComms != NULL && sendComms[i])
       heteroComm->netAdaptor->closeSend(sendComms[i]);
-    if (recvComms[i])
+    if (recvComms != NULL && recvComms[i])
       heteroComm->netAdaptor->closeRecv(recvComms[i]);
   }
   free(allHandles);
-fail_listen:
-  heteroComm->netAdaptor->closeListen(listenComm);
-fail:
+  if (listenComm != NULL)
+    heteroComm->netAdaptor->closeListen(listenComm);
   free(sendComms);
   free(recvComms);
   *outSend = NULL;
@@ -461,28 +493,39 @@ flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
   int nContexts = 1;
   if (heteroComm->proxyState != NULL &&
       heteroComm->proxyState->initialized == 0) {
-    FLAGCXCHECKGOTO(flagcxProxyInit(heteroComm), res, fail);
+    res = flagcxProxyInit(heteroComm);
   }
-  if (heteroComm->proxyState != NULL)
+  if (res == flagcxSuccess && heteroComm->proxyState != NULL)
     nContexts = 1 + heteroComm->proxyState->kernelState.contextCount;
   info->nContexts = nContexts;
   info->nRanks = nranks;
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextSendComms, nContexts), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->contextRecvComms, nContexts), res, fail);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&info->contextSendComms, nContexts);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&info->contextRecvComms, nContexts);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, rank, nranks, res);
+  if (res != flagcxSuccess)
+    goto fail_partial;
 
   // Build one full-mesh per context (collective: all ranks participate per
   // round)
   for (int ctx = 0; ctx < nContexts; ctx++) {
-    FLAGCXCHECKGOTO(flagcxOneSideBuildOneContext(heteroComm, nranks, rank, ctx,
-                                                 &info->contextSendComms[ctx],
-                                                 &info->contextRecvComms[ctx]),
-                    res, fail_partial);
+    flagcxResult_t localResult = flagcxOneSideBuildOneContext(
+        heteroComm, nranks, rank, ctx, &info->contextSendComms[ctx],
+        &info->contextRecvComms[ctx]);
+    // Converge connection outcomes before any rank advances to the next
+    // context or to MR metadata exchange.
+    res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, rank, nranks,
+                                      localResult);
+    if (res != flagcxSuccess)
+      goto fail_partial;
   }
 
   // Legacy aliases: context 0 = RMA proxy
   info->fullSendComms = info->contextSendComms[0];
   info->fullRecvComms = info->contextRecvComms[0];
+  info->ownsConnections = 1;
 
   INFO(FLAGCX_REG,
        "flagcxOneSideBuildFullMesh: rank %d, %d contexts × %d peers "
@@ -493,20 +536,22 @@ flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
 fail_partial:
   // Cleanup contexts that were successfully created
   for (int ctx = 0; ctx < nContexts; ctx++) {
-    if (info->contextSendComms[ctx] != NULL) {
+    if (info->contextSendComms != NULL && info->contextSendComms[ctx] != NULL) {
       for (int i = 0; i < nranks; i++) {
         if (info->contextSendComms[ctx][i])
           heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
-        if (info->contextRecvComms[ctx][i])
+        if (info->contextRecvComms != NULL &&
+            info->contextRecvComms[ctx] != NULL &&
+            info->contextRecvComms[ctx][i])
           heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
       }
       free(info->contextSendComms[ctx]);
-      free(info->contextRecvComms[ctx]);
+      if (info->contextRecvComms != NULL)
+        free(info->contextRecvComms[ctx]);
     }
   }
   free(info->contextSendComms);
   free(info->contextRecvComms);
-fail:
   info->contextSendComms = NULL;
   info->contextRecvComms = NULL;
   info->fullSendComms = NULL;
@@ -515,6 +560,9 @@ fail:
   info->nContexts = 0;
   return res;
 }
+
+static flagcxResult_t
+flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm);
 
 // Ensure full-mesh one-sided connections exist for this heteroComm.
 // If no data handle has been registered yet, lazily build a connection-only
@@ -527,42 +575,66 @@ flagcxOneSideEnsureFullMesh(struct flagcxHeteroComm *heteroComm) {
       heteroComm->netAdaptor->regMr == NULL)
     return flagcxNotSupported;
 
-  // Already have connections?
+  if (heteroComm->bootstrap == NULL)
+    return flagcxNotSupported;
+
+  flagcxResult_t res = flagcxSuccess;
+  struct flagcxOneSideHandleInfo *info = NULL;
+  struct flagcxOneSideHandleInfo **publishHandles = heteroComm->oneSideHandles;
+  int publishCapacity = heteroComm->oneSideHandleCapacity;
+  bool replaceHandleArray = false;
+
+  res = flagcxOneSideRetryPendingCleanup(heteroComm);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    return res;
+
+  // Only take the existing-mesh fast path after every rank has retried and
+  // converged cleanup retained by an earlier failed registration rollback.
   if (heteroComm->oneSideHandleCount > 0 &&
       heteroComm->oneSideHandles[0] != NULL &&
       heteroComm->oneSideHandles[0]->fullRecvComms != NULL) {
     return flagcxSuccess;
   }
 
-  if (heteroComm->bootstrap == NULL)
-    return flagcxNotSupported;
-
-  flagcxResult_t res = flagcxSuccess;
-  struct flagcxOneSideHandleInfo *info = NULL;
-
-  // Grow array if needed
+  // Prepare capacity without publishing it until the full mesh converges.
   if (heteroComm->oneSideHandleCount >= heteroComm->oneSideHandleCapacity) {
     int newCap = heteroComm->oneSideHandleCapacity == 0
                      ? 4
                      : heteroComm->oneSideHandleCapacity * 2;
-    struct flagcxOneSideHandleInfo **newArr =
-        (struct flagcxOneSideHandleInfo **)realloc(
-            heteroComm->oneSideHandles,
-            newCap * sizeof(struct flagcxOneSideHandleInfo *));
-    if (newArr == NULL)
-      return flagcxSystemError;
-    for (int i = heteroComm->oneSideHandleCapacity; i < newCap; i++)
-      newArr[i] = NULL;
-    heteroComm->oneSideHandles = newArr;
-    heteroComm->oneSideHandleCapacity = newCap;
+    publishHandles = (struct flagcxOneSideHandleInfo **)calloc(
+        newCap, sizeof(struct flagcxOneSideHandleInfo *));
+    if (publishHandles == NULL)
+      res = flagcxSystemError;
+    else {
+      for (int i = 0; i < heteroComm->oneSideHandleCount; i++)
+        publishHandles[i] = heteroComm->oneSideHandles[i];
+      publishCapacity = newCap;
+      replaceHandleArray = true;
+    }
   }
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_info;
+  res = flagcxCalloc(&info, 1);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_info;
   FLAGCXCHECKGOTO(flagcxOneSideBuildFullMesh(heteroComm, info), res, fail_info);
 
   // Store at current slot (should be slot 0 if this is truly the first)
   {
     int slot = heteroComm->oneSideHandleCount;
+    if (replaceHandleArray) {
+      free(heteroComm->oneSideHandles);
+      heteroComm->oneSideHandles = publishHandles;
+      heteroComm->oneSideHandleCapacity = publishCapacity;
+      replaceHandleArray = false;
+    }
     heteroComm->oneSideHandles[slot] = info;
     heteroComm->oneSideHandleCount = slot + 1;
 
@@ -580,7 +652,8 @@ flagcxOneSideEnsureFullMesh(struct flagcxHeteroComm *heteroComm) {
 
 fail_info:
   free(info);
-fail:
+  if (replaceHandleArray)
+    free(publishHandles);
   return res;
 }
 
@@ -609,24 +682,33 @@ flagcxOneSideExchangeMrInfo(struct bootstrapState *bootstrap, int rank,
     return flagcxInvalidArgument;
 
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->regionSizes, nranks), res, fail);
-  FLAGCXCHECKGOTO(flagcxCalloc(&info->mrInfos, nranks), res, fail);
+  res = flagcxCalloc(&info->baseVas, nranks);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&info->regionSizes, nranks);
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&info->mrInfos, nranks);
+  res = flagcxOneSideConvergeStatus(bootstrap, rank, nranks, res);
+  if (res != flagcxSuccess)
+    goto fail;
 
   info->baseVas[rank] = (uintptr_t)buffer;
   info->regionSizes[rank] = size;
   info->mrInfos[rank] = *localMrInfo;
   info->nRanks = nranks;
 
-  FLAGCXCHECKGOTO(
-      bootstrapCollAllGather(bootstrap, info->baseVas, sizeof(uintptr_t)), res,
-      fail);
-  FLAGCXCHECKGOTO(
-      bootstrapCollAllGather(bootstrap, info->regionSizes, sizeof(size_t)), res,
-      fail);
-  FLAGCXCHECKGOTO(bootstrapCollAllGather(bootstrap, info->mrInfos,
-                                         sizeof(struct flagcxNetMrInfo)),
-                  res, fail);
+  res = bootstrapCollAllGather(bootstrap, info->baseVas, sizeof(uintptr_t));
+  res = flagcxOneSideConvergeStatus(bootstrap, rank, nranks, res);
+  if (res != flagcxSuccess)
+    goto fail;
+  res = bootstrapCollAllGather(bootstrap, info->regionSizes, sizeof(size_t));
+  res = flagcxOneSideConvergeStatus(bootstrap, rank, nranks, res);
+  if (res != flagcxSuccess)
+    goto fail;
+  res = bootstrapCollAllGather(bootstrap, info->mrInfos,
+                               sizeof(struct flagcxNetMrInfo));
+  res = flagcxOneSideConvergeStatus(bootstrap, rank, nranks, res);
+  if (res != flagcxSuccess)
+    goto fail;
   return flagcxSuccess;
 
 fail:
@@ -648,6 +730,80 @@ static void flagcxOneSideFreeMrInfo(struct flagcxOneSideHandleInfo *info) {
   info->mrInfos = NULL;
   info->regionSizes = NULL;
   info->baseVas = NULL;
+}
+
+static void
+flagcxOneSideCloseConnections(struct flagcxHeteroComm *heteroComm,
+                              struct flagcxOneSideHandleInfo *info) {
+  if (heteroComm == NULL || info == NULL || !info->ownsConnections)
+    return;
+  if (heteroComm->netAdaptor != NULL && info->contextSendComms != NULL) {
+    for (int ctx = 0; ctx < info->nContexts; ctx++) {
+      for (int peer = 0; peer < info->nRanks; peer++) {
+        if (info->contextSendComms[ctx] != NULL &&
+            info->contextSendComms[ctx][peer] != NULL)
+          heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][peer]);
+        if (info->contextRecvComms != NULL &&
+            info->contextRecvComms[ctx] != NULL &&
+            info->contextRecvComms[ctx][peer] != NULL)
+          heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][peer]);
+      }
+      free(info->contextSendComms[ctx]);
+      if (info->contextRecvComms != NULL)
+        free(info->contextRecvComms[ctx]);
+    }
+  }
+  free(info->contextSendComms);
+  free(info->contextRecvComms);
+  info->contextSendComms = NULL;
+  info->contextRecvComms = NULL;
+  info->fullSendComms = NULL;
+  info->fullRecvComms = NULL;
+  info->ownsConnections = 0;
+}
+
+// Release one handle in dependency order. On deregMr failure absolutely no
+// upper-level ownership is discarded, so the same object can be retried.
+static flagcxResult_t
+flagcxOneSideCleanupHandle(struct flagcxHeteroComm *heteroComm,
+                           struct flagcxOneSideHandleInfo *info,
+                           bool closeConnections) {
+  if (info == NULL)
+    return flagcxSuccess;
+  if (info->localMrHandle != NULL) {
+    if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+        heteroComm->netAdaptor->deregMr == NULL || info->localRecvComm == NULL)
+      return flagcxInternalError;
+    flagcxResult_t result = heteroComm->netAdaptor->deregMr(
+        info->localRecvComm, info->localMrHandle);
+    if (result != flagcxSuccess)
+      return result;
+    info->localMrHandle = NULL;
+    info->ownsLocalMr = 0;
+  }
+  flagcxOneSideFreeMrInfo(info);
+  if (closeConnections)
+    flagcxOneSideCloseConnections(heteroComm, info);
+  return flagcxSuccess;
+}
+
+static void flagcxOneSideRetainCleanup(struct flagcxHeteroComm *heteroComm,
+                                       struct flagcxOneSideHandleInfo *info) {
+  info->cleanupNext = heteroComm->pendingOneSideCleanup;
+  heteroComm->pendingOneSideCleanup = info;
+}
+
+static flagcxResult_t
+flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm) {
+  while (heteroComm->pendingOneSideCleanup != NULL) {
+    struct flagcxOneSideHandleInfo *info = heteroComm->pendingOneSideCleanup;
+    flagcxResult_t result = flagcxOneSideCleanupHandle(heteroComm, info, true);
+    if (result != flagcxSuccess)
+      return result;
+    heteroComm->pendingOneSideCleanup = info->cleanupNext;
+    free(info);
+  }
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
@@ -676,35 +832,57 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     return flagcxNotSupported;
   }
 
+  // A prior rollback may still own an MR whose deregistration failed. Retry
+  // it before creating another connection/MR transaction.
+  flagcxResult_t pendingResult = flagcxOneSideRetryPendingCleanup(heteroComm);
+  pendingResult =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, pendingResult);
+  if (pendingResult != flagcxSuccess)
+    return pendingResult;
+
   flagcxResult_t res = flagcxSuccess;
   void *mrHandle = NULL;
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
+  struct flagcxOneSideHandleInfo **publishHandles = heteroComm->oneSideHandles;
+  int publishCapacity = heteroComm->oneSideHandleCapacity;
+  bool replaceHandleArray = false;
 
-  // Grow dynamic array if needed (doubling strategy, initial capacity 4)
+  // Prepare a replacement array locally, but do not attach it until the
+  // collective transaction succeeds on every rank.
   if (heteroComm->oneSideHandleCount >= heteroComm->oneSideHandleCapacity) {
     int newCap = heteroComm->oneSideHandleCapacity == 0
                      ? 4
                      : heteroComm->oneSideHandleCapacity * 2;
-    struct flagcxOneSideHandleInfo **newArr =
-        (struct flagcxOneSideHandleInfo **)realloc(
-            heteroComm->oneSideHandles,
-            newCap * sizeof(struct flagcxOneSideHandleInfo *));
-    if (newArr == NULL) {
-      WARN("flagcxOneSideRegister: realloc failed");
-      return flagcxSystemError;
+    publishHandles = (struct flagcxOneSideHandleInfo **)calloc(
+        newCap, sizeof(struct flagcxOneSideHandleInfo *));
+    if (publishHandles == NULL) {
+      res = flagcxSystemError;
+    } else {
+      for (int i = 0; i < heteroComm->oneSideHandleCount; i++)
+        publishHandles[i] = heteroComm->oneSideHandles[i];
+      publishCapacity = newCap;
+      replaceHandleArray = true;
     }
-    // Zero-init new slots
-    for (int i = heteroComm->oneSideHandleCapacity; i < newCap; i++)
-      newArr[i] = NULL;
-    heteroComm->oneSideHandles = newArr;
-    heteroComm->oneSideHandleCapacity = newCap;
+  }
+
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess) {
+    if (replaceHandleArray)
+      free(publishHandles);
+    return res;
   }
 
   bool isFirstHandle = (heteroComm->oneSideHandleCount == 0);
 
-  FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail);
+  res = flagcxCalloc(&info, 1);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_info;
 
   // First handle for this heteroComm: build a new full-mesh IB connection set
   if (isFirstHandle) {
@@ -759,25 +937,43 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                           FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
     }
   }
+  if (mrHandle != NULL) {
+    info->localMrHandle = mrHandle;
+    info->ownsLocalMr = 1;
+  }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
     res = flagcxNotSupported;
-    goto fail_mr;
+  } else {
+    res =
+        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
   }
-  FLAGCXCHECKGOTO(
-      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
-      res, fail_mr);
+
+  // Every rank reports local connection/MR preparation before any rank enters
+  // the MR base/size/key metadata collectives.
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
 
   // Allgather MR info
   {
     int nranks = heteroComm->nRanks;
-    FLAGCXCHECKGOTO(flagcxOneSideExchangeMrInfo(heteroComm->bootstrap,
-                                                heteroComm->rank, nranks, buff,
-                                                size, &localMrInfo, info),
-                    res, fail_mr);
-    info->localMrHandle = mrHandle;
+    flagcxResult_t exchangeResult =
+        flagcxOneSideExchangeMrInfo(heteroComm->bootstrap, heteroComm->rank,
+                                    nranks, buff, size, &localMrInfo, info);
+    res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                      nranks, exchangeResult);
+    if (res != flagcxSuccess)
+      goto fail_mr;
 
     int slot = heteroComm->oneSideHandleCount;
+    if (replaceHandleArray) {
+      free(heteroComm->oneSideHandles);
+      heteroComm->oneSideHandles = publishHandles;
+      heteroComm->oneSideHandleCapacity = publishCapacity;
+      replaceHandleArray = false;
+    }
     heteroComm->oneSideHandles[slot] = info;
     heteroComm->oneSideHandleCount = slot + 1;
 
@@ -800,29 +996,20 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   return flagcxSuccess;
 
 fail_mr:
-  flagcxOneSideFreeMrInfo(info);
-  if (regComm && mrHandle)
-    heteroComm->netAdaptor->deregMr(regComm, mrHandle);
-  if (isFirstHandle) {
-    // Clean up per-context full-mesh connections on first-handle failure
-    for (int ctx = 0; ctx < info->nContexts; ctx++) {
-      if (info->contextSendComms && info->contextSendComms[ctx]) {
-        for (int i = 0; i < heteroComm->nRanks; i++) {
-          if (info->contextSendComms[ctx][i])
-            heteroComm->netAdaptor->closeSend(info->contextSendComms[ctx][i]);
-          if (info->contextRecvComms[ctx][i])
-            heteroComm->netAdaptor->closeRecv(info->contextRecvComms[ctx][i]);
-        }
-        free(info->contextSendComms[ctx]);
-        free(info->contextRecvComms[ctx]);
-      }
+  if (info != NULL) {
+    flagcxResult_t cleanupResult =
+        flagcxOneSideCleanupHandle(heteroComm, info, isFirstHandle);
+    if (cleanupResult != flagcxSuccess) {
+      WARN("flagcxOneSideRegister: rollback retained for retry, res=%d",
+           (int)cleanupResult);
+      flagcxOneSideRetainCleanup(heteroComm, info);
+      info = NULL;
     }
-    free(info->contextSendComms);
-    free(info->contextRecvComms);
   }
 fail_info:
   free(info);
-fail:
+  if (replaceHandleArray)
+    free(publishHandles);
   return res;
 }
 
@@ -838,41 +1025,27 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
   if (heteroComm == NULL)
     return flagcxInternalError;
 
+  FLAGCXCHECK(flagcxOneSideRetryPendingCleanup(heteroComm));
+
   // Deregister all data handles in reverse order
   for (int i = heteroComm->oneSideHandleCount - 1; i >= 0; i--) {
     struct flagcxOneSideHandleInfo *info = heteroComm->oneSideHandles[i];
     if (info == NULL)
       continue;
 
-    if (heteroComm->netAdaptor != NULL) {
-      // Deregister MR
-      if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
-        void *regComm = info->localRecvComm;
-        heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-      }
-
-      // Close per-context full-mesh connections (only in the first handle)
-      if (info->contextSendComms != NULL) {
-        for (int ctx = 0; ctx < info->nContexts; ctx++) {
-          if (info->contextSendComms[ctx] != NULL) {
-            for (int j = 0; j < info->nRanks; j++) {
-              if (info->contextSendComms[ctx][j])
-                heteroComm->netAdaptor->closeSend(
-                    info->contextSendComms[ctx][j]);
-              if (info->contextRecvComms[ctx][j])
-                heteroComm->netAdaptor->closeRecv(
-                    info->contextRecvComms[ctx][j]);
-            }
-            free(info->contextSendComms[ctx]);
-            free(info->contextRecvComms[ctx]);
-          }
-        }
-        free(info->contextSendComms);
-        free(info->contextRecvComms);
-      }
-    }
-
-    flagcxOneSideFreeMrInfo(info);
+    const bool closeConnections = info->ownsConnections != 0;
+    // Signal/staging MRs use the first data handle's recvComm/PD. They must be
+    // released before that connection owner can be destroyed.
+    if (closeConnections &&
+        (heteroComm->signalHandle != NULL || heteroComm->stagingHandle != NULL))
+      return flagcxInProgress;
+    flagcxResult_t result =
+        flagcxOneSideCleanupHandle(heteroComm, info, closeConnections);
+    if (result != flagcxSuccess)
+      return result;
+    if (closeConnections && heteroComm->rmaProxy != NULL)
+      __atomic_store_n(&heteroComm->rmaProxy->fullSendComms, NULL,
+                       __ATOMIC_RELEASE);
     free(info);
     heteroComm->oneSideHandles[i] = NULL;
   }
@@ -981,12 +1154,17 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
-
-  // Use self recvComm from this comm's first data handle for MR registration
-  // (PD match)
   void *selfRecvComm = firstDataHandle->fullRecvComms[heteroComm->rank];
   regComm = selfRecvComm;
 
+  res = flagcxCalloc(&info, 1);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
+
+  // Use self recvComm from this comm's first data handle for MR registration
+  // (PD match)
   {
     int dmaBufFd = -1;
 
@@ -1020,24 +1198,33 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
           regComm, buff, size, ptrType, FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
     }
   }
+  if (mrHandle != NULL) {
+    info->localMrHandle = mrHandle;
+    info->localRecvComm = selfRecvComm;
+    info->ownsLocalMr = 1;
+  }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);
     res = flagcxNotSupported;
-    goto fail_mr;
+  } else {
+    res =
+        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
   }
-  FLAGCXCHECKGOTO(
-      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
-      res, fail_mr);
+
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
 
   {
     int nranks = heteroComm->nRanks;
-    FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
-    FLAGCXCHECKGOTO(flagcxOneSideExchangeMrInfo(heteroComm->bootstrap,
-                                                heteroComm->rank, nranks, buff,
-                                                size, &localMrInfo, info),
-                    res, fail_mr);
-    info->localMrHandle = mrHandle;
-    info->localRecvComm = selfRecvComm;
+    flagcxResult_t exchangeResult =
+        flagcxOneSideExchangeMrInfo(heteroComm->bootstrap, heteroComm->rank,
+                                    nranks, buff, size, &localMrInfo, info);
+    res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                      nranks, exchangeResult);
+    if (res != flagcxSuccess)
+      goto fail_mr;
     heteroComm->signalHandle = info;
     INFO(FLAGCX_REG, "Signal register allgather results (rank %d, nranks %d):",
          heteroComm->rank, nranks);
@@ -1055,11 +1242,14 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
 
 fail_mr:
   if (info) {
-    flagcxOneSideFreeMrInfo(info);
+    flagcxResult_t cleanupResult =
+        flagcxOneSideCleanupHandle(heteroComm, info, false);
+    if (cleanupResult != flagcxSuccess) {
+      flagcxOneSideRetainCleanup(heteroComm, info);
+      info = NULL;
+    }
     free(info);
   }
-  if (regComm != NULL && mrHandle != NULL)
-    heteroComm->netAdaptor->deregMr(regComm, mrHandle);
   if (ipcSlot >= 0)
     return flagcxSuccess;
   heteroComm->rmaSignalBase = NULL;
@@ -1078,11 +1268,10 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
     return flagcxSuccess;
   }
 
-  if (info != NULL && heteroComm->netAdaptor != NULL) {
-    if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
-      void *regComm = info->localRecvComm;
-      heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-    }
+  if (info != NULL) {
+    flagcxResult_t result = flagcxOneSideCleanupHandle(heteroComm, info, false);
+    if (result != flagcxSuccess)
+      return result;
   }
 
   if (heteroComm->rmaProxy != NULL && heteroComm->rmaProxy->ipcState != NULL)
@@ -1096,7 +1285,6 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
   heteroComm->rmaSignalSize = 0;
 
   if (info != NULL) {
-    flagcxOneSideFreeMrInfo(info);
     free(info);
   }
   heteroComm->signalHandle = NULL;
@@ -1154,35 +1342,49 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
-
-  // Use self recvComm from this comm's first data handle for MR registration
-  // (PD match)
   void *selfRecvComm = firstDataHandleStg->fullRecvComms[heteroComm->rank];
   regComm = selfRecvComm;
 
+  res = flagcxCalloc(&info, 1);
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
+
+  // Use self recvComm from this comm's first data handle for MR registration
+  // (PD match)
   {
     int type = FLAGCX_PTR_HOST;
     res =
         heteroComm->netAdaptor->regMr(regComm, buff, size, type, 0, &mrHandle);
   }
+  if (mrHandle != NULL) {
+    info->localMrHandle = mrHandle;
+    info->localRecvComm = selfRecvComm;
+    info->ownsLocalMr = 1;
+  }
   if (res != flagcxSuccess || mrHandle == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideStagingRegister: regMr failed, res=%d", res);
     res = flagcxNotSupported;
-    goto fail_mr;
+  } else {
+    res =
+        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
   }
-  FLAGCXCHECKGOTO(
-      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
-      res, fail_mr);
+
+  res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                    heteroComm->nRanks, res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
 
   {
     int nranks = heteroComm->nRanks;
-    FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
-    FLAGCXCHECKGOTO(flagcxOneSideExchangeMrInfo(heteroComm->bootstrap,
-                                                heteroComm->rank, nranks, buff,
-                                                size, &localMrInfo, info),
-                    res, fail_mr);
-    info->localMrHandle = mrHandle;
-    info->localRecvComm = selfRecvComm;
+    flagcxResult_t exchangeResult =
+        flagcxOneSideExchangeMrInfo(heteroComm->bootstrap, heteroComm->rank,
+                                    nranks, buff, size, &localMrInfo, info);
+    res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                      nranks, exchangeResult);
+    if (res != flagcxSuccess)
+      goto fail_mr;
     heteroComm->stagingHandle = info;
     INFO(FLAGCX_REG, "Staging register allgather results (rank %d, nranks %d):",
          heteroComm->rank, nranks);
@@ -1196,11 +1398,14 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
 
 fail_mr:
   if (info) {
-    flagcxOneSideFreeMrInfo(info);
+    flagcxResult_t cleanupResult =
+        flagcxOneSideCleanupHandle(heteroComm, info, false);
+    if (cleanupResult != flagcxSuccess) {
+      flagcxOneSideRetainCleanup(heteroComm, info);
+      info = NULL;
+    }
     free(info);
   }
-  if (regComm != NULL && mrHandle != NULL)
-    heteroComm->netAdaptor->deregMr(regComm, mrHandle);
   return res;
 }
 
@@ -1212,14 +1417,9 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm) {
   if (info == NULL)
     return flagcxSuccess;
 
-  if (heteroComm->netAdaptor != NULL) {
-    if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
-      void *regComm = info->localRecvComm;
-      heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-    }
-  }
-
-  flagcxOneSideFreeMrInfo(info);
+  flagcxResult_t result = flagcxOneSideCleanupHandle(heteroComm, info, false);
+  if (result != flagcxSuccess)
+    return result;
   free(info);
   heteroComm->stagingHandle = NULL;
   return flagcxSuccess;
@@ -1248,34 +1448,49 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
   struct flagcxNetMrInfo localMrInfo = {};
   struct flagcxOneSideHandleInfo *info = NULL;
 
+  res = flagcxCalloc(&info, 1);
+  res = flagcxOneSideConvergeStatus(comm->bootstrap, comm->rank, comm->nranks,
+                                    res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
+
   // Leaders (recvComm != NULL): register MR and extract keys
   if (recvComm != NULL && buff != NULL && size > 0) {
     void *regComm = recvComm;
     res = net->regMr(regComm, buff, size, FLAGCX_PTR_HOST,
                      FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    if (mrHandle != NULL) {
+      info->localMrHandle = mrHandle;
+      info->localRecvComm = recvComm;
+      info->ownsLocalMr = 1;
+    }
     if (res != flagcxSuccess || mrHandle == NULL) {
       INFO(FLAGCX_REG, "flagcxOneSideBarrierRegister: regMr failed, res=%d",
            res);
       res = flagcxNotSupported;
-      goto fail_mr;
+    } else {
+      res = flagcxOneSideGetMrInfo(net, mrHandle, &localMrInfo);
     }
-    FLAGCXCHECKGOTO(flagcxOneSideGetMrInfo(net, mrHandle, &localMrInfo), res,
-                    fail_mr);
   }
+
+  res = flagcxOneSideConvergeStatus(comm->bootstrap, comm->rank, comm->nranks,
+                                    res);
+  if (res != flagcxSuccess)
+    goto fail_mr;
 
   // ALL ranks: allocate info, populate own entry, AllGather
   {
     int nranks = comm->nranks;
     int myRank = comm->rank;
-    FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
     void *localBuffer = mrHandle == NULL ? NULL : buff;
     size_t localSize = mrHandle == NULL ? 0 : size;
-    FLAGCXCHECKGOTO(flagcxOneSideExchangeMrInfo(comm->bootstrap, myRank, nranks,
-                                                localBuffer, localSize,
-                                                &localMrInfo, info),
-                    res, fail_mr);
-    info->localMrHandle = mrHandle;
-    info->localRecvComm = recvComm;
+    flagcxResult_t exchangeResult =
+        flagcxOneSideExchangeMrInfo(comm->bootstrap, myRank, nranks,
+                                    localBuffer, localSize, &localMrInfo, info);
+    res = flagcxOneSideConvergeStatus(comm->bootstrap, myRank, nranks,
+                                      exchangeResult);
+    if (res != flagcxSuccess)
+      goto fail_mr;
 
     INFO(FLAGCX_REG,
          "Barrier register allgather results (rank %d, nranks %d):", myRank,
@@ -1291,12 +1506,13 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
 
 fail_mr:
   if (info) {
-    flagcxOneSideFreeMrInfo(info);
+    flagcxResult_t cleanupResult =
+        flagcxOneSideCleanupHandle(heteroComm, info, false);
+    if (cleanupResult != flagcxSuccess && heteroComm != NULL) {
+      flagcxOneSideRetainCleanup(heteroComm, info);
+      info = NULL;
+    }
     free(info);
-  }
-  if (mrHandle != NULL) {
-    void *regComm = recvComm;
-    net->deregMr(regComm, mrHandle);
   }
   return res;
 }
@@ -1310,14 +1526,9 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
     return flagcxInternalError;
 
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
-  if (heteroComm != NULL && heteroComm->netAdaptor != NULL) {
-    if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
-      void *regComm = info->localRecvComm;
-      heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
-    }
-  }
-
-  flagcxOneSideFreeMrInfo(info);
+  flagcxResult_t result = flagcxOneSideCleanupHandle(heteroComm, info, false);
+  if (result != flagcxSuccess)
+    return result;
   free(info);
   return flagcxSuccess;
 }
@@ -1924,8 +2135,17 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   return flagcxSuccess;
 
 fail:
-  if (state->devComm)
-    flagcxDevCommDestroy(comm, state->devComm);
+  if (state->devComm) {
+    flagcxResult_t result = flagcxDevCommDestroy(comm, state->devComm);
+    if (result != flagcxSuccess) {
+      // The backend still owns resources reachable through state->devComm.
+      // Publish the partially initialized state so communicator teardown can
+      // retry instead of leaking the entire ownership graph.
+      comm->devCommState = state;
+      return result;
+    }
+    state->devComm = nullptr;
+  }
   if (state->recvStagedMem)
     flagcxDevMemDestroy(comm, state->recvStagedMem);
   if (state->sendStagedMem)
@@ -1977,8 +2197,12 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
   auto *state = comm->devCommState;
 
   // Destroy DevComm first — vendor may reference windows/buffers internally
-  if (state->devComm)
-    flagcxDevCommDestroy(comm, state->devComm);
+  if (state->devComm) {
+    flagcxResult_t result = flagcxDevCommDestroy(comm, state->devComm);
+    if (result != flagcxSuccess)
+      return result;
+    state->devComm = nullptr;
+  }
   if (state->sendStagedMem)
     flagcxDevMemDestroy(comm, state->sendStagedMem);
   if (state->recvStagedMem)
@@ -2129,6 +2353,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homoInterComm = NULL;
   (*comm)->c2cSchedule = NULL;
   (*comm)->devCommState = NULL;
+  (*comm)->pendingDevCommCleanup = NULL;
   flagcxIntruQueueConstruct(&(*comm)->deferredBufferQueue);
   (*comm)->deferredBufferCount = 0;
 
@@ -2506,9 +2731,12 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   FLAGCXCHECK(
       cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm));
-  if (!useHomoComm(comm)) {
-    // TODO: to be implemented
-    return flagcxNotSupported;
+
+  if (!useHomoComm(comm) || useHeteroComm()) {
+    // Finalize initiates local RMA quiescence without adding a blocking rank
+    // collective. This preserves serial multi-rank lifecycle calls in one
+    // process; transport-specific peer shutdown remains in commCleanup.
+    FLAGCXCHECK(flagcxCommQuiesce(comm));
   }
   return flagcxSuccess;
 }
@@ -2521,6 +2749,37 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
         "homoCommMapSize=%zu commMapSize=%zu",
         comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
         comm->commMap.size());
+
+  // Stop new producers and drain device FIFOs plus the RMA proxy before any MR
+  // deregistration can close a connection. Quiesce is idempotent so a failed
+  // deregistration leaves this communicator in a retryable, owned state.
+  if (!useHomoComm(comm) || useHeteroComm())
+    FLAGCXCHECK(flagcxCommQuiesce(comm));
+
+  // Preserve transport-specific shutdown coordination before any DevComm or
+  // one-sided registration can release remotely accessible memory.
+  if (!useHomoComm(comm) || useHeteroComm())
+    FLAGCXCHECK(flagcxCommCleanup(comm));
+
+  // A failed create rollback can exist for any Device API backend. Retry it
+  // while the outer communicator and its vendor communicator are still live.
+  flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
+
+  if (!useHomoComm(comm) || useHeteroComm()) {
+    // Each stage retains ownership on failure so the same rank can retry the
+    // call safely after transport shutdown coordination has completed.
+    cleanupResult = flagcxOneSideStagingDeregister(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult = flagcxOneSideSignalDeregister(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+  }
 
   // Destroy cluster info
   free(comm->clusterIds);
@@ -2566,12 +2825,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     TRACE(FLAGCX_INIT,
           "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
           comm->heteroComm);
-    FLAGCXCHECK(flagcxCommCleanup(comm));
-    // Destroy hetero comm (stops/joins proxy threads, frees proxyState)
-    flagcxOneSideStagingDeregister(comm);
-    flagcxOneSideSignalDeregister(comm);
-    flagcxOneSideDeregister(comm->heteroComm);
-
     // Destroy hetero comm
     TRACE(FLAGCX_INIT,
           "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,

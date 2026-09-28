@@ -40,6 +40,12 @@ struct flagcxOneSideHandleInfo {
   // NULL if VMM not available or window not registered with
   // FLAGCX_WIN_COLL_SYMMETRIC.
   struct flagcxSymWindow *symWin;
+
+  // Ownership is released in dependency order: MR first, then metadata, then
+  // connections. A failed deregMr leaves all fields intact for a later retry.
+  uint8_t ownsLocalMr;
+  uint8_t ownsConnections;
+  struct flagcxOneSideHandleInfo *cleanupNext;
 };
 
 #endif // FLAGCX_ONESIDED_TYPES_H_

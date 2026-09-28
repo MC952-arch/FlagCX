@@ -6,17 +6,23 @@
 
 #include "adaptor.h"
 #include "dev_api_backend.h"
+#include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
+#include "flagcx_hetero.h"
+#include "flagcx_kernel_internal.h"
 #include "flagcx_net_adaptor.h"
 #include "global_comm.h"
 #include "mem_alloc_registry.h"
 #include "onesided.h"
+#include "proxy.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <thread>
 #include <vector>
 
 static constexpr size_t kLegacyRequirementsSize =
@@ -427,6 +433,43 @@ TEST_F(DefaultDevCommCleanupTest, UnpublishesHandleBeforeBackendDestroy) {
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
 }
 
+TEST_F(DefaultDevCommCleanupTest, QuiesceWaitsForNativeFifoCompletion) {
+  uint64_t fifoBuffer[flagcxFifoIdxData] = {};
+  fifoBuffer[flagcxFifoIdxConsumed] = 1;
+  fifoBuffer[flagcxFifoIdxProduced] = 1;
+  fifoBuffer[flagcxFifoIdxCompleted] = 0;
+  flagcxFifo fifo;
+  fifo.buffer = fifoBuffer;
+
+  flagcxProxyState proxyState = {};
+  proxyState.asyncResult = flagcxSuccess;
+  proxyState.kernelState.contextCount = 1;
+  proxyState.kernelState.fifos[0] = &fifo;
+  flagcxRmaProxyState rmaProxy = {};
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.proxyState = &proxyState;
+  heteroComm.rmaProxy = &rmaProxy;
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  std::atomic<bool> started{false};
+  std::atomic<int> result{flagcxInProgress};
+  std::thread quiescer([&] {
+    started.store(true, std::memory_order_release);
+    result.store(devApiBackend->commQuiesce(&comm), std::memory_order_release);
+  });
+  while (!started.load(std::memory_order_acquire))
+    std::this_thread::yield();
+  for (int i = 0; i < 1000; i++)
+    std::this_thread::yield();
+  EXPECT_EQ(result.load(std::memory_order_acquire), flagcxInProgress);
+
+  __atomic_store_n(flagcxFifoControlPtr(fifoBuffer, flagcxFifoIdxCompleted),
+                   flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
+  quiescer.join();
+  EXPECT_EQ(result.load(std::memory_order_acquire), flagcxSuccess);
+}
+
 TEST_F(DefaultDevCommCleanupTest, ShmBarrierAliasesAreNotFreedTwice) {
   flagcxDevCommInternal devComm = {};
   devComm.nLocalRanks = 3;
@@ -776,10 +819,16 @@ TEST(DevCommCreateTest, PreservesCreateErrorWhenRollbackFails) {
   flagcxDevComm_t devComm = nullptr;
   flagcxResult_t result = flagcxDevCommCreate(&comm, &reqs, &devComm);
 
-  devApiBackend = savedBackend;
   EXPECT_EQ(result, flagcxSystemError);
   EXPECT_EQ(rollbackCallCount, 1);
   EXPECT_EQ(devComm, nullptr);
+  EXPECT_NE(comm.pendingDevCommCleanup, nullptr);
+
+  rollbackResult = flagcxSuccess;
+  EXPECT_EQ(flagcxDevCommRetryPendingCleanup(&comm), flagcxSuccess);
+  EXPECT_EQ(rollbackCallCount, 2);
+  EXPECT_EQ(comm.pendingDevCommCleanup, nullptr);
+  devApiBackend = savedBackend;
 }
 
 int devMemCreateCalls = 0;

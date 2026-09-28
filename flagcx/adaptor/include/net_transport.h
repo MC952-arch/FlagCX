@@ -71,6 +71,21 @@ struct flagcxNetSubmitContext {
   uint32_t flags;
 };
 
+enum flagcxNetSubmitFlags {
+  FLAGCX_NET_SUBMIT_DATA = 1u << 0,
+  FLAGCX_NET_SUBMIT_RELEASE = 1u << 1,
+  FLAGCX_NET_SUBMIT_INDEPENDENT = 1u << 2,
+};
+
+// The adaptor ABI stays unchanged. Core transport consumers bracket an
+// adaptor submission with this thread-local context, allowing in-tree
+// backends to select an ordering domain without adding callback parameters.
+flagcxResult_t
+flagcxNetSetSubmitContext(const struct flagcxNetSubmitContext *context);
+flagcxResult_t
+flagcxNetGetSubmitContext(struct flagcxNetSubmitContext *context);
+void flagcxNetClearSubmitContext(void);
+
 enum flagcxNetReleaseGroupState {
   FLAGCX_NET_RELEASE_GROUP_OPEN = 0,
   FLAGCX_NET_RELEASE_GROUP_SEALED = 1,
@@ -139,6 +154,12 @@ flagcxResult_t
 flagcxNetTrackSubmit(struct flagcxNetCompletionScoreboard *scoreboard,
                      const struct flagcxNetSubmitContext *context,
                      struct flagcxNetReleaseGroup *releaseGroup);
+// Cancel a submission that has not been published to a transport. This is
+// used only to roll back a tail of descriptors prepared transactionally by an
+// upper layer; completed entries cannot be cancelled.
+flagcxResult_t
+flagcxNetTrackCancel(struct flagcxNetCompletionScoreboard *scoreboard,
+                     const struct flagcxNetSubmitContext *context);
 flagcxResult_t
 flagcxNetTrackCompletion(struct flagcxNetCompletionScoreboard *scoreboard,
                          const struct flagcxNetSubmitContext *context,

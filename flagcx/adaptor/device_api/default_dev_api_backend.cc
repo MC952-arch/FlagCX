@@ -14,6 +14,7 @@
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
+#include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "net.h"
 #include "onesided.h"
@@ -743,14 +744,18 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (devComm->ownedStagingRegistration) {
     if (comm != nullptr && comm->heteroComm != nullptr &&
         comm->heteroComm->stagingHandle == devComm->ownedStagingRegistration) {
-      flagcxOneSideStagingDeregister(comm);
+      flagcxResult_t result = flagcxOneSideStagingDeregister(comm);
+      if (result != flagcxSuccess)
+        return result;
     }
     devComm->ownedStagingRegistration = nullptr;
   }
   if (devComm->ownedSignalBuffer) {
     if (comm != nullptr && comm->heteroComm != nullptr &&
         comm->heteroComm->rmaSignalBase == devComm->ownedSignalBuffer) {
-      flagcxOneSideSignalDeregister(comm);
+      flagcxResult_t result = flagcxOneSideSignalDeregister(comm);
+      if (result != flagcxSuccess)
+        return result;
     }
     devComm->ownedSignalBuffer = nullptr;
     devComm->ownedSignalRegistration = nullptr;
@@ -1258,40 +1263,66 @@ static flagcxResult_t defaultDevApiMemFreeDevicePtr(flagcxDevMem_t devMem) {
 }
 
 // ==========================================================================
-// Comm-level cleanup — relay teardown + IPC table
+// Comm-level quiesce and cleanup
 // ==========================================================================
+
+static flagcxResult_t defaultCommQuiesce(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (hetero == nullptr || hetero->oneSideQuiesced)
+    return flagcxSuccess;
+
+  // Drain every device producer and its native requests before MR
+  // deregistration is allowed to close an RDMA connection reachable from a
+  // FIFO descriptor. consumed only means the proxy posted the descriptor;
+  // completed is advanced after the corresponding native request retires.
+  if (hetero->proxyState) {
+    int ctxCount = hetero->proxyState->kernelState.contextCount;
+    for (int i = 0; i < ctxCount; i++) {
+      if (hetero->proxyState->kernelState.fifos[i]) {
+        volatile uint64_t *buf =
+            (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
+                ->buffer;
+        if (buf) {
+          while (
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxCompleted),
+                              __ATOMIC_ACQUIRE) !=
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
+                              __ATOMIC_ACQUIRE)) {
+            if (hetero->rmaProxy != nullptr &&
+                __atomic_load_n(&hetero->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
+              return flagcxRemoteError;
+            flagcxResult_t asyncResult = __atomic_load_n(
+                &hetero->proxyState->asyncResult, __ATOMIC_ACQUIRE);
+            if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
+              return asyncResult;
+            sched_yield();
+          }
+        }
+      }
+    }
+  }
+
+  // The common dispatcher quiesces the RMA proxy after every backend has
+  // drained its local producers.
+  return flagcxSuccess;
+}
 
 static flagcxResult_t defaultCommCleanup(flagcxComm_t comm) {
   if (comm == nullptr)
     return flagcxSuccess;
 
-  // Tear down inter-node signal relay
   struct flagcxHeteroComm *hetero = comm->heteroComm;
   if (hetero != nullptr && hetero->relayInitialized &&
       hetero->nInterPeers > 0) {
-    // Drain all FIFOs before closing RDMA connections
-    if (hetero->proxyState) {
-      int ctxCount = hetero->proxyState->kernelState.contextCount;
-      for (int i = 0; i < ctxCount; i++) {
-        if (hetero->proxyState->kernelState.fifos[i]) {
-          volatile uint64_t *buf =
-              (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
-                  ->buffer;
-          if (buf) {
-            while (*flagcxFifoControlPtr(buf, flagcxFifoIdxConsumed) !=
-                   *flagcxFifoControlPtr(buf, flagcxFifoIdxProduced))
-              sched_yield();
-          }
-        }
-      }
-    }
-
-    // Cross-rank barrier: all ranks drain before any rank closes connections
-    bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
-
+    // Preserve the existing relay shutdown rendezvous. The local quiesce phase
+    // has already retired FIFO-native requests before reaching this point.
+    FLAGCXCHECK(bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks,
+                                     0x7f01));
     free(hetero->interPeerRanks);
     hetero->interPeerRanks = nullptr;
-
     hetero->relayInitialized = false;
   }
 
@@ -1312,6 +1343,7 @@ static struct flagcxDevApiBackend defaultBackend = {
     .devCommFreeDevicePtr = defaultDevApiCommFreeDevicePtr,
     .devMemGetDevicePtr = defaultDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = defaultDevApiMemFreeDevicePtr,
+    .commQuiesce = defaultCommQuiesce,
     .commCleanup = defaultCommCleanup,
 };
 

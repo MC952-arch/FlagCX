@@ -364,6 +364,7 @@ struct flagcxHeteroComm {
   flagcxDevComm_t devCommHandle;
   // Inter-node signal relay — established once, shared across devComms.
   bool relayInitialized;
+  bool oneSideQuiesced;
   int nInterPeers;
   int *interPeerRanks;
   // Async RMA proxy state (one-sided Put/Get offload thread).
@@ -377,6 +378,9 @@ struct flagcxHeteroComm {
   struct flagcxOneSideHandleInfo **oneSideHandles;
   int oneSideHandleCount;
   int oneSideHandleCapacity;
+  // Failed rollback is retained here until a later registration or comm
+  // teardown retries deregistration. This list is never published to RMA.
+  struct flagcxOneSideHandleInfo *pendingOneSideCleanup;
 
   // Active symmetric windows. Each window owns independent IPC and network
   // locators; the list is used to resolve a local source address without
