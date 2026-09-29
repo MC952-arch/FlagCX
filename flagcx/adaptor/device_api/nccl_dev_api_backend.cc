@@ -282,6 +282,7 @@ static struct flagcxDevApiBackend ncclBackend = {
     .devCommFreeDevicePtr = ncclDevApiCommFreeDevicePtr,
     .devMemGetDevicePtr = ncclDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = ncclDevApiMemFreeDevicePtr,
+    .commQuiesce = ncclCommCleanup,
     .commCleanup = ncclCommCleanup,
 };
 

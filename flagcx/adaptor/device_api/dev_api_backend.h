@@ -32,10 +32,17 @@ struct flagcxDevApiBackend {
   flagcxResult_t (*devMemGetDevicePtr)(flagcxDevMem_t devMem, void **devPtr);
   flagcxResult_t (*devMemFreeDevicePtr)(flagcxDevMem_t devMem);
 
-  // Comm-level cleanup (called once from flagcxCommDestroy in flagcx.cc)
+  // Quiesce stops/drains producers without releasing communicator ownership.
+  // It must be idempotent because MR deregistration may fail and be retried.
+  flagcxResult_t (*commQuiesce)(flagcxComm_t comm);
+
+  // Destructive comm-level cleanup after all MRs have been deregistered.
   flagcxResult_t (*commCleanup)(flagcxComm_t comm);
 };
 
 extern struct flagcxDevApiBackend *devApiBackend;
+
+flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm);
+flagcxResult_t flagcxDevCommRetryPendingCleanup(flagcxComm_t comm);
 
 #endif // FLAGCX_DEV_API_BACKEND_H_

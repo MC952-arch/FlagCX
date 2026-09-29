@@ -2375,8 +2375,11 @@ init_done:
           flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
           flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
     }
-    if (res != flagcxSuccess)
+    if (res != flagcxSuccess) {
+      if (comm->rmaProxy != NULL)
+        __atomic_store_n((int *)&comm->rmaProxy->rmaError, 1, __ATOMIC_RELEASE);
       break;
+    }
   }
 
   INFO(FLAGCX_PROXY,

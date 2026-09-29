@@ -359,6 +359,7 @@ static struct flagcxDevApiBackend xshmemBackend = {
     .devCommFreeDevicePtr = xshmemDevApiCommFreeDevicePtr,
     .devMemGetDevicePtr = xshmemDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = xshmemDevApiMemFreeDevicePtr,
+    .commQuiesce = xshmemDevApiCommCleanup,
     .commCleanup = xshmemDevApiCommCleanup,
 };
 

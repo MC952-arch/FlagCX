@@ -86,6 +86,27 @@ TEST(NetTransportLaneTest, RejectsInvalidLaneSetsAndCommits) {
             flagcxInvalidArgument);
 }
 
+TEST(NetTransportSubmitContextTest, ThreadLocalContextKeepsAdaptorAbiStable) {
+  flagcxNetSubmitContext context = {};
+  context.orderingKey = 7;
+  context.groupId = 11;
+  context.generation = 3;
+  context.sequence = 19;
+  context.flags = FLAGCX_NET_SUBMIT_DATA | FLAGCX_NET_SUBMIT_INDEPENDENT;
+
+  ASSERT_EQ(flagcxNetSetSubmitContext(&context), flagcxSuccess);
+  flagcxNetSubmitContext observed = {};
+  ASSERT_EQ(flagcxNetGetSubmitContext(&observed), flagcxSuccess);
+  EXPECT_EQ(observed.orderingKey, 7u);
+  EXPECT_EQ(observed.groupId, 11u);
+  EXPECT_EQ(observed.generation, 3u);
+  EXPECT_EQ(observed.sequence, 19u);
+  EXPECT_NE(observed.flags & FLAGCX_NET_SUBMIT_INDEPENDENT, 0u);
+
+  flagcxNetClearSubmitContext();
+  EXPECT_EQ(flagcxNetGetSubmitContext(&observed), flagcxNotSupported);
+}
+
 flagcxNetSubmitContext makeSubmitContext(uint64_t sequence, uint64_t generation,
                                          uint64_t groupId = 0,
                                          uint64_t orderingKey = 0) {
@@ -148,6 +169,34 @@ TEST(NetTransportScoreboardTest, AdvancesOnlyContiguousCompletedSequence) {
   EXPECT_EQ(nextSequence, 13u);
   EXPECT_EQ(inFlight, 0u);
   EXPECT_EQ(firstError, flagcxSuccess);
+}
+
+TEST(NetTransportScoreboardTest, CancelsUnpublishedGroupTail) {
+  flagcxNetCompletionEntry entries[2] = {};
+  flagcxNetCompletionScoreboard scoreboard = {};
+  flagcxNetReleaseGroup group = {};
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(&scoreboard, entries, 2, 6, 4),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupInit(&group, 9, 6), flagcxSuccess);
+
+  flagcxNetSubmitContext context = makeSubmitContext(4, 6, 9);
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &context, &group), flagcxSuccess);
+  EXPECT_EQ(group.pending, 1u);
+  EXPECT_EQ(group.members, 1u);
+  ASSERT_EQ(flagcxNetTrackCancel(&scoreboard, &context), flagcxSuccess);
+  EXPECT_EQ(group.pending, 0u);
+  EXPECT_EQ(group.members, 0u);
+  EXPECT_EQ(scoreboard.inFlight, 0u);
+
+  // The same tail sequence can be prepared again because cancellation did not
+  // publish or retire it.
+  ASSERT_EQ(flagcxNetTrackSubmit(&scoreboard, &context, &group), flagcxSuccess);
+  ASSERT_EQ(flagcxNetReleaseGroupSeal(&group), flagcxSuccess);
+  uint32_t advanced = 0;
+  ASSERT_EQ(
+      flagcxNetTrackCompletion(&scoreboard, &context, flagcxSuccess, &advanced),
+      flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
 }
 
 TEST(NetTransportReleaseGroupTest, SuppressesReleaseAndKeepsFirstError) {

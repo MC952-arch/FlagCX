@@ -12,8 +12,10 @@
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel_internal.h"
+#include "flagcx_net_adaptor.h"
 #include "global_comm.h"
 #include "onesided.h"
+#include "onesided_types.h"
 
 namespace {
 
@@ -26,6 +28,27 @@ int closedIpcMappingCount = 0;
 void *queriedAllocationBase = nullptr;
 size_t queriedAllocationSize = 0;
 flagcxResult_t addressRangeResult = flagcxSuccess;
+int deregMrCalls = 0;
+int closeSendCalls = 0;
+int closeRecvCalls = 0;
+flagcxResult_t nextDeregisterResult = flagcxSuccess;
+
+flagcxResult_t retryableDeregisterMr(void *, void *) {
+  deregMrCalls++;
+  flagcxResult_t result = nextDeregisterResult;
+  nextDeregisterResult = flagcxSuccess;
+  return result;
+}
+
+flagcxResult_t recordCloseSend(void *) {
+  closeSendCalls++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t recordCloseRecv(void *) {
+  closeRecvCalls++;
+  return flagcxSuccess;
+}
 
 flagcxResult_t recordSignalGdrFree(void *ptr, void *) {
   freedSignalBuffer = ptr;
@@ -73,6 +96,10 @@ protected:
     queriedAllocationBase = nullptr;
     queriedAllocationSize = 0;
     addressRangeResult = flagcxSuccess;
+    deregMrCalls = 0;
+    closeSendCalls = 0;
+    closeRecvCalls = 0;
+    nextDeregisterResult = flagcxSuccess;
   }
 
   void TearDown() override {
@@ -122,6 +149,164 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   EXPECT_EQ(freedSignalBuffer, signalBuffer);
   EXPECT_EQ(signalBufferFreeCount, 1);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       DeregisterFailureRetainsSignalOwnerAndBackingBufferForRetry) {
+  void *signalBuffer = reinterpret_cast<void *>(0x7000);
+  flagcxNetAdaptor_latest net = {};
+  net.deregMr = retryableDeregisterMr;
+
+  flagcxOneSideHandleInfo *info =
+      static_cast<flagcxOneSideHandleInfo *>(calloc(1, sizeof(*info)));
+  ASSERT_NE(info, nullptr);
+  info->localMrHandle = reinterpret_cast<void *>(0x7100);
+  info->localRecvComm = reinterpret_cast<void *>(0x7200);
+  info->ownsLocalMr = 1;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.netAdaptor = &net;
+  heteroComm.signalHandle = info;
+  heteroComm.rmaSignalBase = signalBuffer;
+  heteroComm.rmaSignalSize = sizeof(uint64_t);
+  heteroComm.rmaSignalIpcSlot = -1;
+  signalOwnerHeteroComm = &heteroComm;
+
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  flagcxDevCommInternal devComm = {};
+  devComm.barrierIpcIndex = -1;
+  devComm.signalIpcSlot = -1;
+  devComm.signalBuffer = static_cast<uint64_t *>(signalBuffer);
+  devComm.ownedSignalBuffer = signalBuffer;
+  devComm.ownedSignalRegistration = info;
+
+  nextDeregisterResult = flagcxRemoteError;
+  EXPECT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxRemoteError);
+  EXPECT_EQ(deregMrCalls, 1);
+  EXPECT_EQ(heteroComm.signalHandle, info);
+  EXPECT_EQ(heteroComm.rmaSignalBase, signalBuffer);
+  EXPECT_EQ(devComm.ownedSignalBuffer, signalBuffer);
+  EXPECT_EQ(devComm.ownedSignalRegistration, info);
+  EXPECT_EQ(signalBufferFreeCount, 0);
+
+  EXPECT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
+  EXPECT_EQ(deregMrCalls, 2);
+  EXPECT_EQ(heteroComm.signalHandle, nullptr);
+  EXPECT_EQ(heteroComm.rmaSignalBase, nullptr);
+  EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
+  EXPECT_EQ(devComm.ownedSignalRegistration, nullptr);
+  EXPECT_EQ(signalBufferFreeCount, 1);
+  EXPECT_EQ(freedSignalBuffer, signalBuffer);
+  EXPECT_TRUE(signalStateClearedBeforeFree);
+}
+
+TEST_F(RmaSignalRegistrationOwnershipTest,
+       DevCommDestroyPropagatesDeregisterFailureWithoutFreeingOwner) {
+  void *signalBuffer = reinterpret_cast<void *>(0x7300);
+  flagcxNetAdaptor_latest net = {};
+  net.deregMr = retryableDeregisterMr;
+
+  flagcxOneSideHandleInfo *info =
+      static_cast<flagcxOneSideHandleInfo *>(calloc(1, sizeof(*info)));
+  ASSERT_NE(info, nullptr);
+  info->localMrHandle = reinterpret_cast<void *>(0x7400);
+  info->localRecvComm = reinterpret_cast<void *>(0x7500);
+  info->ownsLocalMr = 1;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.netAdaptor = &net;
+  heteroComm.signalHandle = info;
+  heteroComm.rmaSignalBase = signalBuffer;
+  heteroComm.rmaSignalSize = sizeof(uint64_t);
+  heteroComm.rmaSignalIpcSlot = -1;
+  signalOwnerHeteroComm = &heteroComm;
+
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  flagcxDevCommInternal *devComm = static_cast<flagcxDevCommInternal *>(
+      calloc(1, sizeof(flagcxDevCommInternal)));
+  ASSERT_NE(devComm, nullptr);
+  pthread_mutex_init(&devComm->cachedPtrMutex, nullptr);
+  devComm->barrierIpcIndex = -1;
+  devComm->signalIpcSlot = -1;
+  devComm->signalBuffer = static_cast<uint64_t *>(signalBuffer);
+  devComm->ownedSignalBuffer = signalBuffer;
+  devComm->ownedSignalRegistration = info;
+  heteroComm.devCommHandle = devComm;
+
+  nextDeregisterResult = flagcxRemoteError;
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxRemoteError);
+  EXPECT_EQ(heteroComm.devCommHandle, devComm);
+  EXPECT_EQ(heteroComm.signalHandle, info);
+  EXPECT_EQ(signalBufferFreeCount, 0);
+
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
+  EXPECT_EQ(heteroComm.devCommHandle, nullptr);
+  EXPECT_EQ(heteroComm.signalHandle, nullptr);
+  EXPECT_EQ(signalBufferFreeCount, 1);
+}
+
+TEST(RmaRegistrationOwnership,
+     DeregisterFailureRetainsMrAndConnectionsForRetry) {
+  deregMrCalls = 0;
+  closeSendCalls = 0;
+  closeRecvCalls = 0;
+  nextDeregisterResult = flagcxSuccess;
+  flagcxNetAdaptor_latest net = {};
+  net.deregMr = retryableDeregisterMr;
+  net.closeSend = recordCloseSend;
+  net.closeRecv = recordCloseRecv;
+
+  flagcxOneSideHandleInfo *info =
+      static_cast<flagcxOneSideHandleInfo *>(calloc(1, sizeof(*info)));
+  ASSERT_NE(info, nullptr);
+  info->localMrHandle = reinterpret_cast<void *>(0x1000);
+  info->localRecvComm = reinterpret_cast<void *>(0x2000);
+  info->ownsLocalMr = 1;
+  info->ownsConnections = 1;
+  info->nContexts = 1;
+  info->nRanks = 1;
+  info->contextSendComms = static_cast<void ***>(calloc(1, sizeof(void **)));
+  info->contextRecvComms = static_cast<void ***>(calloc(1, sizeof(void **)));
+  ASSERT_NE(info->contextSendComms, nullptr);
+  ASSERT_NE(info->contextRecvComms, nullptr);
+  info->contextSendComms[0] = static_cast<void **>(calloc(1, sizeof(void *)));
+  info->contextRecvComms[0] = static_cast<void **>(calloc(1, sizeof(void *)));
+  ASSERT_NE(info->contextSendComms[0], nullptr);
+  ASSERT_NE(info->contextRecvComms[0], nullptr);
+  info->contextSendComms[0][0] = reinterpret_cast<void *>(0x3000);
+  info->contextRecvComms[0][0] = info->localRecvComm;
+  info->fullSendComms = info->contextSendComms[0];
+  info->fullRecvComms = info->contextRecvComms[0];
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.netAdaptor = &net;
+  heteroComm.oneSideHandles = static_cast<flagcxOneSideHandleInfo **>(
+      calloc(1, sizeof(flagcxOneSideHandleInfo *)));
+  ASSERT_NE(heteroComm.oneSideHandles, nullptr);
+  heteroComm.oneSideHandles[0] = info;
+  heteroComm.oneSideHandleCount = 1;
+  heteroComm.oneSideHandleCapacity = 1;
+
+  nextDeregisterResult = flagcxRemoteError;
+  EXPECT_EQ(flagcxOneSideDeregister(&heteroComm), flagcxRemoteError);
+  EXPECT_EQ(deregMrCalls, 1);
+  EXPECT_EQ(closeSendCalls, 0);
+  EXPECT_EQ(closeRecvCalls, 0);
+  EXPECT_EQ(heteroComm.oneSideHandleCount, 1);
+  EXPECT_EQ(heteroComm.oneSideHandles[0], info);
+  EXPECT_EQ(info->localMrHandle, reinterpret_cast<void *>(0x1000));
+  EXPECT_NE(info->contextSendComms, nullptr);
+
+  EXPECT_EQ(flagcxOneSideDeregister(&heteroComm), flagcxSuccess);
+  EXPECT_EQ(deregMrCalls, 2);
+  EXPECT_EQ(closeSendCalls, 1);
+  EXPECT_EQ(closeRecvCalls, 1);
+  EXPECT_EQ(heteroComm.oneSideHandles, nullptr);
+  EXPECT_EQ(heteroComm.oneSideHandleCount, 0);
 }
 
 TEST_F(RmaSignalRegistrationOwnershipTest,

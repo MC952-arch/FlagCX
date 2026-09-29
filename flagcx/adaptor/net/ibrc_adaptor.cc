@@ -3112,6 +3112,20 @@ flagcxIbInitOneSidedRequest(struct flagcxIbSendComm *comm, int type,
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxIbSelectOneSidedLane(struct flagcxIbSendComm *comm,
+                                                 struct flagcxIbLane *lane) {
+  struct flagcxNetSubmitContext context = {};
+  uint64_t orderingKey = 0;
+  if (flagcxNetGetSubmitContext(&context) == flagcxSuccess &&
+      (context.flags & FLAGCX_NET_SUBMIT_INDEPENDENT) != 0) {
+    orderingKey = context.orderingKey;
+  }
+  // Public/legacy submissions have no explicit independence flag and remain
+  // on domain 0. Internal independent domains deterministically hash to a QP.
+  return flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, orderingKey,
+                            lane);
+}
+
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
@@ -3128,8 +3142,7 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
   struct flagcxIbLane lane = {};
-  FLAGCXCHECK(
-      flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, 0, &lane));
+  FLAGCXCHECK(flagcxIbSelectOneSidedLane(comm, &lane));
   struct flagcxIbQp *qp = lane.ibQp;
   struct flagcxNetResolvedRange srcRange = {};
   struct flagcxNetResolvedRange dstRange = {};
@@ -3205,8 +3218,7 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
   }
 
   struct flagcxIbLane lane = {};
-  FLAGCXCHECK(
-      flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, 0, &lane));
+  FLAGCXCHECK(flagcxIbSelectOneSidedLane(comm, &lane));
   struct flagcxIbQp *qp = lane.ibQp;
   int devIndex = qp->devIndex;
 
@@ -3337,8 +3349,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
   struct flagcxIbLane lane = {};
-  FLAGCXCHECK(
-      flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, 0, &lane));
+  FLAGCXCHECK(flagcxIbSelectOneSidedLane(comm, &lane));
   struct flagcxIbQp *qp = lane.ibQp;
   struct flagcxNetResolvedRange srcRange = {};
   struct flagcxNetResolvedRange dstRange = {};
@@ -3407,8 +3418,7 @@ flagcxResult_t flagcxIbIgetBatch(void *sendComm, int count,
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
   struct flagcxIbLane lane = {};
-  FLAGCXCHECK(
-      flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, 0, &lane));
+  FLAGCXCHECK(flagcxIbSelectOneSidedLane(comm, &lane));
   struct flagcxIbQp *qp = lane.ibQp;
 
   uint32_t rkeys[MAX_REQUESTS];
@@ -3485,8 +3495,7 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   struct flagcxOneSideHandleInfo *signalInfo =
       (struct flagcxOneSideHandleInfo *)signalHandles;
   struct flagcxIbLane lane = {};
-  FLAGCXCHECK(
-      flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_ORDERED, 0, &lane));
+  FLAGCXCHECK(flagcxIbSelectOneSidedLane(comm, &lane));
   struct flagcxIbQp *qp = lane.ibQp;
   int devIndex = qp->devIndex;
   struct flagcxNetResolvedRange signalRange = {};

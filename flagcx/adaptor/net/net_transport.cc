@@ -8,6 +8,34 @@
 
 #include <limits.h>
 
+static thread_local struct flagcxNetSubmitContext flagcxNetThreadSubmitContext =
+    {};
+static thread_local bool flagcxNetThreadSubmitContextValid = false;
+
+flagcxResult_t
+flagcxNetSetSubmitContext(const struct flagcxNetSubmitContext *context) {
+  if (context == NULL)
+    return flagcxInvalidArgument;
+  flagcxNetThreadSubmitContext = *context;
+  flagcxNetThreadSubmitContextValid = true;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetSubmitContext(struct flagcxNetSubmitContext *context) {
+  if (context == NULL)
+    return flagcxInvalidArgument;
+  if (!flagcxNetThreadSubmitContextValid)
+    return flagcxNotSupported;
+  *context = flagcxNetThreadSubmitContext;
+  return flagcxSuccess;
+}
+
+void flagcxNetClearSubmitContext(void) {
+  flagcxNetThreadSubmitContext = {};
+  flagcxNetThreadSubmitContextValid = false;
+}
+
 static void flagcxNetTransportLock(uint32_t *lock) {
   while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE) != 0) {
     while (__atomic_load_n(lock, __ATOMIC_RELAXED) != 0) {
@@ -355,6 +383,49 @@ flagcxNetTrackSubmit(struct flagcxNetCompletionScoreboard *scoreboard,
 exit:
   flagcxNetTransportUnlock(&scoreboard->lock);
   return result;
+}
+
+flagcxResult_t
+flagcxNetTrackCancel(struct flagcxNetCompletionScoreboard *scoreboard,
+                     const struct flagcxNetSubmitContext *context) {
+  if (scoreboard == NULL || context == NULL || scoreboard->entries == NULL ||
+      scoreboard->capacity == 0)
+    return flagcxInvalidArgument;
+
+  flagcxNetTransportLock(&scoreboard->lock);
+  if (context->generation != scoreboard->generation ||
+      context->sequence < scoreboard->nextSequence ||
+      context->sequence - scoreboard->nextSequence >= scoreboard->capacity) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxInvalidArgument;
+  }
+
+  struct flagcxNetCompletionEntry *entry =
+      &scoreboard->entries[context->sequence % scoreboard->capacity];
+  if (entry->state != FLAGCX_NET_COMPLETION_ENTRY_PENDING ||
+      !flagcxNetSubmitContextMatches(&entry->context, context)) {
+    flagcxNetTransportUnlock(&scoreboard->lock);
+    return flagcxInvalidArgument;
+  }
+
+  if (entry->releaseGroup != NULL) {
+    flagcxNetTransportLock(&entry->releaseGroup->lock);
+    if (entry->releaseGroup->state != FLAGCX_NET_RELEASE_GROUP_OPEN ||
+        entry->releaseGroup->pending == 0 ||
+        entry->releaseGroup->members == 0) {
+      flagcxNetTransportUnlock(&entry->releaseGroup->lock);
+      flagcxNetTransportUnlock(&scoreboard->lock);
+      return flagcxInvalidArgument;
+    }
+    entry->releaseGroup->pending--;
+    entry->releaseGroup->members--;
+    flagcxNetTransportUnlock(&entry->releaseGroup->lock);
+  }
+
+  flagcxNetCompletionEntryReset(entry);
+  scoreboard->inFlight--;
+  flagcxNetTransportUnlock(&scoreboard->lock);
+  return flagcxSuccess;
 }
 
 flagcxResult_t

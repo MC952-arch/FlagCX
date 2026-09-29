@@ -138,6 +138,10 @@ struct flagcxComm {
 
   // Custom op state (NULL = not enabled)
   struct flagcxDevCommState *devCommState;
+
+  // A partially-created DevComm whose backend rollback could not release all
+  // owned resources. The communicator retains it until cleanup can be retried.
+  flagcxDevComm_t pendingDevCommCleanup;
 };
 
 // Function helps init single homo cluster.

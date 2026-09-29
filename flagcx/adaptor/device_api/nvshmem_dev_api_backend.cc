@@ -306,6 +306,7 @@ static struct flagcxDevApiBackend nvshmemBackend = {
     .devCommFreeDevicePtr = nvshmemDevApiCommFreeDevicePtr,
     .devMemGetDevicePtr = nvshmemDevApiMemGetDevicePtr,
     .devMemFreeDevicePtr = nvshmemDevApiMemFreeDevicePtr,
+    .commQuiesce = nvshmemDevApiCommCleanup,
     .commCleanup = nvshmemDevApiCommCleanup,
 };
 
