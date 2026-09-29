@@ -159,48 +159,39 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   flagcxCompletionWord_t prod = __atomic_load_n(
       flagcxFifoControlPtr(buffer, flagcxFifoIdxProduced), __ATOMIC_ACQUIRE);
 
-  if (prod != cons) {
-    // Get pointer to slot's raw uint64_t fields (3 words per entry)
-    uint64_t idx = cons % capacity;
-    uint64_t *slotFst = buffer + flagcxFifoIdxData +
-                        idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
-    uint64_t *slotSnd = slotFst + 1;
-    uint64_t *slotTrd = slotFst + 2;
-
-    // Wait for valid bit on trd (word2, written last by producer with release)
-    int spins = 0;
-    while (!(__atomic_load_n(slotTrd, __ATOMIC_ACQUIRE) &
-             flagcxDeviceTriggerValidMask)) {
-      if (++spins > 1000) {
-        if (spins == 1001) {
-          INFO(FLAGCX_P2P,
-               "dequeue: spinning on valid bit prod=%lu cons=%lu idx=%lu "
-               "slotTrd=0x%lx validMask=0x%lx",
-               (unsigned long)prod, (unsigned long)cons, idx,
-               __atomic_load_n(slotTrd, __ATOMIC_RELAXED),
-               flagcxDeviceTriggerValidMask);
-        }
-        sched_yield();
-        spins = 0;
-      }
-    }
-
-    // Acquire on slotTrd above ensures payload (fst/snd) is visible
-    trigger->fst = __atomic_load_n(slotFst, __ATOMIC_RELAXED);
-    trigger->snd = __atomic_load_n(slotSnd, __ATOMIC_RELAXED);
-    trigger->trd = __atomic_load_n(slotTrd, __ATOMIC_RELAXED) &
-                   ~flagcxDeviceTriggerValidMask;
-
-    TRACE(FLAGCX_P2P,
-          "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "
-          "fst=0x%lx snd=0x%lx trd=0x%lx",
-          (unsigned long)prod, (unsigned long)cons, trigger->getPrim(),
-          trigger->getPeerRank(), trigger->fst, trigger->snd, trigger->trd);
-
-    // Clear trd valid bit in slot for reuse
-    __atomic_store_n(slotTrd, (uint64_t)0, __ATOMIC_RELAXED);
-  } else {
+  if (prod == cons) {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
+    return flagcxInProgress;
   }
+
+  // Get pointer to slot's raw uint64_t fields (3 words per entry).
+  uint64_t idx = cons % capacity;
+  uint64_t *slotFst = buffer + flagcxFifoIdxData +
+                      idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+  uint64_t *slotSnd = slotFst + 1;
+  uint64_t *slotTrd = slotFst + 2;
+
+  // Reservation advances produced before the GPU publishes the slot. Do not
+  // block this proxy worker waiting for publication: it must remain able to
+  // poll CQEs and observe a terminal error raised by another context.
+  uint64_t trd = __atomic_load_n(slotTrd, __ATOMIC_ACQUIRE);
+  if ((trd & flagcxDeviceTriggerValidMask) == 0) {
+    memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
+    return flagcxInProgress;
+  }
+
+  // Acquire on slotTrd above ensures payload (fst/snd) is visible.
+  trigger->fst = __atomic_load_n(slotFst, __ATOMIC_RELAXED);
+  trigger->snd = __atomic_load_n(slotSnd, __ATOMIC_RELAXED);
+  trigger->trd = trd & ~flagcxDeviceTriggerValidMask;
+
+  TRACE(FLAGCX_P2P,
+        "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "
+        "fst=0x%lx snd=0x%lx trd=0x%lx",
+        (unsigned long)prod, (unsigned long)cons, trigger->getPrim(),
+        trigger->getPeerRank(), trigger->fst, trigger->snd, trigger->trd);
+
+  // Clear trd valid bit in slot for reuse.
+  __atomic_store_n(slotTrd, (uint64_t)0, __ATOMIC_RELAXED);
   return flagcxSuccess;
 }

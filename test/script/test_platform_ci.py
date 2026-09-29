@@ -596,6 +596,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "TerminalFinalizeWaitsForBackpressuredReservation",
             transport_test,
         )
+        self.assertIn("ProducerGateSerializesEntryWithClose", transport_test)
+        self.assertIn(
+            "DequeueReturnsInProgressForUnpublishedReservation",
+            transport_test,
+        )
+        self.assertIn("DequeueConsumesPublishedReservation", transport_test)
 
         cuda_config = (
             REPO_ROOT / ".github/configs/cuda.yml"
@@ -638,6 +644,15 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "test/kernel/nvidia/device_api.cu"
         ).read_text()
         self.assertIn("MultiContextPutRelease", cuda_kernel)
+        cuda_ir_kernel = (
+            REPO_ROOT / "test/kernel/nvidia/device_ir.cu"
+        ).read_text()
+        cuda_ir_test = (
+            REPO_ROOT
+            / "test/unittest/device_api/test_device_ir_inter.cpp"
+        ).read_text()
+        self.assertIn("kernelNetMultiContextPutSignalIncS", cuda_ir_kernel)
+        self.assertIn("S3b MultiContextPutSignalIncS", cuda_ir_test)
         self.assertIn("flagcxDevNet net(devComm, contextId)", cuda_kernel)
         self.assertIn("flagcxTeamTagWorld{}, net, contextId", cuda_kernel)
         device_api_test = (

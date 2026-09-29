@@ -28,17 +28,18 @@ template <typename Atomic, typename Word>
 FLAGCX_DEVICE_INLINE_DECORATOR bool
 flagcxFifoProducerTryEnter(Word *producerState) {
   const Word closedMask = flagcxFifoProducerClosedMask<Word>();
-  const Word activeMask = flagcxFifoProducerActiveMask<Word>();
-  Word observed = Atomic::load(producerState, flagcxDeviceMemoryOrderAcquire);
-  while ((observed & closedMask) == 0) {
-    if ((observed & activeMask) == activeMask)
-      return false;
-    Word desired = static_cast<Word>(observed + Word{1});
-    if (Atomic::compareExchange(producerState, observed, desired,
-                                flagcxDeviceMemoryOrderAcqRel))
-      return true;
+  // Linearize producer entry with a single RMW. If close wins first, the
+  // producer temporarily contributes to the active count, observes the close
+  // bit in the returned value, and immediately drops that reference without
+  // reserving a FIFO sequence. If entry wins first, the closer observes the
+  // active reference and waits for flagcxFifoProducerLeave().
+  Word observed =
+      Atomic::fetchAdd(producerState, Word{1}, flagcxDeviceMemoryOrderAcqRel);
+  if ((observed & closedMask) != 0) {
+    Atomic::fetchSub(producerState, Word{1}, flagcxDeviceMemoryOrderRelease);
+    return false;
   }
-  return false;
+  return true;
 }
 
 template <typename Atomic, typename Word>

@@ -7,10 +7,13 @@
 #include "device_api/completion_word.h"
 #include "device_api/fifo_producer_gate.h"
 #include "flagcx_kernel_core.h"
+#include "flagcx_kernel_internal.h"
 #include "kernel_proxy_transport.h"
 
+#include <array>
 #include <atomic>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -21,10 +24,8 @@ struct HostAtomic {
   }
 
   template <typename T>
-  static bool compareExchange(T *ptr, T &expected, const T &desired,
-                              flagcxDeviceMemoryOrder_t) {
-    return __atomic_compare_exchange_n(ptr, &expected, desired, false,
-                                       __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+  static T fetchAdd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
+    return __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
   }
 
   template <typename T>
@@ -43,6 +44,100 @@ flagcxNetSubmitContext track(flagcxKernelProxyTransport *transport,
 }
 
 } // namespace
+
+TEST(KernelProxyTransportTest, ProducerGateSerializesEntryWithClose) {
+  uint64_t fifoBuffer[flagcxFifoIdxData] = {};
+  auto *producerState =
+      flagcxFifoControlPtr(fifoBuffer, flagcxFifoIdxProducerState);
+  const flagcxCompletionWord_t closedMask =
+      flagcxFifoProducerClosedMask<flagcxCompletionWord_t>();
+  const flagcxCompletionWord_t activeMask =
+      flagcxFifoProducerActiveMask<flagcxCompletionWord_t>();
+  constexpr int kProducerCount = 32;
+  std::atomic<int> entered{0};
+  std::atomic<int> enterFailures{0};
+  std::atomic<bool> release{false};
+  std::vector<std::thread> producers;
+  producers.reserve(kProducerCount);
+
+  for (int i = 0; i < kProducerCount; ++i) {
+    producers.emplace_back([&] {
+      bool accepted = flagcxFifoProducerTryEnter<HostAtomic>(producerState);
+      if (!accepted)
+        enterFailures.fetch_add(1, std::memory_order_relaxed);
+      entered.fetch_add(1, std::memory_order_release);
+      if (!accepted)
+        return;
+      while (!release.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      flagcxFifoProducerLeave<HostAtomic>(producerState);
+    });
+  }
+  while (entered.load(std::memory_order_acquire) != kProducerCount)
+    std::this_thread::yield();
+  EXPECT_EQ(enterFailures.load(std::memory_order_acquire), 0);
+
+  std::atomic<bool> closeFinished{false};
+  std::thread closer([&] {
+    EXPECT_EQ(flagcxKernelProxyCloseFifoProducerGate(fifoBuffer),
+              flagcxSuccess);
+    closeFinished.store(true, std::memory_order_release);
+  });
+  while ((__atomic_load_n(producerState, __ATOMIC_ACQUIRE) & closedMask) == 0)
+    std::this_thread::yield();
+
+  EXPECT_FALSE(closeFinished.load(std::memory_order_acquire));
+  EXPECT_FALSE(flagcxFifoProducerTryEnter<HostAtomic>(producerState));
+  EXPECT_EQ(__atomic_load_n(producerState, __ATOMIC_ACQUIRE) & activeMask,
+            static_cast<flagcxCompletionWord_t>(kProducerCount));
+
+  release.store(true, std::memory_order_release);
+  for (auto &producer : producers)
+    producer.join();
+  closer.join();
+
+  EXPECT_TRUE(closeFinished.load(std::memory_order_acquire));
+  EXPECT_EQ(__atomic_load_n(producerState, __ATOMIC_ACQUIRE), closedMask);
+}
+
+TEST(KernelProxyTransportTest, DequeueReturnsInProgressForEmptyFifo) {
+  std::array<uint64_t, flagcxFifoIdxData + 3> fifoBuffer = {};
+  fifoBuffer[flagcxFifoIdxCapacity] = 1;
+  flagcxDeviceTrigger trigger = {};
+
+  EXPECT_EQ(dequeue(fifoBuffer.data(), &trigger), flagcxInProgress);
+}
+
+TEST(KernelProxyTransportTest,
+     DequeueReturnsInProgressForUnpublishedReservation) {
+  std::array<uint64_t, flagcxFifoIdxData + 3> fifoBuffer = {};
+  fifoBuffer[flagcxFifoIdxCapacity] = 1;
+  *flagcxFifoControlPtr(fifoBuffer.data(), flagcxFifoIdxProduced) = 1;
+  flagcxDeviceTrigger trigger = {};
+
+  EXPECT_EQ(dequeue(fifoBuffer.data(), &trigger), flagcxInProgress);
+  EXPECT_EQ(*flagcxFifoControlPtr(fifoBuffer.data(), flagcxFifoIdxConsumed),
+            0u);
+}
+
+TEST(KernelProxyTransportTest, DequeueConsumesPublishedReservation) {
+  std::array<uint64_t, flagcxFifoIdxData + 3> fifoBuffer = {};
+  fifoBuffer[flagcxFifoIdxCapacity] = 1;
+  *flagcxFifoControlPtr(fifoBuffer.data(), flagcxFifoIdxProduced) = 1;
+  uint64_t *slot = fifoBuffer.data() + flagcxFifoIdxData;
+  slot[0] = 0x1234;
+  slot[1] = 0x5678;
+  slot[2] =
+      flagcxDeviceTriggerValidMask | (static_cast<uint64_t>(flagcxDevicePrimPut)
+                                      << flagcxDeviceTriggerOffPrim);
+  flagcxDeviceTrigger trigger = {};
+
+  EXPECT_EQ(dequeue(fifoBuffer.data(), &trigger), flagcxSuccess);
+  EXPECT_EQ(trigger.fst, 0x1234u);
+  EXPECT_EQ(trigger.snd, 0x5678u);
+  EXPECT_EQ(trigger.getPrim(), flagcxDevicePrimPut);
+  EXPECT_EQ(slot[2], 0u);
+}
 
 TEST(KernelProxyTransportTest,
      TerminalFinalizeWaitsForLateProducerReservation) {

@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 // ===========================================================================
 // Main test driver
@@ -93,21 +94,31 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate test buffer sized to maxBytes + putValue space
-  size_t bufSize = maxBytes + (size_t)totalProcs * sizeof(uint64_t);
-  size_t putValBase = maxBytes;
+  // Reserve a disjoint row per rank/context for the explicit multi-context
+  // transport test. The fixed CTA stride keeps the device-side layout stable
+  // without exporting contextCount through the public API.
+  size_t multiContextBase =
+      (maxBytes + sizeof(float) - 1) & ~(sizeof(float) - 1);
+  size_t multiContextBytes =
+      (size_t)totalProcs * FLAGCX_DEVICE_CTA_COUNT * sizeof(float);
+  size_t sendBufSize =
+      multiContextBase + FLAGCX_DEVICE_CTA_COUNT * sizeof(float);
+  size_t putValBase =
+      (multiContextBase + multiContextBytes + sizeof(uint64_t) - 1) &
+      ~(sizeof(uint64_t) - 1);
+  size_t bufSize = putValBase + (size_t)totalProcs * sizeof(uint64_t);
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
 #endif
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, sendBufSize, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, bufSize, memAllocator));
 
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
-  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, sendBufSize, &sendWin,
                                        FLAGCX_WIN_COLL_SYMMETRIC,
                                        memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
@@ -116,7 +127,8 @@ int main(int argc, char *argv[]) {
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
-  FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &sendMem));
+  FLAGCXCHECK(
+      flagcxDevMemCreate(comm, sendBuff, sendBufSize, sendWin, &sendMem));
   FLAGCXCHECK(flagcxDevMemCreate(comm, recvBuff, bufSize, recvWin, &recvMem));
 
   // Get device pointers for IR functions
@@ -184,10 +196,69 @@ int main(int argc, char *argv[]) {
     s2Pass = true;
   MPI_Barrier(MPI_COMM_WORLD);
 
+#ifdef USE_NVIDIA_ADAPTOR
+  // =========================================================================
+  // S3b: explicit multi-context data + release — run once before size loop
+  // =========================================================================
+  bool s3bPass = true;
+  if (!s1Skip) {
+    std::vector<float> multiSend(FLAGCX_DEVICE_CTA_COUNT);
+    for (int context = 0; context < FLAGCX_DEVICE_CTA_COUNT; ++context)
+      multiSend[context] = (float)(proc * 1000 + context);
+    FLAGCXCHECK(devHandle->deviceMemcpy(
+        (char *)sendBuff + multiContextBase, multiSend.data(),
+        multiSend.size() * sizeof(float), flagcxMemcpyHostToDevice, stream));
+    FLAGCXCHECK(devHandle->deviceMemset((char *)recvBuff + multiContextBase, 0,
+                                        multiContextBytes, flagcxMemDevice,
+                                        stream));
+    FLAGCXCHECK(devHandle->deviceMemset(
+        devResults, 0, (FLAGCX_DEVICE_CTA_COUNT + 1) * sizeof(int),
+        flagcxMemDevice, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    launchKernelNetMultiContextPutSignalIncS(devCommPtr, sendMemPtr, recvMemPtr,
+                                             multiContextBase, devResults,
+                                             stream);
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+
+    int hostContextResults[FLAGCX_DEVICE_CTA_COUNT + 1] = {};
+    std::vector<float> multiRecv((size_t)totalProcs * FLAGCX_DEVICE_CTA_COUNT);
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostContextResults, devResults,
+                                        sizeof(hostContextResults),
+                                        flagcxMemcpyDeviceToHost, stream));
+    FLAGCXCHECK(devHandle->deviceMemcpy(
+        multiRecv.data(), (char *)recvBuff + multiContextBase,
+        multiContextBytes, flagcxMemcpyDeviceToHost, stream));
+
+    int contextCount = hostContextResults[FLAGCX_DEVICE_CTA_COUNT];
+    int nNodes = intraSize > 0 ? totalProcs / intraSize : 0;
+    s3bPass = contextCount > 0 && contextCount <= FLAGCX_DEVICE_CTA_COUNT &&
+              nNodes > 1;
+    int intraRank = proc % intraSize;
+    int nodeIdx = proc / intraSize;
+    int prevNode = nNodes > 0 ? (nodeIdx + nNodes - 1) % nNodes : 0;
+    int sourceRank = prevNode * intraSize + intraRank;
+    for (int context = 0; context < contextCount && s3bPass; ++context) {
+      float expected = (float)(sourceRank * 1000 + context);
+      size_t index = (size_t)sourceRank * FLAGCX_DEVICE_CTA_COUNT + context;
+      if (hostContextResults[context] != 1 || multiRecv[index] != expected)
+        s3bPass = false;
+    }
+    printf("[rank %d] S3b MultiContextPutSignalIncS: %s (contexts=%d)\n", proc,
+           s3bPass ? "PASS" : "FAIL", contextCount);
+    fflush(stdout);
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+#endif
+
   // =========================================================================
   // Main test loop: S3–S14
   // =========================================================================
   bool allInterPass = true;
+#ifdef USE_NVIDIA_ADAPTOR
+  allInterPass &= s3bPass;
+#endif
 
   // Helper lambda: init sendBuff with alltoall pattern
   auto initSend = [&](size_t countPerPeer) {

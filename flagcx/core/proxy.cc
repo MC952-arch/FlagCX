@@ -2086,12 +2086,14 @@ init_done:
     }
 
     if (!hasPending) {
-      dequeue(fifo->buffer, ptr);
-      if ((ptr->getPrim() == flagcxDevicePrimSend ||
-           ptr->getPrim() == flagcxDevicePrimRecv) &&
-          ptr->getAddr() == 0) {
+      res = dequeue(fifo->buffer, ptr);
+      if (res == flagcxInProgress) {
         sched_yield();
         continue;
+      }
+      if (res != flagcxSuccess) {
+        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+        break;
       }
       pending = *ptr;
       hasPending = true;
