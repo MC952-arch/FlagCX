@@ -22,6 +22,9 @@
 #include <memory>
 #include <pthread.h>
 
+#define FLAGCX_KERNEL_PROXY_MAX_INFLIGHT 256
+#define FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS 32
+
 enum flagcxProxyOpState {
   flagcxProxyOpNone,
   flagcxProxyOpReady,
@@ -39,11 +42,9 @@ struct flagcxProxyKernelState {
   pthread_cond_t initCond;
   int ready = 0;
   int initFailed = 0;
-  // Shared per-peer spinlocks for PUT_VALUE staging slot protection.
-  // All kernel proxy threads lock pvLocks[peer] before writing the staging
-  // buffer and posting iput, preventing cross-thread corruption.
-  pthread_spinlock_t *pvLocks = nullptr;
-  int pvLocksCount = 0;
+  // First permanent kernel-proxy transport failure. Device FIFO terminal
+  // words mirror this value so GPU waiters can stop spinning.
+  volatile flagcxResult_t terminalResult = flagcxSuccess;
 };
 
 struct flagcxProxyArgs;

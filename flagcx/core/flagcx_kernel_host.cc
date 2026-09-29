@@ -129,6 +129,8 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   buffer[flagcxFifoIdxConsumed] = 0;
   buffer[flagcxFifoIdxProduced] = 0;
   buffer[flagcxFifoIdxCompleted] = 0; // IB completion count (GPU polls this)
+  buffer[flagcxFifoIdxTerminalStatus] = flagcxSuccess;
+  buffer[flagcxFifoIdxProducerState] = 0;
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
   return flagcxSuccess;

@@ -384,6 +384,31 @@ TEST_F(RmaSharedTransportFixture, QuiesceRejectsNewSubmissions) {
   EXPECT_EQ(opSeq_, 0u);
 }
 
+TEST_F(RmaSharedTransportFixture,
+       MissingSendCommPoisonsProxyWithoutPostingAndDrainsRing) {
+  sendComms_[0] = nullptr;
+  ASSERT_EQ(flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
+  ASSERT_EQ(pi_, 1u);
+  ASSERT_EQ(ci_, 0u);
+
+  // The first pass discovers the missing transport and publishes a terminal
+  // proxy error. It must not hand the descriptor to the network adaptor.
+  Progress();
+  EXPECT_EQ(mockDataPosts, 0);
+  EXPECT_NE(proxy_.pendingError, 0);
+  EXPECT_NE(proxy_.rmaError, 0);
+  EXPECT_EQ(ci_, 0u);
+
+  // Once poisoned, the next pass completes queued descriptors with an error
+  // so producers cannot leave the ring permanently occupied.
+  Progress();
+  EXPECT_EQ(mockDataPosts, 0);
+  EXPECT_EQ(ci_, pi_);
+  EXPECT_EQ(inFlight_, 0u);
+  EXPECT_EQ(doneSeq_, 1u);
+  EXPECT_TRUE(flagcxIntruQueueEmpty(&inProgress_));
+}
+
 TEST_F(RmaSharedTransportFixture, PartialBatchDrainsPrefixThenRetriesSuffix) {
   net_.iputBatch = mockPutBatch;
   mockBatchPosted = 2;

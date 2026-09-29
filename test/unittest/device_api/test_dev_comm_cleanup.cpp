@@ -17,6 +17,7 @@
 #include "proxy.h"
 
 #include <atomic>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -105,6 +106,59 @@ TEST(CompletionDomainTest, SixtyFourBitComparisonKeepsNumericOrdering) {
   EXPECT_TRUE(Storage::waitBefore(7u, 8u));
   EXPECT_FALSE(Storage::waitBefore(8u, 7u));
   EXPECT_EQ(Storage::advance(UINT32_MAX, 1), UINT64_C(0x100000000));
+}
+
+TEST(PutValueStagingLayoutTest, SeparatesHostAndKernelSlots) {
+  size_t kernelBase = 0;
+  size_t totalSlots = 0;
+  size_t totalBytes = 0;
+  ASSERT_TRUE(
+      flagcxPutValueStagingLayout(128, 4, FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS,
+                                  &kernelBase, &totalSlots, &totalBytes));
+  EXPECT_EQ(kernelBase, 128u);
+  EXPECT_EQ(totalSlots,
+            128u + 4u * (size_t)FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS);
+  EXPECT_EQ(totalBytes, totalSlots * sizeof(uint64_t));
+
+  flagcxDevCommInternal devComm = {};
+  devComm.putValueStagingSlotCount = FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
+  devComm.putValueStagingContextCount = 4;
+  devComm.putValueStagingKernelBaseSlot = kernelBase;
+  devComm.putValueStagingTotalSlotCount = totalSlots;
+
+  uint64_t firstKernelOffset = 0;
+  uint64_t lastKernelOffset = 0;
+  ASSERT_TRUE(
+      flagcxKernelPutValueStagingOffset(&devComm, 0, 0, &firstKernelOffset));
+  ASSERT_TRUE(flagcxKernelPutValueStagingOffset(
+      &devComm, 3, FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS - 1, &lastKernelOffset));
+  EXPECT_EQ(firstKernelOffset, 128u * sizeof(uint64_t));
+  EXPECT_EQ(lastKernelOffset + sizeof(uint64_t), totalBytes);
+}
+
+TEST(PutValueStagingLayoutTest, RejectsOutOfRangeKernelSlots) {
+  size_t kernelBase = 0;
+  size_t totalSlots = 0;
+  size_t totalBytes = 0;
+  EXPECT_FALSE(flagcxPutValueStagingLayout(
+      INT_MAX, INT_MAX, INT_MAX, &kernelBase, &totalSlots, &totalBytes));
+
+  flagcxDevCommInternal devComm = {};
+  devComm.putValueStagingSlotCount = FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
+  devComm.putValueStagingContextCount = 2;
+  devComm.putValueStagingKernelBaseSlot = 8;
+  devComm.putValueStagingTotalSlotCount =
+      8 + 2 * FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
+
+  uint64_t offset = 0;
+  EXPECT_FALSE(flagcxKernelPutValueStagingOffset(&devComm, -1, 0, &offset));
+  EXPECT_FALSE(flagcxKernelPutValueStagingOffset(&devComm, 2, 0, &offset));
+  EXPECT_FALSE(flagcxKernelPutValueStagingOffset(
+      &devComm, 0, FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS, &offset));
+
+  devComm.putValueStagingTotalSlotCount--;
+  EXPECT_FALSE(flagcxKernelPutValueStagingOffset(
+      &devComm, 1, FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS - 1, &offset));
 }
 
 struct LegacyWindowTeam {};
@@ -468,6 +522,49 @@ TEST_F(DefaultDevCommCleanupTest, QuiesceWaitsForNativeFifoCompletion) {
                    flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
   quiescer.join();
   EXPECT_EQ(result.load(std::memory_order_acquire), flagcxSuccess);
+}
+
+TEST_F(DefaultDevCommCleanupTest, QuiesceReturnsKernelProxyTerminalStatus) {
+  uint64_t fifoBuffer[flagcxFifoIdxData] = {};
+  fifoBuffer[flagcxFifoIdxProduced] = 1;
+  fifoBuffer[flagcxFifoIdxCompleted] = 0;
+  fifoBuffer[flagcxFifoIdxTerminalStatus] = flagcxRemoteError;
+  flagcxFifo fifo;
+  fifo.buffer = fifoBuffer;
+
+  flagcxProxyState proxyState = {};
+  proxyState.asyncResult = flagcxSuccess;
+  proxyState.kernelState.contextCount = 1;
+  proxyState.kernelState.fifos[0] = &fifo;
+  proxyState.kernelState.terminalResult = flagcxRemoteError;
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.proxyState = &proxyState;
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  EXPECT_EQ(devApiBackend->commQuiesce(&comm), flagcxRemoteError);
+}
+
+TEST_F(DefaultDevCommCleanupTest, QuiesceCanRetryAfterTerminalDrain) {
+  uint64_t fifoBuffer[flagcxFifoIdxData] = {};
+  fifoBuffer[flagcxFifoIdxProduced] = 1;
+  fifoBuffer[flagcxFifoIdxConsumed] = 1;
+  fifoBuffer[flagcxFifoIdxCompleted] = 1;
+  fifoBuffer[flagcxFifoIdxTerminalStatus] = flagcxRemoteError;
+  flagcxFifo fifo;
+  fifo.buffer = fifoBuffer;
+
+  flagcxProxyState proxyState = {};
+  proxyState.asyncResult = flagcxSuccess;
+  proxyState.kernelState.contextCount = 1;
+  proxyState.kernelState.fifos[0] = &fifo;
+  proxyState.kernelState.terminalResult = flagcxRemoteError;
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.proxyState = &proxyState;
+  flagcxComm comm = {};
+  comm.heteroComm = &heteroComm;
+
+  EXPECT_EQ(devApiBackend->commQuiesce(&comm), flagcxSuccess);
 }
 
 TEST_F(DefaultDevCommCleanupTest, ShmBarrierAliasesAreNotFreedTwice) {

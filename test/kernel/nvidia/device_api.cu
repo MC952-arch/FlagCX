@@ -431,6 +431,49 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   }
 }
 
+// Every active kernel-proxy context writes the inter-node data and then emits
+// a standalone release on its own signal domain. The duplicate writes carry
+// identical bytes; their purpose is to exercise independent ordering keys and
+// QPs while each context verifies data-before-release through its own signal.
+FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
+    flagcxInterTestMultiContextPutReleaseKernel(
+        flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
+        flagcxDataType_t datatype, flagcxDevComm devComm) {
+  int contextId = FLAGCX_BLOCK_IDX_X;
+  if (contextId >= devComm._contextCount || devComm._nInterPeers <= 0)
+    return;
+
+  int nRanks = devComm.getSize();
+  int myRank = devComm.getRank();
+  int intraSize = devComm.getIntraSize();
+  int intraBase = myRank - devComm.getIntraRank();
+  int nInterRanks = nRanks - intraSize;
+  size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+  flagcxDevNet net(devComm, contextId);
+  uint64_t baseline = net.readSignal(2);
+  flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> ready(
+      flagcxCoopBlock(), flagcxTeamTagWorld{}, net, contextId);
+
+  // A fast rank must not publish data/release before every rank has captured
+  // the old signal baseline and entered the kernel. Each context rendezvous on
+  // its own ordering domain so the test still exercises multiple QPs.
+  ready.sync(flagcxDeviceMemoryOrderRelaxed);
+
+  for (int peer = FLAGCX_THREAD_IDX_X; peer < nRanks;
+       peer += FLAGCX_BLOCK_DIM_X) {
+    if (peer >= intraBase && peer < intraBase + intraSize)
+      continue;
+    net.put(flagcxTeamWorld(devComm), peer, recvMem, (size_t)myRank * size,
+            sendMem, (size_t)peer * size, size, flagcxDevNet_None{},
+            flagcxDevNet_None{}, flagcxCoopThread{});
+    net.signal(flagcxTeamWorld(devComm), peer, flagcxDevNet_SignalInc{2},
+               flagcxCoopThread{});
+  }
+  net.waitSignal(flagcxCoopBlock{}, 2,
+                 baseline + (uint64_t)nInterRanks);
+  net.flush(flagcxCoopBlock{});
+}
+
 // put + CounterInc two-round pipeline
 // Round 1: put with CounterInc; waitCounter; stamp sentinel; Round 2: put again.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
@@ -788,6 +831,21 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestPutSignalAddDecoupledKernel
+      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t launchKernelNetMultiContextPutRelease(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm,
+    flagcxStream_t stream) {
+  if (!devComm || !sendMem || !recvMem)
+    return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxDevMem sm(*sendMem), rm(*recvMem);
+  flagcxInterTestMultiContextPutReleaseKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
   cudaError_t err = cudaGetLastError();

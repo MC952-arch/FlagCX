@@ -98,6 +98,8 @@ flagcxResult_t flagcxFifo::flagcxRedFifoInit() {
   buffer[flagcxFifoIdxConsumed] = 0;
   buffer[flagcxFifoIdxProduced] = 0;
   buffer[flagcxFifoIdxTerminate] = 0;
+  buffer[flagcxFifoIdxTerminalStatus] = 0;
+  buffer[flagcxFifoIdxProducerState] = 0;
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxReduceFifoCapacity * sizeof(flagcxReduceTrigger));
   __sync_synchronize();

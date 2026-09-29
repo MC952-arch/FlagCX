@@ -378,6 +378,9 @@ struct flagcxHeteroComm {
   struct flagcxOneSideHandleInfo **oneSideHandles;
   int oneSideHandleCount;
   int oneSideHandleCapacity;
+  // Diagnostic phase counter used to verify that failed local preparation
+  // converges before any rank enters the data-MR metadata collectives.
+  uint64_t oneSideDataMetadataExchangeCount;
   // Failed rollback is retained here until a later registration or comm
   // teardown retries deregistration. This list is never published to RMA.
   struct flagcxOneSideHandleInfo *pendingOneSideCleanup;

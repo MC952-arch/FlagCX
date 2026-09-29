@@ -559,7 +559,20 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     // an otherwise valid local allocation, and PutValue then needs this
     // registered staging source to make the fallback complete.
     if (comm->heteroComm != nullptr) {
-      size_t stagingSize = (size_t)comm->heteroComm->nRanks * sizeof(uint64_t);
+      devComm->putValueStagingSlotCount = FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
+      devComm->putValueStagingContextCount = bufCtxCount;
+      size_t stagingSize = 0;
+      if (!flagcxPutValueStagingLayout(comm->heteroComm->nRanks, bufCtxCount,
+                                       devComm->putValueStagingSlotCount,
+                                       &devComm->putValueStagingKernelBaseSlot,
+                                       &devComm->putValueStagingTotalSlotCount,
+                                       &stagingSize)) {
+        WARN("defaultDevApiCommCreate: PutValue staging layout overflow "
+             "(ranks=%d contexts=%d slots=%d)",
+             comm->heteroComm->nRanks, bufCtxCount,
+             devComm->putValueStagingSlotCount);
+        return flagcxInvalidArgument;
+      }
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
            stagingSize);
       res =
@@ -898,6 +911,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                               NULL);
     devComm->putValueStagingBuffer = nullptr;
   }
+  devComm->putValueStagingSlotCount = 0;
+  devComm->putValueStagingContextCount = 0;
+  devComm->putValueStagingKernelBaseSlot = 0;
+  devComm->putValueStagingTotalSlotCount = 0;
   free(devComm->localRankToRank);
   devComm->localRankToRank = nullptr;
 
@@ -1291,6 +1308,11 @@ static flagcxResult_t defaultCommQuiesce(flagcxComm_t comm) {
                               __ATOMIC_ACQUIRE) !=
               __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
                               __ATOMIC_ACQUIRE)) {
+            flagcxResult_t terminal =
+                __atomic_load_n(&hetero->proxyState->kernelState.terminalResult,
+                                __ATOMIC_ACQUIRE);
+            if (terminal != flagcxSuccess)
+              return terminal;
             if (hetero->rmaProxy != nullptr &&
                 __atomic_load_n(&hetero->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
               return flagcxRemoteError;

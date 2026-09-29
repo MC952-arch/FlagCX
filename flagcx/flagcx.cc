@@ -959,6 +959,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   // Allgather MR info
   {
     int nranks = heteroComm->nRanks;
+    heteroComm->oneSideDataMetadataExchangeCount++;
     flagcxResult_t exchangeResult =
         flagcxOneSideExchangeMrInfo(heteroComm->bootstrap, heteroComm->rank,
                                     nranks, buff, size, &localMrInfo, info);
@@ -2980,6 +2981,11 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
     if (result == flagcxSuccess && comm->heteroComm->proxyState != nullptr) {
       result = __atomic_load_n(&comm->heteroComm->proxyState->asyncResult,
                                __ATOMIC_ACQUIRE);
+      if (result == flagcxSuccess) {
+        result = __atomic_load_n(
+            &comm->heteroComm->proxyState->kernelState.terminalResult,
+            __ATOMIC_ACQUIRE);
+      }
     }
     if (result == flagcxSuccess && comm->heteroComm->rmaProxy != nullptr &&
         __atomic_load_n(&comm->heteroComm->rmaProxy->rmaError,

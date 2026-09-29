@@ -18,6 +18,7 @@
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
 #include "default_completion.h"
+#include "fifo_producer_gate.h"
 #include "flagcx_kernel_core.h"
 #include <cassert>
 #ifndef FLAGCX_DEVICE_COMPILE
@@ -351,12 +352,24 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     return CompletionStorage::before(lhs, rhs);
   }
 
+  FLAGCX_DEVICE_INLINE_DECORATOR static flagcxResult_t
+  fifoTerminalStatus(uint64_t *buffer) {
+    return static_cast<flagcxResult_t>(Atomic::load(
+        &buffer[flagcxFifoIdxTerminalStatus], flagcxDeviceMemoryOrderAcquire));
+  }
+
   // Enqueue a trigger into the device FIFO buffer.
   // Atomically reserves a slot, waits for space, writes 3 words.
   FLAGCX_DEVICE_INLINE_DECORATOR
   static flagcxResult_t fifoEnqueue(void *fifoBuffer, uint64_t fstVal,
                                     uint64_t sndVal, uint64_t trdVal) {
     uint64_t *buffer = (uint64_t *)fifoBuffer;
+    CompletionWord *producerState =
+        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProducerState]);
+    if (!flagcxFifoProducerTryEnter<Atomic>(producerState)) {
+      flagcxResult_t terminal = fifoTerminalStatus(buffer);
+      return terminal == flagcxSuccess ? flagcxInternalError : terminal;
+    }
     uint64_t capacity = Atomic::load(&buffer[flagcxFifoIdxCapacity],
                                      flagcxDeviceMemoryOrderRelaxed);
 
@@ -374,7 +387,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                             Atomic::load(consumed,
                                          flagcxDeviceMemoryOrderAcquire)) >=
            (CompletionWord)capacity) {
+      flagcxResult_t terminal = fifoTerminalStatus(buffer);
+      if (terminal != flagcxSuccess) {
+        flagcxFifoProducerLeave<Atomic>(producerState);
+        return terminal;
+      }
       Intrin::spinBackoff(iter++);
+    }
+
+    // A terminal error may be published after the slot reservation but before
+    // the FIFO becomes full. Leave the sequence hole unpublished; terminal
+    // cleanup waits for this producer reference and then advances all failed
+    // reservations to the stable produced value.
+    flagcxResult_t terminal = fifoTerminalStatus(buffer);
+    if (terminal != flagcxSuccess) {
+      flagcxFifoProducerLeave<Atomic>(producerState);
+      return terminal;
     }
 
     // 3. Compute slot index and get pointers to slot's 3 uint64_t fields
@@ -393,6 +421,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
                   flagcxDeviceMemoryOrderRelease);
 
+    flagcxFifoProducerLeave<Atomic>(producerState);
     return flagcxSuccess;
   }
 
@@ -403,6 +432,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   static flagcxResult_t fifoFlush(void *fifoBuffer) {
     uint64_t *buffer = (uint64_t *)fifoBuffer;
+    flagcxResult_t terminal = fifoTerminalStatus(buffer);
+    if (terminal != flagcxSuccess)
+      return terminal;
     CompletionWord *produced =
         reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
     CompletionWord *completed =
@@ -412,6 +444,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int iter = 0;
     while (fifoWordBefore(
         Atomic::load(completed, flagcxDeviceMemoryOrderAcquire), snapshot)) {
+      terminal = fifoTerminalStatus(buffer);
+      if (terminal != flagcxSuccess)
+        return terminal;
       Intrin::spinBackoff(iter++);
     }
     return flagcxSuccess;
@@ -912,6 +947,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         int iter = 0;
         while (CompletionStorage::waitBefore(loadSignalValue(idx, order),
                                              target)) {
+          if (fifoBuffer != nullptr &&
+              fifoTerminalStatus((uint64_t *)fifoBuffer) != flagcxSuccess)
+            break;
           Intrin::spinBackoff(iter++);
         }
       }
@@ -990,6 +1028,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         int iter = 0;
         while (CompletionStorage::waitBefore(loadCounterValue(idx, order),
                                              target)) {
+          if (fifoBuffer != nullptr &&
+              fifoTerminalStatus((uint64_t *)fifoBuffer) != flagcxSuccess)
+            break;
           Intrin::spinBackoff(iter++);
         }
       }
@@ -1196,6 +1237,11 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
           Atomic::load(&_signalBuffer[absIdx], flagcxDeviceMemoryOrderAcquire);
       int iter = 0;
       while (current < expected) {
+        if (_fifoBuffer != nullptr &&
+            Atomic::load(
+                &((uint64_t *)_fifoBuffer)[flagcxFifoIdxTerminalStatus],
+                flagcxDeviceMemoryOrderAcquire) != flagcxSuccess)
+          break;
         Intrin::spinBackoff(iter++);
         current = Atomic::load(&_signalBuffer[absIdx],
                                flagcxDeviceMemoryOrderAcquire);
