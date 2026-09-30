@@ -666,6 +666,17 @@ TEST(IbTransportLaneTest, CompatibilityDataPolicyRetainsRoundRobin) {
   EXPECT_EQ(comm.qpIndex, 0);
 }
 
+TEST(IbTransportLaneTest, DataLaneGeometryRequiresExactPeerAgreement) {
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(2, 0, 2, 0), flagcxSuccess);
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(2, 1, 2, 1), flagcxSuccess);
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(1, 0, 2, 0), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(2, 0, 2, 1), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(0, 0, 2, 0),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxIbValidateDataLaneGeometry(2, 2, 2, 0),
+            flagcxInvalidArgument);
+}
+
 TEST(IbTransportKeyTest, UsesLaneLocalAndRemoteNicKeys) {
   uintptr_t base = 0x1000;
   size_t regionSize = 0x1000;

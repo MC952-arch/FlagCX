@@ -19,6 +19,10 @@ struct flagcxIbDataLanePolicy {
   uint64_t *laneMask;
 };
 
+flagcxResult_t flagcxIbValidateDataLaneGeometry(int localNqps, int localSplit,
+                                                int remoteNqps,
+                                                int remoteSplit);
+
 // Two-sided collective traffic uses a deterministic base lane when the core
 // marks an ordering domain independent. Compatibility traffic retains the
 // legacy round-robin cursor. stripeIndex walks the QPs inside that lane group.

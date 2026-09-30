@@ -418,6 +418,22 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_RUNNER_BYTES=67108864", striping)
         self.assertIn("FlagCXCollTest.AlltoAll", striping)
 
+        adaptor_case = unit_runner[unit_runner.index("    adaptor)") :]
+        adaptor_case = adaptor_case[: adaptor_case.index("    core|service)")]
+        self.assertIn('basename "$SET_ENV_SCRIPT" .sh', adaptor_case)
+        self.assertIn('== "cuda"', adaptor_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="IBRC QP-count mismatch"', adaptor_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="IBRC split-data mismatch"', adaptor_case)
+        self.assertEqual(
+            adaptor_case.count("FLAGCX_CI_EXPECT_IB_GEOMETRY_MISMATCH=1"),
+            1,
+        )
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=1", adaptor_case)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", adaptor_case)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=0", adaptor_case)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=1", adaptor_case)
+        self.assertIn("IbConnectionGeometryMpiTest", adaptor_case)
+
         ppu_forced_net = ppu_env[
             ppu_env.index('FLAGCX_CI_MPI_LABEL="runner BAREX forced NET"') :
         ]
@@ -585,6 +601,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT
             / "test/unittest/core/test_kernel_proxy_transport.cpp"
         ).read_text()
+        coll_proxy_test = (
+            REPO_ROOT
+            / "test/unittest/core/test_coll_proxy_progress.cpp"
+        ).read_text()
 
         self.assertIn("UNIT_SRCS   := $(wildcard test_*.cpp)", core_makefile)
         core_case = unit_runner[unit_runner.index("    core|service)") :]
@@ -619,6 +639,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             transport_test,
         )
         self.assertIn("DequeueConsumesPublishedReservation", transport_test)
+        self.assertIn(
+            "DifferentOrderingDomainsCanRemainInflightAndRetireIndependently",
+            coll_proxy_test,
+        )
+        self.assertIn("maxConcurrentDomains", coll_proxy_test)
 
         cuda_config = (
             REPO_ROOT / ".github/configs/cuda.yml"

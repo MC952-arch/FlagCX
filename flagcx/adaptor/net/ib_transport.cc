@@ -7,6 +7,18 @@
 #include "ibvwrap.h"
 #include "onesided_types.h"
 
+flagcxResult_t flagcxIbValidateDataLaneGeometry(int localNqps, int localSplit,
+                                                int remoteNqps,
+                                                int remoteSplit) {
+  if (localNqps <= 0 || remoteNqps <= 0 ||
+      (localSplit != 0 && localSplit != 1) ||
+      (remoteSplit != 0 && remoteSplit != 1))
+    return flagcxInvalidArgument;
+  return localNqps == remoteNqps && localSplit == remoteSplit
+             ? flagcxSuccess
+             : flagcxInvalidUsage;
+}
+
 void flagcxIbGetDataLanePolicy(struct flagcxIbDataLanePolicy *policy) {
   if (policy == NULL)
     return;

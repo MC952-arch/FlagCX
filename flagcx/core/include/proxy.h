@@ -438,6 +438,10 @@ flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  bool *justInquire = NULL);
 flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
                                            flagcxResult_t result);
+flagcxResult_t flagcxProxyFailProgressQueue(
+    struct flagcxProxyState *proxyState,
+    struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next> *queue,
+    flagcxResult_t result);
 flagcxResult_t
 flagcxProxyRecordConnectionError(struct flagcxProxyConnection *connection,
                                  flagcxResult_t result);

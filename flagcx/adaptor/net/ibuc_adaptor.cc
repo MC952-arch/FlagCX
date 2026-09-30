@@ -1238,8 +1238,9 @@ ibuc_connect:
 
   memcpy(&remMeta, stage->buffer, sizeof(flagcxIbConnectionMetadata));
 
-  if (remMeta.nqps != comm->base.nqps ||
-      remMeta.splitDataOnQps != (flagcxParamIbucSplitDataOnQps() ? 1 : 0)) {
+  if (flagcxIbValidateDataLaneGeometry(
+          comm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,
+          remMeta.nqps, remMeta.splitDataOnQps) != flagcxSuccess) {
     WARN("NET/IBUC : incompatible data lane geometry local nqps=%d split=%d "
          "remote nqps=%d split=%d",
          comm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0, remMeta.nqps,
@@ -1500,8 +1501,9 @@ ib_recv:
                      rComm->base.ndevs; // We must have at least 1 qp per-device
   rComm->base.isSend = false;
 
-  if (remMeta.nqps != rComm->base.nqps ||
-      remMeta.splitDataOnQps != (flagcxParamIbucSplitDataOnQps() ? 1 : 0)) {
+  if (flagcxIbValidateDataLaneGeometry(
+          rComm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,
+          remMeta.nqps, remMeta.splitDataOnQps) != flagcxSuccess) {
     WARN("NET/IBUC : incompatible data lane geometry local nqps=%d split=%d "
          "remote nqps=%d split=%d",
          rComm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,

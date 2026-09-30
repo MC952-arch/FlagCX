@@ -280,6 +280,7 @@ run_suite() {
       local unit_status=0
       local ibuc_status=0
       local ipc_status=0
+      local geometry_status=0
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
       # layer can express QP selection together with ordering boundaries.
@@ -334,8 +335,55 @@ run_suite() {
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \
         MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
-      if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0)); then
-        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status" >&2
+
+      # Exercise the real IBRC connection handshake with asymmetric rank-local
+      # settings. Both peers must report the same terminal error, cleanup must
+      # not hang, and neither connector may be published as connected.
+      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == "cuda" ]]; then
+        local geometry_filter="IbConnectionGeometryMpiTest.MismatchedPeersFailConsistentlyWithoutPublishingConnectors"
+        local -a geometry_common_env=(
+          -x FLAGCX_USE_HETERO_COMM=1
+          -x FLAGCX_MEM_ENABLE=1
+          -x FLAGCX_VMM_ENABLE=0
+          -x FLAGCX_P2P_DISABLE=1
+          -x FLAGCX_CI_EXPECT_IB_GEOMETRY_MISMATCH=1
+          -x LD_LIBRARY_PATH
+        )
+        FLAGCX_CI_MPI_TIMEOUT=5m \
+          FLAGCX_CI_MPI_LABEL="IBRC QP-count mismatch" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np 1 "${geometry_common_env[@]}" \
+          "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=1 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+          "$suite_dir/build/bin/adaptor_mpi_tests" \
+          --gtest_filter="$geometry_filter" \
+          : -np 1 "${geometry_common_env[@]}" \
+          "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+          "$suite_dir/build/bin/adaptor_mpi_tests" \
+          --gtest_filter="$geometry_filter" || geometry_status=$?
+
+        FLAGCX_CI_MPI_TIMEOUT=5m \
+          FLAGCX_CI_MPI_LABEL="IBRC split-data mismatch" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np 1 "${geometry_common_env[@]}" \
+          "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+          "$suite_dir/build/bin/adaptor_mpi_tests" \
+          --gtest_filter="$geometry_filter" \
+          : -np 1 "${geometry_common_env[@]}" \
+          "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=1 \
+          "$suite_dir/build/bin/adaptor_mpi_tests" \
+          --gtest_filter="$geometry_filter" || geometry_status=$?
+      fi
+      if ((unit_status != 0 || ibuc_status != 0 || ipc_status != 0 ||
+           geometry_status != 0)); then
+        echo "Adaptor failures: IBRC=$unit_status IBUC=$ibuc_status IPC=$ipc_status geometry=$geometry_status" >&2
         return 1
       fi
       ;;
