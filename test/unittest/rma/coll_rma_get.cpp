@@ -5,6 +5,17 @@
 #include <cstring>
 #include <vector>
 
+namespace {
+
+int collectiveOpFailed(flagcxResult_t result) {
+  int localFailed = result != flagcxSuccess;
+  int anyFailed = 0;
+  MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  return anyFailed;
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // GetSmall: rank 1 reads 64 bytes from rank 0's buffer
 // ---------------------------------------------------------------------------
@@ -13,17 +24,20 @@ TEST_F(RmaTest, GetSmall) {
     GTEST_SKIP() << "Requires at least 2 ranks";
 
   const size_t testSize = 64;
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-
   // Rank 0 fills its buffer with known pattern
+  flagcxResult_t setupRes = flagcxSuccess;
   if (rank == 0) {
     std::vector<uint8_t> pattern(testSize, 0xCD);
-    devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
-                            flagcxMemcpyHostToDevice, nullptr);
+    setupRes = devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
+                                       flagcxMemcpyHostToDevice, nullptr);
   } else {
-    devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
+    setupRes =
+        devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
   }
+  if (setupRes == flagcxSuccess)
+    setupRes = devHandle->deviceSynchronize();
+  ASSERT_EQ(collectiveOpFailed(setupRes), 0)
+      << "GetSmall buffer initialization failed with local result " << setupRes;
   MPI_Barrier(MPI_COMM_WORLD);
 
   flagcxResult_t opRes = flagcxSuccess;
@@ -41,31 +55,32 @@ TEST_F(RmaTest, GetSmall) {
   MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   if (opRes != flagcxSuccess)
     ADD_FAILURE() << "GetSmall RMA operation failed with result " << opRes;
-  if (anyFailed) {
-    devHandle->streamDestroy(s);
+  if (anyFailed)
     return;
-  }
 
   if (rank == 1) {
     // Verify
     std::vector<uint8_t> received(testSize, 0);
-    devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
-                            flagcxMemcpyDeviceToHost, nullptr);
+    flagcxResult_t copyRes = devHandle->deviceMemcpy(
+        received.data(), dataBuff, testSize, flagcxMemcpyDeviceToHost, nullptr);
+    EXPECT_EQ(copyRes, flagcxSuccess)
+        << "GetSmall verification copy failed with result " << copyRes;
 
-    int mismatches = 0;
-    for (size_t i = 0; i < testSize; ++i) {
-      if (received[i] != 0xCD) {
-        mismatches++;
-        if (mismatches == 1) {
-          EXPECT_EQ(received[i], 0xCD) << "Mismatch at byte " << i;
+    if (copyRes == flagcxSuccess) {
+      int mismatches = 0;
+      for (size_t i = 0; i < testSize; ++i) {
+        if (received[i] != 0xCD) {
+          mismatches++;
+          if (mismatches == 1) {
+            EXPECT_EQ(received[i], 0xCD) << "Mismatch at byte " << i;
+          }
         }
       }
+      EXPECT_EQ(mismatches, 0);
     }
-    EXPECT_EQ(mismatches, 0);
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
-  devHandle->streamDestroy(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,18 +91,21 @@ TEST_F(RmaTest, GetLarge) {
     GTEST_SKIP() << "Requires at least 2 ranks";
 
   const size_t testSize = RMA_TEST_SIZE;
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-
+  flagcxResult_t setupRes = flagcxSuccess;
   if (rank == 0) {
     std::vector<uint8_t> pattern(testSize);
     for (size_t i = 0; i < testSize; ++i)
       pattern[i] = static_cast<uint8_t>((i * 7) & 0xFF);
-    devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
-                            flagcxMemcpyHostToDevice, nullptr);
+    setupRes = devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
+                                       flagcxMemcpyHostToDevice, nullptr);
   } else {
-    devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
+    setupRes =
+        devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
   }
+  if (setupRes == flagcxSuccess)
+    setupRes = devHandle->deviceSynchronize();
+  ASSERT_EQ(collectiveOpFailed(setupRes), 0)
+      << "GetLarge buffer initialization failed with local result " << setupRes;
   MPI_Barrier(MPI_COMM_WORLD);
 
   flagcxResult_t opRes = flagcxSuccess;
@@ -105,32 +123,33 @@ TEST_F(RmaTest, GetLarge) {
   MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   if (opRes != flagcxSuccess)
     ADD_FAILURE() << "GetLarge RMA operation failed with result " << opRes;
-  if (anyFailed) {
-    devHandle->streamDestroy(s);
+  if (anyFailed)
     return;
-  }
 
   if (rank == 1) {
     // Verify
     std::vector<uint8_t> received(testSize, 0);
-    devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
-                            flagcxMemcpyDeviceToHost, nullptr);
+    flagcxResult_t copyRes = devHandle->deviceMemcpy(
+        received.data(), dataBuff, testSize, flagcxMemcpyDeviceToHost, nullptr);
+    EXPECT_EQ(copyRes, flagcxSuccess)
+        << "GetLarge verification copy failed with result " << copyRes;
 
-    int mismatches = 0;
-    for (size_t i = 0; i < testSize && mismatches < 10; ++i) {
-      uint8_t expected = static_cast<uint8_t>((i * 7) & 0xFF);
-      if (received[i] != expected) {
-        mismatches++;
-        if (mismatches == 1) {
-          EXPECT_EQ(received[i], expected) << "Mismatch at byte " << i;
+    if (copyRes == flagcxSuccess) {
+      int mismatches = 0;
+      for (size_t i = 0; i < testSize && mismatches < 10; ++i) {
+        uint8_t expected = static_cast<uint8_t>((i * 7) & 0xFF);
+        if (received[i] != expected) {
+          mismatches++;
+          if (mismatches == 1) {
+            EXPECT_EQ(received[i], expected) << "Mismatch at byte " << i;
+          }
         }
       }
+      EXPECT_EQ(mismatches, 0);
     }
-    EXPECT_EQ(mismatches, 0);
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
-  devHandle->streamDestroy(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,17 +160,20 @@ TEST_F(RmaTest, GetBidirectional) {
     GTEST_SKIP() << "Requires at least 2 ranks";
 
   const size_t testSize = 4096;
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-
   // Each rank fills its buffer with rank-specific pattern
+  flagcxResult_t setupRes = flagcxSuccess;
   {
     std::vector<uint8_t> pattern(testSize);
     for (size_t i = 0; i < testSize; ++i)
       pattern[i] = static_cast<uint8_t>((rank + 1 + i) & 0xFF);
-    devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
-                            flagcxMemcpyHostToDevice, nullptr);
+    setupRes = devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
+                                       flagcxMemcpyHostToDevice, nullptr);
   }
+  if (setupRes == flagcxSuccess)
+    setupRes = devHandle->deviceSynchronize();
+  ASSERT_EQ(collectiveOpFailed(setupRes), 0)
+      << "GetBidirectional buffer initialization failed with local result "
+      << setupRes;
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Both ranks issue Get from peer. Use offset to avoid overwriting source
@@ -172,29 +194,31 @@ TEST_F(RmaTest, GetBidirectional) {
   if (opRes != flagcxSuccess)
     ADD_FAILURE() << "GetBidirectional RMA operation failed with result "
                   << opRes;
-  if (anyFailed) {
-    devHandle->streamDestroy(s);
+  if (anyFailed)
     return;
-  }
 
   // Verify peer's data at dstOffset
   std::vector<uint8_t> received(testSize, 0);
-  devHandle->deviceMemcpy(received.data(), (char *)dataBuff + dstOffset,
-                          testSize, flagcxMemcpyDeviceToHost, nullptr);
+  flagcxResult_t copyRes =
+      devHandle->deviceMemcpy(received.data(), (char *)dataBuff + dstOffset,
+                              testSize, flagcxMemcpyDeviceToHost, nullptr);
+  EXPECT_EQ(copyRes, flagcxSuccess)
+      << "GetBidirectional verification copy failed with result " << copyRes;
 
-  int mismatches = 0;
-  for (size_t i = 0; i < testSize && mismatches < 10; ++i) {
-    uint8_t expected = static_cast<uint8_t>((peer + 1 + i) & 0xFF);
-    if (received[i] != expected) {
-      mismatches++;
-      if (mismatches == 1) {
-        EXPECT_EQ(received[i], expected)
-            << "Mismatch at byte " << i << " reading from rank " << peer;
+  if (copyRes == flagcxSuccess) {
+    int mismatches = 0;
+    for (size_t i = 0; i < testSize && mismatches < 10; ++i) {
+      uint8_t expected = static_cast<uint8_t>((peer + 1 + i) & 0xFF);
+      if (received[i] != expected) {
+        mismatches++;
+        if (mismatches == 1) {
+          EXPECT_EQ(received[i], expected)
+              << "Mismatch at byte " << i << " reading from rank " << peer;
+        }
       }
     }
+    EXPECT_EQ(mismatches, 0);
   }
-  EXPECT_EQ(mismatches, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
-  devHandle->streamDestroy(s);
 }
