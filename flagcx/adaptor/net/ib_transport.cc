@@ -7,6 +7,73 @@
 #include "ibvwrap.h"
 #include "onesided_types.h"
 
+flagcxResult_t flagcxIbValidateDataLaneGeometry(int localNqps, int localSplit,
+                                                int remoteNqps,
+                                                int remoteSplit) {
+  if (localNqps <= 0 || remoteNqps <= 0 ||
+      (localSplit != 0 && localSplit != 1) ||
+      (remoteSplit != 0 && remoteSplit != 1))
+    return flagcxInvalidArgument;
+  return localNqps == remoteNqps && localSplit == remoteSplit
+             ? flagcxSuccess
+             : flagcxInvalidUsage;
+}
+
+void flagcxIbGetDataLanePolicy(struct flagcxIbDataLanePolicy *policy) {
+  if (policy == NULL)
+    return;
+  policy->mode = FLAGCX_NET_LANE_UNORDERED;
+  policy->orderingKey = 0;
+  policy->laneMask = NULL;
+  struct flagcxNetSubmitContext context = {};
+  if (flagcxNetGetSubmitContext(&context) == flagcxSuccess &&
+      (context.flags & FLAGCX_NET_SUBMIT_INDEPENDENT) != 0) {
+    policy->mode = FLAGCX_NET_LANE_ORDERED;
+    policy->orderingKey = context.orderingKey;
+    policy->laneMask = context.laneMask;
+  }
+}
+
+flagcxResult_t
+flagcxIbSelectDataLane(struct flagcxIbNetCommBase *base,
+                       const struct flagcxIbDataLanePolicy *policy,
+                       uint32_t stripeIndex, struct flagcxIbLane *lane) {
+  if (policy == NULL)
+    return flagcxInvalidArgument;
+  const uint64_t key = policy->mode == FLAGCX_NET_LANE_ORDERED
+                           ? policy->orderingKey + stripeIndex
+                           : policy->orderingKey;
+  return flagcxIbSelectLane(base, policy->mode, key, lane);
+}
+
+flagcxResult_t
+flagcxIbPreviewDataLane(struct flagcxIbNetCommBase *base,
+                        const struct flagcxIbDataLanePolicy *policy,
+                        uint32_t stripeIndex, struct flagcxIbLane *lane) {
+  if (base == NULL || policy == NULL)
+    return flagcxInvalidArgument;
+  // Ordered selection is side-effect free. For legacy RR, preview the cursor
+  // plus stripe index without consuming it; the post loop performs commits.
+  const uint64_t key = policy->mode == FLAGCX_NET_LANE_ORDERED
+                           ? policy->orderingKey + stripeIndex
+                           : (uint64_t)(uint32_t)base->qpIndex + stripeIndex;
+  return flagcxIbSelectLane(base, FLAGCX_NET_LANE_ORDERED, key, lane);
+}
+
+flagcxResult_t
+flagcxIbCommitDataLane(struct flagcxIbNetCommBase *base,
+                       const struct flagcxIbDataLanePolicy *policy,
+                       const struct flagcxIbLane *lane) {
+  if (policy == NULL)
+    return flagcxInvalidArgument;
+  flagcxResult_t result = flagcxIbCommitLane(base, policy->mode, lane);
+  if (result == flagcxSuccess && lane != NULL && lane->base.index < 64 &&
+      policy->laneMask != NULL)
+    __atomic_fetch_or(policy->laneMask, 1ULL << lane->base.index,
+                      __ATOMIC_RELAXED);
+  return result;
+}
+
 flagcxResult_t flagcxIbSelectLane(struct flagcxIbNetCommBase *base,
                                   enum flagcxNetLaneMode mode,
                                   uint64_t orderingKey,

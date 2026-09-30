@@ -490,6 +490,17 @@ static void flagcxProxyRetireFailedQueue(
   }
 }
 
+flagcxResult_t flagcxProxyFailProgressQueue(
+    struct flagcxProxyState *proxyState,
+    struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next> *queue,
+    flagcxResult_t result) {
+  if (queue == NULL)
+    return flagcxInvalidArgument;
+  flagcxProxyRecordAsyncError(proxyState, result);
+  flagcxProxyRetireFailedQueue(queue);
+  return result;
+}
+
 // process all the ProxyOps in the consumer queue
 // idle is set to 1 if no operations are pending
 // if idle is set to 0, it means there are pending operations
@@ -528,8 +539,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                       : op->connection->tcomm->progressProxyOp(op->connection,
                                                                op);
               if (res != flagcxSuccess && res != flagcxInProgress) {
-                flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedQueue(queue);
+                flagcxProxyFailProgressQueue(proxyState, queue, res);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&
@@ -559,8 +569,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                       : op->connection->tcomm->progressProxyOp(op->connection,
                                                                op);
               if (res != flagcxSuccess && res != flagcxInProgress) {
-                flagcxProxyRecordAsyncError(proxyState, res);
-                flagcxProxyRetireFailedQueue(queue);
+                flagcxProxyFailProgressQueue(proxyState, queue, res);
                 op = NULL;
               }
               if (op != NULL && op->args.done == 1 &&

@@ -401,12 +401,45 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ]
         forced_net = forced_net[:forced_net.index(";;")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IB", forced_net)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", forced_net)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=0", forced_net)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", forced_net)
+
+        striping = unit_runner[
+            unit_runner.index(
+                'FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"'
+            ) :
+        ]
+        striping = striping[:striping.index(";;")]
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", striping)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=1", striping)
+        self.assertIn("FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1", striping)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_QP_STRIPING=1", striping)
+        self.assertIn("FLAGCX_CI_RUNNER_BYTES=67108864", striping)
+        self.assertIn("FlagCXCollTest.AlltoAll", striping)
+
+        adaptor_case = unit_runner[unit_runner.index("    adaptor)") :]
+        adaptor_case = adaptor_case[: adaptor_case.index("    core|service)")]
+        self.assertIn('basename "$SET_ENV_SCRIPT" .sh', adaptor_case)
+        self.assertIn('== "cuda"', adaptor_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="IBRC QP-count mismatch"', adaptor_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="IBRC split-data mismatch"', adaptor_case)
+        self.assertEqual(
+            adaptor_case.count("FLAGCX_CI_EXPECT_IB_GEOMETRY_MISMATCH=1"),
+            1,
+        )
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=1", adaptor_case)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", adaptor_case)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=0", adaptor_case)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=1", adaptor_case)
+        self.assertIn("IbConnectionGeometryMpiTest", adaptor_case)
 
         ppu_forced_net = ppu_env[
             ppu_env.index('FLAGCX_CI_MPI_LABEL="runner BAREX forced NET"') :
         ]
         ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
 
     def test_p2p_read_diagnostics_use_fresh_qp_and_mtu_processes(self):
         unit_runner = (
@@ -455,11 +488,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
         self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 3
+            runner_case.count("./build/bin/runner_mpi_tests"), 4
         )
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 2
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
         )
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", runner_case)
@@ -568,6 +601,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT
             / "test/unittest/core/test_kernel_proxy_transport.cpp"
         ).read_text()
+        coll_proxy_test = (
+            REPO_ROOT
+            / "test/unittest/core/test_coll_proxy_progress.cpp"
+        ).read_text()
 
         self.assertIn("UNIT_SRCS   := $(wildcard test_*.cpp)", core_makefile)
         core_case = unit_runner[unit_runner.index("    core|service)") :]
@@ -602,6 +639,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             transport_test,
         )
         self.assertIn("DequeueConsumesPublishedReservation", transport_test)
+        self.assertIn(
+            "DifferentOrderingDomainsCanRemainInflightAndRetireIndependently",
+            coll_proxy_test,
+        )
+        self.assertIn("maxConcurrentDomains", coll_proxy_test)
 
         cuda_config = (
             REPO_ROOT / ".github/configs/cuda.yml"

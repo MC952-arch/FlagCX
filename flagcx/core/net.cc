@@ -11,6 +11,24 @@
 #include <string.h>
 #include <string>
 
+namespace {
+
+class flagcxCollSubmitScope {
+public:
+  explicit flagcxCollSubmitScope(const struct flagcxNetSubmitContext *context) {
+    active_ = flagcxNetSetSubmitContext(context) == flagcxSuccess;
+  }
+  ~flagcxCollSubmitScope() {
+    if (active_)
+      flagcxNetClearSubmitContext();
+  }
+
+private:
+  bool active_ = false;
+};
+
+} // namespace
+
 int64_t flagcxNetBufferSize;
 int64_t flagcxNetChunkSize;
 int64_t flagcxNetChunks;
@@ -26,6 +44,18 @@ flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
   op->args.chunkSize = flagcxNetChunkSize;
   op->args.chunkSteps = (size + flagcxNetChunkSize - 1) / flagcxNetChunkSize;
   op->args.sendStepMask = flagcxNetChunks - 1;
+  const int srcRank = op->pattern == flagcxPatternRecv ? peer : comm->rank;
+  const int dstRank = op->pattern == flagcxPatternRecv ? comm->rank : peer;
+  const uint64_t orderingKey =
+      flagcxCollProxyOrderingKey(op->channelId, srcRank, dstRank);
+  const uint32_t submitFlags =
+      op->channelId == 0 ? 0 : FLAGCX_NET_SUBMIT_INDEPENDENT;
+  const uint64_t generation =
+      __atomic_add_fetch(&op->connection->collGeneration, 1, __ATOMIC_RELAXED);
+  FLAGCXCHECK(flagcxCollProxyTransportInit(
+      &op->args.collTransport, (uint32_t)flagcxNetChunks, generation,
+      orderingKey, submitFlags));
+  op->args.collTransport.laneMask = &op->connection->collDataLaneMask;
   flagcxConnector *peerConns[] = {
       op->pattern == flagcxPatternRecv
           ? comm->channels[op->channelId].peers[peer]->recv
@@ -259,28 +289,59 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       }
       if (done) {
         void *req = NULL;
-        flagcxResult_t sendRes = resources->netAdaptor->isend(
-            resources->netSendComm,
-            args->subs[args->posted & stepMask].stepBuff,
-            args->subs[args->posted & stepMask].stepSize, 0,
-            args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
-            &req);
-        if (sendRes != flagcxSuccess && sendRes != flagcxInProgress)
+        struct flagcxNetSubmitContext *submit = NULL;
+        flagcxResult_t trackRes =
+            flagcxCollProxyTrackNext(&args->collTransport, &submit);
+        if (trackRes == flagcxInProgress)
+          return flagcxSuccess;
+        FLAGCXCHECK(trackRes);
+        flagcxResult_t sendRes;
+        {
+          flagcxCollSubmitScope submitScope(submit);
+          sendRes = resources->netAdaptor->isend(
+              resources->netSendComm,
+              args->subs[args->posted & stepMask].stepBuff,
+              args->subs[args->posted & stepMask].stepSize, 0,
+              args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
+              &req);
+        }
+        if (sendRes != flagcxSuccess && sendRes != flagcxInProgress) {
+          FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
           return sendRes;
+        }
         if (req) {
           args->subs[args->posted++ & stepMask].requests[0] = req;
+        } else {
+          FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
         }
       }
     }
 
     if (args->transmitted < args->posted) {
-      void *req = args->subs[args->transmitted & stepMask].requests[0];
-      int done = 0, sizes;
-      flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
-      if (testRes != flagcxSuccess && testRes != flagcxInProgress)
-        return testRes;
-      if (done) {
-        args->transmitted++;
+      // Poll every accepted request. CQEs from different physical QPs may be
+      // observed in any order; the scoreboard retires only a contiguous
+      // sequence prefix.
+      for (int sequence = args->transmitted; sequence < args->posted;
+           ++sequence) {
+        int slot = sequence & stepMask;
+        void *req = args->subs[slot].requests[0];
+        if (req == NULL)
+          continue;
+        int done = 0, sizes = 0;
+        flagcxResult_t testRes =
+            resources->netAdaptor->test(req, &done, &sizes);
+        if (testRes != flagcxSuccess && testRes != flagcxInProgress)
+          return testRes;
+        if (done) {
+          args->subs[slot].requests[0] = NULL;
+          uint32_t advanced = 0;
+          FLAGCXCHECK(flagcxCollProxyComplete(
+              &args->collTransport,
+              &args->collTransport
+                   .contexts[sequence % args->collTransport.capacity],
+              flagcxSuccess, &advanced));
+          args->transmitted += advanced;
+        }
       }
     }
   } else {
@@ -306,38 +367,66 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         args->posted - args->copied < flagcxNetChunks) {
       int tags[8] = {0};
       void *req = NULL;
-      args->subs[args->posted & stepMask].stepSize =
+      const int sequence = args->posted;
+      const int slot = sequence & stepMask;
+      args->subs[slot].stepSize =
           std::min(args->chunkSize, size - args->totalPostSize);
       if (!args->regBufFlag) {
-        args->subs[args->posted & stepMask].stepBuff =
-            resources->buffers[0] +
-            flagcxNetChunkSize * (args->posted & stepMask);
+        args->subs[slot].stepBuff =
+            resources->buffers[0] + flagcxNetChunkSize * slot;
       } else {
-        args->subs[args->posted & stepMask].stepBuff =
+        args->subs[slot].stepBuff =
             (void *)((char *)data + flagcxNetChunkSize * args->posted);
       }
-      flagcxResult_t recvRes = resources->netAdaptor->irecv(
-          resources->netRecvComm, 1,
-          &args->subs[args->posted & stepMask].stepBuff,
-          (size_t *)&args->subs[args->posted & stepMask].stepSize, tags,
-          args->regBufFlag ? &args->regHandle : resources->mhandles, NULL,
-          &req);
-      if (recvRes != flagcxSuccess && recvRes != flagcxInProgress)
+      struct flagcxNetSubmitContext *submit = NULL;
+      flagcxResult_t trackRes =
+          flagcxCollProxyTrackNext(&args->collTransport, &submit);
+      if (trackRes == flagcxInProgress)
+        return flagcxSuccess;
+      FLAGCXCHECK(trackRes);
+      flagcxResult_t recvRes;
+      {
+        flagcxCollSubmitScope submitScope(submit);
+        recvRes = resources->netAdaptor->irecv(
+            resources->netRecvComm, 1, &args->subs[slot].stepBuff,
+            (size_t *)&args->subs[slot].stepSize, tags,
+            args->regBufFlag ? &args->regHandle : resources->mhandles, NULL,
+            &req);
+      }
+      if (recvRes != flagcxSuccess && recvRes != flagcxInProgress) {
+        FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
         return recvRes;
+      }
       if (req) {
-        args->subs[args->posted & stepMask].requests[0] = req;
-        args->totalPostSize += args->subs[args->posted++ & stepMask].stepSize;
+        args->netCompleted[slot] = 0;
+        args->subs[slot].requests[0] = req;
+        args->totalPostSize += args->subs[slot].stepSize;
+        args->posted++;
         return flagcxSuccess;
       }
+      FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
     }
 
-    if (args->postFlush < args->posted) {
-      void *req = args->subs[args->postFlush & stepMask].requests[0];
-      int done = 0, sizes;
+    // Receive CQEs are independent. Record every observed completion, then
+    // let the flush/copy pipeline consume the contiguous prefix.
+    for (int sequence = args->postFlush; sequence < args->posted; ++sequence) {
+      int slot = sequence & stepMask;
+      if (args->netCompleted[slot])
+        continue;
+      void *req = args->subs[slot].requests[0];
+      int done = 0, sizes = 0;
       flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
       if (testRes != flagcxSuccess && testRes != flagcxInProgress)
         return testRes;
       if (done) {
+        args->netCompleted[slot] = 1;
+        args->subs[slot].requests[0] = NULL;
+      }
+    }
+
+    if (args->postFlush < args->posted) {
+      int step = args->postFlush & stepMask;
+      if (args->netCompleted[step]) {
         if (resources->netAdaptor == getNetAdaptor(RDMA)) {
           void *req = NULL;
           flagcxResult_t flushRes = resources->netAdaptor->iflush(
@@ -426,10 +515,22 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         FLAGCXCHECK(flagcxTransportClassifyCompletion(
             deviceAdaptor->eventQuery(resources->cpEvents[step]), &completed));
         if (completed) {
-          args->copied++;
+          uint32_t advanced = 0;
+          FLAGCXCHECK(flagcxCollProxyComplete(
+              &args->collTransport,
+              &args->collTransport
+                   .contexts[args->copied % args->collTransport.capacity],
+              flagcxSuccess, &advanced));
+          args->copied += advanced;
         }
       } else {
-        args->copied++;
+        uint32_t advanced = 0;
+        FLAGCXCHECK(flagcxCollProxyComplete(
+            &args->collTransport,
+            &args->collTransport
+                 .contexts[args->copied % args->collTransport.capacity],
+            flagcxSuccess, &advanced));
+        args->copied += advanced;
       }
     }
   } else {

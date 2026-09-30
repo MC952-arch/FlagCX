@@ -27,6 +27,7 @@ class PpuCiRegressionTest(unittest.TestCase):
             source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 2
         )
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", source)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", source)
         full_heterogeneous = source[
             source.index('FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous"'):
         ]

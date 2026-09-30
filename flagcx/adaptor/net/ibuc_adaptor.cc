@@ -32,6 +32,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+FLAGCX_PARAM(IbucSplitDataOnQps, "IBUC_SPLIT_DATA_ON_QPS", 0);
+
 static flagcxResult_t
 flagcxIbucPostRetransRecv(struct flagcxIbRecvCommDev *commDev,
                           uint32_t creditIndex);
@@ -1063,6 +1065,8 @@ ibuc_connect_check:
   struct flagcxIbConnectionMetadata meta;
   memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.ndevs;
+  meta.nqps = comm->base.nqps;
+  meta.splitDataOnQps = flagcxParamIbucSplitDataOnQps() ? 1 : 0;
 
   // Alternate QPs between devices
   int devIndex;
@@ -1233,6 +1237,16 @@ ibuc_connect:
     return flagcxSuccess;
 
   memcpy(&remMeta, stage->buffer, sizeof(flagcxIbConnectionMetadata));
+
+  if (flagcxIbValidateDataLaneGeometry(
+          comm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,
+          remMeta.nqps, remMeta.splitDataOnQps) != flagcxSuccess) {
+    WARN("NET/IBUC : incompatible data lane geometry local nqps=%d split=%d "
+         "remote nqps=%d split=%d",
+         comm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0, remMeta.nqps,
+         remMeta.splitDataOnQps);
+    return flagcxInvalidUsage;
+  }
 
   comm->base.nRemDevs = remMeta.ndevs;
   if (comm->base.nRemDevs != comm->base.ndevs) {
@@ -1486,6 +1500,16 @@ ib_recv:
   rComm->base.nqps = flagcxParamIbQpsPerConn() *
                      rComm->base.ndevs; // We must have at least 1 qp per-device
   rComm->base.isSend = false;
+
+  if (flagcxIbValidateDataLaneGeometry(
+          rComm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,
+          remMeta.nqps, remMeta.splitDataOnQps) != flagcxSuccess) {
+    WARN("NET/IBUC : incompatible data lane geometry local nqps=%d split=%d "
+         "remote nqps=%d split=%d",
+         rComm->base.nqps, flagcxParamIbucSplitDataOnQps() ? 1 : 0,
+         remMeta.nqps, remMeta.splitDataOnQps);
+    return flagcxInvalidUsage;
+  }
 
   rComm->base.nRemDevs = remMeta.ndevs;
   if (rComm->base.nRemDevs != rComm->base.ndevs) {
@@ -1744,6 +1768,8 @@ ib_recv:
   }
 
   meta.ndevs = rComm->base.ndevs;
+  meta.nqps = rComm->base.nqps;
+  meta.splitDataOnQps = flagcxParamIbucSplitDataOnQps() ? 1 : 0;
   // IBUC always enables retransmission, ignore remote value
   meta.retransEnabled = 1;
   strncpy(meta.devName, mergedDev->devName, MAX_MERGED_DEV_NAME);
@@ -2040,8 +2066,6 @@ flagcxResult_t flagcxIbucDeregMr(void *comm, void *mhandle) {
                                             mhandle, flagcxIbucDeregMrInternal);
 }
 
-FLAGCX_PARAM(IbucSplitDataOnQps, "IBUC_SPLIT_DATA_ON_QPS", 0);
-
 flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
   struct flagcxIbRequest **reqs = comm->fifoReqs[slot];
   volatile struct flagcxIbSendFifo *slots = comm->fifo[slot];
@@ -2120,10 +2144,11 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
   const int align = 128;
   int nqps =
       flagcxParamIbucSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
+  struct flagcxIbDataLanePolicy lanePolicy = {};
+  flagcxIbGetDataLanePolicy(&lanePolicy);
   for (int i = 0; i < nqps; i++) {
     struct flagcxIbLane lane = {};
-    FLAGCXCHECK(
-        flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, 0, &lane));
+    FLAGCXCHECK(flagcxIbSelectDataLane(&comm->base, &lanePolicy, i, &lane));
     flagcxIbQp *qp = lane.ibQp;
     int devIndex = qp->devIndex;
     for (int r = 0; r < nreqs; r++) {
@@ -2215,8 +2240,7 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
       comm->wrs[r].wr.rdma.remote_addr += chunkSize;
     }
 
-    FLAGCXCHECK(
-        flagcxIbCommitLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, &lane));
+    FLAGCXCHECK(flagcxIbCommitDataLane(&comm->base, &lanePolicy, &lane));
   }
 
   if (comm->retrans.enabled)
@@ -2300,25 +2324,19 @@ flagcxResult_t flagcxIbucIsend(void *sendComm, void *data, size_t size, int tag,
     // Populate events
     int nEvents =
         flagcxParamIbucSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
-    struct flagcxNetLaneSet previewLanes = {
-        (uint32_t)comm->base.nqps,
-        (uint32_t)comm->base.qpIndex,
-    };
+    struct flagcxIbDataLanePolicy lanePolicy = {};
+    flagcxIbGetDataLanePolicy(&lanePolicy);
     // Count down
-    while (nEvents > 0) {
-      uint32_t laneIndex = 0;
-      FLAGCXCHECK(flagcxNetSelectLane(&previewLanes, FLAGCX_NET_LANE_UNORDERED,
-                                      0, &laneIndex));
-      flagcxIbQp *qp = comm->base.qps + laneIndex;
+    for (int event = 0; event < nEvents; event++) {
+      struct flagcxIbLane lane = {};
+      FLAGCXCHECK(
+          flagcxIbPreviewDataLane(&comm->base, &lanePolicy, event, &lane));
+      flagcxIbQp *qp = lane.ibQp;
       int devIndex = qp->devIndex;
       flagcxIbucAddEvent(req, devIndex, &comm->devs[devIndex].base);
       // Track the valid lkey for this RDMA_Write
       req->send.lkeys[devIndex] = mhandleWrapper->mrs[devIndex]->lkey;
-      nEvents--;
-      // Don't update comm->base.qpIndex yet, we need to run through this same
-      // set of QPs inside flagcxIbucMultiSend()
-      FLAGCXCHECK(flagcxNetCommitLane(&previewLanes, FLAGCX_NET_LANE_UNORDERED,
-                                      laneIndex));
+      // Preview only. flagcxIbucMultiSend commits after posting.
     }
 
     // Store all lkeys
@@ -2413,18 +2431,18 @@ flagcxResult_t flagcxIbucIrecv(void *recvComm, int n, void **data,
   // Select either all QPs, or one qp per-device
   const int nqps =
       flagcxParamIbucSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
+  struct flagcxIbDataLanePolicy lanePolicy = {};
+  flagcxIbGetDataLanePolicy(&lanePolicy);
 
   // Notification WQEs are connection-level credits posted during accept.
   // Associate this logical request with the same QPs the sender will stripe
   // over, without tying receive-WQE ownership to the request slot.
   for (int i = 0; i < nqps; i++) {
     struct flagcxIbLane lane = {};
-    FLAGCXCHECK(
-        flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, 0, &lane));
+    FLAGCXCHECK(flagcxIbSelectDataLane(&comm->base, &lanePolicy, i, &lane));
     struct flagcxIbQp *qp = lane.ibQp;
     flagcxIbucAddDataEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
-    FLAGCXCHECK(
-        flagcxIbCommitLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, &lane));
+    FLAGCXCHECK(flagcxIbCommitDataLane(&comm->base, &lanePolicy, &lane));
   }
 
   TIME_STOP(1);

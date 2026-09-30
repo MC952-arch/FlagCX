@@ -69,6 +69,10 @@ struct flagcxNetSubmitContext {
   uint64_t generation;
   uint64_t sequence;
   uint32_t flags;
+  // Optional transport-neutral diagnostics sink. Backends OR the physical
+  // lane index used for an accepted data post; logical-lane transports may
+  // leave it zero.
+  uint64_t *laneMask;
 };
 
 enum flagcxNetSubmitFlags {

@@ -117,6 +117,10 @@ struct flagcxTaskP2p {
   flagcxTaskP2p *next;
   void *buff;
   size_t bytes;
+  // Internal transport ordering domain. Public send/recv enqueue on channel
+  // zero; collective algorithms may select another channel when the
+  // corresponding edge is explicitly independent.
+  int channelId;
   // Stateful chunk index. If a p2p gets "cut" over two plans this keeps track
   // of where it left off.
   int chunk;

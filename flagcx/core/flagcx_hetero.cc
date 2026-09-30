@@ -1422,8 +1422,19 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int opId, int step) {
+  return flagcxHeteroSendOnChannel(sendbuff, count, datatype, peer, comm,
+                                   stream, 0, opId, step);
+}
+
+flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
+                                         flagcxDataType_t datatype, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
+      channelId >= MAXCHANNELS)
+    return flagcxInvalidArgument;
   flagcxHeteroGroupStart();
-  int channelId = 0;
   if (comm->channels[channelId].peers[peer]->send[0].connected == 0 &&
       comm->channels[channelId].peers[peer]->send[0].registered == 0) {
     comm->connectSend[peer] |= (1UL << channelId);
@@ -1435,6 +1446,7 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
   FLAGCXCHECK(flagcxCalloc(&p2p, 1));
   p2p->buff = (void *)sendbuff;
   p2p->bytes = count * getFlagcxDataTypeSize(datatype);
+  p2p->channelId = channelId;
   p2p->chunk = 0;
   p2p->dtype = datatype;
   p2p->stream = stream;
@@ -1453,8 +1465,19 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int opId, int step) {
+  return flagcxHeteroRecvOnChannel(recvbuff, count, datatype, peer, comm,
+                                   stream, 0, opId, step);
+}
+
+flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
+                                         flagcxDataType_t datatype, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
+      channelId >= MAXCHANNELS)
+    return flagcxInvalidArgument;
   flagcxHeteroGroupStart();
-  int channelId = 0;
   if (comm->channels[channelId].peers[peer]->recv[0].connected == 0 &&
       comm->channels[channelId].peers[peer]->recv[0].registered == 0) {
     comm->connectRecv[peer] |= (1UL << channelId);
@@ -1466,6 +1489,7 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
   FLAGCXCHECK(flagcxCalloc(&p2p, 1));
   p2p->buff = (void *)recvbuff;
   p2p->bytes = count * getFlagcxDataTypeSize(datatype);
+  p2p->channelId = channelId;
   p2p->chunk = 0;
   p2p->dtype = datatype;
   p2p->stream = stream;

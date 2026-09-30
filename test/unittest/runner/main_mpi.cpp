@@ -52,6 +52,13 @@ void FlagCXCollTest::SetUp() {
   hostrecvbuff = nullptr;
   stream = nullptr;
   size = 4ULL * 1024 * 1024; // 4MB
+  const char *runnerBytes = std::getenv("FLAGCX_CI_RUNNER_BYTES");
+  if (runnerBytes != nullptr && runnerBytes[0] != '\0') {
+    const unsigned long long configured =
+        std::strtoull(runnerBytes, nullptr, 0);
+    if (configured != 0)
+      size = static_cast<size_t>(configured);
+  }
   count = size / sizeof(float);
 
   if (runnerTransportFailureObserved) {

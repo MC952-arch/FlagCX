@@ -2,6 +2,7 @@
  * Copyright (c) 2025 BAAI. All rights reserved.
  ************************************************************************/
 
+#include "coll_proxy_transport.h"
 #include "flagcx_hetero.h"
 #include "proxy.h"
 #include "runner.h"
@@ -56,15 +57,17 @@ flagcxResult_t uniRunnerGather(const void *sendbuff, void *recvbuff,
       [&]() {
         if (comm->rank == root) {
           for (int r = 0; r < comm->nranks; r++) {
-            flagcxResult_t result =
-                flagcxHeteroRecv(static_cast<void *>(buffer + r * size), count,
-                                 datatype, r, comm->heteroComm, stream);
+            flagcxResult_t result = flagcxHeteroRecvOnChannel(
+                static_cast<void *>(buffer + r * size), count, datatype, r,
+                comm->heteroComm, stream,
+                flagcxCollProxyChannelForEdge(r, root, 0));
             if (!flagcxRunnerResultAccepted(result))
               return result;
           }
         }
-        return flagcxHeteroSend(sendbuff, count, datatype, root,
-                                comm->heteroComm, stream);
+        return flagcxHeteroSendOnChannel(
+            sendbuff, count, datatype, root, comm->heteroComm, stream,
+            flagcxCollProxyChannelForEdge(comm->rank, root, 0));
       },
       []() { return flagcxHeteroGroupEnd(); });
 }
@@ -81,15 +84,17 @@ flagcxResult_t uniRunnerScatter(const void *sendbuff, void *recvbuff,
       [&]() {
         if (comm->rank == root) {
           for (int r = 0; r < comm->nranks; r++) {
-            flagcxResult_t result =
-                flagcxHeteroSend(static_cast<const void *>(buffer + r * size),
-                                 count, datatype, r, comm->heteroComm, stream);
+            flagcxResult_t result = flagcxHeteroSendOnChannel(
+                static_cast<const void *>(buffer + r * size), count, datatype,
+                r, comm->heteroComm, stream,
+                flagcxCollProxyChannelForEdge(root, r, 0));
             if (!flagcxRunnerResultAccepted(result))
               return result;
           }
         }
-        return flagcxHeteroRecv(recvbuff, count, datatype, root,
-                                comm->heteroComm, stream);
+        return flagcxHeteroRecvOnChannel(
+            recvbuff, count, datatype, root, comm->heteroComm, stream,
+            flagcxCollProxyChannelForEdge(root, comm->rank, 0));
       },
       []() { return flagcxHeteroGroupEnd(); });
 }
@@ -103,14 +108,16 @@ flagcxResult_t uniRunnerBroadcast(const void *sendbuff, void *recvbuff,
       [&]() {
         if (comm->rank == root) {
           for (int r = 0; r < comm->nranks; r++) {
-            flagcxResult_t result = flagcxHeteroSend(
-                sendbuff, count, datatype, r, comm->heteroComm, stream);
+            flagcxResult_t result = flagcxHeteroSendOnChannel(
+                sendbuff, count, datatype, r, comm->heteroComm, stream,
+                flagcxCollProxyChannelForEdge(root, r, 0));
             if (!flagcxRunnerResultAccepted(result))
               return result;
           }
         }
-        return flagcxHeteroRecv(recvbuff, count, datatype, root,
-                                comm->heteroComm, stream);
+        return flagcxHeteroRecvOnChannel(
+            recvbuff, count, datatype, root, comm->heteroComm, stream,
+            flagcxCollProxyChannelForEdge(root, comm->rank, 0));
       },
       []() { return flagcxHeteroGroupEnd(); });
 }
@@ -194,13 +201,15 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
       []() { return flagcxHeteroGroupStart(); },
       [&]() {
         for (int r = 0; r < comm->nranks; r++) {
-          flagcxResult_t result = flagcxHeteroSend(
-              sendbuff, sendcount, datatype, r, comm->heteroComm, stream);
+          flagcxResult_t result = flagcxHeteroSendOnChannel(
+              sendbuff, sendcount, datatype, r, comm->heteroComm, stream,
+              flagcxCollProxyChannelForEdge(comm->rank, r, 0));
           if (!flagcxRunnerResultAccepted(result))
             return result;
-          result = flagcxHeteroRecv(static_cast<void *>(bufferOut + r * size),
-                                    sendcount, datatype, r, comm->heteroComm,
-                                    stream);
+          result = flagcxHeteroRecvOnChannel(
+              static_cast<void *>(bufferOut + r * size), sendcount, datatype, r,
+              comm->heteroComm, stream,
+              flagcxCollProxyChannelForEdge(r, comm->rank, 0));
           if (!flagcxRunnerResultAccepted(result))
             return result;
         }
@@ -219,14 +228,16 @@ flagcxResult_t uniRunnerAlltoAll(const void *sendbuff, void *recvbuff,
       []() { return flagcxHeteroGroupStart(); },
       [&]() {
         for (int r = 0; r < comm->nranks; r++) {
-          flagcxResult_t result =
-              flagcxHeteroSend(static_cast<const void *>(bufferIn + r * size),
-                               count, datatype, r, comm->heteroComm, stream);
+          flagcxResult_t result = flagcxHeteroSendOnChannel(
+              static_cast<const void *>(bufferIn + r * size), count, datatype,
+              r, comm->heteroComm, stream,
+              flagcxCollProxyChannelForEdge(comm->rank, r, 0));
           if (!flagcxRunnerResultAccepted(result))
             return result;
-          result =
-              flagcxHeteroRecv(static_cast<void *>(bufferOut + r * size), count,
-                               datatype, r, comm->heteroComm, stream);
+          result = flagcxHeteroRecvOnChannel(
+              static_cast<void *>(bufferOut + r * size), count, datatype, r,
+              comm->heteroComm, stream,
+              flagcxCollProxyChannelForEdge(r, comm->rank, 0));
           if (!flagcxRunnerResultAccepted(result))
             return result;
         }
@@ -248,16 +259,18 @@ flagcxResult_t uniRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
       [&]() {
         for (int r = 0; r < comm->nranks; r++) {
           if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
-            flagcxResult_t result = flagcxHeteroSend(
+            flagcxResult_t result = flagcxHeteroSendOnChannel(
                 static_cast<const void *>(bufferIn + sdispls[r] * size),
-                sendcounts[r], datatype, r, comm->heteroComm, stream);
+                sendcounts[r], datatype, r, comm->heteroComm, stream,
+                flagcxCollProxyChannelForEdge(comm->rank, r, 0));
             if (!flagcxRunnerResultAccepted(result))
               return result;
           }
           if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-            flagcxResult_t result = flagcxHeteroRecv(
+            flagcxResult_t result = flagcxHeteroRecvOnChannel(
                 static_cast<void *>(bufferOut + rdispls[r] * size),
-                recvcounts[r], datatype, r, comm->heteroComm, stream);
+                recvcounts[r], datatype, r, comm->heteroComm, stream,
+                flagcxCollProxyChannelForEdge(r, comm->rank, 0));
             if (!flagcxRunnerResultAccepted(result))
               return result;
           }
