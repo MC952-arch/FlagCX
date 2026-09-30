@@ -42,6 +42,11 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
                                            flagcxDevComm_t devComm,
                                            flagcxStream_t stream);
 
+// Multiple kernel-proxy contexts issue data followed by a standalone release.
+flagcxResult_t launchKernelNetMultiContextPutRelease(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream);
+
 flagcxResult_t
 launchKernelNetCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
                                size_t count, flagcxDataType_t datatype,

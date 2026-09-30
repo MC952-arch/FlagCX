@@ -123,6 +123,15 @@ void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                   size_t countPerPeer, flagcxStream_t stream);
 
+#ifdef USE_NVIDIA_ADAPTOR
+// S3b: one independent put+signal+wait+flush chain per transport context.
+void launchKernelNetMultiContextPutSignalIncS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t dataBase,
+    int *devResults, flagcxStream_t stream);
+#endif
+
 // S4: Put + SigAdd — PutS_RSigAdd + WaitSignalS + FlushS
 void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,

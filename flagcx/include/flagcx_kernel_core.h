@@ -45,7 +45,9 @@ typedef enum {
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
-// Layout: [capacity][consumed][produced][terminate|completed][data...]
+// Layout:
+// [capacity][consumed][produced][terminate|completed][terminalStatus]
+// [producerState][data...]
 //
 // Slot 3 is shared between two FIFO types with mutually exclusive semantics:
 //   - flagcxReduceTrigger FIFO: uses slot 3 as "terminate" (host signals GPU to
@@ -59,7 +61,14 @@ typedef enum {
   flagcxFifoIdxProduced = 2,
   flagcxFifoIdxTerminate = 3, // ReduceTrigger FIFO only
   flagcxFifoIdxCompleted = 3, // DeviceTrigger FIFO only (IB completion count)
-  flagcxFifoIdxData = 4
+  // DeviceTrigger FIFO only. First permanent proxy error, flagcxSuccess while
+  // healthy. ReduceTrigger FIFOs leave this reserved word zero.
+  flagcxFifoIdxTerminalStatus = 4,
+  // DeviceTrigger FIFO only. Highest CompletionWord bit closes new enqueue
+  // attempts; remaining bits count producers that entered before closure.
+  // ReduceTrigger FIFOs leave this reserved word zero.
+  flagcxFifoIdxProducerState = 5,
+  flagcxFifoIdxData = 6
 } flagcxFifoIndex;
 
 typedef enum {

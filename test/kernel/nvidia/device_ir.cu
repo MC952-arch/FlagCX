@@ -841,10 +841,100 @@ __global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
 
 void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
-                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
-                                  flagcxStream_t stream) {
-  kernelNetPutSignalIncS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
-                                                       recvMemPtr, countPerPeer);
+                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                                  size_t countPerPeer, flagcxStream_t stream) {
+  kernelNetPutSignalIncS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
+      devCommPtr, sendMemPtr, recvMemPtr, countPerPeer);
+}
+
+// ---------------------------------------------------------------------------
+// S3b: Multi-context PutS_RSigInc + WaitSignalS + FlushS
+//
+// One CTA owns each context. Every context sends one independent value to the
+// same-intra-rank peer on the next node and receives one from the previous
+// node. Data, release signal, wait, and flush stay in the same context.
+// ---------------------------------------------------------------------------
+__global__ void
+kernelNetMultiContextPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                                   size_t dataBase, int *results) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int contextId = FLAGCX_BLOCK_IDX_X;
+  int contextCount = comm->getContextCount();
+  if (contextId >= contextCount)
+    return;
+
+  if (contextId == 0 && FLAGCX_THREAD_IDX_X == 0)
+    results[FLAGCX_DEVICE_CTA_COUNT] = contextCount;
+
+  const void FLAGCX_IR_GLOBAL_PTR *net =
+      flagcxDevNetGetFromCommS(devCommPtr, contextId);
+  if (!net) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      results[contextId] = -1;
+    return;
+  }
+
+  int myRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int nNodes = intraSize > 0 ? nRanks / intraSize : 0;
+  if (nNodes <= 1) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      results[contextId] = 0;
+    return;
+  }
+
+  if (FLAGCX_THREAD_IDX_X == 0)
+    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  uint64_t baseline =
+      flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
+                              flagcxDeviceMemoryOrderRelaxed);
+
+  // All ranks reset this context's signal before any rank sends on it.
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, (uint32_t)contextId, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    int nodeIdx = myRank / intraSize;
+    int peerNode = (nodeIdx + 1) % nNodes;
+    int peer = peerNode * intraSize + intraRank;
+    size_t srcOffset = dataBase + (size_t)contextId * sizeof(float);
+    size_t dstOffset = dataBase + ((size_t)myRank * FLAGCX_DEVICE_CTA_COUNT +
+                                   (size_t)contextId) *
+                                      sizeof(float);
+    flagcxDevNetPutS_RSigInc(net, devCommPtr, FLAGCX_TEAM_WORLD, peer,
+                             recvMemPtr, dstOffset, sendMemPtr, srcOffset,
+                             sizeof(float), FLAGCX_COOP_THREAD,
+                             (flagcxDevSignal_t)0);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+
+  flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
+                          baseline + 1, kCompletionBits,
+                          flagcxDeviceMemoryOrderAcquire);
+  flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire);
+
+  // Keep the context alive until every rank has observed its release.
+  flagcxWorldBarrierSyncS(net, FLAGCX_COOP_BLOCK, (uint32_t)contextId, false,
+                          flagcxDeviceMemoryOrderRelaxed,
+                          flagcxDevNetFenceLevel::Relaxed);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    results[contextId] = 1;
+}
+
+void launchKernelNetMultiContextPutSignalIncS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t dataBase,
+    int *devResults, flagcxStream_t stream) {
+  kernelNetMultiContextPutSignalIncS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0,
+                                       stream->base>>>(
+      devCommPtr, sendMemPtr, recvMemPtr, dataBase, devResults);
 }
 
 // ---------------------------------------------------------------------------

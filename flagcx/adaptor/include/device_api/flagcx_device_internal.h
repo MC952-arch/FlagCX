@@ -18,6 +18,8 @@
 #include "mem_alloc_provenance.h"
 #include "shmutils.h"
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // Forward declaration for typed vendor device comm handle
 struct flagcxInnerDevComm;
@@ -106,7 +108,11 @@ struct flagcxDevCommInternal {
   void *ownedSignalBuffer;
   // Network registration installed together with ownedSignalBuffer, if any.
   struct flagcxOneSideHandleInfo *ownedSignalRegistration;
-  void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
+  void *putValueStagingBuffer; // bounded host-pinned slot pool, MR registered
+  int putValueStagingSlotCount;
+  int putValueStagingContextCount;
+  size_t putValueStagingKernelBaseSlot;
+  size_t putValueStagingTotalSlotCount;
   struct flagcxOneSideHandleInfo *ownedStagingRegistration;
 
   // One-sided transport readiness.  Signal send/wait must use the same
@@ -132,6 +138,55 @@ struct flagcxDevCommInternal {
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
 };
+
+// The first nRanks slots preserve the existing host-RMA PutValue layout
+// (one slot per peer). Kernel-proxy contexts use a disjoint bounded pool after
+// that prefix so their independently-lived native requests cannot overwrite a
+// host-RMA request's source value.
+static inline bool flagcxPutValueStagingLayout(int nRanks, int contextCount,
+                                               int slotsPerContext,
+                                               size_t *kernelBaseSlot,
+                                               size_t *totalSlotCount,
+                                               size_t *totalBytes) {
+  if (nRanks < 0 || contextCount < 0 || slotsPerContext < 0 ||
+      kernelBaseSlot == nullptr || totalSlotCount == nullptr ||
+      totalBytes == nullptr)
+    return false;
+
+  const size_t hostSlots = (size_t)nRanks;
+  const size_t contexts = (size_t)contextCount;
+  const size_t slots = (size_t)slotsPerContext;
+  if (contexts != 0 && slots > (SIZE_MAX - hostSlots) / contexts)
+    return false;
+  const size_t allSlots = hostSlots + contexts * slots;
+  if (allSlots > SIZE_MAX / sizeof(uint64_t))
+    return false;
+
+  *kernelBaseSlot = hostSlots;
+  *totalSlotCount = allSlots;
+  *totalBytes = allSlots * sizeof(uint64_t);
+  return true;
+}
+
+static inline bool
+flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
+                                  int contextId, int stagingSlot,
+                                  uint64_t *offset) {
+  if (devComm == nullptr || offset == nullptr || contextId < 0 ||
+      contextId >= devComm->putValueStagingContextCount || stagingSlot < 0 ||
+      stagingSlot >= devComm->putValueStagingSlotCount)
+    return false;
+
+  const size_t slot =
+      devComm->putValueStagingKernelBaseSlot +
+      (size_t)contextId * (size_t)devComm->putValueStagingSlotCount +
+      (size_t)stagingSlot;
+  if (slot >= devComm->putValueStagingTotalSlotCount ||
+      slot > UINT64_MAX / sizeof(uint64_t))
+    return false;
+  *offset = (uint64_t)slot * sizeof(uint64_t);
+  return true;
+}
 
 // ============================================================
 // Section 2: flagcxDevMemInternal — Host-Side Memory Handle

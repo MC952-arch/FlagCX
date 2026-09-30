@@ -533,6 +533,134 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "FLAGCX_P2P_DISABLE=1", configure, platform
             )
 
+    def test_rma_registration_failure_runs_in_two_rank_network_ci(self):
+        rma_makefile = (
+            REPO_ROOT / "test/unittest/rma/Makefile"
+        ).read_text()
+        registration_test = (
+            REPO_ROOT
+            / "test/unittest/rma/coll_rma_registration_failure.cpp"
+        ).read_text()
+
+        self.assertRegex(
+            rma_makefile, r"MPI_SRCS\s*:=\s*\$\(wildcard coll_\*\.cpp\)"
+        )
+        network_target = rma_makefile[
+            rma_makefile.index("run-mpi-net:") :
+        ]
+        network_target = network_target[: network_target.index("\n\n")]
+        self.assertIn("-np 2", network_target)
+        self.assertNotIn("--gtest_filter", network_target)
+        self.assertIn("failRegMr", registration_test)
+        self.assertIn(
+            "oneSideDataMetadataExchangeCount", registration_test
+        )
+        self.assertIn("flagcxOneSideRegister", registration_test)
+
+    def test_kernel_proxy_transport_regressions_are_in_ci(self):
+        core_makefile = (
+            REPO_ROOT / "test/unittest/core/Makefile"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        transport_test = (
+            REPO_ROOT
+            / "test/unittest/core/test_kernel_proxy_transport.cpp"
+        ).read_text()
+
+        self.assertIn("UNIT_SRCS   := $(wildcard test_*.cpp)", core_makefile)
+        core_case = unit_runner[unit_runner.index("    core|service)") :]
+        core_case = core_case[: core_case.index("    rma)")]
+        self.assertIn('make -C "$suite_dir" run-unit', core_case)
+        for platform in ("cuda", "metax", "hygon", "ppu"):
+            config = (
+                REPO_ROOT / f".github/configs/{platform}.yml"
+            ).read_text()
+            self.assertIn("  - core", config, platform)
+
+        self.assertIn(
+            "OutOfOrderRequestsAdvanceOnlyContiguousPrefix", transport_test
+        )
+        self.assertIn(
+            "StagingSlotsRemainOwnedUntilRequestCompletion", transport_test
+        )
+        self.assertIn("FailedDataSuppressesReleaseSubmission", transport_test)
+        self.assertIn(
+            "TerminalFinalizeWaitsForLateProducerReservation", transport_test
+        )
+        self.assertIn(
+            "ClosedProducerGateRejectsNewReservations", transport_test
+        )
+        self.assertIn(
+            "TerminalFinalizeWaitsForBackpressuredReservation",
+            transport_test,
+        )
+        self.assertIn("ProducerGateSerializesEntryWithClose", transport_test)
+        self.assertIn(
+            "DequeueReturnsInProgressForUnpublishedReservation",
+            transport_test,
+        )
+        self.assertIn("DequeueConsumesPublishedReservation", transport_test)
+
+        cuda_config = (
+            REPO_ROOT / ".github/configs/cuda.yml"
+        ).read_text()
+        self.assertIn("  - device_api_host", cuda_config)
+        cleanup_test = (
+            REPO_ROOT
+            / "test/unittest/device_api/test_dev_comm_cleanup.cpp"
+        ).read_text()
+        self.assertIn(
+            "QuiesceReturnsKernelProxyTerminalStatus", cleanup_test
+        )
+        self.assertIn("PutValueStagingLayoutTest", cleanup_test)
+
+        proxy_source = (REPO_ROOT / "flagcx/core/proxy.cc").read_text()
+        terminal_publish = proxy_source[
+            proxy_source.index("flagcxKernelProxyPublishTerminal(") :
+        ]
+        terminal_publish = terminal_publish[
+            : terminal_publish.index("flagcxKernelProxyAdvanceCompleted(")
+        ]
+        self.assertNotIn("kernelState.fifos[", terminal_publish)
+        kernel_join = proxy_source.index(
+            "pthread_join(comm->proxyState->kernelState.threads[i]"
+        )
+        deferred_fifo_destroy = proxy_source.index(
+            "fifo->flagcxFifoDestroy()", kernel_join
+        )
+        self.assertLess(kernel_join, deferred_fifo_destroy)
+
+        device_api_case = unit_runner[
+            unit_runner.index("run_device_api() {") :
+        ]
+        device_api_case = device_api_case[
+            : device_api_case.index("run_device_api_unified_ir() {")
+        ]
+        self.assertIn("FLAGCX_KERNEL_PROXY_PARALLELISM=4", device_api_case)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", device_api_case)
+        cuda_kernel = (
+            REPO_ROOT / "test/kernel/nvidia/device_api.cu"
+        ).read_text()
+        self.assertIn("MultiContextPutRelease", cuda_kernel)
+        cuda_ir_kernel = (
+            REPO_ROOT / "test/kernel/nvidia/device_ir.cu"
+        ).read_text()
+        cuda_ir_test = (
+            REPO_ROOT
+            / "test/unittest/device_api/test_device_ir_inter.cpp"
+        ).read_text()
+        self.assertIn("kernelNetMultiContextPutSignalIncS", cuda_ir_kernel)
+        self.assertIn("S3b MultiContextPutSignalIncS", cuda_ir_test)
+        self.assertIn("flagcxDevNet net(devComm, contextId)", cuda_kernel)
+        self.assertIn("flagcxTeamTagWorld{}, net, contextId", cuda_kernel)
+        device_api_test = (
+            REPO_ROOT
+            / "test/unittest/device_api/test_device_api_inter.cpp"
+        ).read_text()
+        self.assertIn("usleep(100000)", device_api_test)
+
 
 class MetaXEnvironmentTest(unittest.TestCase):
     def run_metax_shell(self, body, *, extra_env=None):

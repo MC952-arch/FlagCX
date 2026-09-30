@@ -8,6 +8,7 @@
  *   K2:  Signal/Counter Reset (resetSignal, resetCounter, readSignal, shadow)
  *   K3:  Put + SigInc (putSignalInc)
  *   K4:  Put + SigAdd (putSignalAddDecoupled)
+ *   K4b: Multi-context Put + standalone release
  *   K5:  Put + SigInc + CtrInc (CounterPipeline)
  *   K6:  Put(None) + Flush + Signal (FlushDecouple)
  *   K7:  PutValue
@@ -33,8 +34,8 @@
  *
  * Signal/counter slot assignments:
  *   slot 0: K3(SignalInc), K5(CounterPipeline), K6(FlushDecouple),
- *K14(OneSided) slot 1: K7(PutValue), K9(Signal) slot 2: K10(Shadow) counter 0:
- *K5(CounterInc)
+ *K14(OneSided) slot 1: K7(PutValue), K9(Signal) slot 2: K4b(MultiContext),
+ *K10(Shadow) counter 0: K5(CounterInc)
  *
  * DevCommRequirements: interSignalCount=3, interCounterCount=1
  ************************************************************************/
@@ -81,6 +82,23 @@ static bool verifyAlltoAll(const float *buf, size_t countPerPeer, int nRanks,
     }
   return true;
 }
+
+#ifdef USE_NVIDIA_ADAPTOR
+static bool verifyInterAlltoAll(const float *buf, size_t countPerPeer,
+                                int nRanks, int myRank, int intraSize) {
+  int myNode = myRank / intraSize;
+  for (int src = 0; src < nRanks; src++) {
+    if (src / intraSize == myNode)
+      continue;
+    for (size_t i = 0; i < countPerPeer; i++) {
+      float expected = (float)(src * 1000 + myRank * 100 + (int)i);
+      if (buf[(size_t)src * countPerPeer + i] != expected)
+        return false;
+    }
+  }
+  return true;
+}
+#endif
 
 static bool verifyCounterPipeline(const uint64_t *hResult, const float *buf,
                                   size_t countPerPeer, int nRanks) {
@@ -328,6 +346,29 @@ int main(int argc, char *argv[]) {
     printResult("K4 PutSigAdd", k4Ok, proc);
     allPass &= k4Ok;
     MPI_Barrier(MPI_COMM_WORLD);
+
+#ifdef USE_NVIDIA_ADAPTOR
+    // --- K4b: multi-context data + standalone release ---
+    initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
+                 hostBuff);
+    FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, floatSize, flagcxMemDevice,
+                                        stream));
+    // Make launch skew deterministic for the first size. Without the kernel's
+    // pre-communication rendezvous, peers can signal rank 0 before it captures
+    // its baseline and rank 0 waits forever for one extra signal.
+    if (size == minBytes && proc == 0)
+      usleep(100000);
+    FLAGCXCHECK(launchKernelNetMultiContextPutRelease(
+        sendMem, recvMem, countPerPeer, DATATYPE, devComm, stream));
+    FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuff, recvBuff, floatSize,
+                                        flagcxMemcpyDeviceToHost, stream));
+    bool k4bOk = verifyInterAlltoAll((const float *)hostBuff, countPerPeer,
+                                     totalProcs, proc, intraSize);
+    printResult("K4b MultiContextPutRelease", k4bOk, proc);
+    allPass &= k4bOk;
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
 
     // --- K5: Put + SigInc + CtrInc (CounterPipeline) ---
     initSendBuff(sendBuff, countPerPeer, totalProcs, proc, devHandle, stream,
