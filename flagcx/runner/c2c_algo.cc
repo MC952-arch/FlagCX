@@ -1,5 +1,6 @@
 #include "c2c_algo.h"
 #include "c2c_ir.h"
+#include "coll_proxy_transport.h"
 #include "runner_result.h"
 #include <cstdint>
 #include <cstdlib>
@@ -220,11 +221,13 @@ flagcxResult_t flagcxC2cP2pOp::run(void *buff, flagcxDataType_t datatype,
   void *ptr =
       static_cast<char *>(buff) + offset_ * getFlagcxDataTypeSize(datatype);
   if (isRecv_) {
-    return flagcxHeteroRecv(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->heteroComm, stream);
+    return flagcxHeteroRecvOnChannel(
+        static_cast<void *>(ptr), count_, datatype, peerRank_, comm->heteroComm,
+        stream, flagcxCollProxyChannelForEdge(peerRank_, comm->rank, 0));
   } else {
-    return flagcxHeteroSend(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->heteroComm, stream);
+    return flagcxHeteroSendOnChannel(
+        static_cast<void *>(ptr), count_, datatype, peerRank_, comm->heteroComm,
+        stream, flagcxCollProxyChannelForEdge(comm->rank, peerRank_, 0));
   }
 }
 

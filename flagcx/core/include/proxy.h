@@ -7,6 +7,7 @@
 #ifndef FLAGCX_PROXY_H_
 #define FLAGCX_PROXY_H_
 
+#include "coll_proxy_transport.h"
 #include "device.h"
 #include "flagcx_kernel.h"
 #include "flagcx_kernel_internal.h"
@@ -54,6 +55,8 @@ typedef flagcxResult_t (*proxyProgressFunc_t)(struct flagcxProxyState *,
 #define FLAGCX_PROXY_MAX_SUBS MAXCHANNELS
 static_assert(FLAGCX_MAX_WORK_ELEMENTS <= MAXCHANNELS,
               "Not enough sub space for max work elements");
+static_assert(FLAGCX_COLL_PROXY_MAX_CHANNELS == MAXCHANNELS,
+              "Collective channel selector must match communicator layout");
 
 union flagcxProxyOpSpecifics {
   struct {
@@ -116,6 +119,10 @@ struct flagcxProxyArgs {
   int postFlush = 0;
   int transmitted = 0;
   int sendStepMask;
+  // Shared collective transport state. Adaptor requests may complete out of
+  // order; the scoreboard controls contiguous chunk retirement.
+  struct flagcxCollProxyTransport collTransport;
+  uint8_t netCompleted[FLAGCX_COLL_PROXY_MAX_STEPS];
   size_t totalCopySize;
   size_t totalPostSize;
   size_t totalSendSize;
@@ -411,6 +418,12 @@ struct flagcxProxyConnection {
   proxyConnectState state;
   // First terminal control-plane error for this connection.
   flagcxResult_t result;
+  // Monotonic generation for collective requests on this connection/order
+  // domain. Chunk sequence numbers restart at zero for each generation.
+  uint64_t collGeneration;
+  // Physical lanes accepted for collective data on this connection. Kept in
+  // the transport-neutral proxy object so BAREX-only builds need no IB types.
+  uint64_t collDataLaneMask;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };

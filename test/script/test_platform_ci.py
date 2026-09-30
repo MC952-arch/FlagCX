@@ -401,12 +401,29 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ]
         forced_net = forced_net[:forced_net.index(";;")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IB", forced_net)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", forced_net)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=0", forced_net)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", forced_net)
+
+        striping = unit_runner[
+            unit_runner.index(
+                'FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"'
+            ) :
+        ]
+        striping = striping[:striping.index(";;")]
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", striping)
+        self.assertIn("FLAGCX_IB_SPLIT_DATA_ON_QPS=1", striping)
+        self.assertIn("FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1", striping)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_QP_STRIPING=1", striping)
+        self.assertIn("FLAGCX_CI_RUNNER_BYTES=67108864", striping)
+        self.assertIn("FlagCXCollTest.AlltoAll", striping)
 
         ppu_forced_net = ppu_env[
             ppu_env.index('FLAGCX_CI_MPI_LABEL="runner BAREX forced NET"') :
         ]
         ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
+        self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
 
     def test_p2p_read_diagnostics_use_fresh_qp_and_mtu_processes(self):
         unit_runner = (
@@ -455,11 +472,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
         self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 3
+            runner_case.count("./build/bin/runner_mpi_tests"), 4
         )
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 2
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
         )
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", runner_case)

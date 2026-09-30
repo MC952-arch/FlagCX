@@ -1,5 +1,6 @@
 #include "uni_runner_impl.h"
 #include "adaptor.h"
+#include "coll_proxy_transport.h"
 #include "comm.h"
 #include "device_api/completion_word.h"
 #include "flagcx_hetero.h"
@@ -1663,13 +1664,15 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
             struct uniRunnerP2pOpData *op = &ops[i];
             flagcxResult_t opResult = flagcxSuccess;
             if (op->type == flagcxDevicePrimSend) {
-              opResult =
-                  flagcxHeteroSend(op->addr, op->count, op->datatype,
-                                   op->peerRank, comm, runnerState->commStream);
+              opResult = flagcxHeteroSendOnChannel(
+                  op->addr, op->count, op->datatype, op->peerRank, comm,
+                  runnerState->commStream,
+                  flagcxCollProxyChannelForEdge(comm->rank, op->peerRank, 0));
             } else if (op->type == flagcxDevicePrimRecv) {
-              opResult =
-                  flagcxHeteroRecv(op->addr, op->count, op->datatype,
-                                   op->peerRank, comm, runnerState->commStream);
+              opResult = flagcxHeteroRecvOnChannel(
+                  op->addr, op->count, op->datatype, op->peerRank, comm,
+                  runnerState->commStream,
+                  flagcxCollProxyChannelForEdge(op->peerRank, comm->rank, 0));
             } else {
               return flagcxInvalidArgument;
             }

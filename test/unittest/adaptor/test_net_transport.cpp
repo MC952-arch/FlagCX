@@ -615,6 +615,57 @@ TEST(IbTransportLaneTest, UnorderedSelectionPreservesLegacyCursor) {
   EXPECT_EQ(comm.qpIndex, 0);
 }
 
+TEST(IbTransportLaneTest, IndependentDomainUsesStableStripedLaneGroup) {
+  flagcxIbNetCommBase comm = {};
+  ibv_qp nativeQps[4] = {};
+  comm.ready = 1;
+  comm.nqps = 4;
+  comm.qpIndex = 3;
+  for (int i = 0; i < comm.nqps; ++i)
+    comm.qps[i].qp = &nativeQps[i];
+
+  flagcxNetSubmitContext submit = {};
+  uint64_t laneMask = 0;
+  submit.orderingKey = 6;
+  submit.flags = FLAGCX_NET_SUBMIT_DATA | FLAGCX_NET_SUBMIT_INDEPENDENT;
+  submit.laneMask = &laneMask;
+  ASSERT_EQ(flagcxNetSetSubmitContext(&submit), flagcxSuccess);
+
+  flagcxIbDataLanePolicy policy = {};
+  flagcxIbGetDataLanePolicy(&policy);
+  EXPECT_EQ(policy.mode, FLAGCX_NET_LANE_ORDERED);
+  flagcxIbLane first = {};
+  flagcxIbLane second = {};
+  ASSERT_EQ(flagcxIbSelectDataLane(&comm, &policy, 0, &first), flagcxSuccess);
+  ASSERT_EQ(flagcxIbSelectDataLane(&comm, &policy, 1, &second), flagcxSuccess);
+  EXPECT_EQ(first.base.index, 2u);
+  EXPECT_EQ(second.base.index, 3u);
+  EXPECT_EQ(comm.qpIndex, 3);
+  EXPECT_EQ(flagcxIbCommitDataLane(&comm, &policy, &first), flagcxSuccess);
+  EXPECT_EQ(comm.qpIndex, 3);
+  EXPECT_EQ(laneMask, 1ULL << first.base.index);
+  flagcxNetClearSubmitContext();
+}
+
+TEST(IbTransportLaneTest, CompatibilityDataPolicyRetainsRoundRobin) {
+  flagcxIbNetCommBase comm = {};
+  ibv_qp nativeQps[2] = {};
+  comm.ready = 1;
+  comm.nqps = 2;
+  comm.qpIndex = 1;
+  comm.qps[0].qp = &nativeQps[0];
+  comm.qps[1].qp = &nativeQps[1];
+
+  flagcxIbDataLanePolicy policy = {};
+  flagcxIbGetDataLanePolicy(&policy);
+  EXPECT_EQ(policy.mode, FLAGCX_NET_LANE_UNORDERED);
+  flagcxIbLane lane = {};
+  ASSERT_EQ(flagcxIbSelectDataLane(&comm, &policy, 0, &lane), flagcxSuccess);
+  EXPECT_EQ(lane.base.index, 1u);
+  ASSERT_EQ(flagcxIbCommitDataLane(&comm, &policy, &lane), flagcxSuccess);
+  EXPECT_EQ(comm.qpIndex, 0);
+}
+
 TEST(IbTransportKeyTest, UsesLaneLocalAndRemoteNicKeys) {
   uintptr_t base = 0x1000;
   size_t regionSize = 0x1000;

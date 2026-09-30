@@ -404,6 +404,10 @@ struct flagcxIbConnectionMetadata {
   char devName[MAX_MERGED_DEV_NAME];
   uint64_t fifoAddr;
   int ndevs;
+  // Data-lane geometry is negotiated explicitly. Both endpoints must use the
+  // same QP count and striping width for deterministic lane mapping.
+  int nqps;
+  int splitDataOnQps;
 
   uint32_t ctrlQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];
   uint32_t retransQpn[FLAGCX_IB_MAX_DEVS_PER_NIC];

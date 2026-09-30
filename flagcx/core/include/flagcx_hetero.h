@@ -171,11 +171,25 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int opId = INT_MAX, int step = -1);
 
+// Internal collective entry point. channelId is part of the transport order
+// key; callers must choose it deterministically on both endpoints.
+flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
+                                         flagcxDataType_t datatype, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId = INT_MAX, int step = -1);
+
 /* C++ style */
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int opId = INT_MAX, int step = -1);
+
+flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
+                                         flagcxDataType_t datatype, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId = INT_MAX, int step = -1);
 
 flagcxResult_t flagcxHeteroGroupStart();
 

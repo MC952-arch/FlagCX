@@ -436,8 +436,29 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+        -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+        -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=0 \
+        -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests
+      FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
+        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+        -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        -x FLAGCX_IB_SPLIT_DATA_ON_QPS=1 \
+        -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1 \
+        -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
+        -x FLAGCX_CI_EXPECT_COLL_QP_STRIPING=1 \
+        -x FLAGCX_CI_RUNNER_BYTES=67108864 \
+        "${runner_net_platform_env[@]}" \
+        ./build/bin/runner_mpi_tests \
+        --gtest_filter=FlagCXCollTest.AlltoAll
       ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
