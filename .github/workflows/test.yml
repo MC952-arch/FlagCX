@@ -1,12 +1,7 @@
 name: Perf Tests in Container
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 env:
   MPI_HOME: /usr/local/mpi

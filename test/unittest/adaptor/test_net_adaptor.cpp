@@ -1068,7 +1068,7 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
       flagcxSuccess);
   ASSERT_GE(fd, 0);
   void *mr = nullptr;
-  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_DMABUF,
+  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_CUDA,
                               0, fd, FLAGCX_NET_MR_FLAG_NONE, &mr),
             flagcxSuccess);
   EXPECT_NE(mr, nullptr);

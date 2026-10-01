@@ -1280,10 +1280,6 @@ TEST_F(SymMemTest, DuplicateWindowsShareMrUntilLastDeregister) {
 }
 
 TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
-  int rank = 0;
-  int nranks = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &nranks);
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
   ASSERT_NE(testComm, nullptr);
@@ -1316,17 +1312,12 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
     EXPECT_NE(liveWindow->defaultBase->mcHandle, nullptr);
   }
 
-  // Deliberately omit flagcxCommWindowDeregister. Destroy one rank at a time:
-  // a bootstrap rendezvous in the live-window cleanup path would deadlock the
-  // active rank while all peers wait below in MPI_Allreduce.
-  for (int owner = 0; owner < nranks; owner++) {
-    flagcxResult_t result = flagcxSuccess;
-    if (rank == owner) {
-      result = flagcxCommDestroy(testComm);
-      if (result == flagcxSuccess)
-        testComm = nullptr;
-    }
-    ASSERT_TRUE(allRanksSucceeded(result));
-  }
+  // Deliberately omit flagcxCommWindowDeregister. Communicator destruction is
+  // collective for some device providers, so every rank must enter it
+  // concurrently. The local-only cleanup behavior is covered by the mock
+  // ownership tests in test_sym_window_struct.cpp.
+  flagcxResult_t result = flagcxCommDestroy(testComm);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  testComm = nullptr;
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
