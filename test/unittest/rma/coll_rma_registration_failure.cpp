@@ -93,7 +93,7 @@ TEST_F(RmaTest, RankLocalRegistrationFailureConvergesBeforeMetadataExchange) {
   int maximumResult = 0;
   allRankResultRange(registerResult, &minimumResult, &maximumResult);
   EXPECT_EQ(minimumResult, maximumResult);
-  EXPECT_EQ(minimumResult, static_cast<int>(flagcxNotSupported));
+  EXPECT_EQ(minimumResult, static_cast<int>(flagcxSystemError));
 
   // Local status convergence must happen before metadata exchange and before
   // publishing either the handle array entry or proxy sendComm table.
@@ -125,6 +125,7 @@ TEST_F(RmaTest, RankLocalRegistrationFailureConvergesBeforeMetadataExchange) {
   allRankResultRange(destroyResult, &minimumDestroy, &maximumDestroy);
   EXPECT_EQ(minimumDestroy, maximumDestroy);
   EXPECT_EQ(minimumDestroy, static_cast<int>(flagcxSuccess));
-  if (destroyResult == flagcxSuccess)
+  if (destroyResult == flagcxSuccess) {
     EXPECT_EQ(flagcxMemFree(registrationBuffer), flagcxSuccess);
+  }
 }

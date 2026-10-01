@@ -2239,6 +2239,17 @@ static flagcxResult_t flagcxRollbackWindowRegistration(
     return originalResult;
 
   flagcxWindow_t failedWin = *win;
+  // The lower-level registration path already attempted rollback and retained
+  // this object when provider teardown failed. Do not immediately retry that
+  // teardown here: the non-null output is the caller's cleanup token and must
+  // remain valid until an explicit deregistration retry.
+  if (failedWin->defaultBase != nullptr &&
+      failedWin->defaultBase->state == flagcxSymWindowCleanupRequired) {
+    flagcxResult_t retainResult = flagcxSymRetainPendingCleanup(
+        comm != nullptr ? comm->heteroComm : nullptr, failedWin);
+    return retainResult == flagcxSuccess ? originalResult : retainResult;
+  }
+
   flagcxResult_t cleanupResult = flagcxCommWindowDeregisterInternal(
       comm, failedWin, allocator, cleanupMode);
   if (cleanupResult == flagcxSuccess) {

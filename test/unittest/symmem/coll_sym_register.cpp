@@ -441,7 +441,8 @@ TEST_F(SymMemTest, RepeatedRegisterDeregister) {
   }
 }
 
-TEST_F(SymMemTest, RankLocalVmmPrepareFailureFallsBackBeforeFdExchange) {
+TEST_F(SymMemTest,
+       RankLocalVmmPrepareFailureConvergesBeforeFdExchangeAndRetries) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
       envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
     GTEST_SKIP() << "Runs in the required VMM-local invocation";
@@ -466,13 +467,27 @@ TEST_F(SymMemTest, RankLocalVmmPrepareFailureFallsBackBeforeFdExchange) {
   if (rank == 1)
     deviceAdaptor->symPhysAlloc = originalSymPhysAlloc;
 
-  ASSERT_TRUE(allRanksSucceeded(result));
-  ASSERT_NE(fallbackWindow, nullptr);
-  ASSERT_NE(fallbackWindow->defaultBase, nullptr);
-  EXPECT_FALSE(fallbackWindow->defaultBase->isVMM);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
   EXPECT_EQ(testComm->heteroComm->symWindowFdExchangeCount, 0u);
-  ASSERT_TRUE(
-      allRanksSucceeded(flagcxCommWindowDeregister(testComm, fallbackWindow)));
+  if (result == flagcxSuccess) {
+    ASSERT_NE(fallbackWindow, nullptr);
+    ASSERT_NE(fallbackWindow->defaultBase, nullptr);
+    EXPECT_FALSE(fallbackWindow->defaultBase->isVMM);
+    ASSERT_TRUE(allRanksSucceeded(
+        flagcxCommWindowDeregister(testComm, fallbackWindow)));
+  } else {
+    // Some providers cannot export an IPC handle for the VMM allocation that
+    // backs buffer. In that case the only valid fallback is a collective,
+    // unpublished NotSupported result; publishing a window without a usable
+    // local data route would be incorrect.
+    EXPECT_EQ(result, flagcxNotSupported);
+    EXPECT_EQ(fallbackWindow, nullptr);
+    EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
+    EXPECT_EQ(testComm->heteroComm->pendingSymCleanup, nullptr);
+  }
 
   flagcxWindow_t retryWindow = nullptr;
   result = flagcxCommWindowRegister(testComm, buffer, size, &retryWindow,

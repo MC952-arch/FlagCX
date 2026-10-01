@@ -505,8 +505,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("flagcxSymWindowValidateDataRoutes", staged_publish)
         self.assertIn("flagcxSymWindowPublish", staged_publish)
 
+        # Keep the source check independent of clang-format's return-type
+        # wrapping for this long function name.
         route_start = source.index(
-            "flagcxResult_t flagcxSymWindowValidateDataRoutesForMode"
+            "flagcxSymWindowValidateDataRoutesForMode("
         )
         route_end = source.index(
             "static flagcxResult_t flagcxSymCleanupStepConverge", route_start

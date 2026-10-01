@@ -22,6 +22,8 @@ struct SymWindowIpcFixture : public ::testing::Test {
     window.localRanks = 2;
     window.mrIndex = -1;
     window.ipcSlot = 0;
+    window.published = true;
+    window.state = flagcxSymWindowPublished;
     comm.symWindows = &window;
 
     peerPointers[0] = localMemory;
