@@ -145,7 +145,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             'export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"',
             configure,
         )
-        self.assertIn('runner)', configure)
+        self.assertIn('runner|symmem)', configure)
         self.assertIn(
             'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
             configure,
@@ -347,6 +347,262 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+    def test_symmem_runs_required_local_and_network_vmm_matrix(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        symmem_runner = (
+            REPO_ROOT / "test/script/symmem_test.sh"
+        ).read_text()
+
+        self.assertIn('adaptor|p2p|rma|runner|symmem)', unit_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
+            unit_runner,
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET VA"', unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF"', unit_runner
+        )
+        self.assertIn('FLAGCX_VMM_MR_MODE=va', unit_runner)
+        self.assertIn('FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va', unit_runner)
+        self.assertIn('FLAGCX_VMM_MR_MODE=dmabuf', unit_runner)
+        self.assertIn(
+            'FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf', unit_runner
+        )
+        self.assertIn('FLAGCX_CI_REQUIRE_NET_MR=1', unit_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1', unit_runner)
+        self.assertIn(
+            'FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1', unit_runner
+        )
+        self.assertIn('FLAGCX_CI_EXPECT_NET_ADAPTOR="$expected_adaptor"', unit_runner)
+        self.assertIn(
+            "SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.DuplicateWindowsShareMrUntilLastDeregister",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalStatusFailureConvergesDeterministically",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.PublicRegistrationUsesVmmMrRouting",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.VmmFlatFallbackPreservesMrRoute",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.DirectGdrVmmPreservesMrRoute",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.SignalRegistrationUsesAllocationProvenance",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries",
+            unit_runner,
+        )
+        self.assertNotIn(
+            "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
+            symmem_runner,
+        )
+
+        for platform in ("cuda", "metax", "hygon", "ppu"):
+            config = (
+                REPO_ROOT / f".github/configs/{platform}.yml"
+            ).read_text()
+            source = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn("  - symmem", config)
+            self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", source)
+            self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", source)
+
+    def test_cuda_vmm_allocation_does_not_require_imex_fabric(self):
+        source = (
+            REPO_ROOT / "flagcx/adaptor/device/cuda_adaptor.cc"
+        ).read_text()
+        start = source.index("flagcxResult_t cudaAdaptorGdrMemAlloc")
+        end = source.index("flagcxResult_t cudaAdaptorGdrMemFree", start)
+        allocator = source[start:end]
+
+        self.assertIn("CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR", allocator)
+        self.assertNotIn("CU_MEM_HANDLE_TYPE_FABRIC", allocator)
+
+    def test_symmem_status_convergence_is_allocation_free(self):
+        source = (REPO_ROOT / "flagcx/core/sym_heap.cc").read_text()
+        start = source.index(
+            "static flagcxResult_t flagcxSymGlobalConvergeScalar"
+        )
+        end = source.index("} // namespace", start)
+        convergence = source[start:end]
+
+        self.assertNotIn("flagcxCalloc", convergence)
+        self.assertNotIn("std::vector", convergence)
+        self.assertNotIn("bootstrapCollAllGather", convergence)
+        self.assertIn("bootstrapRecv", convergence)
+        self.assertIn("bootstrapSend", convergence)
+
+        retry_start = source.index(
+            "flagcxResult_t flagcxSymRetryPendingCleanup"
+        )
+        retry_end = source.index(
+            "flagcxResult_t flagcxSymRetainPendingCleanup", retry_start
+        )
+        retry = source[retry_start:retry_end]
+        self.assertNotIn("std::vector", retry)
+        self.assertNotIn("bootstrapCollAllGather", retry)
+        self.assertIn("flagcxSymLogicalOr", retry)
+
+        common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
+        publish_start = common.index(
+            "static flagcxResult_t flagcxDevCommStatePublishWindow"
+        )
+        publish_end = common.index(
+            "static flagcxResult_t flagcxDevCommStateInit", publish_start
+        )
+        staged_publish = common[publish_start:publish_end]
+        self.assertGreaterEqual(
+            staged_publish.count("flagcxSymConvergeStatus"), 2
+        )
+        self.assertIn("flagcxSymWindowValidateDataRoutes", staged_publish)
+        self.assertIn("flagcxSymWindowPublish", staged_publish)
+
+        route_start = source.index(
+            "flagcxResult_t flagcxSymWindowValidateDataRoutesForMode"
+        )
+        route_end = source.index(
+            "static flagcxResult_t flagcxSymCleanupStepConverge", route_start
+        )
+        route_validation = source[route_start:route_end]
+        self.assertIn("localPeerTransportEnabled", route_validation)
+        self.assertIn("hasNetworkMr", route_validation)
+
+        register_start = source.index(
+            "flagcxResult_t flagcxSymWindowRegisterInternal"
+        )
+        register_end = source.index("\nfail:", register_start)
+        registration = source[register_start:register_end]
+        self.assertIn("kSymNetworkRouteGatherTag", registration)
+        self.assertIn("flagcxParamP2pDisable()", registration)
+        self.assertIn("if (needsNetworkMr)", registration)
+
+        vmm_start = source.index("const bool localVmmAvailable")
+        vmm_end = source.index("flagcxResult_t commonVmmAvailability", vmm_start)
+        vmm_callbacks = source[vmm_start:vmm_end]
+        for callback in (
+            "symPhysAlloc",
+            "symPhysFree",
+            "symFlatMap",
+            "symFlatMappingUnmap",
+            "symFlatVaFree",
+        ):
+            self.assertIn(callback, vmm_callbacks)
+
+    def test_all_device_adaptors_offer_dmabuf_then_va_for_vmm_mr(self):
+        adaptor_sources = (
+            "cuda_adaptor.cc",
+            "maca_adaptor.cc",
+            "ducuda_adaptor.cc",
+            "ppu_cuda_adaptor.cc",
+        )
+        for filename in adaptor_sources:
+            source = (
+                REPO_ROOT / "flagcx/adaptor/device" / filename
+            ).read_text()
+            self.assertIn(
+                "FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA",
+                source,
+                filename,
+            )
+            self.assertIn("GetAllocationVmmMrCaps", source, filename)
+
+        common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
+        dma_route = common.index("return FLAGCX_VMM_MR_ROUTE_DMABUF")
+        va_route = common.index("return FLAGCX_VMM_MR_ROUTE_VA")
+        unsupported_route = common.index("return FLAGCX_VMM_MR_ROUTE_NONE")
+        self.assertLess(dma_route, va_route)
+        self.assertLess(va_route, unsupported_route)
+        self.assertIn('flagcxGetEnv("FLAGCX_VMM_MR_MODE")', common)
+        self.assertIn("mode == flagcxVmmMrModeAuto", common)
+
+        route_tests = (
+            REPO_ROOT / "test/unittest/symmem/test_sym_window_struct.cpp"
+        ).read_text()
+        for test_name in (
+            "StrictVaSkipsDmaBufProbeAndRegistration",
+            "StrictDmaBufNeverFallsBackToVa",
+            "StrictDmaBufUsesDmaBufRoute",
+            "InvalidStrictModeFailsBeforeRegistration",
+            "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
+            "AllocationCapabilityCanRejectUnsafeVaRoute",
+            "PartialDmaBufMrIsReleasedBeforeVaFallback",
+            "PartialDmaBufMrCleanupFailureSuppressesVaFallback",
+        ):
+            self.assertIn(test_name, route_tests)
+
+    def test_multicast_retained_handle_extension_is_latest_only(self):
+        header = (
+            REPO_ROOT / "flagcx/adaptor/include/flagcx_device_adaptor.h"
+        ).read_text()
+        v1 = header[
+            header.index("struct flagcxDeviceAdaptor_v1") :
+            header.index("struct flagcxDeviceAdaptor_latest")
+        ]
+        self.assertNotIn("symMulticastImport", v1)
+        self.assertIn("symMulticastImport", header)
+
+        for filename, symbol in (
+            ("cuda_adaptor.cc", "cudaAdaptorSymMulticastImport"),
+            ("maca_adaptor.cc", "macaAdaptorSymMulticastImport"),
+            ("ducuda_adaptor.cc", "ducudaAdaptorSymMulticastImport"),
+            ("ppu_cuda_adaptor.cc", "ppucudaAdaptorSymMulticastImport"),
+        ):
+            source = (
+                REPO_ROOT / "flagcx/adaptor/device" / filename
+            ).read_text()
+            self.assertIn(symbol, source)
+
+        sym_heap = (REPO_ROOT / "flagcx/core/sym_heap.cc").read_text()
+        self.assertIn("deviceAdaptor->symMulticastImport", sym_heap)
+        self.assertIn("d->mcHandle, /*importFd=*/-1", sym_heap)
 
     def test_perf_collectives_fail_fast_on_flagcx_errors(self):
         perf_dir = REPO_ROOT / "test/perf/host_api"

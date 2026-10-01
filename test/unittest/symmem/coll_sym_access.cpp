@@ -2,10 +2,13 @@
 // Verifies that the flat VA mapping allows direct peer reads/writes.
 // Requires MPI + GPUs with P2P support.
 
+#include "adaptor.h"
 #include "global_comm.h"
+#include "onesided_types.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -22,6 +25,37 @@ bool allRanksSucceeded(flagcxResult_t localResult) {
   return allRanksReady(localResult == flagcxSuccess);
 }
 
+bool envEnabled(const char *name) {
+  const char *value = std::getenv(name);
+  return value != nullptr && std::strcmp(value, "0") != 0;
+}
+
+::testing::AssertionResult vmmMrRouteMatches(uint8_t actual) {
+  const char *expected = std::getenv("FLAGCX_CI_EXPECT_VMM_MR_ROUTE");
+  if (expected == nullptr || expected[0] == '\0') {
+    if (actual != FLAGCX_VMM_MR_ROUTE_NONE)
+      return ::testing::AssertionSuccess();
+    return ::testing::AssertionFailure()
+           << "VMM MR did not record a registration route";
+  }
+
+  flagcxVmmMrRoute_t expectedRoute = FLAGCX_VMM_MR_ROUTE_NONE;
+  if (std::strcmp(expected, "dmabuf") == 0)
+    expectedRoute = FLAGCX_VMM_MR_ROUTE_DMABUF;
+  else if (std::strcmp(expected, "va") == 0)
+    expectedRoute = FLAGCX_VMM_MR_ROUTE_VA;
+  else
+    return ::testing::AssertionFailure()
+           << "invalid FLAGCX_CI_EXPECT_VMM_MR_ROUTE=" << expected;
+
+  if (actual == static_cast<uint8_t>(expectedRoute))
+    return ::testing::AssertionSuccess();
+  return ::testing::AssertionFailure()
+         << "expected VMM MR route " << expected << " ("
+         << static_cast<int>(expectedRoute) << "), got "
+         << static_cast<int>(actual);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -35,13 +69,16 @@ TEST_F(SymMemTest, CrossGpuReadViaIpcPeerPtr) {
                                                 FLAGCX_WIN_COLL_SYMMETRIC);
   ASSERT_TRUE(allRanksSucceeded(res));
 
+  const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
   bool localReady = win != nullptr && win->defaultBase != nullptr &&
                     !win->defaultBase->isVMM &&
                     win->defaultBase->localRanks >= 2 &&
                     win->defaultBase->ipcSlot >= 0 &&
-                    win->defaultBase->mrIndex < 0 && hasHeteroComm();
+                    (requireNetMr ? win->defaultBase->mrIndex >= 0
+                                  : win->defaultBase->mrIndex < 0) &&
+                    hasHeteroComm();
   ASSERT_TRUE(allRanksReady(localReady))
-      << "IPC fallback requires ipcSlot >= 0 and mrIndex < 0 on every rank";
+      << "IPC mode has the wrong IPC locator or network-MR state";
 
   flagcxSymWindow_t window = win->defaultBase;
   int localRank = comm->heteroComm->localRank;
@@ -82,13 +119,16 @@ TEST_F(SymMemTest, CrossGpuWriteViaIpcPeerPtr) {
                                                 FLAGCX_WIN_COLL_SYMMETRIC);
   ASSERT_TRUE(allRanksSucceeded(res));
 
+  const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
   bool localReady = win != nullptr && win->defaultBase != nullptr &&
                     !win->defaultBase->isVMM &&
                     win->defaultBase->localRanks >= 2 &&
                     win->defaultBase->ipcSlot >= 0 &&
-                    win->defaultBase->mrIndex < 0 && hasHeteroComm();
+                    (requireNetMr ? win->defaultBase->mrIndex >= 0
+                                  : win->defaultBase->mrIndex < 0) &&
+                    hasHeteroComm();
   ASSERT_TRUE(allRanksReady(localReady))
-      << "IPC fallback requires ipcSlot >= 0 and mrIndex < 0 on every rank";
+      << "IPC mode has the wrong IPC locator or network-MR state";
 
   flagcxSymWindow_t window = win->defaultBase;
   int localRank = comm->heteroComm->localRank;
@@ -146,8 +186,11 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   flagcxSymWindow_t d = win->defaultBase;
   if (!d->isVMM || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
+    if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+      FAIL() << "FLAGCX_CI_REQUIRE_VMM forbids IPC fallback";
     GTEST_SKIP() << "VMM not available, cannot test flat VA access";
   }
+  ASSERT_EQ(d->mrIndex >= 0, envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
   if (!hasHeteroComm()) {
     flagcxCommWindowDeregister(comm, win);
     GTEST_SKIP() << "heteroComm not available";
@@ -160,9 +203,10 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   // Each rank fills its own region with (localRank + 1) as a float pattern
   float fillValue = (float)(localRank + 1);
   std::vector<float> pattern(count, fillValue);
-  devHandle->deviceMemcpy(devBuff, pattern.data(), size,
-                          flagcxMemcpyHostToDevice, stream);
-  devHandle->streamSynchronize(stream);
+  flagcxResult_t setupResult = devHandle->deviceMemcpy(
+      devBuff, pattern.data(), size, flagcxMemcpyHostToDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(setupResult));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -172,11 +216,14 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   // Stage through local device memory: peer VMM -> devBuff2 -> host
   std::vector<float> readBack(count, 0.0f);
-  devHandle->deviceMemcpy(devBuff2, peerRegion, size,
-                          flagcxMemcpyDeviceToDevice, stream);
-  devHandle->deviceMemcpy(readBack.data(), devBuff2, size,
-                          flagcxMemcpyDeviceToHost, stream);
-  devHandle->streamSynchronize(stream);
+  flagcxResult_t copyResult = devHandle->deviceMemcpy(
+      devBuff2, peerRegion, size, flagcxMemcpyDeviceToDevice, stream);
+  if (copyResult == flagcxSuccess)
+    copyResult = devHandle->deviceMemcpy(readBack.data(), devBuff2, size,
+                                         flagcxMemcpyDeviceToHost, stream);
+  if (copyResult == flagcxSuccess)
+    copyResult = devHandle->streamSynchronize(stream);
+  ASSERT_TRUE(allRanksSucceeded(copyResult));
 
   // Verify: peer's region should contain (peerLocalRank + 1)
   float expected = (float)(peerLocalRank + 1);
@@ -196,7 +243,7 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommWindowDeregister(comm, win);
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +263,11 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   flagcxSymWindow_t d = win->defaultBase;
   if (!d->isVMM || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
+    if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+      FAIL() << "FLAGCX_CI_REQUIRE_VMM forbids IPC fallback";
     GTEST_SKIP() << "VMM not available, cannot test flat VA access";
   }
+  ASSERT_EQ(d->mrIndex >= 0, envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
   if (!hasHeteroComm()) {
     flagcxCommWindowDeregister(comm, win);
     GTEST_SKIP() << "heteroComm not available";
@@ -228,8 +278,10 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   size_t allocSize = d->allocSize;
 
   // Zero out own region first
-  devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
-  devHandle->streamSynchronize(stream);
+  flagcxResult_t setupResult =
+      devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(setupResult));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -242,11 +294,14 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 
   float writeValue = (float)(localRank + 100);
   std::vector<float> pattern(count, writeValue);
-  devHandle->deviceMemcpy(devBuff2, pattern.data(), size,
-                          flagcxMemcpyHostToDevice, stream);
-  devHandle->deviceMemcpy(targetRegion, devBuff2, size,
-                          flagcxMemcpyDeviceToDevice, stream);
-  devHandle->streamSynchronize(stream);
+  flagcxResult_t copyResult = devHandle->deviceMemcpy(
+      devBuff2, pattern.data(), size, flagcxMemcpyHostToDevice, stream);
+  if (copyResult == flagcxSuccess)
+    copyResult = devHandle->deviceMemcpy(targetRegion, devBuff2, size,
+                                         flagcxMemcpyDeviceToDevice, stream);
+  if (copyResult == flagcxSuccess)
+    copyResult = devHandle->streamSynchronize(stream);
+  ASSERT_TRUE(allRanksSucceeded(copyResult));
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -255,9 +310,11 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   float expected = (float)(writerLocalRank + 100);
 
   std::vector<float> readBack(count, 0.0f);
-  devHandle->deviceMemcpy(readBack.data(), devBuff, size,
-                          flagcxMemcpyDeviceToHost, stream);
-  devHandle->streamSynchronize(stream);
+  copyResult = devHandle->deviceMemcpy(readBack.data(), devBuff, size,
+                                       flagcxMemcpyDeviceToHost, stream);
+  if (copyResult == flagcxSuccess)
+    copyResult = devHandle->streamSynchronize(stream);
+  ASSERT_TRUE(allRanksSucceeded(copyResult));
 
   int mismatches = 0;
   for (size_t i = 0; i < count && mismatches < 10; i++) {
@@ -274,9 +331,156 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommWindowDeregister(comm, win);
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}
+
+// A four-rank/two-logical-node invocation must expose both paths from the same
+// window: flat/IPC for a local peer and an MR-backed GET for a remote peer.
+TEST_F(SymMemTest, HybridLocalAndRemoteAccess) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
+    GTEST_SKIP() << "Runs only in the required NET invocation";
+
+  flagcxWindow_t win = nullptr;
+  flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
+                                                FLAGCX_WIN_COLL_SYMMETRIC);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_NE(win, nullptr);
+  ASSERT_NE(win->defaultBase, nullptr);
+  flagcxSymWindow_t window = win->defaultBase;
+
+  if (envEnabled("FLAGCX_CI_REQUIRE_VMM")) {
+    ASSERT_TRUE(allRanksReady(window->isVMM && window->flatBase != nullptr))
+        << "required VMM invocation fell back to IPC";
+  } else {
+    ASSERT_TRUE(allRanksReady(!window->isVMM && window->ipcSlot >= 0))
+        << "required IPC invocation has no local mapping";
+  }
+  ASSERT_TRUE(allRanksReady(window->mrIndex >= 0))
+      << "required NET invocation did not register an MR";
+  ASSERT_LT(window->mrIndex, comm->heteroComm->oneSideHandleCount);
+  auto *mrHandle = comm->heteroComm->oneSideHandles[window->mrIndex];
+  ASSERT_NE(mrHandle, nullptr);
+  if (envEnabled("FLAGCX_CI_REQUIRE_VMM")) {
+    EXPECT_TRUE(vmmMrRouteMatches(mrHandle->registrationRoute));
+  }
+  const char *expectedAdaptor = std::getenv("FLAGCX_CI_EXPECT_NET_ADAPTOR");
+  bool adaptorMatches =
+      expectedAdaptor == nullptr ||
+      (comm->heteroComm->netAdaptor != nullptr &&
+       comm->heteroComm->netAdaptor->name != nullptr &&
+       std::strcmp(comm->heteroComm->netAdaptor->name, expectedAdaptor) == 0);
+  ASSERT_TRUE(allRanksReady(adaptorMatches))
+      << "required network adaptor was not selected";
+  ASSERT_TRUE(allRanksReady(window->localRanks >= 2 &&
+                            window->localRanks < comm->nranks));
+
+  const size_t transferSize = 256;
+  const size_t srcOffset = 128;
+  const size_t dstOffset = 4096;
+  std::vector<uint8_t> pattern(transferSize,
+                               static_cast<uint8_t>(comm->rank + 17));
+  res = devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
+  if (res == flagcxSuccess)
+    res =
+        devHandle->deviceMemcpy((char *)devBuff + srcOffset, pattern.data(),
+                                transferSize, flagcxMemcpyHostToDevice, stream);
+  if (res == flagcxSuccess)
+    res = devHandle->streamSynchronize(stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  const int localRank = comm->heteroComm->localRank;
+  const int localPeerRank = (localRank + 1) % window->localRanks;
+  const int localPeer = comm->localRankToRank[localPeerRank];
+  int remotePeer = -1;
+  for (int peer = 0; peer < comm->nranks; peer++) {
+    if (comm->heteroComm->rankToNode[peer] != comm->heteroComm->node) {
+      remotePeer = peer;
+      break;
+    }
+  }
+  ASSERT_TRUE(allRanksReady(remotePeer >= 0));
+
+  void *localPeerPtr = nullptr;
+  res =
+      flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, window, localPeer,
+                                       srcOffset, transferSize, &localPeerPtr);
+  if (res == flagcxSuccess)
+    res = devHandle->deviceMemcpy(devBuff2, localPeerPtr, transferSize,
+                                  flagcxMemcpyDeviceToDevice, stream);
+  std::vector<uint8_t> localRead(transferSize, 0);
+  if (res == flagcxSuccess)
+    res = devHandle->deviceMemcpy(localRead.data(), devBuff2, transferSize,
+                                  flagcxMemcpyDeviceToHost, stream);
+  if (res == flagcxSuccess)
+    res = devHandle->streamSynchronize(stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  EXPECT_EQ(localRead, std::vector<uint8_t>(
+                           transferSize, static_cast<uint8_t>(localPeer + 17)));
+
+  uint64_t before = 0;
+  res = flagcxReadCounter(comm, &before);
+  if (res == flagcxSuccess)
+    res = flagcxGet(comm, remotePeer, srcOffset, dstOffset, transferSize,
+                    window->mrIndex, window->mrIndex);
+  if (res == flagcxSuccess)
+    res = flagcxWaitCounter(comm, before + 1);
+  ASSERT_TRUE(allRanksSucceeded(res));
+
+  // Do not add an extra deviceSynchronize after flagcxWaitCounter: the host
+  // copy must observe data based on the RMA completion contract itself.
+  std::vector<uint8_t> remoteRead(transferSize, 0);
+  res =
+      devHandle->deviceMemcpy(remoteRead.data(), (char *)devBuff + dstOffset,
+                              transferSize, flagcxMemcpyDeviceToHost, nullptr);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  EXPECT_EQ(remoteRead,
+            std::vector<uint8_t>(transferSize,
+                                 static_cast<uint8_t>(remotePeer + 17)));
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
 }
 
 // ---------------------------------------------------------------------------
 // Verify multicast base is set when VMM succeeds
 // ---------------------------------------------------------------------------
+
+TEST_F(SymMemTest, MulticastMappingWhenSupported) {
+  flagcxWindow_t win = nullptr;
+  flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
+                                                FLAGCX_WIN_COLL_SYMMETRIC);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_NE(win, nullptr);
+  ASSERT_NE(win->defaultBase, nullptr);
+
+  if (!win->defaultBase->isVMM) {
+    EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+      FAIL() << "required VMM invocation fell back to IPC";
+    GTEST_SKIP() << "multicast requires VMM";
+  }
+
+  int localSupported = 0;
+  res = deviceAdaptor->symMulticastSupported != nullptr
+            ? deviceAdaptor->symMulticastSupported(&localSupported)
+            : flagcxNotSupported;
+  if (res == flagcxNotSupported) {
+    localSupported = 0;
+    res = flagcxSuccess;
+  }
+  ASSERT_TRUE(allRanksSucceeded(res));
+  bool supportedEverywhere = allRanksReady(localSupported != 0);
+  if (!supportedEverywhere) {
+    EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    GTEST_SKIP() << "multicast capability is not present on every rank";
+  }
+
+  bool mappingReady = allRanksReady(win->defaultBase->mcBase != nullptr &&
+                                    win->defaultBase->mcMapSize > 0);
+  if (!mappingReady) {
+    EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    GTEST_SKIP() << "multicast is unsupported by this device topology";
+  }
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}

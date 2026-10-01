@@ -381,6 +381,9 @@ struct flagcxHeteroComm {
   // Diagnostic phase counter used to verify that failed local preparation
   // converges before any rank enters the data-MR metadata collectives.
   uint64_t oneSideDataMetadataExchangeCount;
+  // Diagnostic counter for symmetric-memory FD exchange. Fault-injection
+  // tests use it to verify that local preparation converges first.
+  uint64_t symWindowFdExchangeCount;
   // Failed rollback is retained here until a later registration or comm
   // teardown retries deregistration. This list is never published to RMA.
   struct flagcxOneSideHandleInfo *pendingOneSideCleanup;
@@ -389,6 +392,9 @@ struct flagcxHeteroComm {
   // locators; the list is used to resolve a local source address without
   // requiring a network MR registration.
   struct flagcxSymWindow *symWindows;
+  // Unpublished registrations whose MR/VMM rollback failed. Every rank keeps
+  // the transaction until a later register or communicator destroy retries it.
+  struct flagcxSymWindow *pendingSymCleanup;
 
   // RMA signal memory has an IPC mapping independent of signalHandle, which
   // represents only the optional network MR registration.

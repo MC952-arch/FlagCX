@@ -43,8 +43,8 @@ FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=8
 export NP=8
 
-# Keep the common runner/device test helpers satisfied if those suites are
-# enabled later. PPU's current suite list does not run multi-node tests.
+# Two logical nodes on the shared PPU host. Symmem uses these app contexts to
+# require a real BAREX MR for remote peers while retaining local flat mappings.
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x FLAGCX_HOSTID=node0
   -x NCCL_HOSTID=node0

@@ -27,8 +27,18 @@ export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBR
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_INTRA_NP=8
+FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=8
 export NP=8
+
+FLAGCX_CI_NODE1_MPI_ARGS=(
+  -x FLAGCX_HOSTID=node0
+  -x NCCL_HOSTID=node0
+)
+FLAGCX_CI_NODE2_MPI_ARGS=(
+  -x FLAGCX_HOSTID=node1
+  -x NCCL_HOSTID=node1
+)
 
 flagcx_ci_configure_suite() {
   local suite=$1

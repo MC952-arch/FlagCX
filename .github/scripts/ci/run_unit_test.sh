@@ -63,10 +63,8 @@ flagcx_ci_require_rdma() {
     *) return 0 ;;
   esac
 
-  # Symmem currently runs its explicit IPC-fallback invocation with the RDMA
-  # class disabled, so it must not be gated by an RDMA preflight.
   case "$suite" in
-    adaptor|p2p|rma|runner) ;;
+    adaptor|p2p|rma|runner|symmem) ;;
     *) return 0 ;;
   esac
 
@@ -510,6 +508,140 @@ run_suite() {
       ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
+      : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
+      declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
+        echo "symmem NET tests require FLAGCX_CI_NODE1_MPI_ARGS" >&2
+        return 1
+      }
+      declare -p FLAGCX_CI_NODE2_MPI_ARGS >/dev/null 2>&1 || {
+        echo "symmem NET tests require FLAGCX_CI_NODE2_MPI_ARGS" >&2
+        return 1
+      }
+      local platform_name expected_adaptor
+      local -a symmem_common_env symmem_platform_env
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      expected_adaptor=IB
+      symmem_platform_env=()
+      if [[ "$platform_name" == "ppu" ]]; then
+        expected_adaptor=BAREX
+        symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
+      fi
+      symmem_common_env=(
+        -x FLAGCX_USE_HETERO_COMM=1
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2
+        -x FLAGCX_MEM_ENABLE=1
+        -x FLAGCX_IB_DISABLE=0
+        -x FLAGCX_P2P_DISABLE=1
+        -x FLAGCX_CI_REQUIRE_NET_MR=1
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR="$expected_adaptor"
+        -x LD_LIBRARY_PATH
+      )
+      local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmFlatFallbackPreservesMrRoute:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+
+      FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
+        "$MPI_RUNNER" --allow-run-as-root \
+        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        -x FLAGCX_USE_HETERO_COMM=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_IB_DISABLE=1 \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
+        -x LD_LIBRARY_PATH \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+        "$symmem_bin" \
+        --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow \
+        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        -x FLAGCX_USE_HETERO_COMM=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_IB_DISABLE=1 \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
+        -x LD_LIBRARY_PATH \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+        "$symmem_bin" \
+        --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
+
+      FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
+        "$MPI_RUNNER" --allow-run-as-root \
+        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1 \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+        "$symmem_bin" \
+        --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish
+
+      FLAGCX_CI_MPI_LABEL="symmem IPC + NET" \
+        "$MPI_RUNNER" --allow-run-as-root \
+        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+        "$symmem_bin" "$symmem_filter" \
+        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+        "$symmem_bin" "$symmem_filter"
+
+      FLAGCX_CI_MPI_LABEL="symmem VMM + NET VA" \
+        "$MPI_RUNNER" --allow-run-as-root \
+        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_VMM_MR_MODE=va \
+        -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+        "$symmem_bin" "$symmem_filter" \
+        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_VMM_MR_MODE=va \
+        -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+        "$symmem_bin" "$symmem_filter"
+
+      if [[ "$platform_name" == "ppu" ]]; then
+        FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF unsupported" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_VMM_MR_MODE=dmabuf \
+          -x FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED=1 \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.StrictDmaBufUnsupportedDoesNotPublishWindow \
+          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_VMM_MR_MODE=dmabuf \
+          -x FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED=1 \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.StrictDmaBufUnsupportedDoesNotPublishWindow
+      else
+        FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_VMM_MR_MODE=dmabuf \
+          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" "$symmem_filter" \
+          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_VMM_MR_MODE=dmabuf \
+          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          "$symmem_bin" "$symmem_filter"
+      fi
       ;;
     device_api)
       run_device_api

@@ -4,6 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 
+// The main library may be built with a pre-C++17 default language mode, where
+// an odr-used static constexpr data member still needs one out-of-class
+// definition. Unit tests link the shared library into a C++17 executable and
+// therefore expose the otherwise deferred undefined symbol.
+constexpr uintptr_t flagcxRegPool::GLOBAL_POOL_KEY;
+
 flagcxRegPool::flagcxRegPool() { pageSize = sysconf(_SC_PAGESIZE); }
 
 flagcxRegPool::~flagcxRegPool() {

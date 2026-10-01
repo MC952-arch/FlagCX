@@ -12,23 +12,37 @@ export MPI_HOME="${MPI_HOME:-/usr/local/mpi}"
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
 
-NP="${NP:-8}"
+LOCAL_NP="${FLAGCX_CI_SYMMEM_LOCAL_NP:-2}"
 
 echo "=== Running symmem unit tests (no MPI/GPU) ==="
 FLAGCX_CI_TEST_LABEL="symmem unit tests" \
   "$TEST_RUNNER" "$BUILD_BIN/symmem_unit_tests"
 
 echo ""
-echo "=== Running symmem MPI tests (np=$NP) ==="
-FLAGCX_CI_MPI_LABEL="symmem MPI tests" \
-  "$MPI_RUNNER" -np "$NP" --allow-run-as-root \
+echo ""
+echo "=== Running symmem IPC-local MPI tests (np=$LOCAL_NP) ==="
+FLAGCX_CI_MPI_LABEL="symmem IPC local" \
+  "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
     -x FLAGCX_MEM_ENABLE=1 \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+
+echo ""
+echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
+FLAGCX_CI_MPI_LABEL="symmem VMM local" \
+  "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
+    -x FLAGCX_USE_HETERO_COMM=1 \
+    -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+    -x FLAGCX_MEM_ENABLE=1 \
+    -x FLAGCX_VMM_ENABLE=1 \
+    -x FLAGCX_IB_DISABLE=1 \
+    -x FLAGCX_CI_REQUIRE_VMM=1 \
+    "$BUILD_BIN/symmem_mpi_tests" \
+    --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
 
 echo ""
 echo "All symmem tests passed."

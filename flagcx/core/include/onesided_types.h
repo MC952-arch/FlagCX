@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct flagcxSymWindow;
 struct flagcxNetMrInfo;
 
 // Transport-neutral one-sided registration metadata. Keep this definition in
@@ -20,7 +19,8 @@ struct flagcxOneSideHandleInfo {
   size_t *regionSizes;             // [nRanks]
   struct flagcxNetMrInfo *mrInfos; // [nRanks], including per-NIC keys
   void *localMrHandle;             // local rank's MR handle for deregMr
-  void *localRecvComm; // recvComm used for MR registration (PD match)
+  void *localRecvComm;       // recvComm used for MR registration (PD match)
+  uint8_t registrationRoute; // flagcxVmmMrRoute_t used for this MR
   // Full-mesh RDMA connections (including self loopback, aligned with NCCL GIN)
   void **fullSendComms; // [nRanks] per-peer sendComm — alias for
                         // contextSendComms[0]
@@ -36,13 +36,10 @@ struct flagcxOneSideHandleInfo {
   void ***contextRecvComms; // [nContexts][nRanks]
   int nContexts;            // 1 + nKernelProxies
 
-  // Symmetric memory window for intra-node D2D bypass (CE path).
-  // NULL if VMM not available or window not registered with
-  // FLAGCX_WIN_COLL_SYMMETRIC.
-  struct flagcxSymWindow *symWin;
-
   // Ownership is released in dependency order: MR first, then metadata, then
   // connections. A failed deregMr leaves all fields intact for a later retry.
+  uint32_t windowRefs; // symmetric windows currently retaining this MR
+  uint8_t commOwned;   // public/comm registration retains MR to comm teardown
   uint8_t ownsLocalMr;
   uint8_t ownsConnections;
   struct flagcxOneSideHandleInfo *cleanupNext;

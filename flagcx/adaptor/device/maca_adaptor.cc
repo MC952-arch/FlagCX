@@ -9,6 +9,19 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "param.h"
+#include <mutex>
+#include <new>
+#include <unordered_map>
+
+struct MacaVmmAllocation {
+  size_t size;
+  uint32_t mrCaps;
+  bool mappingOwned;
+  bool vaOwned;
+};
+static std::mutex gMacaVmmAllocationMtx;
+static std::unordered_map<void *, MacaVmmAllocation> gMacaVmmAllocations;
 
 std::map<flagcxMemcpyType_t, mcMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, mcMemcpyHostToDevice},
@@ -114,12 +127,81 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(mcMalloc(ptr, size));
-  mcPointerAttribute_t attrs;
-  DEVCHECK(mcPointerGetAttributes(&attrs, *ptr));
-  unsigned flags = 1;
-  DEVCHECK(mcPointerSetAttribute(&flags, mcPointerAttributeSyncMemops,
-                                 (mcDeviceptr_t)attrs.devicePointer));
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(mcMalloc(ptr, size));
+    mcPointerAttribute_t attrs;
+    DEVCHECK(mcPointerGetAttributes(&attrs, *ptr));
+    unsigned flags = 1;
+    DEVCHECK(mcPointerSetAttribute(&flags, mcPointerAttributeSyncMemops,
+                                   (mcDeviceptr_t)attrs.devicePointer));
+    return flagcxSuccess;
+  }
+
+  int device = 0;
+  MCdevice mcDevice;
+  DEVCHECK(mcGetDevice(&device));
+  DEVCHECK(mcDeviceGet(&mcDevice, device));
+
+  mcMemAllocationProp prop = {};
+  prop.type = mcMemAllocationTypePinned;
+  prop.location.type = mcMemLocationTypeDevice;
+  prop.location.id = mcDevice;
+  prop.requestedHandleTypes = mcMemHandleTypePosixFileDescriptor;
+
+  size_t granularity = 0;
+  DEVCHECK(mcMemGetAllocationGranularity(&granularity, &prop,
+                                         MC_MEM_ALLOC_GRANULARITY_MINIMUM));
+  size_t allocSize = size;
+  ALIGN_SIZE(allocSize, granularity);
+
+  mcMemGenericAllocationHandle handle;
+  DEVCHECK(mcMemCreate(&handle, allocSize, &prop, 0));
+  mcDeviceptr_t address = 0;
+  mcError_t error = mcMemAddressReserve(&address, allocSize, granularity, 0, 0);
+  if (error != mcSuccess) {
+    mcMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  error = mcMemMap(address, allocSize, 0, handle, 0);
+  if (error != mcSuccess) {
+    mcMemAddressFree(address, allocSize);
+    mcMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  mcMemAccessDesc access = {};
+  access.location.type = mcMemLocationTypeDevice;
+  access.location.id = mcDevice;
+  access.flags = mcMemAccessFlagsProtReadWrite;
+  error = mcMemSetAccess(address, allocSize, &access, 1);
+  if (error != mcSuccess) {
+    mcMemUnmap(address, allocSize);
+    mcMemAddressFree(address, allocSize);
+    mcMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  if (mcMemRelease(handle) != mcSuccess) {
+    mcMemUnmap(address, allocSize);
+    mcMemAddressFree(address, allocSize);
+    return flagcxUnhandledDeviceError;
+  }
+  *ptr = (void *)(uintptr_t)address;
+  bool tracked = false;
+  try {
+    std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+    tracked = gMacaVmmAllocations
+                  .emplace(*ptr, MacaVmmAllocation{allocSize,
+                                                   FLAGCX_VMM_MR_CAP_DMABUF |
+                                                       FLAGCX_VMM_MR_CAP_VA,
+                                                   true, true})
+                  .second;
+  } catch (const std::bad_alloc &) {
+  }
+  if (!tracked) {
+    mcMemUnmap(address, allocSize);
+    mcMemAddressFree(address, allocSize);
+    *ptr = NULL;
+    return flagcxSystemError;
+  }
   return flagcxSuccess;
 }
 
@@ -127,7 +209,41 @@ flagcxResult_t macaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-  DEVCHECK(mcFree(ptr));
+  std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+  auto it = gMacaVmmAllocations.find(ptr);
+  if (it == gMacaVmmAllocations.end()) {
+    DEVCHECK(mcFree(ptr));
+    return flagcxSuccess;
+  }
+  MacaVmmAllocation &allocation = it->second;
+  if (allocation.mappingOwned) {
+    if (mcMemUnmap((mcDeviceptr_t)ptr, allocation.size) != mcSuccess)
+      return flagcxUnhandledDeviceError;
+    allocation.mappingOwned = false;
+  }
+  if (allocation.vaOwned) {
+    if (mcMemAddressFree((mcDeviceptr_t)ptr, allocation.size) != mcSuccess)
+      return flagcxUnhandledDeviceError;
+    allocation.vaOwned = false;
+  }
+  gMacaVmmAllocations.erase(it);
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorDmaSupport(bool *supported) {
+  if (supported == NULL)
+    return flagcxInvalidArgument;
+  *supported = false;
+  int device = 0;
+  MCdevice mcDevice;
+  if (mcGetDevice(&device) != mcSuccess ||
+      mcDeviceGet(&mcDevice, device) != mcSuccess)
+    return flagcxSuccess;
+  int value = 0;
+  if (mcDeviceGetAttribute(
+          &value, mcDeviceAttributeHandleTypePosixFileDescriptorSupported,
+          mcDevice) == mcSuccess)
+    *supported = value != 0;
   return flagcxSuccess;
 }
 
@@ -402,9 +518,13 @@ flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 flagcxResult_t
 macaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                        size_t size, unsigned long long flags) {
-  // MCdeviceptr dptr = (MCdeviceptr)buffer;
-  DEVCHECK(mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags));
-  return flagcxSuccess;
+  if (handleOut == NULL || buffer == NULL || size == 0)
+    return flagcxInvalidArgument;
+  mcError_t result =
+      mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags);
+  if (result == mcErrorNotSupported)
+    return flagcxNotSupported;
+  return result == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t macaAdaptorHostRegister(void *ptr, size_t size) {
@@ -436,20 +556,35 @@ flagcxResult_t macaAdaptorSymPhysAlloc(void *ptr, size_t size,
     return flagcxSystemError;
 
   // Retain the physical allocation handle from the VMM-backed pointer
-  DEVCHECK(mcMemRetainAllocationHandle(mcHandle, ptr));
+  mcError_t result = mcMemRetainAllocationHandle(mcHandle, ptr);
+  if (result != mcSuccess) {
+    free(mcHandle);
+    return flagcxUnhandledDeviceError;
+  }
 
   // Discover actual physical allocation size (already granularity-aligned)
   size_t actualAllocSize = 0;
-  DEVCHECK(mcMemGetAddressRange(NULL, &actualAllocSize, ptr));
+  result = mcMemGetAddressRange(NULL, &actualAllocSize, ptr);
+  if (result != mcSuccess) {
+    mcMemRelease(*mcHandle);
+    free(mcHandle);
+    return flagcxUnhandledDeviceError;
+  }
   *allocSize = actualAllocSize;
 
   // Export as POSIX fd for IPC sharing
   if (*handleSize < sizeof(int)) {
+    mcMemRelease(*mcHandle);
     free(mcHandle);
     return flagcxInvalidArgument;
   }
-  DEVCHECK(mcMemExportToShareableHandle(shareableHandle, *mcHandle,
-                                        mcMemHandleTypePosixFileDescriptor, 0));
+  result = mcMemExportToShareableHandle(shareableHandle, *mcHandle,
+                                        mcMemHandleTypePosixFileDescriptor, 0);
+  if (result != mcSuccess) {
+    mcMemRelease(*mcHandle);
+    free(mcHandle);
+    return flagcxUnhandledDeviceError;
+  }
   *handleSize = sizeof(int); // POSIX fd is an int
   *physHandle = mcHandle;
   return flagcxSuccess;
@@ -461,7 +596,8 @@ flagcxResult_t macaAdaptorSymPhysFree(void *physHandle) {
     return flagcxSuccess;
   mcMemGenericAllocationHandle *mcHandle =
       (mcMemGenericAllocationHandle *)physHandle;
-  mcMemRelease(*mcHandle);
+  if (mcMemRelease(*mcHandle) != mcSuccess)
+    return flagcxUnhandledDeviceError;
   free(mcHandle);
   return flagcxSuccess;
 }
@@ -481,37 +617,62 @@ flagcxResult_t macaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
 
   // Reserve the full VA range
   mcDeviceptr_t base = 0;
-  DEVCHECK(mcMemAddressReserve(&base, totalSize, 0, 0, 0));
+  mcError_t result = mcMemAddressReserve(&base, totalSize, 0, 0, 0);
+  if (result != mcSuccess)
+    return flagcxUnhandledDeviceError;
 
   // Import and map each peer's physical memory
   int macaDev;
-  DEVCHECK(mcGetDevice(&macaDev));
+  if (mcGetDevice(&macaDev) != mcSuccess) {
+    mcMemAddressFree(base, totalSize);
+    return flagcxUnhandledDeviceError;
+  }
   mcMemAccessDesc accessDesc = {};
   accessDesc.location.type = mcMemLocationTypeDevice;
   accessDesc.location.id = macaDev;
   accessDesc.flags = mcMemAccessFlagsProtReadWrite;
 
+  int mappedPeers = 0;
   for (int i = 0; i < nPeers; i++) {
     mcMemGenericAllocationHandle peerHandle;
+    bool imported = i != selfIndex;
     if (i == selfIndex) {
       peerHandle = selfHandle;
     } else {
       int fd = *(int *)peerHandles[i];
-      DEVCHECK(
+      result =
           mcMemImportFromShareableHandle(&peerHandle, (void *)(uintptr_t)fd,
-                                         mcMemHandleTypePosixFileDescriptor));
+                                         mcMemHandleTypePosixFileDescriptor);
+      if (result != mcSuccess)
+        goto rollback;
     }
     mcDeviceptr_t slot =
         (mcDeviceptr_t)((uintptr_t)base + (uint64_t)i * allocSize);
-    DEVCHECK(mcMemMap(slot, allocSize, 0, peerHandle, 0));
-    DEVCHECK(mcMemSetAccess(slot, allocSize, &accessDesc, 1));
-    if (i != selfIndex) {
-      mcMemRelease(peerHandle);
+    result = mcMemMap(slot, allocSize, 0, peerHandle, 0);
+    if (result != mcSuccess) {
+      if (imported)
+        mcMemRelease(peerHandle);
+      goto rollback;
     }
+    mappedPeers++;
+    result = mcMemSetAccess(slot, allocSize, &accessDesc, 1);
+    if (imported)
+      mcMemRelease(peerHandle);
+    if (result != mcSuccess)
+      goto rollback;
   }
 
   *flatBase = (void *)base;
   return flagcxSuccess;
+
+rollback:
+  for (int i = 0; i < mappedPeers; i++) {
+    mcDeviceptr_t slot =
+        (mcDeviceptr_t)((uintptr_t)base + (uint64_t)i * allocSize);
+    mcMemUnmap(slot, allocSize);
+  }
+  mcMemAddressFree(base, totalSize);
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t macaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
@@ -522,6 +683,22 @@ flagcxResult_t macaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
   size_t totalSize = allocSize * nPeers;
   DEVCHECK(mcMemUnmap(base, totalSize));
   DEVCHECK(mcMemAddressFree(base, totalSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymFlatMappingUnmap(void *flatBase, size_t allocSize,
+                                              int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(mcMemUnmap((mcDeviceptr_t)flatBase, allocSize * nPeers));
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymFlatVaFree(void *flatBase, size_t allocSize,
+                                        int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(mcMemAddressFree((mcDeviceptr_t)flatBase, allocSize * nPeers));
   return flagcxSuccess;
 }
 
@@ -608,6 +785,31 @@ cleanup_fd:
 cleanup_handle:
   mcMemRelease(handle);
   return flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t macaAdaptorSymMulticastImport(int importFd, void **mcHandle) {
+  if (importFd < 0 || mcHandle == NULL)
+    return flagcxInvalidArgument;
+  *mcHandle = NULL;
+
+  mcMemGenericAllocationHandle handle = 0;
+  mcError_t res = mcMemImportFromShareableHandle(
+      &handle, (void *)(intptr_t)importFd, mcMemHandleTypePosixFileDescriptor);
+  if (res != mcSuccess) {
+    WARN("symMulticastImport: mcMemImportFromShareableHandle failed: %d", res);
+    return flagcxUnhandledDeviceError;
+  }
+
+  mcMemGenericAllocationHandle *handlePtr =
+      (mcMemGenericAllocationHandle *)malloc(
+          sizeof(mcMemGenericAllocationHandle));
+  if (handlePtr == NULL) {
+    mcMemRelease(handle);
+    return flagcxSystemError;
+  }
+  *handlePtr = handle;
+  *mcHandle = handlePtr;
+  return flagcxSuccess;
 }
 
 flagcxResult_t macaAdaptorSymMulticastBind(void *mcHandle, int importFd,
@@ -723,6 +925,21 @@ flagcxResult_t macaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorSymMulticastMappingUnmap(void *mcBase,
+                                                   size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(mcMemUnmap((mcDeviceptr_t)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymMulticastVaFree(void *mcBase, size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(mcMemAddressFree((mcDeviceptr_t)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
+
 flagcxResult_t macaAdaptorSymMulticastFree(void *mcHandle) {
   if (mcHandle == NULL)
     return flagcxSuccess;
@@ -770,6 +987,24 @@ flagcxResult_t macaAdaptorGetAddressRange(const void *ptr, void **base,
   mcDeviceptr_t allocationBase = 0;
   DEVCHECK(mcMemGetAddressRange(&allocationBase, size, (mcDeviceptr_t)ptr));
   *base = (void *)(uintptr_t)allocationBase;
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorGetAllocationVmmMrCaps(const void *ptr,
+                                                 uint32_t *caps) {
+  if (ptr == NULL || caps == NULL)
+    return flagcxInvalidArgument;
+  *caps = FLAGCX_VMM_MR_CAP_NONE;
+  void *base = NULL;
+  size_t size = 0;
+  flagcxResult_t result = macaAdaptorGetAddressRange(ptr, &base, &size);
+  if (result != flagcxSuccess)
+    return result;
+  std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+  auto it = gMacaVmmAllocations.find(base);
+  if (it == gMacaVmmAllocations.end())
+    return flagcxNotSupported;
+  *caps = it->second.mrCaps;
   return flagcxSuccess;
 }
 
@@ -823,7 +1058,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
                                       // *dev, const char *pciBusId);
       macaAdaptorLaunchHostFunc,
       // DMA buffer
-      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
+      macaAdaptorDmaSupport,
       macaAdaptorMemGetHandleForAddressRange, // flagcxResult_t
                                               // (*memGetHandleForAddressRange)(void
                                               // *handleOut, void *buffer,
@@ -832,13 +1067,18 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
-      // Symmetric memory VMM functions (not supported)
+      // Symmetric memory VMM functions
       macaAdaptorSymPhysAlloc, macaAdaptorSymPhysFree, macaAdaptorSymFlatMap,
       macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSupported,
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
       macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       macaAdaptorGetPointerType, macaAdaptorGetAddressRange,
+      FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
+      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, macaAdaptorSymMulticastImport,
+      macaAdaptorSymFlatMappingUnmap, macaAdaptorSymFlatVaFree,
+      macaAdaptorSymMulticastMappingUnmap, macaAdaptorSymMulticastVaFree,
+      macaAdaptorGetAllocationVmmMrCaps,
 };
 
 #endif // USE_METAX_ADAPTOR

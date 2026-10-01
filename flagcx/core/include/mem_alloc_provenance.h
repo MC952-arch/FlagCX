@@ -23,6 +23,14 @@ struct flagcxMemAllocationInfo {
   size_t size;
   flagcxMemAllocator_t allocator;
   flagcxMemAllocBackend_t backend;
+  // Captured at allocation time. Registration must not infer this later from
+  // the current FLAGCX_VMM_ENABLE value because the environment can change.
+  bool isVmm;
+  // Number of live symmetric windows that may still expose this allocation
+  // through an IPC/VMM mapping or network MR. flagcxMemFree must not release
+  // the allocation until every window (including cleanup-required tokens) has
+  // dropped its lease.
+  size_t windowRefs;
 };
 
 #endif // FLAGCX_MEM_ALLOC_PROVENANCE_H_

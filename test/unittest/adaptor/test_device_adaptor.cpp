@@ -3,6 +3,7 @@
  * Single device adaptor test - no multi-GPU or MPI required
  ************************************************************************/
 
+#include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
@@ -12,6 +13,16 @@
 #include "topo.h"
 
 TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
+  // The v1 plugin prefix is frozen: 32 bytes of name plus 48 function
+  // pointers on every supported 64-bit platform. New fields belong only to
+  // the latest in-process representation.
+  static_assert(sizeof(void *) == 8, "FlagCX plugins require a 64-bit ABI");
+  static_assert(sizeof(flagcxDeviceAdaptor_v1) == 416,
+                "flagcxDeviceAdaptor_v1 ABI changed");
+  static_assert(offsetof(flagcxDeviceAdaptor_latest, hostRegister) ==
+                    sizeof(flagcxDeviceAdaptor_v1),
+                "latest adaptor no longer preserves the v1 prefix");
+
   flagcxDeviceAdaptor_v1 v1 = {};
   flagcxDeviceAdaptor_latest latest = {};
 
@@ -19,6 +30,26 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
 
   EXPECT_EQ(latest.getPointerType, nullptr);
   EXPECT_EQ(latest.getAddressRange, nullptr);
+  EXPECT_EQ(latest.symMulticastImport, nullptr);
+  EXPECT_EQ(latest.symFlatMappingUnmap, nullptr);
+  EXPECT_EQ(latest.symFlatVaFree, nullptr);
+  EXPECT_EQ(latest.symMulticastMappingUnmap, nullptr);
+  EXPECT_EQ(latest.symMulticastVaFree, nullptr);
+  EXPECT_EQ(latest.getAllocationVmmMrCaps, nullptr);
+  EXPECT_EQ(latest.vmmMrCaps, static_cast<uint32_t>(FLAGCX_VMM_MR_CAP_NONE));
+  EXPECT_NE(latest.internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1,
+            0u);
+  EXPECT_TRUE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, true));
+  EXPECT_FALSE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, false));
+}
+
+TEST(DeviceAdaptorCompatibilityTest, LatestUsesExplicitVmmCapabilities) {
+  flagcxDeviceAdaptor_latest latest = {};
+
+  EXPECT_FALSE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, true));
+  latest.vmmMrCaps = FLAGCX_VMM_MR_CAP_VA;
+  EXPECT_TRUE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, true));
+  EXPECT_FALSE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, false));
 }
 
 class DeviceAdaptorTest : public ::testing::Test {

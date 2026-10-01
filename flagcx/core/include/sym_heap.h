@@ -22,31 +22,112 @@ struct flagcxWindow {
   int winFlags;           // flags passed at registration time
 };
 
+enum flagcxSymWindowState {
+  flagcxSymWindowPreparing = 0,
+  flagcxSymWindowPublished = 1,
+  // Registration failed and rollback did not finish. The returned public
+  // handle is a cleanup token and must only be passed to deregistration.
+  flagcxSymWindowCleanupRequired = 2,
+};
+
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
-  void *localBase;  // local user allocation backing this window
-  void *flatBase;   // flat VA base (NULL if IPC fallback)
-  void *mcBase;     // multicast base (NULL if no NVLS)
-  size_t mcMapSize; // multicast VA mapped size (for teardown)
-  int mrIndex;      // one-sided MR index (-1 if none)
-  uintptr_t mrBase; // MR base VA
+  flagcxWindow_t owner; // owning public handle (for communicator cleanup)
+  void *localBase;      // local user allocation backing this window
+  void *flatBase;       // flat VA base (NULL if IPC fallback)
+  void *mcBase;         // multicast base (NULL if no NVLS)
+  size_t mcMapSize;     // multicast VA mapped size (for teardown)
+  int mrIndex;          // one-sided MR index (-1 if none)
+  uintptr_t mrBase;     // MR base VA
+  bool hasNetworkMrRef; // this window retains mrIndex until deregistration
+  // An unpublished MR transaction is retained in comm->pendingOneSideCleanup.
+  // Keep this window and its allocation lease alive until that MR is released.
+  bool hasPendingNetworkCleanup;
   size_t heapSize;  // user-requested size (for bounds info)
   size_t allocSize; // actual physical allocation size per peer
                     // (granularity-aligned)
   int localRanks;   // number of intra-node peers
   int ipcSlot;      // IPC table slot for non-VMM peer mappings (-1 if none)
   void *physHandle; // for cleanup (symPhysFree)
-  void *mcHandle;   // multicast handle (for cleanup)
-  bool isVMM;       // true if VMM path (false = IPC fallback)
+  void *mcHandle;   // this rank's retained multicast handle reference
+  // VMM teardown is split into independently retryable provider operations.
+  // A successful unmap clears only mapping ownership; the base address stays
+  // available until the subsequent VA-free operation succeeds.
+  bool flatMappingOwned;
+  bool flatVaOwned;
+  bool multicastMappingOwned;
+  bool multicastVaOwned;
+  // Lease held in globalMemAllocRegistry when localBase belongs to
+  // flagcxMemAlloc. It prevents callers from freeing memory still referenced
+  // by a published window or cleanup token.
+  bool hasAllocationLease;
+  void *allocationBase;
+  // Allocation provenance is independent of whether the optional flat peer
+  // mapping succeeded. Network MR routing must use allocationIsVmm; local
+  // peer-pointer resolution uses isVMM/flatBase.
+  bool allocationIsVmm;
+  bool isVMM;     // true while a VMM flat mapping is active
+  bool published; // linked into comm->symWindows only after full commit
+  flagcxSymWindowState state;
   struct flagcxSymWindow *next; // intrusive link in comm->symWindows
+  struct flagcxSymWindow
+      *cleanupNext; // unpublished rollback retained for retry
+};
+
+// Public window deregistration is collective so every rank reports the same
+// MR/cleanup result. Communicator destruction is deliberately rank-local and
+// must not enter bootstrap rendezvous while another rank is still live.
+enum flagcxSymCleanupMode {
+  flagcxSymCleanupCollective = 0,
+  flagcxSymCleanupLocal = 1,
 };
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
                                        int winFlags);
 
-flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
-                                         flagcxWindow_t win);
+// Internal entry point for owners that allocate outside flagcxMemAlloc and
+// therefore know the allocation provenance explicitly.
+flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
+                                               void *buff, size_t size,
+                                               flagcxWindow_t *win,
+                                               int winFlags,
+                                               bool allocationIsVmm);
+
+flagcxResult_t flagcxSymWindowDeregister(
+    flagcxHeteroComm_t comm, flagcxWindow_t win,
+    flagcxSymCleanupMode mode = flagcxSymCleanupCollective);
+
+// Publish only after every collective setup phase, including IPC fallback,
+// has converged successfully on all ranks.
+flagcxResult_t flagcxSymWindowPublish(flagcxHeteroComm_t comm,
+                                      flagcxWindow_t win);
+flagcxResult_t flagcxSymRetryPendingCleanup(
+    flagcxHeteroComm_t comm,
+    flagcxSymCleanupMode mode = flagcxSymCleanupCollective);
+flagcxResult_t flagcxSymRetainPendingCleanup(flagcxHeteroComm_t comm,
+                                             flagcxWindow_t win);
+flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
+                                       flagcxResult_t localStatus,
+                                       flagcxResult_t *commonStatus);
+
+// Acquire and attach a network MR reference to an unpublished symmetric
+// window. The operation is collective and idempotent across retries.
+flagcxResult_t flagcxSymWindowEnsureNetworkMr(flagcxHeteroComm_t comm,
+                                              flagcxSymWindow_t window);
+
+// A published window must provide a usable path to every peer: flat/IPC/NET
+// for local peers when P2P is enabled, and NET for remote peers or whenever
+// P2P is disabled.
+flagcxResult_t flagcxSymWindowValidateDataRoutes(flagcxHeteroComm_t comm,
+                                                 flagcxSymWindow_t window);
+
+// Pure validation seam used by unit tests and by the runtime wrapper above.
+// localPeerTransportEnabled controls whether flat/IPC routes are usable.
+flagcxResult_t
+flagcxSymWindowValidateDataRoutesForMode(flagcxHeteroComm_t comm,
+                                         flagcxSymWindow_t window,
+                                         bool localPeerTransportEnabled);
 
 // Find the symmetric window containing [ptr, ptr + size) on the local rank.
 // Returns NULL when the range is not owned by an active window.

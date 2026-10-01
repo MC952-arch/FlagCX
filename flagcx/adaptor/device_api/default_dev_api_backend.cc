@@ -456,6 +456,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       devComm->barrierSignalBase = userSignals;
       size_t sigSize =
           (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t);
+      devComm->signalBufferIsVmm = false;
       INFO(
           FLAGCX_INIT,
           "defaultDevApiCommCreate: signalBuffer sigSize=%zu (count=%d ctx=%d)",
@@ -477,6 +478,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                res);
           return res;
         }
+        devComm->signalBufferIsVmm = flagcxDeviceAdaptorNativeAllocIsVmm(
+            deviceAdaptor, flagcxParamVmmEnable());
         res = deviceAdaptor->deviceMemset(devComm->signalBuffer, 0, sigSize,
                                           flagcxMemDevice, NULL);
         if (res != flagcxSuccess) {
@@ -596,10 +599,10 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         INFO(FLAGCX_INIT,
              "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
              sigPtrType);
-        res = flagcxOneSideSignalRegister(comm, devComm->signalBuffer,
-                                          (size_t)devComm->signalCount *
-                                              bufCtxCount * sizeof(uint64_t),
-                                          sigPtrType);
+        res = flagcxOneSideSignalRegisterInternal(
+            comm, devComm->signalBuffer,
+            (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t),
+            sigPtrType, devComm->signalBufferIsVmm);
         struct flagcxOneSideHandleInfo *registration =
             comm->heteroComm->signalHandle;
         bool signalRegistered =
@@ -874,11 +877,18 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     devComm->epochBuffer = nullptr;
   }
   if (devComm->signalBuffer) {
+    flagcxResult_t result = flagcxSuccess;
     if (flagcxParamSignalHostEnable())
-      deviceAdaptor->deviceFree(devComm->signalBuffer, flagcxMemHost, NULL);
+      result =
+          deviceAdaptor->deviceFree(devComm->signalBuffer, flagcxMemHost, NULL);
     else
-      deviceAdaptor->gdrMemFree(devComm->signalBuffer, NULL);
+      result = deviceAdaptor->gdrMemFree(devComm->signalBuffer, NULL);
+    // Preserve the buffer ownership record when provider teardown fails so a
+    // subsequent communicator-destroy attempt can retry it.
+    if (result != flagcxSuccess)
+      return result;
     devComm->signalBuffer = nullptr;
+    devComm->signalBufferIsVmm = false;
   }
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionSignalBuffer) {
