@@ -143,12 +143,11 @@ flagcxResult_t ducudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   prop.location.id = cuDevice;
   prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
-  int rdmaCapable = 0;
-  CUresult attributeResult = cuDeviceGetAttribute(
-      &rdmaCapable, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
-      cuDevice);
-  if (attributeResult == CUDA_SUCCESS && rdmaCapable)
-    prop.allocFlags.gpuDirectRDMACapable = 1;
+  // The DCU CUDA compatibility layer aborts on NVIDIA-only capability enum
+  // 110 instead of returning CUDA_ERROR_NOT_SUPPORTED.  Do not query it here:
+  // DMA-BUF export and provider VA registration are the authoritative probes
+  // for this allocation and are exercised independently by the strict CI
+  // modes.
 
   size_t granularity = 0;
   DEVCHECK(cuMemGetAllocationGranularity(&granularity, &prop,
@@ -190,8 +189,7 @@ flagcxResult_t ducudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   bool tracked = false;
   try {
     std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
-    const uint32_t mrCaps =
-        FLAGCX_VMM_MR_CAP_DMABUF | (rdmaCapable ? FLAGCX_VMM_MR_CAP_VA : 0);
+    const uint32_t mrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
     tracked =
         gDucudaVmmAllocations
             .emplace(*ptr, DucudaVmmAllocation{allocSize, mrCaps, true, true})
@@ -406,17 +404,11 @@ flagcxResult_t ducudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
-  *dmaBufferSupport = false;
-  int device = 0;
-  CUdevice cuDevice;
-  int supported = 0;
-  if (cudaGetDevice(&device) != cudaSuccess ||
-      cuDeviceGet(&cuDevice, device) != CUDA_SUCCESS)
-    return flagcxSuccess;
-  CUresult result = cuDeviceGetAttribute(
-      &supported, CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, cuDevice);
-  if (result == CUDA_SUCCESS)
-    *dmaBufferSupport = supported != 0;
+  // Enum 124 is also unsupported by the DCU compatibility layer and aborts
+  // the process.  Advertise the implemented export path and let
+  // cuMemGetHandleForAddressRange provide the per-allocation result.  Auto
+  // mode falls back to VA only on an explicit flagcxNotSupported result.
+  *dmaBufferSupport = true;
   return flagcxSuccess;
 }
 

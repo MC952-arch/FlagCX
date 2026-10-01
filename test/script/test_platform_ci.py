@@ -524,6 +524,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         registration = source[register_start:register_end]
         self.assertIn("kSymNetworkRouteGatherTag", registration)
         self.assertIn("flagcxParamP2pDisable()", registration)
+        self.assertIn("flagcxParamDeviceOneSidedForceNet()", registration)
         self.assertIn("if (needsNetworkMr)", registration)
 
         vmm_start = source.index("const bool localVmmAvailable")
@@ -555,6 +556,33 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 filename,
             )
             self.assertIn("GetAllocationVmmMrCaps", source, filename)
+
+        # The DCU CUDA compatibility layer aborts instead of returning an
+        # unsupported status for NVIDIA-only attributes 110 and 124.  Its
+        # strict DMA-BUF/VA CI invocations probe the real operations instead.
+        ducuda = (
+            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        ).read_text()
+        self.assertNotIn(
+            "CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED",
+            ducuda,
+        )
+        self.assertNotIn("CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED", ducuda)
+        gdr_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        ]
+        self.assertIn(
+            "FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA",
+            gdr_alloc,
+        )
+        dma_support = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorDmaSupport") :
+            ducuda.index(
+                "flagcxResult_t ducudaAdaptorMemGetHandleForAddressRange"
+            )
+        ]
+        self.assertIn("*dmaBufferSupport = true", dma_support)
 
         common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
         dma_route = common.index("return FLAGCX_VMM_MR_ROUTE_DMABUF")

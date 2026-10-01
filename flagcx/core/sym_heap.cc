@@ -361,10 +361,10 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   if (comm == nullptr)
     return flagcxInvalidArgument;
   flagcxResult_t local = flagcxSuccess;
-  if (d != nullptr && d->hasPendingNetworkCleanup) {
+  const bool retryingPendingNetworkCleanup =
+      d != nullptr && d->hasPendingNetworkCleanup;
+  if (retryingPendingNetworkCleanup) {
     local = flagcxOneSideRetryPendingCleanup(comm);
-    if (local == flagcxSuccess)
-      d->hasPendingNetworkCleanup = false;
   } else if (d != nullptr && d->hasNetworkMrRef && d->mrIndex >= 0) {
     local = flagcxOneSideDeregisterInternal(comm, d->mrIndex);
     if (local == flagcxSuccess) {
@@ -381,6 +381,13 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   }
   if (common != flagcxSuccess)
     return common;
+
+  // Pending cleanup is a collective participation token.  A rank with no
+  // local object to retry must retain it until every rank reports success;
+  // otherwise the next retry can split control flow and strand peers in the
+  // status convergence.
+  if (retryingPendingNetworkCleanup)
+    d->hasPendingNetworkCleanup = false;
 
   return flagcxSymCleanupMappingsConverged(comm, d, mode);
 }
@@ -462,15 +469,16 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   if (anyPendingCleanup)
     return flagcxInvalidUsage;
 
-  // Flat VMM and IPC mappings are node-local and the runtime deliberately
-  // bypasses both when P2P is disabled. Converge whether any rank needs NET so
-  // every rank takes the same collective MR path even if its local environment
-  // is inconsistent.
+  // Flat VMM and IPC mappings are node-local. The runtime bypasses them when
+  // P2P is disabled or the device API explicitly forces NET. Converge whether
+  // any rank needs NET so every rank takes the same collective MR path even if
+  // its local environment is inconsistent.
   int needsNetworkMr = 0;
   FLAGCXCHECK(flagcxSymGlobalConvergeScalar(
       comm,
       comm->localRanks < comm->nRanks ||
-              (comm->localRanks > 1 && flagcxParamP2pDisable())
+              (comm->localRanks > 1 && flagcxParamP2pDisable()) ||
+              flagcxParamDeviceOneSidedForceNet()
           ? 1
           : 0,
       kSymNetworkRouteGatherTag, kSymNetworkRouteBroadcastTag,
