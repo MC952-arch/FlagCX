@@ -3650,4 +3650,8 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbGetDevFromName,
 
     // Optional one-sided batch helpers and MR metadata
-    flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo};
+    flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo,
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE};

@@ -42,6 +42,12 @@ size_t mockRangeSize = 0;
 int multicastProviderRefs = 0;
 int multicastObjectDestroyCalls = 0;
 
+struct flagcxNetAdaptor makeVmmCapableTestNet() {
+  struct flagcxNetAdaptor net = {};
+  net.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  return net;
+}
+
 flagcxResult_t mockGetAllocationVmmMrCaps(const void *, uint32_t *caps) {
   if (caps == nullptr)
     return flagcxInvalidArgument;
@@ -428,7 +434,7 @@ TEST(SymWindowMrRoute, PreservesNetPropertyQueryResults) {
   char buffer[64] = {};
   for (const auto &testCase : cases) {
     SCOPED_TRACE(testCase.name);
-    struct flagcxNetAdaptor testNet = {};
+    struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
     struct flagcxHeteroComm comm = {};
     testNet.getProperties = testCase.getProperties;
     testNet.regMr = mockVaRegMr;
@@ -456,12 +462,54 @@ TEST(SymWindowMrRoute, PreservesNetPropertyQueryResults) {
   deviceAdaptor = savedDevice;
 }
 
+TEST(SymWindowMrRoute, ProviderCapabilitiesSuppressUnvalidatedVmmRoutes) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
+  struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
+  struct flagcxHeteroComm comm = {};
+  char buffer[64] = {};
+  void *mrHandle = reinterpret_cast<void *>(0x1);
+  flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_VA;
+
+  testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
+  testDevice.getAllocationVmmMrCaps = nullptr;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  testDevice.dmaSupport = mockDmaSupport;
+  testDevice.getAddressRange = mockAddressRange;
+  testDevice.getHandleForAddressRange = mockDmaBufExportSuccess;
+  testNet.vmmMrCaps = FLAGCX_VMM_MR_CAP_NONE;
+  testNet.getProperties = mockNetProperties;
+  testNet.regMr = mockVaRegMr;
+  testNet.regMrDmaBuf = mockDmaBufRegMr;
+  comm.netAdaptor = &testNet;
+  comm.netDev = 0;
+  vaRegCalls = 0;
+  dmaBufRegCalls = 0;
+  dmaSupportCalls = 0;
+  deviceAdaptor = &testDevice;
+
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, sizeof(buffer), FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route),
+            flagcxNotSupported);
+  EXPECT_EQ(mrHandle, nullptr);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
+  EXPECT_EQ(vaRegCalls, 0);
+  EXPECT_EQ(dmaBufRegCalls, 0);
+  EXPECT_EQ(dmaSupportCalls, 0);
+
+  deviceAdaptor = savedDevice;
+}
+
 TEST(SymWindowMrRoute, StrictVaSkipsDmaBufProbeAndRegistration) {
   ASSERT_NE(deviceAdaptor, nullptr);
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "va");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -501,7 +549,7 @@ TEST(SymWindowMrRoute, AllocationCapabilityCanRejectUnsafeVaRoute) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "va");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = reinterpret_cast<void *>(0x1);
@@ -537,7 +585,7 @@ TEST(SymWindowMrRoute, StrictDmaBufNeverFallsBackToVa) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "dmabuf");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -578,7 +626,7 @@ TEST(SymWindowMrRoute, DmaBufProviderErrorDoesNotFallbackToVa) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -619,7 +667,7 @@ TEST(SymWindowMrRoute, PartialDmaBufMrIsReleasedBeforeVaFallback) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -661,7 +709,7 @@ TEST(SymWindowMrRoute, PartialDmaBufMrCleanupFailureSuppressesVaFallback) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -709,7 +757,7 @@ TEST(SymWindowMrRoute, DmaBufSubrangeExportsAllocationAndUsesPageOffset) {
 
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   auto *subrange = static_cast<char *>(allocation) + pageSize + 123;
   constexpr size_t subrangeSize = 257;
@@ -766,7 +814,7 @@ TEST(SymWindowMrRoute, VaProviderErrorIsPreserved) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "va");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -806,7 +854,7 @@ TEST(SymWindowMrRoute, ProviderSuccessWithoutHandleIsInternalError) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "va");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = reinterpret_cast<void *>(0x1);
@@ -839,7 +887,7 @@ TEST(SymWindowMrRoute, StrictDmaBufUsesDmaBufRoute) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "dmabuf");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -880,7 +928,7 @@ TEST(SymWindowMrRoute, InvalidStrictModeFailsBeforeRegistration) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "invalid");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -912,7 +960,7 @@ TEST(SymWindowMrRoute, ExportNotSupportedFallsBackToValidatedVa) {
   ASSERT_NE(deviceAdaptor, nullptr);
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -955,7 +1003,7 @@ TEST(SymWindowMrRoute, LegacyV1ExportSuccessUsesDmaBuf) {
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "invalid");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -993,7 +1041,7 @@ TEST(SymWindowMrRoute, LegacyV1ExportFailureFallsBackToVa) {
   ASSERT_NE(deviceAdaptor, nullptr);
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;
@@ -1025,11 +1073,52 @@ TEST(SymWindowMrRoute, LegacyV1ExportFailureFallsBackToVa) {
   deviceAdaptor = savedDevice;
 }
 
+TEST(SymWindowMrRoute, LegacyNetV1PreservesHistoricalRouteSelection) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "invalid");
+  struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
+  struct flagcxHeteroComm comm = {};
+  char buffer[64] = {};
+  void *mrHandle = nullptr;
+  flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
+
+  testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_NONE;
+  testDevice.dmaSupport = mockDmaSupportFailure;
+  testDevice.getHandleForAddressRange = mockDmaBufExportSuccess;
+  testNet.internalFlags = FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1;
+  testNet.vmmMrCaps = FLAGCX_VMM_MR_CAP_NONE;
+  testNet.regMr = mockVaRegMr;
+  testNet.regMrDmaBuf = mockDmaBufRegMr;
+  comm.netAdaptor = &testNet;
+  vaRegCalls = 0;
+  dmaBufRegCalls = 0;
+  dmaSupportCalls = 0;
+  dmaBufRegPtrType = -1;
+  deviceAdaptor = &testDevice;
+
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, sizeof(buffer), FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route),
+            flagcxSuccess);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_DMABUF);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x5678));
+  EXPECT_EQ(vaRegCalls, 0);
+  EXPECT_EQ(dmaBufRegCalls, 1);
+  EXPECT_EQ(dmaSupportCalls, 0);
+  EXPECT_EQ(dmaBufRegPtrType, FLAGCX_PTR_CUDA);
+
+  deviceAdaptor = savedDevice;
+}
+
 TEST(SymWindowMrRoute, LatestExportDeviceErrorDoesNotFallback) {
   ASSERT_NE(deviceAdaptor, nullptr);
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
-  struct flagcxNetAdaptor testNet = {};
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
   struct flagcxHeteroComm comm = {};
   char buffer[64] = {};
   void *mrHandle = nullptr;

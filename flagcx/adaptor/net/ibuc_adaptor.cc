@@ -2962,17 +2962,29 @@ flagcxResult_t flagcxIbucGetProperties(int dev, void *props) {
 
 struct flagcxNetAdaptor flagcxNetIbuc = {
     // Basic functions
-    "IBUC", flagcxIbucInit, flagcxIbDevices, flagcxIbucGetProperties,
+    "IBUC",
+    flagcxIbucInit,
+    flagcxIbDevices,
+    flagcxIbucGetProperties,
 
     // Setup functions
-    flagcxIbucListen, flagcxIbucConnect, flagcxIbucAccept, flagcxIbucCloseSend,
-    flagcxIbucCloseRecv, flagcxIbucCloseListen,
+    flagcxIbucListen,
+    flagcxIbucConnect,
+    flagcxIbucAccept,
+    flagcxIbucCloseSend,
+    flagcxIbucCloseRecv,
+    flagcxIbucCloseListen,
 
     // Memory region functions
-    flagcxIbucRegMr, flagcxIbucRegMrDmaBuf, flagcxIbucDeregMr,
+    flagcxIbucRegMr,
+    flagcxIbucRegMrDmaBuf,
+    flagcxIbucDeregMr,
 
     // Two-sided functions
-    flagcxIbucIsend, flagcxIbucIrecv, flagcxIbucIflush, flagcxIbucTest,
+    flagcxIbucIsend,
+    flagcxIbucIrecv,
+    flagcxIbucIflush,
+    flagcxIbucTest,
 
     // One-sided functions
     NULL, // iput - not supported on IBUC
@@ -2987,6 +2999,10 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     NULL, // testBatch
     NULL, // igetBatch
     NULL, // getMrInfo
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };
 
 #endif // USE_IBUC

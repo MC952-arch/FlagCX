@@ -588,60 +588,47 @@ run_suite() {
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter"
 
-      FLAGCX_CI_MPI_LABEL="symmem VMM + NET VA" \
-        "$MPI_RUNNER" --allow-run-as-root \
-        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_VMM_MR_MODE=va \
-        -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-        "$symmem_bin" "$symmem_filter" \
-        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_VMM_MR_MODE=va \
-        -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-        "$symmem_bin" "$symmem_filter"
-
-      if [[ "$platform_name" == "ppu" ]]; then
-        FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF unsupported" \
+      if [[ "$platform_name" != "ppu" ]]; then
+        FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto" \
           "$MPI_RUNNER" --allow-run-as-root \
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=dmabuf \
-          -x FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED=1 \
-          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-          "$symmem_bin" \
-          --gtest_filter=SymMemTest.StrictDmaBufUnsupportedDoesNotPublishWindow \
-          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-          -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=dmabuf \
-          -x FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED=1 \
-          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-          "$symmem_bin" \
-          --gtest_filter=SymMemTest.StrictDmaBufUnsupportedDoesNotPublishWindow
-      else
-        FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF" \
-          "$MPI_RUNNER" --allow-run-as-root \
-          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-          -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=dmabuf \
-          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf \
+          -x FLAGCX_VMM_MR_MODE=auto \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter" \
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=dmabuf \
-          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf \
+          -x FLAGCX_VMM_MR_MODE=auto \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
       fi
+
+      local -a symmem_route_union_env=()
+      if [[ "$platform_name" == "ppu" ]]; then
+        symmem_route_union_env+=( -x FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1 )
+      fi
+      FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union" \
+        "$MPI_RUNNER" --allow-run-as-root \
+        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
+        -x FLAGCX_VMM_MR_MODE=auto \
+        "${symmem_route_union_env[@]}" \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+        "$symmem_bin" \
+        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion \
+        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_CI_REQUIRE_VMM=1 \
+        -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
+        -x FLAGCX_VMM_MR_MODE=auto \
+        "${symmem_route_union_env[@]}" \
+        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+        "$symmem_bin" \
+        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
       ;;
     device_api)
       run_device_api

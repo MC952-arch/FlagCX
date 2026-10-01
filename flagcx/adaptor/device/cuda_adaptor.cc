@@ -643,13 +643,22 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   }
 
   // Discover actual physical allocation size (already granularity-aligned)
+  CUdeviceptr allocationBase = 0;
   size_t actualAllocSize = 0;
   CUresult rangeRes =
-      cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr);
+      cuMemGetAddressRange(&allocationBase, &actualAllocSize, (CUdeviceptr)ptr);
   if (rangeRes != CUDA_SUCCESS) {
     cuMemRelease(*cuHandle);
     free(cuHandle);
     return flagcxUnhandledDeviceError;
+  }
+  const CUdeviceptr address = (CUdeviceptr)ptr;
+  if (allocationBase == 0 || actualAllocSize == 0 || address < allocationBase ||
+      address - allocationBase > actualAllocSize ||
+      size > actualAllocSize - (address - allocationBase)) {
+    cuMemRelease(*cuHandle);
+    free(cuHandle);
+    return flagcxInvalidUsage;
   }
   *allocSize = actualAllocSize;
 

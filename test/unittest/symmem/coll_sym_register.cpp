@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -18,6 +19,37 @@ bool envEnabled(const char *name) {
   const char *value = std::getenv(name);
   return value != nullptr && std::strcmp(value, "0") != 0;
 }
+
+class ScopedEnvVar {
+public:
+  ScopedEnvVar(const char *name, const char *value) : name_(name) {
+    const char *old = std::getenv(name);
+    if (old != nullptr) {
+      hadOldValue_ = true;
+      oldValue_ = old;
+    }
+    set(value);
+  }
+
+  void set(const char *value) {
+    if (value != nullptr)
+      setenv(name_, value, 1);
+    else
+      unsetenv(name_);
+  }
+
+  ~ScopedEnvVar() {
+    if (hadOldValue_)
+      setenv(name_, oldValue_.c_str(), 1);
+    else
+      unsetenv(name_);
+  }
+
+private:
+  const char *name_;
+  bool hadOldValue_ = false;
+  std::string oldValue_;
+};
 
 ::testing::AssertionResult vmmMrRouteMatches(uint8_t actual) {
   const char *expected = std::getenv("FLAGCX_CI_EXPECT_VMM_MR_ROUTE");
@@ -789,6 +821,85 @@ TEST_F(SymMemTest, StrictDmaBufUnsupportedDoesNotPublishWindow) {
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION"))
+    GTEST_SKIP() << "Runs in the VMM NET route-capability invocation";
+  ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
+  ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
+
+  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
+  const char *modes[] = {"dmabuf", "va"};
+  const flagcxVmmMrRoute_t expectedRoutes[] = {FLAGCX_VMM_MR_ROUTE_DMABUF,
+                                               FLAGCX_VMM_MR_ROUTE_VA};
+  bool routeSucceeded[2] = {false, false};
+
+  for (int routeIndex = 0; routeIndex < 2; routeIndex++) {
+    SCOPED_TRACE(modes[routeIndex]);
+    routeMode.set(modes[routeIndex]);
+
+    flagcxComm_t testComm = nullptr;
+    ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+    ASSERT_NE(testComm, nullptr);
+    ASSERT_NE(testComm->heteroComm, nullptr);
+    ASSERT_NE(testComm->heteroComm->netAdaptor, nullptr);
+
+    void *buffer = nullptr;
+    ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&buffer, size)));
+    const int handlesBefore = testComm->heteroComm->oneSideHandleCount;
+    const uint64_t exchangesBefore =
+        testComm->heteroComm->oneSideDataMetadataExchangeCount;
+    flagcxWindow_t window = nullptr;
+    flagcxResult_t result = flagcxCommWindowRegister(
+        testComm, buffer, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+
+    int minimum = 0;
+    int maximum = 0;
+    allRankResultRange(result, &minimum, &maximum);
+    ASSERT_EQ(minimum, maximum)
+        << modes[routeIndex] << " result diverged across ranks";
+    ASSERT_TRUE(result == flagcxSuccess || result == flagcxNotSupported)
+        << modes[routeIndex] << " returned unexpected result "
+        << static_cast<int>(result);
+
+    if (result == flagcxSuccess) {
+      routeSucceeded[routeIndex] = true;
+      ASSERT_NE(window, nullptr);
+      ASSERT_NE(window->defaultBase, nullptr);
+      ASSERT_TRUE(window->defaultBase->hasNetworkMrRef);
+      const int mrIndex = window->defaultBase->mrIndex;
+      ASSERT_GE(mrIndex, 0);
+      ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
+      auto *handle = testComm->heteroComm->oneSideHandles[mrIndex];
+      ASSERT_NE(handle, nullptr);
+      EXPECT_EQ(handle->registrationRoute,
+                static_cast<uint8_t>(expectedRoutes[routeIndex]));
+      ASSERT_TRUE(
+          allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+    } else {
+      EXPECT_EQ(window, nullptr);
+      EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
+      EXPECT_EQ(testComm->heteroComm->pendingSymCleanup, nullptr);
+      EXPECT_EQ(testComm->heteroComm->oneSideHandleCount, handlesBefore);
+      EXPECT_EQ(testComm->heteroComm->oneSideDataMetadataExchangeCount,
+                exchangesBefore);
+    }
+
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
+    EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+  }
+
+  const int localMask =
+      (routeSucceeded[0] ? 1 : 0) | (routeSucceeded[1] ? 2 : 0);
+  int minimumMask = 0;
+  int maximumMask = 0;
+  MPI_Allreduce(&localMask, &minimumMask, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  MPI_Allreduce(&localMask, &maximumMask, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  ASSERT_EQ(minimumMask, maximumMask);
+  if (!envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED"))
+    EXPECT_NE(minimumMask, 0)
+        << "neither DMA-BUF nor VA can register a VMM allocation";
 }
 
 TEST_F(SymMemTest, AsymmetricDeregisterUsesCollectivePublishSlot) {

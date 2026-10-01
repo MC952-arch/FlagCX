@@ -22,11 +22,10 @@ class PpuCiRegressionTest(unittest.TestCase):
 
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertIn(
-            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET VA"', unit_runner
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"', unit_runner
         )
         self.assertIn(
-            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF unsupported"',
-            unit_runner,
+            "FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner
         )
         self.assertIn(
             'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner
@@ -35,16 +34,10 @@ class PpuCiRegressionTest(unittest.TestCase):
             'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
             unit_runner,
         )
-        self.assertIn("FLAGCX_VMM_MR_MODE=va", unit_runner)
-        self.assertIn("FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va", unit_runner)
-        self.assertIn("FLAGCX_VMM_MR_MODE=dmabuf", unit_runner)
-        self.assertIn(
-            "FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED=1", unit_runner
-        )
-        self.assertIn(
-            "SymMemTest.StrictDmaBufUnsupportedDoesNotPublishWindow",
-            unit_runner,
-        )
+        self.assertIn("FLAGCX_VMM_MR_MODE=auto", unit_runner)
+        self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
+        self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
+        self.assertIn('if [[ "$platform_name" != "ppu" ]]', unit_runner)
         self.assertIn(
             "SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow",
             unit_runner,
@@ -76,6 +69,7 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "ACCL currently has no API that consumes a DMA-BUF fd", barex
         )
+        self.assertIn("FLAGCX_VMM_MR_CAP_NONE", barex)
         self.assertIn("barexnet::barexRegMr", barex)
         self.assertNotIn("Requires FLAGCX_VMM_ENABLE=0", barex)
         self.assertNotIn("VMM unpinnable", accl_p2p)

@@ -1680,6 +1680,11 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     barexnet::barexTestBatch,
     barexnet::barexIgetBatch,
     barexnet::barexGetMrInfo,
+
+    // ACCL RegUserMr cannot currently pin VMM allocations, and ACCL exposes
+    // no API that consumes a DMA-BUF fd. Ordinary GPU MR remains supported.
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };
 
 /* Keep the external plugin ABI at v1. The complete one-sided and batch

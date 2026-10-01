@@ -586,12 +586,22 @@ flagcxResult_t ppucudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     return flagcxUnhandledDeviceError;
   }
 
+  CUdeviceptr allocationBase = 0;
   size_t actualAllocSize = 0;
-  result = cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr);
+  result =
+      cuMemGetAddressRange(&allocationBase, &actualAllocSize, (CUdeviceptr)ptr);
   if (result != CUDA_SUCCESS) {
     cuMemRelease(*cuHandle);
     free(cuHandle);
     return flagcxUnhandledDeviceError;
+  }
+  const CUdeviceptr address = (CUdeviceptr)ptr;
+  if (allocationBase == 0 || actualAllocSize == 0 || address < allocationBase ||
+      address - allocationBase > actualAllocSize ||
+      size > actualAllocSize - (address - allocationBase)) {
+    cuMemRelease(*cuHandle);
+    free(cuHandle);
+    return flagcxInvalidUsage;
   }
   *allocSize = actualAllocSize;
 

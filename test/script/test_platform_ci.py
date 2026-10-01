@@ -386,17 +386,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET VA"', unit_runner
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto"', unit_runner
         )
         self.assertIn(
-            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET DMA-BUF"', unit_runner
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
+            unit_runner,
         )
-        self.assertIn('FLAGCX_VMM_MR_MODE=va', unit_runner)
-        self.assertIn('FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va', unit_runner)
-        self.assertIn('FLAGCX_VMM_MR_MODE=dmabuf', unit_runner)
+        self.assertIn('FLAGCX_VMM_MR_MODE=auto', unit_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
         self.assertIn(
-            'FLAGCX_CI_EXPECT_VMM_MR_ROUTE=dmabuf', unit_runner
+            "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
         )
+        self.assertIn('if [[ "$platform_name" != "ppu" ]]', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_NET_MR=1', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1', unit_runner)
         self.assertIn(
@@ -619,10 +620,142 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "InvalidStrictModeFailsBeforeRegistration",
             "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
             "AllocationCapabilityCanRejectUnsafeVaRoute",
+            "ProviderCapabilitiesSuppressUnvalidatedVmmRoutes",
             "PartialDmaBufMrIsReleasedBeforeVaFallback",
             "PartialDmaBufMrCleanupFailureSuppressesVaFallback",
         ):
             self.assertIn(test_name, route_tests)
+
+        mpi_route_tests = (
+            REPO_ROOT / "test/unittest/symmem/coll_sym_register.cpp"
+        ).read_text()
+        self.assertIn("VmmNetRouteCapabilityUnion", mpi_route_tests)
+        self.assertIn("routeSucceeded[0]", mpi_route_tests)
+        self.assertIn("routeSucceeded[1]", mpi_route_tests)
+
+    def test_hygon_flat_vmm_cleanup_tracks_and_unmaps_individual_slots(self):
+        ducuda = (
+            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        ).read_text()
+        self.assertIn(
+            "CUmemGenericAllocationHandle handle;",
+            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+        )
+        self.assertIn(
+            "bool handleOwned;",
+            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+        )
+        self.assertIn("struct DucudaSymPhysHandle", ducuda)
+        self.assertIn("bool releaseOwned;", ducuda)
+
+        gdr_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        ]
+        self.assertNotIn(
+            "if (cuMemRelease(handle) != CUDA_SUCCESS)", gdr_alloc
+        )
+        self.assertIn(
+            "DucudaVmmAllocation{handle,allocSize,mrCaps,true,true,true}",
+            "".join(gdr_alloc.split()),
+        )
+
+        gdr_free = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree") :
+            ducuda.index("flagcxResult_t ducudaAdaptorStreamCreate")
+        ]
+        self.assertLess(
+            gdr_free.index("cuMemUnmap"),
+            gdr_free.index("cuMemRelease(allocation.handle)"),
+        )
+        self.assertLess(
+            gdr_free.index("cuMemAddressFree"),
+            gdr_free.index("cuMemRelease(allocation.handle)"),
+        )
+
+        phys_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree")
+        ]
+        self.assertLess(
+            phys_alloc.index("cuMemGetAddressRange"),
+            phys_alloc.index("cuMemRetainAllocationHandle"),
+        )
+        self.assertIn("gDucudaVmmAllocations.find", phys_alloc)
+        self.assertIn("handle->handle = allocation.handle", phys_alloc)
+        self.assertIn("handle->releaseOwned = false", phys_alloc)
+        self.assertIn("handle->releaseOwned = true", phys_alloc)
+
+        phys_free = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMappingUnmap")
+        ]
+        self.assertIn("ducudaSymPhysHandleDestroy", phys_free)
+        destroy = ducuda[
+            ducuda.index("ducudaSymPhysHandleDestroy") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc")
+        ]
+        self.assertLess(
+            destroy.index("if (physHandle->releaseOwned)"),
+            destroy.index("cuMemRelease(physHandle->handle)"),
+        )
+
+        self.assertIn("struct DucudaFlatMapping", ducuda)
+        self.assertIn("gDucudaFlatMappings", ducuda)
+        self.assertIn("mappedSlots", ducuda)
+        self.assertIn("importedHandleOwned", ducuda)
+
+        flat_map = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMap(") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatUnmap(")
+        ]
+        self.assertLess(
+            flat_map.index("gDucudaFlatMappings.emplace"),
+            flat_map.index("cuMemImportFromShareableHandle"),
+        )
+        self.assertLess(
+            flat_map.index("*flatBase = (void *)base"),
+            flat_map.index("cuMemImportFromShareableHandle"),
+        )
+        for stage in (
+            "stage=address-reserve",
+            "stage=import",
+            "stage=map",
+            "stage=set-access",
+        ):
+            self.assertIn(stage, flat_map)
+        self.assertIn("mapping.importedHandleOwned[i] = 1", flat_map)
+        self.assertNotIn("cuMemRelease(peerHandle)", flat_map)
+
+        legacy_unmap = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatUnmap("
+        )
+        mapping_unmap_start = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatMappingUnmap", legacy_unmap
+        )
+        va_free_start = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatVaFree", mapping_unmap_start
+        )
+        mapping_unmap = ducuda[mapping_unmap_start:va_free_start]
+        self.assertIn("for (int i = 0; i < nPeers; i++)", mapping_unmap)
+        self.assertIn("cuMemUnmap(slot, allocSize)", mapping_unmap)
+        self.assertIn("mapping.mappedSlots[i] = 0", mapping_unmap)
+        self.assertNotIn("cuMemUnmap((CUdeviceptr)flatBase,", mapping_unmap)
+        self.assertIn("stage=release-import", mapping_unmap)
+        self.assertLess(
+            mapping_unmap.index("cuMemUnmap(slot, allocSize)"),
+            mapping_unmap.index("cuMemRelease(mapping.importedHandles[i])"),
+        )
+
+        va_free = ducuda[
+            va_free_start : ducuda.index(
+                "flagcxResult_t ducudaAdaptorSymMulticastSupported"
+            )
+        ]
+        self.assertIn("mapping.mappedSlots[i]", va_free)
+        self.assertIn("mapping.importedHandleOwned[i]", va_free)
+        self.assertIn("cuMemAddressFree", va_free)
+        self.assertIn("gDucudaFlatMappings.erase(it)", va_free)
 
     def test_multicast_retained_handle_extension_is_latest_only(self):
         header = (
@@ -649,6 +782,23 @@ class PlatformCiRegressionTest(unittest.TestCase):
         sym_heap = (REPO_ROOT / "flagcx/core/sym_heap.cc").read_text()
         self.assertIn("deviceAdaptor->symMulticastImport", sym_heap)
         self.assertIn("d->mcHandle, /*importFd=*/-1", sym_heap)
+
+    def test_vmm_mr_provider_capability_is_latest_only(self):
+        header = (
+            REPO_ROOT / "flagcx/adaptor/include/flagcx_net_adaptor.h"
+        ).read_text()
+        v1 = header[
+            header.index("struct flagcxNetAdaptor_v1") :
+            header.index("struct flagcxNetAdaptor_latest")
+        ]
+        latest = header[header.index("struct flagcxNetAdaptor_latest") :]
+        self.assertNotIn("vmmMrCaps", v1)
+        self.assertNotIn("internalFlags", v1)
+        self.assertIn("uint32_t vmmMrCaps", latest)
+        self.assertIn("uint32_t internalFlags", latest)
+        self.assertIn(
+            "FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1", latest
+        )
 
     def test_perf_collectives_fail_fast_on_flagcx_errors(self):
         perf_dir = REPO_ROOT / "test/perf/host_api"

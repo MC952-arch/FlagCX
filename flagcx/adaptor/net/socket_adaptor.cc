@@ -688,11 +688,15 @@ flagcxResult_t flagcxNetSocketClose(void *opaqueComm) {
 
 flagcxNetAdaptor flagcxNetSocket = {
     // Basic functions
-    "Socket", flagcxNetSocketInit, flagcxNetSocketDevices,
+    "Socket",
+    flagcxNetSocketInit,
+    flagcxNetSocketDevices,
     flagcxNetSocketGetProperties,
 
     // Setup functions
-    flagcxNetSocketListen, flagcxNetSocketConnect, flagcxNetSocketAccept,
+    flagcxNetSocketListen,
+    flagcxNetSocketConnect,
+    flagcxNetSocketAccept,
     flagcxNetSocketClose, // closeSend
     flagcxNetSocketClose, // closeRecv (same as closeSend for socket)
     flagcxNetSocketCloseListen,
@@ -703,7 +707,9 @@ flagcxNetAdaptor flagcxNetSocket = {
     flagcxNetSocketDeregMr,
 
     // Two-sided functions
-    flagcxNetSocketIsend, flagcxNetSocketIrecv, flagcxNetSocketIflush,
+    flagcxNetSocketIsend,
+    flagcxNetSocketIrecv,
+    flagcxNetSocketIflush,
     flagcxNetSocketTest,
 
     // One-sided functions
@@ -719,4 +725,8 @@ flagcxNetAdaptor flagcxNetSocket = {
     NULL, // testBatch
     NULL, // igetBatch
     NULL, // getMrInfo
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };

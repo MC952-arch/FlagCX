@@ -12,6 +12,7 @@
 #include "param.h"
 #include <mutex>
 #include <new>
+#include <unistd.h>
 #include <unordered_map>
 
 struct MacaVmmAllocation {
@@ -239,6 +240,9 @@ flagcxResult_t macaAdaptorDmaSupport(bool *supported) {
   if (mcGetDevice(&device) != mcSuccess ||
       mcDeviceGet(&mcDevice, device) != mcSuccess)
     return flagcxSuccess;
+  // A POSIX shareable-handle attribute is only a prerequisite for DMA-BUF
+  // export, not proof that every VMM allocation can be exported. The
+  // per-allocation callback below performs the definitive range-export probe.
   int value = 0;
   if (mcDeviceGetAttribute(
           &value, mcDeviceAttributeHandleTypePosixFileDescriptorSupported,
@@ -563,12 +567,28 @@ flagcxResult_t macaAdaptorSymPhysAlloc(void *ptr, size_t size,
   }
 
   // Discover actual physical allocation size (already granularity-aligned)
+  mcDeviceptr_t allocationBase = 0;
   size_t actualAllocSize = 0;
-  result = mcMemGetAddressRange(NULL, &actualAllocSize, ptr);
+  result = mcMemGetAddressRange(&allocationBase, &actualAllocSize, ptr);
   if (result != mcSuccess) {
     mcMemRelease(*mcHandle);
     free(mcHandle);
     return flagcxUnhandledDeviceError;
+  }
+  const uintptr_t addressValue = (uintptr_t)ptr;
+  const uintptr_t allocationBaseValue = (uintptr_t)allocationBase;
+  if (allocationBaseValue == 0 || actualAllocSize == 0 ||
+      addressValue < allocationBaseValue) {
+    mcMemRelease(*mcHandle);
+    free(mcHandle);
+    return flagcxInvalidUsage;
+  }
+  const uintptr_t allocationOffset = addressValue - allocationBaseValue;
+  if (allocationOffset > actualAllocSize ||
+      size > actualAllocSize - allocationOffset) {
+    mcMemRelease(*mcHandle);
+    free(mcHandle);
+    return flagcxInvalidUsage;
   }
   *allocSize = actualAllocSize;
 
@@ -1000,11 +1020,34 @@ flagcxResult_t macaAdaptorGetAllocationVmmMrCaps(const void *ptr,
   flagcxResult_t result = macaAdaptorGetAddressRange(ptr, &base, &size);
   if (result != flagcxSuccess)
     return result;
-  std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
-  auto it = gMacaVmmAllocations.find(base);
-  if (it == gMacaVmmAllocations.end())
-    return flagcxNotSupported;
-  *caps = it->second.mrCaps;
+  uint32_t allocationCaps = FLAGCX_VMM_MR_CAP_NONE;
+  {
+    std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+    auto it = gMacaVmmAllocations.find(base);
+    if (it == gMacaVmmAllocations.end())
+      return flagcxNotSupported;
+    allocationCaps = it->second.mrCaps;
+  }
+
+  // MetaX's POSIX-FD device attribute also covers IPC handles and therefore
+  // over-approximates DMA-BUF support. Probe this concrete allocation before
+  // advertising the DMA-BUF route. Any export rejection means the route is
+  // unavailable for this allocation; auto mode can then select validated VA.
+  if (allocationCaps & FLAGCX_VMM_MR_CAP_DMABUF) {
+    int dmaBufFd = -1;
+    flagcxResult_t exportResult =
+        macaAdaptorMemGetHandleForAddressRange(&dmaBufFd, base, size, 0);
+    if (exportResult != flagcxSuccess || dmaBufFd < 0) {
+      allocationCaps &= ~FLAGCX_VMM_MR_CAP_DMABUF;
+      INFO(FLAGCX_REG,
+           "MetaX VMM DMA-BUF allocation probe: base=%p size=%zu result=%d "
+           "fdValid=%d",
+           base, size, static_cast<int>(exportResult), dmaBufFd >= 0 ? 1 : 0);
+    }
+    if (dmaBufFd >= 0)
+      close(dmaBufFd);
+  }
+  *caps = allocationCaps;
   return flagcxSuccess;
 }
 

@@ -1060,9 +1060,12 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
     return flagcxOneSideValidateRegisteredMr(result, *mrHandle);
   }
 
-  const bool legacyV1 =
+  const bool legacyDeviceV1 =
       deviceAdaptor != NULL && (deviceAdaptor->internalFlags &
                                 FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1) != 0;
+  const bool legacyNetV1 =
+      (net->internalFlags & FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1) != 0;
+  const bool legacyV1 = legacyDeviceV1 || legacyNetV1;
   if (legacyV1) {
     // v1 had no explicit per-allocation or MR-route capability. Preserve its
     // historical behavior exactly: try DMA-BUF when both callbacks exist, but
@@ -1128,10 +1131,11 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
     // candidates, never manufacture a route the adaptor did not declare.
     allocationCaps &= deviceAdaptor->vmmMrCaps;
   }
+  const uint32_t providerCaps = net->vmmMrCaps;
+  const uint32_t effectiveCaps = allocationCaps & providerCaps;
 
   bool dmaBufExportSupported = false;
-  if (mode != flagcxVmmMrModeVa &&
-      (allocationCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
+  if (mode != flagcxVmmMrModeVa && (effectiveCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
       deviceAdaptor->dmaSupport != NULL) {
     flagcxResult_t supportResult =
         deviceAdaptor->dmaSupport(&dmaBufExportSupported);
@@ -1143,10 +1147,25 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   }
 
   flagcxVmmMrRoute_t route = flagcxOneSideSelectVmmMrRoute(
-      allocationCaps, properties.ptrSupport, dmaBufExportSupported,
+      effectiveCaps, properties.ptrSupport, dmaBufExportSupported,
       deviceAdaptor->getHandleForAddressRange != NULL &&
           net->regMrDmaBuf != NULL,
       net->regMr != NULL, mode);
+  INFO(FLAGCX_REG,
+       "VMM MR route selection: provider=%s mode=%s allocationCaps=0x%x "
+       "providerCaps=0x%x effectiveCaps=0x%x ptrSupport=0x%x "
+       "dmaBufExport=%d regMrDmaBuf=%d regMr=%d selected=%d",
+       net->name != NULL ? net->name : "unknown",
+       mode == flagcxVmmMrModeDmaBuf
+           ? "dmabuf"
+           : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
+       allocationCaps, providerCaps, effectiveCaps, properties.ptrSupport,
+       dmaBufExportSupported ? 1 : 0,
+       deviceAdaptor->getHandleForAddressRange != NULL &&
+               net->regMrDmaBuf != NULL
+           ? 1
+           : 0,
+       net->regMr != NULL ? 1 : 0, static_cast<int>(route));
   if (route == FLAGCX_VMM_MR_ROUTE_NONE)
     return flagcxNotSupported;
 
@@ -1163,9 +1182,20 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
           (void *)&dmaBufFd, exportBase, exportSize, 0);
     if (result == flagcxSuccess && dmaBufFd < 0)
       result = flagcxNotSupported;
+    INFO(FLAGCX_REG,
+         "VMM MR DMA-BUF export: provider=%s base=%p size=%zu offset=%llu "
+         "result=%d fdValid=%d",
+         net->name != NULL ? net->name : "unknown", exportBase, exportSize,
+         (unsigned long long)dmaBufOffset, static_cast<int>(result),
+         dmaBufFd >= 0 ? 1 : 0);
     if (result == flagcxSuccess) {
       result = net->regMrDmaBuf(regComm, buff, size, FLAGCX_PTR_CUDA,
                                 dmaBufOffset, dmaBufFd, mrFlags, mrHandle);
+      INFO(FLAGCX_REG,
+           "VMM MR NET registration: provider=%s route=dmabuf buff=%p "
+           "size=%zu result=%d handleValid=%d",
+           net->name != NULL ? net->name : "unknown", buff, size,
+           static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
     }
     if (dmaBufFd >= 0)
       close(dmaBufFd);
@@ -1187,12 +1217,17 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
         *mrHandle = NULL;
       }
       route = flagcxOneSideSelectVmmMrRoute(
-          allocationCaps & ~FLAGCX_VMM_MR_CAP_DMABUF, properties.ptrSupport,
+          effectiveCaps & ~FLAGCX_VMM_MR_CAP_DMABUF, properties.ptrSupport,
           false, false, net->regMr != NULL, mode);
       if (route == FLAGCX_VMM_MR_ROUTE_VA) {
         *mrHandle = NULL;
         result =
             net->regMr(regComm, buff, size, FLAGCX_PTR_CUDA, mrFlags, mrHandle);
+        INFO(FLAGCX_REG,
+             "VMM MR NET registration: provider=%s route=va-fallback "
+             "buff=%p size=%zu result=%d handleValid=%d",
+             net->name != NULL ? net->name : "unknown", buff, size,
+             static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
       }
     }
     if (result != flagcxSuccess) {
@@ -1201,6 +1236,11 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   } else {
     result =
         net->regMr(regComm, buff, size, FLAGCX_PTR_CUDA, mrFlags, mrHandle);
+    INFO(FLAGCX_REG,
+         "VMM MR NET registration: provider=%s route=va buff=%p size=%zu "
+         "result=%d handleValid=%d",
+         net->name != NULL ? net->name : "unknown", buff, size,
+         static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
   }
   result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
   if (result == flagcxSuccess) {
