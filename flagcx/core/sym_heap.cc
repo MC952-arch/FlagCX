@@ -639,15 +639,47 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
                 ? flagcxSuccess
                 : (allocRes == flagcxSuccess ? flagcxInternalError : allocRes);
 
-        // No rank may enter FD exchange until every local rank has completed
-        // local preparation successfully.
-        flagcxResult_t allocStatus = flagcxSuccess;
-        FLAGCXCHECKGOTO(flagcxSymLocalConverge(comm, localAllocStatus,
-                                               /*tag=*/0x5931, &allocStatus),
+        // A non-VMM pointer is an expected capability miss, while a provider
+        // failure after recognizing the allocation is fatal. Converge fatal
+        // errors separately so an earlier rank's NotSupported result cannot
+        // hide a later rank's real provider error.
+        flagcxResult_t localAllocFatal =
+            localAllocStatus == flagcxSuccess ||
+                    localAllocStatus == flagcxNotSupported
+                ? flagcxSuccess
+                : localAllocStatus;
+        flagcxResult_t allocFatal = flagcxSuccess;
+        FLAGCXCHECKGOTO(flagcxSymLocalConverge(comm, localAllocFatal,
+                                               /*tag=*/0x5931, &allocFatal),
                         res, fail);
+        flagcxResult_t allocStatus = allocFatal;
+        if (allocStatus == flagcxSuccess) {
+          FLAGCXCHECKGOTO(flagcxSymLocalConverge(comm, localAllocStatus,
+                                                 /*tag=*/0x593d, &allocStatus),
+                          res, fail);
+        }
+        if (allocStatus == flagcxNotSupported) {
+          // Either every local rank has an ordinary allocation or every rank
+          // must use VMM. A mixed result would make peers select incompatible
+          // IPC/flat ownership models, so reject it instead of silently
+          // treating the successfully-probed VMM allocations as ordinary.
+          flagcxResult_t localMixedStatus = localAllocStatus == flagcxSuccess
+                                                ? flagcxInvalidUsage
+                                                : flagcxSuccess;
+          flagcxResult_t mixedStatus = flagcxSuccess;
+          FLAGCXCHECKGOTO(flagcxSymLocalConverge(comm, localMixedStatus,
+                                                 /*tag=*/0x593e, &mixedStatus),
+                          res, fail);
+          if (mixedStatus != flagcxSuccess)
+            allocStatus = mixedStatus;
+        }
         bool allAllocOk = allocStatus == flagcxSuccess;
 
         if (allAllocOk) {
+          // symPhysAlloc is the native allocation probe. The public registry
+          // is intentionally not required: custom allocators may create valid
+          // VMM buffers directly through the device adaptor/runtime.
+          d->isVmmAllocation = true;
           comm->symWindowFdExchangeCount++;
           // Exchange shareable FDs with intra-node peers via Unix Domain Socket
           allFds[localRank] = shareableFd;
@@ -1067,6 +1099,9 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
             d->hasFlatMapping = false;
             d->allocSize = 0;
           }
+          if (allocStatus != flagcxNotSupported &&
+              localPrepareStatus == flagcxSuccess)
+            localPrepareStatus = allocStatus;
         }
         if (!allAllocOk && shareableFd >= 0) {
           close(shareableFd);
@@ -1127,7 +1162,12 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
       // Nodes that prepared successfully roll back now. A node whose earlier
       // rollback failed keeps its exact ownership for the next registration's
       // retry instead of immediately re-running a failed release operation.
-      flagcxResult_t localRollbackStatus = localPrepareStatus;
+      // Keep the preparation result separate from rollback ownership. A rank
+      // whose local prepare failed may already have released every partial
+      // provider object successfully; that original error must still be
+      // returned, but it must not manufacture a cleanup-required token.
+      flagcxResult_t localRollbackStatus =
+          retainCleanupForRetry ? localPrepareStatus : flagcxSuccess;
       if (localPrepareStatus == flagcxSuccess) {
         localRollbackStatus =
             flagcxSymCleanupMappings(comm, d, flagcxSymCleanupCollective);
@@ -1241,8 +1281,9 @@ fail:
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
                                        int winFlags) {
-  return flagcxSymWindowRegisterInternal(comm, buff, size, win, winFlags,
-                                         flagcxOneSideMemoryIsVmm(buff, size));
+  return flagcxSymWindowRegisterInternal(
+      comm, buff, size, win, winFlags,
+      flagcxOneSideRegistryRangeIsVmm(buff, size));
 }
 
 flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,

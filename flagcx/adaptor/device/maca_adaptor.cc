@@ -17,7 +17,6 @@
 
 struct MacaVmmAllocation {
   size_t size;
-  uint32_t mrCaps;
   bool mappingOwned;
   bool vaOwned;
 };
@@ -190,10 +189,7 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
   try {
     std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
     tracked = gMacaVmmAllocations
-                  .emplace(*ptr, MacaVmmAllocation{allocSize,
-                                                   FLAGCX_VMM_MR_CAP_DMABUF |
-                                                       FLAGCX_VMM_MR_CAP_VA,
-                                                   true, true})
+                  .emplace(*ptr, MacaVmmAllocation{allocSize, true, true})
                   .second;
   } catch (const std::bad_alloc &) {
   }
@@ -526,7 +522,12 @@ macaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
     return flagcxInvalidArgument;
   mcError_t result =
       mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags);
-  if (result == mcErrorNotSupported)
+  // MetaX reports mcErrorInvalidDevicePointer when a valid VMM allocation
+  // cannot be exported as DMA-BUF.  Treat that allocation-specific rejection
+  // as an unavailable route so auto mode can probe VA registration.  Invalid
+  // caller arguments have already been rejected above, and the VMM MR path
+  // validates the native address range before reaching this callback.
+  if (result == mcErrorNotSupported || result == mcErrorInvalidDevicePointer)
     return flagcxNotSupported;
   return result == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -563,6 +564,8 @@ flagcxResult_t macaAdaptorSymPhysAlloc(void *ptr, size_t size,
   mcError_t result = mcMemRetainAllocationHandle(mcHandle, ptr);
   if (result != mcSuccess) {
     free(mcHandle);
+    if (result == mcErrorInvalidValue || result == mcErrorNotSupported)
+      return flagcxNotSupported;
     return flagcxUnhandledDeviceError;
   }
 
@@ -1010,47 +1013,6 @@ flagcxResult_t macaAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
-flagcxResult_t macaAdaptorGetAllocationVmmMrCaps(const void *ptr,
-                                                 uint32_t *caps) {
-  if (ptr == NULL || caps == NULL)
-    return flagcxInvalidArgument;
-  *caps = FLAGCX_VMM_MR_CAP_NONE;
-  void *base = NULL;
-  size_t size = 0;
-  flagcxResult_t result = macaAdaptorGetAddressRange(ptr, &base, &size);
-  if (result != flagcxSuccess)
-    return result;
-  uint32_t allocationCaps = FLAGCX_VMM_MR_CAP_NONE;
-  {
-    std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
-    auto it = gMacaVmmAllocations.find(base);
-    if (it == gMacaVmmAllocations.end())
-      return flagcxNotSupported;
-    allocationCaps = it->second.mrCaps;
-  }
-
-  // MetaX's POSIX-FD device attribute also covers IPC handles and therefore
-  // over-approximates DMA-BUF support. Probe this concrete allocation before
-  // advertising the DMA-BUF route. Any export rejection means the route is
-  // unavailable for this allocation; auto mode can then select validated VA.
-  if (allocationCaps & FLAGCX_VMM_MR_CAP_DMABUF) {
-    int dmaBufFd = -1;
-    flagcxResult_t exportResult =
-        macaAdaptorMemGetHandleForAddressRange(&dmaBufFd, base, size, 0);
-    if (exportResult != flagcxSuccess || dmaBufFd < 0) {
-      allocationCaps &= ~FLAGCX_VMM_MR_CAP_DMABUF;
-      INFO(FLAGCX_REG,
-           "MetaX VMM DMA-BUF allocation probe: base=%p size=%zu result=%d "
-           "fdValid=%d",
-           base, size, static_cast<int>(exportResult), dmaBufFd >= 0 ? 1 : 0);
-    }
-    if (dmaBufFd >= 0)
-      close(dmaBufFd);
-  }
-  *caps = allocationCaps;
-  return flagcxSuccess;
-}
-
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -1121,7 +1083,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, macaAdaptorSymMulticastImport,
       macaAdaptorSymFlatMappingUnmap, macaAdaptorSymFlatVaFree,
       macaAdaptorSymMulticastMappingUnmap, macaAdaptorSymMulticastVaFree,
-      macaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_METAX_ADAPTOR

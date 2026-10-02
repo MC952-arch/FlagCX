@@ -16,7 +16,6 @@
 struct DucudaVmmAllocation {
   CUmemGenericAllocationHandle handle;
   size_t size;
-  uint32_t mrCaps;
   bool mappingOwned;
   bool vaOwned;
   bool handleOwned;
@@ -213,10 +212,9 @@ flagcxResult_t ducudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   bool tracked = false;
   try {
     std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
-    const uint32_t mrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
     tracked = gDucudaVmmAllocations
-                  .emplace(*ptr, DucudaVmmAllocation{handle, allocSize, mrCaps,
-                                                     true, true, true})
+                  .emplace(*ptr, DucudaVmmAllocation{handle, allocSize, true,
+                                                     true, true})
                   .second;
   } catch (const std::bad_alloc &) {
   }
@@ -643,6 +641,9 @@ flagcxResult_t ducudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     result = cuMemRetainAllocationHandle(&handle->handle, ptr);
     if (result != CUDA_SUCCESS) {
       free(handle);
+      if (result == CUDA_ERROR_INVALID_VALUE ||
+          result == CUDA_ERROR_NOT_SUPPORTED)
+        return flagcxNotSupported;
       return flagcxUnhandledDeviceError;
     }
     handle->releaseOwned = true;
@@ -964,47 +965,6 @@ flagcxResult_t ducudaAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
-flagcxResult_t ducudaAdaptorGetAllocationVmmMrCaps(const void *ptr,
-                                                   uint32_t *caps) {
-  if (ptr == NULL || caps == NULL)
-    return flagcxInvalidArgument;
-  *caps = FLAGCX_VMM_MR_CAP_NONE;
-  void *base = NULL;
-  size_t size = 0;
-  flagcxResult_t result = ducudaAdaptorGetAddressRange(ptr, &base, &size);
-  if (result != flagcxSuccess)
-    return result;
-  uint32_t allocationCaps = FLAGCX_VMM_MR_CAP_NONE;
-  {
-    std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
-    auto it = gDucudaVmmAllocations.find(base);
-    if (it == gDucudaVmmAllocations.end())
-      return flagcxNotSupported;
-    allocationCaps = it->second.mrCaps;
-  }
-
-  // The DCU compatibility layer does not expose a reliable device-wide
-  // DMA-BUF attribute.  Probe the actual VMM allocation so auto mode can
-  // select VA when this runtime rejects DMA-BUF export.
-  if (allocationCaps & FLAGCX_VMM_MR_CAP_DMABUF) {
-    int fd = -1;
-    flagcxResult_t exportResult =
-        ducudaAdaptorMemGetHandleForAddressRange(&fd, base, size, 0);
-    if (exportResult != flagcxSuccess || fd < 0) {
-      INFO(FLAGCX_INIT,
-           "DCU VMM DMA-BUF capability probe rejected allocation base %p "
-           "size %zu: result %d fd %d",
-           base, size, exportResult, fd);
-      allocationCaps &= ~FLAGCX_VMM_MR_CAP_DMABUF;
-    }
-    if (fd >= 0)
-      close(fd);
-  }
-
-  *caps = allocationCaps;
-  return flagcxSuccess;
-}
-
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -1083,7 +1043,6 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ducudaAdaptorSymMulticastImport,
       ducudaAdaptorSymFlatMappingUnmap, ducudaAdaptorSymFlatVaFree,
       ducudaAdaptorSymMulticastMappingUnmap, ducudaAdaptorSymMulticastVaFree,
-      ducudaAdaptorGetAllocationVmmMrCaps,
       FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH,
 };
 

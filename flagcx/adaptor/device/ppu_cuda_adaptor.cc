@@ -12,7 +12,6 @@
 
 struct PpuVmmAllocation {
   size_t size;
-  uint32_t mrCaps;
   bool mappingOwned;
   bool vaOwned;
 };
@@ -203,12 +202,9 @@ flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   bool tracked = false;
   try {
     std::lock_guard<std::mutex> lock(gPpuVmmAllocationMtx);
-    const uint32_t mrCaps =
-        FLAGCX_VMM_MR_CAP_DMABUF | (flag ? FLAGCX_VMM_MR_CAP_VA : 0);
-    tracked =
-        gPpuVmmAllocations
-            .emplace(*ptr, PpuVmmAllocation{handleSize, mrCaps, true, true})
-            .second;
+    tracked = gPpuVmmAllocations
+                  .emplace(*ptr, PpuVmmAllocation{handleSize, true, true})
+                  .second;
   } catch (const std::bad_alloc &) {
   }
   if (!tracked) {
@@ -583,6 +579,9 @@ flagcxResult_t ppucudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   CUresult result = cuMemRetainAllocationHandle(cuHandle, ptr);
   if (result != CUDA_SUCCESS) {
     free(cuHandle);
+    if (result == CUDA_ERROR_INVALID_VALUE ||
+        result == CUDA_ERROR_NOT_SUPPORTED)
+      return flagcxNotSupported;
     return flagcxUnhandledDeviceError;
   }
 
@@ -829,24 +828,6 @@ flagcxResult_t ppucudaAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
-flagcxResult_t ppucudaAdaptorGetAllocationVmmMrCaps(const void *ptr,
-                                                    uint32_t *caps) {
-  if (ptr == NULL || caps == NULL)
-    return flagcxInvalidArgument;
-  *caps = FLAGCX_VMM_MR_CAP_NONE;
-  void *base = NULL;
-  size_t size = 0;
-  flagcxResult_t result = ppucudaAdaptorGetAddressRange(ptr, &base, &size);
-  if (result != flagcxSuccess)
-    return result;
-  std::lock_guard<std::mutex> lock(gPpuVmmAllocationMtx);
-  auto it = gPpuVmmAllocations.find(base);
-  if (it == gPpuVmmAllocations.end())
-    return flagcxNotSupported;
-  *caps = it->second.mrCaps;
-  return flagcxSuccess;
-}
-
 struct flagcxDeviceAdaptor ppucudaAdaptor {
   "PPU_CUDA",
       // Basic functions
@@ -900,7 +881,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ppucudaAdaptorSymMulticastImport,
       ppucudaAdaptorSymFlatMappingUnmap, ppucudaAdaptorSymFlatVaFree,
       ppucudaAdaptorSymMulticastMappingUnmap, ppucudaAdaptorSymMulticastVaFree,
-      ppucudaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_PPU_ADAPTOR

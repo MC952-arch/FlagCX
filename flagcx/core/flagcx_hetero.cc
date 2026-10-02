@@ -709,6 +709,10 @@ flagcxRmaGetCompletionRequiresFlush(const struct flagcxHeteroComm *comm,
   return info != NULL && info->getCompletionRequiresFlush != 0;
 }
 
+static int flagcxRmaVisibilityFlushSize(size_t size) {
+  return size > static_cast<size_t>(INT_MAX) ? INT_MAX : static_cast<int>(size);
+}
+
 static flagcxResult_t flagcxRmaProxyPostGetFlush(struct flagcxHeteroComm *comm,
                                                  struct flagcxRmaDesc *desc) {
   if (comm == NULL || desc == NULL || desc->dstMrIdx < 0 ||
@@ -721,8 +725,7 @@ static flagcxResult_t flagcxRmaProxyPostGetFlush(struct flagcxHeteroComm *comm,
       comm->rank < 0 || comm->rank >= info->nRanks ||
       comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
-  if (desc->size > (size_t)INT_MAX ||
-      desc->dstOff > info->regionSizes[comm->rank] ||
+  if (desc->dstOff > info->regionSizes[comm->rank] ||
       desc->size > info->regionSizes[comm->rank] - desc->dstOff)
     return flagcxInvalidArgument;
   if (desc->size == 0)
@@ -730,7 +733,10 @@ static flagcxResult_t flagcxRmaProxyPostGetFlush(struct flagcxHeteroComm *comm,
 
   void *data[1] = {
       (void *)(info->baseVas[comm->rank] + (uintptr_t)desc->dstOff)};
-  int sizes[1] = {(int)desc->size};
+  // The legacy iflush ABI uses int sizes only to identify non-empty ranges;
+  // providers issue their own fixed-size visibility operation. Saturate the
+  // transferred size instead of rejecting a valid UINT32-sized RMA request.
+  int sizes[1] = {flagcxRmaVisibilityFlushSize(desc->size)};
   void *mhandles[1] = {info->localMrHandle};
   desc->request = NULL;
   return comm->netAdaptor->iflush(info->localRecvComm, 1, data, sizes, mhandles,
@@ -1920,12 +1926,8 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
 
-  if (size > (size_t)INT_MAX) {
-    WARN("flagcxHeteroFlush: size %zu exceeds int limit", size);
-    return flagcxInternalError;
-  }
   void *data_arr[1] = {gpuAddr};
-  int sizes_arr[1] = {(int)size};
+  int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
   void *mh_arr[1] = {info->localMrHandle};
   void *request = NULL;
   FLAGCXCHECK(comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr,

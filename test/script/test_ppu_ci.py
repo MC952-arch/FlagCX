@@ -37,7 +37,14 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_VMM_MR_MODE=auto", unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
-        self.assertIn('if [[ "$platform_name" != "ppu" ]]', unit_runner)
+        self.assertIn(
+            'if [[ "$platform_name" == "ppu" || '
+            '"$platform_name" == "hygon" ]]',
+            unit_runner,
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
+        )
         self.assertIn(
             "SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow",
             unit_runner,

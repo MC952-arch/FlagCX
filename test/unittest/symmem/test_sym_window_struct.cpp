@@ -31,8 +31,6 @@ int vaRegCalls = 0;
 int dmaBufRegCalls = 0;
 int deregMrCalls = 0;
 int dmaSupportCalls = 0;
-int allocationCapsCalls = 0;
-uint32_t mockAllocationCaps = FLAGCX_VMM_MR_CAP_NONE;
 int dmaBufRegPtrType = -1;
 uint64_t dmaBufRegOffset = UINT64_MAX;
 void *dmaBufExportBase = nullptr;
@@ -46,14 +44,6 @@ struct flagcxNetAdaptor makeVmmCapableTestNet() {
   struct flagcxNetAdaptor net = {};
   net.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   return net;
-}
-
-flagcxResult_t mockGetAllocationVmmMrCaps(const void *, uint32_t *caps) {
-  if (caps == nullptr)
-    return flagcxInvalidArgument;
-  allocationCapsCalls++;
-  *caps = mockAllocationCaps;
-  return flagcxSuccess;
 }
 
 class ScopedEnvVar {
@@ -422,7 +412,6 @@ TEST(SymWindowMrRoute, PreservesNetPropertyQueryResults) {
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
   struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -486,7 +475,6 @@ TEST(SymWindowMrRoute, ProviderCapabilitiesSuppressUnvalidatedVmmRoutes) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_VA;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -528,7 +516,6 @@ TEST(SymWindowMrRoute, StrictVaSkipsDmaBufProbeAndRegistration) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupportFailure;
   testDevice.getHandleForAddressRange = mockDmaBufExportFailure;
@@ -556,7 +543,7 @@ TEST(SymWindowMrRoute, StrictVaSkipsDmaBufProbeAndRegistration) {
   deviceAdaptor = savedDevice;
 }
 
-TEST(SymWindowMrRoute, AllocationCapabilityCanRejectUnsafeVaRoute) {
+TEST(SymWindowMrRoute, DeviceCapabilitiesCanRejectUnsafeVaRoute) {
   ASSERT_NE(deviceAdaptor, nullptr);
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "va");
   struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
@@ -568,14 +555,11 @@ TEST(SymWindowMrRoute, AllocationCapabilityCanRejectUnsafeVaRoute) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_DMABUF;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
-  testDevice.getAllocationVmmMrCaps = mockGetAllocationVmmMrCaps;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF;
   testNet.getProperties = mockNetProperties;
   testNet.regMr = mockVaRegMr;
   comm.netAdaptor = &testNet;
   comm.netDev = 0;
-  mockAllocationCaps = FLAGCX_VMM_MR_CAP_DMABUF;
-  allocationCapsCalls = 0;
   vaRegCalls = 0;
   deviceAdaptor = &testDevice;
 
@@ -584,7 +568,6 @@ TEST(SymWindowMrRoute, AllocationCapabilityCanRejectUnsafeVaRoute) {
                                     /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
                                     &mrHandle, &route),
             flagcxNotSupported);
-  EXPECT_EQ(allocationCapsCalls, 1);
   EXPECT_EQ(vaRegCalls, 0);
   EXPECT_EQ(mrHandle, nullptr);
   EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
@@ -604,7 +587,6 @@ TEST(SymWindowMrRoute, StrictDmaBufNeverFallsBackToVa) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -645,7 +627,6 @@ TEST(SymWindowMrRoute, DmaBufProviderErrorDoesNotFallbackToVa) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -686,7 +667,6 @@ TEST(SymWindowMrRoute, PartialDmaBufMrIsReleasedBeforeVaFallback) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -728,7 +708,6 @@ TEST(SymWindowMrRoute, PartialDmaBufMrCleanupFailureSuppressesVaFallback) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -777,7 +756,6 @@ TEST(SymWindowMrRoute, DmaBufSubrangeExportsAllocationAndUsesPageOffset) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -833,7 +811,6 @@ TEST(SymWindowMrRoute, VaProviderErrorIsPreserved) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupportFailure;
   testDevice.getHandleForAddressRange = mockDmaBufExportFailure;
@@ -873,7 +850,6 @@ TEST(SymWindowMrRoute, ProviderSuccessWithoutHandleIsInternalError) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_VA;
   testNet.getProperties = mockNetProperties;
   testNet.regMr = mockVaRegMrSuccessWithoutHandle;
@@ -906,7 +882,6 @@ TEST(SymWindowMrRoute, StrictDmaBufUsesDmaBufRoute) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -947,7 +922,6 @@ TEST(SymWindowMrRoute, InvalidStrictModeFailsBeforeRegistration) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testNet.getProperties = mockNetProperties;
   testNet.regMr = mockVaRegMr;
@@ -979,7 +953,6 @@ TEST(SymWindowMrRoute, ExportNotSupportedFallsBackToValidatedVa) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -1137,7 +1110,6 @@ TEST(SymWindowMrRoute, LatestExportDeviceErrorDoesNotFallback) {
   flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
 
   testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
-  testDevice.getAllocationVmmMrCaps = nullptr;
   testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
   testDevice.dmaSupport = mockDmaSupport;
   testDevice.getAddressRange = mockAddressRange;
@@ -1270,10 +1242,10 @@ TEST(SymWindowMrRoute, UsesRecordedVmmProvenanceForPublicRegistration) {
   flagcxMemAllocationInfo info = {allocation, sizeof(allocation), flagcxMemCCL,
                                   flagcxMemAllocBackendNative, true};
   ASSERT_EQ(globalMemAllocRegistry.insert(info), flagcxSuccess);
-  EXPECT_TRUE(flagcxOneSideMemoryIsVmm(allocation + 32, 64));
-  EXPECT_FALSE(flagcxOneSideMemoryIsVmm(allocation + 240, 32));
+  EXPECT_TRUE(flagcxOneSideRegistryRangeIsVmm(allocation + 32, 64));
+  EXPECT_FALSE(flagcxOneSideRegistryRangeIsVmm(allocation + 240, 32));
   EXPECT_EQ(globalMemAllocRegistry.erase(allocation), flagcxSuccess);
-  EXPECT_FALSE(flagcxOneSideMemoryIsVmm(allocation, sizeof(allocation)));
+  EXPECT_FALSE(flagcxOneSideRegistryRangeIsVmm(allocation, sizeof(allocation)));
 }
 
 // ---------------------------------------------------------------------------

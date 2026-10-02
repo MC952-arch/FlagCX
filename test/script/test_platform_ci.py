@@ -397,7 +397,22 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
         )
-        self.assertIn('if [[ "$platform_name" != "ppu" ]]', unit_runner)
+        self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
+        self.assertIn(
+            'if [[ "$platform_name" == "ppu" || '
+            '"$platform_name" == "hygon" ]]',
+            unit_runner,
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data == 0)); then", unit_runner
+        )
+        self.assertIn(
+            "Skipping $platform_name VMM + NET data tests", unit_runner
+        )
+        self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_NET_MR=1', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1', unit_runner)
         self.assertIn(
@@ -556,7 +571,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             self.assertIn(callback, vmm_callbacks)
 
-    def test_all_device_adaptors_offer_dmabuf_then_va_for_vmm_mr(self):
+    def test_all_device_adaptors_probe_dmabuf_then_va_for_vmm_mr(self):
         adaptor_sources = (
             "cuda_adaptor.cc",
             "maca_adaptor.cc",
@@ -572,7 +587,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 source,
                 filename,
             )
-            self.assertIn("GetAllocationVmmMrCaps", source, filename)
+            self.assertIn("SymPhysAlloc", source, filename)
+            self.assertIn("MemGetHandleForAddressRange", source, filename)
+            self.assertNotIn("GetAllocationVmmMrCaps", source, filename)
 
         # The DCU CUDA compatibility layer aborts instead of returning an
         # unsupported status for NVIDIA-only attributes 110 and 124.  Its
@@ -589,10 +606,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
             ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
         ]
-        self.assertIn(
-            "FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA",
-            gdr_alloc,
-        )
+        self.assertNotIn("mrCaps", gdr_alloc)
         dma_support = ducuda[
             ducuda.index("flagcxResult_t ducudaAdaptorDmaSupport") :
             ducuda.index(
@@ -600,6 +614,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
             )
         ]
         self.assertIn("*dmaBufferSupport = true", dma_support)
+
+        # MetaX returns InvalidDevicePointer for valid VMM allocations that
+        # cannot be exported as DMA-BUF.  The latest adaptor must normalize
+        # that allocation-specific capability miss so auto mode can try VA.
+        maca = (
+            REPO_ROOT / "flagcx/adaptor/device/maca_adaptor.cc"
+        ).read_text()
+        maca_export = maca[
+            maca.index("macaAdaptorMemGetHandleForAddressRange") :
+            maca.index("flagcxResult_t macaAdaptorHostRegister")
+        ]
+        self.assertIn("mcErrorInvalidDevicePointer", maca_export)
+        self.assertIn("return flagcxNotSupported", maca_export)
 
         common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
         dma_route = common.index("return FLAGCX_VMM_MR_ROUTE_DMABUF")
@@ -609,6 +636,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertLess(va_route, unsupported_route)
         self.assertIn('flagcxGetEnv("FLAGCX_VMM_MR_MODE")', common)
         self.assertIn("mode == flagcxVmmMrModeAuto", common)
+        self.assertNotIn("getAllocationVmmMrCaps", common)
 
         route_tests = (
             REPO_ROOT / "test/unittest/symmem/test_sym_window_struct.cpp"
@@ -619,7 +647,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "StrictDmaBufUsesDmaBufRoute",
             "InvalidStrictModeFailsBeforeRegistration",
             "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
-            "AllocationCapabilityCanRejectUnsafeVaRoute",
+            "DeviceCapabilitiesCanRejectUnsafeVaRoute",
             "ProviderCapabilitiesSuppressUnvalidatedVmmRoutes",
             "PartialDmaBufMrIsReleasedBeforeVaFallback",
             "PartialDmaBufMrCleanupFailureSuppressesVaFallback",
@@ -656,7 +684,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "if (cuMemRelease(handle) != CUDA_SUCCESS)", gdr_alloc
         )
         self.assertIn(
-            "DucudaVmmAllocation{handle,allocSize,mrCaps,true,true,true}",
+            "DucudaVmmAllocation{handle,allocSize,true,true,true}",
             "".join(gdr_alloc.split()),
         )
 

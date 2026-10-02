@@ -503,23 +503,11 @@ TEST_F(SymMemTest,
   int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
   ASSERT_EQ(minimum, maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxSystemError));
   EXPECT_EQ(testComm->heteroComm->symWindowFdExchangeCount, 0u);
-  if (result == flagcxSuccess) {
-    ASSERT_NE(fallbackWindow, nullptr);
-    ASSERT_NE(fallbackWindow->defaultBase, nullptr);
-    EXPECT_FALSE(fallbackWindow->defaultBase->hasFlatMapping);
-    ASSERT_TRUE(allRanksSucceeded(
-        flagcxCommWindowDeregister(testComm, fallbackWindow)));
-  } else {
-    // Some providers cannot export an IPC handle for the VMM allocation that
-    // backs buffer. In that case the only valid fallback is a collective,
-    // unpublished NotSupported result; publishing a window without a usable
-    // local data route would be incorrect.
-    EXPECT_EQ(result, flagcxNotSupported);
-    EXPECT_EQ(fallbackWindow, nullptr);
-    EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
-    EXPECT_EQ(testComm->heteroComm->pendingSymCleanup, nullptr);
-  }
+  EXPECT_EQ(fallbackWindow, nullptr);
+  EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(testComm->heteroComm->pendingSymCleanup, nullptr);
 
   flagcxWindow_t retryWindow = nullptr;
   result = flagcxCommWindowRegister(testComm, buffer, size, &retryWindow,
@@ -583,10 +571,6 @@ TEST_F(SymMemTest, DirectGdrVmmPreservesMrRoute) {
       !envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
     GTEST_SKIP() << "Runs in the required VMM + NET invocation";
 
-  flagcxComm_t testComm = nullptr;
-  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
-  ASSERT_NE(testComm, nullptr);
-  ASSERT_NE(testComm->heteroComm, nullptr);
   ASSERT_NE(deviceAdaptor, nullptr);
   ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
   ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
@@ -598,29 +582,25 @@ TEST_F(SymMemTest, DirectGdrVmmPreservesMrRoute) {
       deviceAdaptor->gdrMemAlloc(&directBuffer, size, nullptr);
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(directBuffer, nullptr);
-  EXPECT_FALSE(flagcxOneSideMemoryIsVmm(directBuffer, size));
+  EXPECT_FALSE(flagcxOneSideRegistryRangeIsVmm(directBuffer, size));
 
   flagcxWindow_t window = nullptr;
-  result = flagcxSymWindowRegisterInternal(
-      testComm->heteroComm, directBuffer, size, &window,
-      FLAGCX_WIN_COLL_SYMMETRIC, /*isVmmAllocation=*/true);
+  result = flagcxCommWindowRegister(comm, directBuffer, size, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
-  ASSERT_TRUE(
-      allRanksSucceeded(flagcxSymWindowPublish(testComm->heteroComm, window)));
   EXPECT_TRUE(window->defaultBase->isVmmAllocation);
   const int mrIndex = window->defaultBase->mrIndex;
   ASSERT_GE(mrIndex, 0);
-  ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
-  auto *handle = testComm->heteroComm->oneSideHandles[mrIndex];
+  ASSERT_LT(mrIndex, comm->heteroComm->oneSideHandleCount);
+  auto *handle = comm->heteroComm->oneSideHandles[mrIndex];
   ASSERT_NE(handle, nullptr);
   EXPECT_TRUE(vmmMrRouteMatches(handle->registrationRoute));
 
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
   ASSERT_TRUE(
       allRanksSucceeded(deviceAdaptor->gdrMemFree(directBuffer, nullptr)));
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
 }
 
 TEST_F(SymMemTest, RankLocalMrFailureDoesNotPublishPartialWindow) {
@@ -1089,7 +1069,7 @@ TEST_F(SymMemTest, RankLocalSignalMrFailurePreservesErrorAndRetries) {
 
   void *signalBuffer = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&signalBuffer, size)));
-  ASSERT_TRUE(flagcxOneSideMemoryIsVmm(signalBuffer, size));
+  ASSERT_TRUE(flagcxOneSideRegistryRangeIsVmm(signalBuffer, size));
 
   auto originalRegMr = net->regMr;
   auto originalRegMrDmaBuf = net->regMrDmaBuf;

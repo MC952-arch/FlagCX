@@ -14,7 +14,6 @@ static std::mutex gVmmHandleMapMtx;
 struct CudaVmmAllocation {
   CUmemGenericAllocationHandle handle;
   size_t size;
-  uint32_t mrCaps;
   bool mappingOwned;
   bool vaOwned;
   bool handleOwned;
@@ -221,11 +220,9 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   bool tracked = false;
   try {
     std::lock_guard<std::mutex> lk(gVmmHandleMapMtx);
-    const uint32_t mrCaps =
-        FLAGCX_VMM_MR_CAP_DMABUF | (flag ? FLAGCX_VMM_MR_CAP_VA : 0);
     tracked = gVmmHandleMap
-                  .emplace(*ptr, CudaVmmAllocation{handle, handleSize, mrCaps,
-                                                   true, true, true})
+                  .emplace(*ptr, CudaVmmAllocation{handle, handleSize, true,
+                                                   true, true})
                   .second;
   } catch (const std::bad_alloc &) {
   }
@@ -639,6 +636,9 @@ flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
     WARN("[symPhysAlloc] cuMemRetainAllocationHandle FAILED: %d ptr=%p",
          (int)retainRes, ptr);
     free(cuHandle);
+    if (retainRes == CUDA_ERROR_INVALID_VALUE ||
+        retainRes == CUDA_ERROR_NOT_SUPPORTED)
+      return flagcxNotSupported;
     return flagcxUnhandledDeviceError;
   }
 
@@ -1140,24 +1140,6 @@ flagcxResult_t cudaAdaptorGetAddressRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
-flagcxResult_t cudaAdaptorGetAllocationVmmMrCaps(const void *ptr,
-                                                 uint32_t *caps) {
-  if (ptr == NULL || caps == NULL)
-    return flagcxInvalidArgument;
-  *caps = FLAGCX_VMM_MR_CAP_NONE;
-  void *base = NULL;
-  size_t size = 0;
-  flagcxResult_t result = cudaAdaptorGetAddressRange(ptr, &base, &size);
-  if (result != flagcxSuccess)
-    return result;
-  std::lock_guard<std::mutex> lock(gVmmHandleMapMtx);
-  auto it = gVmmHandleMap.find(base);
-  if (it == gVmmHandleMap.end())
-    return flagcxNotSupported;
-  *caps = it->second.mrCaps;
-  return flagcxSuccess;
-}
-
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -1229,7 +1211,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, cudaAdaptorSymMulticastImport,
       cudaAdaptorSymFlatMappingUnmap, cudaAdaptorSymFlatVaFree,
       cudaAdaptorSymMulticastMappingUnmap, cudaAdaptorSymMulticastVaFree,
-      cudaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

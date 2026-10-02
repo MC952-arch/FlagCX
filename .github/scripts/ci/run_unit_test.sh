@@ -518,6 +518,7 @@ run_suite() {
         return 1
       }
       local platform_name expected_adaptor
+      local symmem_run_vmm_net_data=1
       local -a symmem_common_env symmem_platform_env
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       expected_adaptor=IB
@@ -525,6 +526,13 @@ run_suite() {
       if [[ "$platform_name" == "ppu" ]]; then
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
+      fi
+      # PPU has no VMM-capable BAREX MR route. Hygon's SHCA stack accepts a
+      # VMM VA MR but does not transfer correct RDMA READ data through it.
+      # Keep VMM-local, IPC+NET, and per-route registration probes on both
+      # platforms, but do not treat either route as data-path capable.
+      if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ]]; then
+        symmem_run_vmm_net_data=0
       fi
       symmem_common_env=(
         -x FLAGCX_USE_HETERO_COMM=1
@@ -588,7 +596,7 @@ run_suite() {
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter"
 
-      if [[ "$platform_name" != "ppu" ]]; then
+      if ((symmem_run_vmm_net_data != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto" \
           "$MPI_RUNNER" --allow-run-as-root \
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
@@ -603,10 +611,12 @@ run_suite() {
           -x FLAGCX_VMM_MR_MODE=auto \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
+      else
+        echo "Skipping $platform_name VMM + NET data tests: no validated VMM MR data route"
       fi
 
       local -a symmem_route_union_env=()
-      if [[ "$platform_name" == "ppu" ]]; then
+      if ((symmem_run_vmm_net_data == 0)); then
         symmem_route_union_env+=( -x FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1 )
       fi
       FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union" \

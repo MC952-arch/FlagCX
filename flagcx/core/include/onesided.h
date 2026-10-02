@@ -39,8 +39,11 @@ flagcxResult_t flagcxOneSideSelectCommonPublishSlot(const uint8_t *occupancy,
                                                     int *slot);
 
 // Return allocation-time VMM provenance for a range owned by flagcxMemAlloc.
-// Untracked external buffers retain the legacy ordinary-registration path.
-bool flagcxOneSideMemoryIsVmm(const void *buff, size_t size);
+// This is only an ownership-registry hint. Symmetric-window registration also
+// probes the native allocation through symPhysAlloc and must not treat a
+// registry miss as proof that a buffer is not VMM-backed. Other public RMA
+// registration entry points retain their ordinary-memory behavior on a miss.
+bool flagcxOneSideRegistryRangeIsVmm(const void *buff, size_t size);
 
 // Register one local MR using the common VMM route policy. Kept internal but
 // exposed here so transport-independent unit tests can inject adaptor vtables

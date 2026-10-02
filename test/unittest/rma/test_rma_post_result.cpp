@@ -47,6 +47,7 @@ int mockRequestCount = 0;
 int mockDataPosts = 0;
 int mockSignalPosts = 0;
 int mockFlushPosts = 0;
+int mockLastFlushSize = -1;
 size_t mockLastSignalSize = SIZE_MAX;
 uint64_t mockOrderingKeys[8] = {};
 uint32_t mockSubmitFlags[8] = {};
@@ -80,13 +81,17 @@ flagcxResult_t mockGet(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                  dstHandles, request);
 }
 
-flagcxResult_t mockFlush(void *, int, void **, int *, void **, void **request) {
+flagcxResult_t mockFlush(void *, int n, void **, int *sizes, void **,
+                         void **request) {
   if (mockFlushBackpressure > 0) {
     mockFlushBackpressure--;
     *request = nullptr;
     return flagcxInProgress;
   }
+  if (n != 1 || sizes == nullptr)
+    return flagcxInvalidArgument;
   mockFlushPosts++;
+  mockLastFlushSize = sizes[0];
   *request = nullptr;
   if (mockFlushResult != flagcxSuccess)
     return mockFlushResult;
@@ -209,6 +214,7 @@ protected:
     mockDataPosts = 0;
     mockSignalPosts = 0;
     mockFlushPosts = 0;
+    mockLastFlushSize = -1;
     mockLastSignalSize = SIZE_MAX;
     memset(mockOrderingKeys, 0, sizeof(mockOrderingKeys));
     memset(mockSubmitFlags, 0, sizeof(mockSubmitFlags));
@@ -383,6 +389,35 @@ TEST_F(RmaSharedTransportFixture, GetWaitsForRequiredVisibilityFlush) {
 
   EXPECT_EQ(doneSeq_, 1u);
   EXPECT_EQ(proxy_.completionCount, 1u);
+}
+
+TEST_F(RmaSharedTransportFixture, LargeGetSaturatesLegacyFlushSize) {
+  mrInfo_.getCompletionRequiresFlush = 1;
+  regionSizes_[0] = static_cast<size_t>(UINT32_MAX);
+
+  const size_t sizes[] = {static_cast<size_t>(INT_MAX) + 1,
+                          static_cast<size_t>(UINT32_MAX)};
+  for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+    SCOPED_TRACE(sizes[i]);
+    ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, sizes[i], 0, 0), flagcxSuccess);
+
+    Progress();
+    const int dataRequest = mockRequestCount - 1;
+    ASSERT_GE(dataRequest, 0);
+    mockRequests[dataRequest].done = 1;
+    Progress();
+    EXPECT_EQ(doneSeq_, i);
+
+    Progress();
+    EXPECT_EQ(mockLastFlushSize, INT_MAX);
+    const int flushRequest = mockRequestCount - 1;
+    ASSERT_GT(flushRequest, dataRequest);
+    mockRequests[flushRequest].done = 1;
+    Progress();
+
+    EXPECT_EQ(doneSeq_, i + 1);
+    EXPECT_EQ(proxy_.completionCount, i + 1);
+  }
 }
 
 TEST_F(RmaSharedTransportFixture, GetFlushBackpressureRetriesDescriptor) {

@@ -35,7 +35,6 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
   EXPECT_EQ(latest.symFlatVaFree, nullptr);
   EXPECT_EQ(latest.symMulticastMappingUnmap, nullptr);
   EXPECT_EQ(latest.symMulticastVaFree, nullptr);
-  EXPECT_EQ(latest.getAllocationVmmMrCaps, nullptr);
   EXPECT_EQ(latest.rmaSemantics, FLAGCX_DEVICE_RMA_SEMANTICS_NONE);
   EXPECT_EQ(latest.vmmMrCaps, static_cast<uint32_t>(FLAGCX_VMM_MR_CAP_NONE));
   EXPECT_NE(latest.internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1,

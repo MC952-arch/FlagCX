@@ -901,7 +901,7 @@ flagcxResult_t flagcxOneSideSelectCommonPublishSlot(const uint8_t *occupancy,
   return flagcxSuccess;
 }
 
-bool flagcxOneSideMemoryIsVmm(const void *buff, size_t size) {
+bool flagcxOneSideRegistryRangeIsVmm(const void *buff, size_t size) {
   flagcxMemAllocationInfo allocation = {};
   return globalMemAllocRegistry.findRange(buff, size, &allocation) ==
              flagcxSuccess &&
@@ -1121,18 +1121,14 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   if (propertiesResult != flagcxSuccess)
     return propertiesResult;
 
-  uint32_t allocationCaps = deviceAdaptor->vmmMrCaps;
-  if (deviceAdaptor->getAllocationVmmMrCaps != NULL) {
-    flagcxResult_t capsResult =
-        deviceAdaptor->getAllocationVmmMrCaps(buff, &allocationCaps);
-    if (capsResult != flagcxSuccess)
-      return capsResult;
-    // A per-allocation callback may only narrow the adaptor's advertised
-    // candidates, never manufacture a route the adaptor did not declare.
-    allocationCaps &= deviceAdaptor->vmmMrCaps;
-  }
+  // Match NCCL's operation-driven route selection: adaptor and provider
+  // capabilities describe candidates, while exporting/registering this exact
+  // allocation is the authoritative probe. Do not require the allocation to
+  // appear in a private allocator map; externally-created VMM allocations are
+  // valid inputs once symPhysAlloc has identified them as VMM-backed.
+  const uint32_t deviceCaps = deviceAdaptor->vmmMrCaps;
   const uint32_t providerCaps = net->vmmMrCaps;
-  const uint32_t effectiveCaps = allocationCaps & providerCaps;
+  const uint32_t effectiveCaps = deviceCaps & providerCaps;
 
   bool dmaBufExportSupported = false;
   if (mode != flagcxVmmMrModeVa && (effectiveCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
@@ -1152,14 +1148,14 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
           net->regMrDmaBuf != NULL,
       net->regMr != NULL, mode);
   INFO(FLAGCX_REG,
-       "VMM MR route selection: provider=%s mode=%s allocationCaps=0x%x "
+       "VMM MR route selection: provider=%s mode=%s deviceCaps=0x%x "
        "providerCaps=0x%x effectiveCaps=0x%x ptrSupport=0x%x "
        "dmaBufExport=%d regMrDmaBuf=%d regMr=%d selected=%d",
        net->name != NULL ? net->name : "unknown",
        mode == flagcxVmmMrModeDmaBuf
            ? "dmabuf"
            : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
-       allocationCaps, providerCaps, effectiveCaps, properties.ptrSupport,
+       deviceCaps, providerCaps, effectiveCaps, properties.ptrSupport,
        dmaBufExportSupported ? 1 : 0,
        deviceAdaptor->getHandleForAddressRange != NULL &&
                net->regMrDmaBuf != NULL
@@ -1288,6 +1284,10 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     if (h != NULL && h->baseVas != NULL && h->regionSizes != NULL &&
         h->baseVas[heteroComm->rank] == (uintptr_t)buff) {
       if (h->regionSizes[heteroComm->rank] != size)
+        lookupResult = flagcxInvalidUsage;
+      else if (isVmm && h->registrationRoute == FLAGCX_VMM_MR_ROUTE_NONE)
+        // Never attach a VMM window to an MR that was registered through the
+        // ordinary-memory path before the native allocation was identified.
         lookupResult = flagcxInvalidUsage;
       else
         existingIndex = i;
@@ -1531,8 +1531,9 @@ flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
-  return flagcxOneSideRegisterInternal(comm->heteroComm, buff, size,
-                                       flagcxOneSideMemoryIsVmm(buff, size));
+  return flagcxOneSideRegisterInternal(
+      comm->heteroComm, buff, size,
+      flagcxOneSideRegistryRangeIsVmm(buff, size));
 }
 
 flagcxResult_t
@@ -1803,7 +1804,7 @@ fail_mr:
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
   const bool isVmmAllocation =
-      ptrType == FLAGCX_PTR_CUDA && flagcxOneSideMemoryIsVmm(buff, size);
+      ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
                                              isVmmAllocation);
 }
@@ -2190,7 +2191,8 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   // registration item cannot safely own a single allocation handle.
   {
     flagcxResult_t regRes = flagcxOneSideRegisterInternal(
-        comm->heteroComm, buff, size, flagcxOneSideMemoryIsVmm(buff, size));
+        comm->heteroComm, buff, size,
+        flagcxOneSideRegistryRangeIsVmm(buff, size));
     if (regRes != flagcxSuccess) {
       INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
            regRes);

@@ -323,13 +323,6 @@ struct flagcxDeviceAdaptor_latest {
   flagcxResult_t (*symMulticastMappingUnmap)(void *mcBase, size_t mcMapSize);
   flagcxResult_t (*symMulticastVaFree)(void *mcBase, size_t mcMapSize);
 
-  // Return the registration routes that are valid for this concrete native
-  // VMM allocation. vmmMrCaps above describes adaptor candidates; this
-  // latest-only callback removes routes rejected by runtime device
-  // capabilities (for example CUDA VMM allocations created without the
-  // gpuDirectRDMACapable flag). An interior address is accepted.
-  flagcxResult_t (*getAllocationVmmMrCaps)(const void *ptr, uint32_t *caps);
-
   // Visibility requirements for one-sided operations targeting allocations
   // owned by this device adaptor. v1 plugins are upgraded with zero here.
   uint32_t rmaSemantics;
