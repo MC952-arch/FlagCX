@@ -17,8 +17,9 @@ void *addr(uintptr_t value) { return reinterpret_cast<void *>(value); }
 
 flagcxMemAllocationInfo allocation(uintptr_t base, size_t size,
                                    flagcxMemAllocator_t allocator,
-                                   flagcxMemAllocBackend_t backend) {
-  return {addr(base), size, allocator, backend};
+                                   flagcxMemAllocBackend_t backend,
+                                   bool isVmm = false) {
+  return {addr(base), size, allocator, backend, isVmm};
 }
 
 TEST(MemAllocRegistry, PreservesNativeAllocationProvenance) {
@@ -33,6 +34,17 @@ TEST(MemAllocRegistry, PreservesNativeAllocationProvenance) {
   EXPECT_EQ(found.size, entry.size);
   EXPECT_EQ(found.allocator, entry.allocator);
   EXPECT_EQ(found.backend, entry.backend);
+  EXPECT_FALSE(found.isVmm);
+}
+
+TEST(MemAllocRegistry, PreservesVmmAllocationProvenance) {
+  flagcxMemAllocRegistry registry;
+  const flagcxMemAllocationInfo entry = allocation(
+      0x10000, 0x1000, flagcxMemCCL, flagcxMemAllocBackendNative, true);
+  flagcxMemAllocationInfo found = {};
+  ASSERT_EQ(registry.insert(entry), flagcxSuccess);
+  ASSERT_EQ(registry.findRange(addr(0x10100), 0x200, &found), flagcxSuccess);
+  EXPECT_TRUE(found.isVmm);
 }
 
 TEST(MemAllocRegistry, AcceptsContainedSubrange) {
@@ -104,6 +116,22 @@ TEST(MemAllocRegistry, EraseRequiresExactBase) {
   flagcxMemAllocationInfo found;
   EXPECT_EQ(registry.findExact(addr(0x10000), &found), flagcxInvalidUsage);
   EXPECT_EQ(registry.erase(addr(0x10000)), flagcxInvalidUsage);
+}
+
+TEST(MemAllocRegistry, WindowLeaseBlocksFreeUntilReleased) {
+  flagcxMemAllocRegistry registry;
+  const flagcxMemAllocationInfo entry = allocation(
+      0x10000, 0x1000, flagcxMemCCL, flagcxMemAllocBackendNative, true);
+  ASSERT_EQ(registry.insert(entry), flagcxSuccess);
+
+  void *allocationBase = nullptr;
+  ASSERT_EQ(registry.retainWindowRange(addr(0x10100), 0x200, &allocationBase),
+            flagcxSuccess);
+  EXPECT_EQ(allocationBase, entry.base);
+  EXPECT_EQ(registry.erase(entry.base), flagcxInvalidUsage);
+  ASSERT_EQ(registry.releaseWindow(allocationBase), flagcxSuccess);
+  EXPECT_EQ(registry.releaseWindow(allocationBase), flagcxInvalidUsage);
+  EXPECT_EQ(registry.erase(entry.base), flagcxSuccess);
 }
 
 TEST(MemAllocRegistry, SupportsConcurrentIndependentAllocations) {

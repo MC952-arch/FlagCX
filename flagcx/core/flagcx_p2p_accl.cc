@@ -2,8 +2,9 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * FlagCX P2P engine: ACCL (accl::barex) transport for PPU + vsolar
- * hosts, where GPU memory can only be registered and moved through
- * ACCL (no peer-mem/DMA-BUF; VMM unpinnable — run FLAGCX_VMM_ENABLE=0).
+ * hosts, where GPU memory is registered and moved through ACCL. The public
+ * ACCL interface registers a mapped VA through RegUserMr and does not expose
+ * a DMA-BUF fd/offset registration entry point.
  *
  * Shape mirrors Mooncake's barex_transport: one XSimpleMempool over all
  * selected NICs (RegUserMr returns one MR/rkey per NIC); one server + client
@@ -1427,8 +1428,7 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
         mem, reinterpret_cast<void *>(cbase), csize, dtype, devId);
     if (r != BAREX_SUCCESS) {
       WARN("NET/ACCL_P2P : RegUserMr(%p,%zu,%s,dev%d) failed: %s "
-           "(chunk %zu/%zu of %p+%zu; VMM memory cannot be registered — "
-           "run with FLAGCX_VMM_ENABLE=0)",
+           "(chunk %zu/%zu of %p+%zu)",
            reinterpret_cast<void *>(cbase), csize, dtype == GPU ? "GPU" : "CPU",
            devId, bxstr(r), off / chunkBytes + 1,
            (size + chunkBytes - 1) / chunkBytes, reinterpret_cast<void *>(data),

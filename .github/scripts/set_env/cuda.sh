@@ -60,8 +60,8 @@ flagcx_ci_configure_suite() {
   case "$suite" in
     adaptor)
       # Keep the allocation-range unit test on the cudaMalloc-backed GDR path,
-      # matching the adaptor IPC MPI invocation. CUDA VMM/FABRIC allocation
-      # requires separate coverage on an IMEX-enabled container.
+      # matching the adaptor IPC MPI invocation. Symmem owns the explicit VMM
+      # matrix, whose POSIX-FD allocations do not require CUDA IMEX/FABRIC.
       export FLAGCX_VMM_ENABLE=0
       ;;
     runner)

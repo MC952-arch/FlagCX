@@ -166,7 +166,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       flagcxSymWindow_t d =
           (win && win->isSymmetricDefault) ? win->defaultBase : nullptr;
 
-      if (d && d->isVMM && d->flatBase) {
+      if (d && d->hasFlatMapping && d->flatBase) {
         mode = SYMMETRIC;
         flatBasePtr = d->flatBase;
         allocSize = d->allocSize;

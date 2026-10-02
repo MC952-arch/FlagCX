@@ -698,6 +698,52 @@ static void flagcxRmaProxyCompleteDesc(struct flagcxRmaProxyState *proxy,
 // Poll every native request, not just the queue head. Native CQEs may arrive
 // out of order; the scoreboard publishes only the contiguous completed prefix.
 static bool
+flagcxRmaGetCompletionRequiresFlush(const struct flagcxHeteroComm *comm,
+                                    const struct flagcxRmaDesc *desc) {
+  if (comm == NULL || desc == NULL || desc->type != FLAGCX_RMA_GET ||
+      desc->dstMrIdx < 0 || desc->dstMrIdx >= comm->oneSideHandleCount ||
+      comm->oneSideHandles == NULL)
+    return false;
+  const struct flagcxOneSideHandleInfo *info =
+      comm->oneSideHandles[desc->dstMrIdx];
+  return info != NULL && info->getCompletionRequiresFlush != 0;
+}
+
+static int flagcxRmaVisibilityFlushSize(size_t size) {
+  return size > static_cast<size_t>(INT_MAX) ? INT_MAX : static_cast<int>(size);
+}
+
+static flagcxResult_t flagcxRmaProxyPostGetFlush(struct flagcxHeteroComm *comm,
+                                                 struct flagcxRmaDesc *desc) {
+  if (comm == NULL || desc == NULL || desc->dstMrIdx < 0 ||
+      desc->dstMrIdx >= comm->oneSideHandleCount ||
+      comm->oneSideHandles == NULL)
+    return flagcxInternalError;
+  struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[desc->dstMrIdx];
+  if (info == NULL || info->baseVas == NULL || info->regionSizes == NULL ||
+      info->localRecvComm == NULL || info->localMrHandle == NULL ||
+      comm->rank < 0 || comm->rank >= info->nRanks ||
+      comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
+    return flagcxNotSupported;
+  if (desc->dstOff > info->regionSizes[comm->rank] ||
+      desc->size > info->regionSizes[comm->rank] - desc->dstOff)
+    return flagcxInvalidArgument;
+  if (desc->size == 0)
+    return flagcxSuccess;
+
+  void *data[1] = {
+      (void *)(info->baseVas[comm->rank] + (uintptr_t)desc->dstOff)};
+  // The legacy iflush ABI uses int sizes only to identify non-empty ranges;
+  // providers issue their own fixed-size visibility operation. Saturate the
+  // transferred size instead of rejecting a valid UINT32-sized RMA request.
+  int sizes[1] = {flagcxRmaVisibilityFlushSize(desc->size)};
+  void *mhandles[1] = {info->localMrHandle};
+  desc->request = NULL;
+  return comm->netAdaptor->iflush(info->localRecvComm, 1, data, sizes, mhandles,
+                                  &desc->request);
+}
+
+static bool
 flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
                                        int peer) {
   struct flagcxHeteroComm *comm = proxy->comm;
@@ -708,7 +754,27 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     struct flagcxRmaDesc *next = desc->next;
     int done = 0;
     flagcxResult_t completionResult = desc->completionResult;
-    if (desc->request != NULL) {
+    if (desc->completionStage == FLAGCX_RMA_COMPLETION_FLUSH_PENDING) {
+      flagcxResult_t res = flagcxRmaProxyPostGetFlush(comm, desc);
+      if (flagcxRmaPostResultIsRetryable(res)) {
+        desc = next;
+        continue;
+      }
+      did = true;
+      if (res != flagcxSuccess) {
+        WARN("flagcxRmaProxyPollNonPersistCompletion: GET flush failed "
+             "peer=%d res=%d",
+             peer, (int)res);
+        completionResult = res;
+        done = 1;
+      } else if (desc->request != NULL) {
+        desc->completionStage = FLAGCX_RMA_COMPLETION_FLUSH_POSTED;
+        desc = next;
+        continue;
+      } else {
+        done = 1;
+      }
+    } else if (desc->request != NULL) {
       flagcxResult_t res = comm->netAdaptor->test(desc->request, &done, NULL);
       if (res != flagcxSuccess) {
         WARN("flagcxRmaProxyPollNonPersistCompletion: test failed peer=%d "
@@ -723,6 +789,18 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
       done = 1;
     }
     if (!done) {
+      desc = next;
+      continue;
+    }
+    if (completionResult == flagcxSuccess &&
+        desc->completionStage == FLAGCX_RMA_COMPLETION_DATA_POSTED &&
+        flagcxRmaGetCompletionRequiresFlush(comm, desc)) {
+      // The data CQE only proves NIC completion on providers with this
+      // capability. Keep the same descriptor and scoreboard reservation until
+      // the local visibility flush has completed.
+      desc->request = NULL;
+      desc->completionStage = FLAGCX_RMA_COMPLETION_FLUSH_PENDING;
+      did = true;
       desc = next;
       continue;
     }
@@ -1848,12 +1926,8 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
 
-  if (size > (size_t)INT_MAX) {
-    WARN("flagcxHeteroFlush: size %zu exceeds int limit", size);
-    return flagcxInternalError;
-  }
   void *data_arr[1] = {gpuAddr};
-  int sizes_arr[1] = {(int)size};
+  int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
   void *mh_arr[1] = {info->localMrHandle};
   void *request = NULL;
   FLAGCXCHECK(comm->netAdaptor->iflush(info->localRecvComm, 1, data_arr,
@@ -1953,7 +2027,8 @@ flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm) {
   bool hasD2dMemory = false;
   for (flagcxSymWindow_t window = comm->symWindows; window != NULL;
        window = window->next) {
-    if ((window->isVMM && window->flatBase != NULL) || window->ipcSlot >= 0) {
+    if ((window->hasFlatMapping && window->flatBase != NULL) ||
+        window->ipcSlot >= 0) {
       hasD2dMemory = true;
       break;
     }

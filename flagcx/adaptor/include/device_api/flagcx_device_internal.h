@@ -83,7 +83,11 @@ struct flagcxDevCommInternal {
   // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
   // 0)
   // ----
-  uint64_t *signalBuffer; // GPU memory (flagcxMemAlloc), [signalCount] entries
+  uint64_t *signalBuffer; // GPU or host signal words, [signalCount] entries
+  // Captured when the owned GPU signal buffer is allocated. It is passed to
+  // internal MR registration because this direct gdrMemAlloc allocation is
+  // not tracked by the public flagcxMemAlloc registry.
+  bool signalBufferIsVmm;
   uint64_t
       *shadowBuffer; // GPU memory (local only, no MR), [signalCount] entries
   uint64_t

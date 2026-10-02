@@ -28,6 +28,13 @@ struct flagcxNetMrInfo {
   uint32_t rkeys[FLAGCX_NET_MAX_MR_KEYS];
 };
 
+// Internal metadata attached only to the latest in-process representation.
+// The frozen v1 plugin ABI does not contain or consume these bits.
+typedef enum {
+  FLAGCX_NET_ADAPTOR_INTERNAL_NONE = 0,
+  FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
+} flagcxNetAdaptorInternalFlags_t;
+
 // Version history:
 //   v1 — 22 function pointers: name, init, devices, getProperties,
 //         listen, connect, accept, closeSend, closeRecv, closeListen,
@@ -160,6 +167,11 @@ struct flagcxNetAdaptor_latest {
   // Export transport-neutral keys from an opaque regMr handle. Required by
   // adaptors that implement one-sided operations; optional for legacy plugins.
   flagcxResult_t (*getMrInfo)(void *mhandle, struct flagcxNetMrInfo *info);
+
+  // VMM-backed allocation routes explicitly supported by this provider.
+  // Ordinary FLAGCX_PTR_CUDA support is not sufficient to claim VMM VA MR.
+  uint32_t vmmMrCaps;
+  uint32_t internalFlags;
 };
 
 #define flagcxNetAdaptor flagcxNetAdaptor_latest
@@ -169,6 +181,7 @@ flagcxNetAdaptorUpgrade(const struct flagcxNetAdaptor_v1 *src,
                         struct flagcxNetAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxNetAdaptor_v1));
+  dst->internalFlags = FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1;
 }
 
 // Versioned export symbol name

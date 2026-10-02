@@ -32,6 +32,36 @@ typedef enum {
   FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES = 1 << 0,
 } flagcxStreamWaitValueFlags_t;
 
+// Candidate routes for registering a VMM-backed allocation. The common layer
+// intersects these device capabilities with the selected net adaptor and its
+// runtime probes, preferring DMA-BUF over a provider-validated VA route.
+typedef enum {
+  FLAGCX_VMM_MR_CAP_NONE = 0,
+  FLAGCX_VMM_MR_CAP_VA = 1 << 0,
+  FLAGCX_VMM_MR_CAP_DMABUF = 1 << 1,
+} flagcxVmmMrCaps_t;
+
+typedef enum {
+  FLAGCX_VMM_MR_ROUTE_NONE = 0,
+  FLAGCX_VMM_MR_ROUTE_VA = 1,
+  FLAGCX_VMM_MR_ROUTE_DMABUF = 2,
+} flagcxVmmMrRoute_t;
+
+// Internal metadata attached only to the latest in-process representation.
+// These bits are not part of the frozen v1 plugin ABI.
+typedef enum {
+  FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE = 0,
+  FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
+} flagcxDeviceAdaptorInternalFlags_t;
+
+// Completion semantics advertised only by the latest in-process adaptor.
+// These flags describe provider-specific visibility requirements without
+// changing the frozen v1 plugin ABI.
+typedef enum {
+  FLAGCX_DEVICE_RMA_SEMANTICS_NONE = 0,
+  FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH = 1 << 0,
+} flagcxDeviceRmaSemantics_t;
+
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
 //         stream/event/IPC functions, kernel launch, device properties,
@@ -250,8 +280,9 @@ struct flagcxDeviceAdaptor_latest {
                                      int localRank, int nLocalDevices,
                                      void **mcBase, size_t *mcMapSize);
   flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t mcMapSize);
-  // Release the multicast object handle returned by symMulticastCreate.
-  // Must be called after all ranks have torn down their mappings.
+  // Release this process's multicast object reference after this process has
+  // torn down its mapping. The provider object remains alive until every
+  // imported/created reference has been released.
   flagcxResult_t (*symMulticastFree)(void *mcHandle);
 
   flagcxResult_t (*getLastError)();
@@ -266,9 +297,47 @@ struct flagcxDeviceAdaptor_latest {
   // allocation and map its base even when ptr refers to an interior address.
   // This optional callback lets common IPC code preserve that user offset.
   flagcxResult_t (*getAddressRange)(const void *ptr, void **base, size_t *size);
+
+  // Candidate registration routes for memory returned by gdrMemAlloc while
+  // FLAGCX_VMM_ENABLE=1. Built-in adaptors must opt in explicitly.
+  uint32_t vmmMrCaps;
+
+  // Loader-owned metadata. A v1 plugin cannot advertise the latest allocation
+  // capabilities, so common code uses this flag to preserve its historical
+  // environment-driven MR routing without changing the v1 ABI.
+  uint32_t internalFlags;
+
+  // Added only to the latest in-process representation. Import and retain a
+  // process-local reference to a multicast object. Each rank must keep this
+  // reference until its own multicast mapping has been torn down; releasing
+  // the final reference destroys the provider object without requiring a
+  // communicator rendezvous during rank-local destruction.
+  flagcxResult_t (*symMulticastImport)(int importFd, void **mcHandle);
+
+  // Retry-safe VMM teardown primitives. These are latest-only: v1 stays
+  // frozen. Common code records completion of each operation separately so a
+  // VA-free failure never causes a successful unmap to be issued twice.
+  flagcxResult_t (*symFlatMappingUnmap)(void *flatBase, size_t allocSize,
+                                        int nPeers);
+  flagcxResult_t (*symFlatVaFree)(void *flatBase, size_t allocSize, int nPeers);
+  flagcxResult_t (*symMulticastMappingUnmap)(void *mcBase, size_t mcMapSize);
+  flagcxResult_t (*symMulticastVaFree)(void *mcBase, size_t mcMapSize);
+
+  // Visibility requirements for one-sided operations targeting allocations
+  // owned by this device adaptor. v1 plugins are upgraded with zero here.
+  uint32_t rmaSemantics;
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
+
+static inline bool flagcxDeviceAdaptorNativeAllocIsVmm(
+    const struct flagcxDeviceAdaptor_latest *adaptor, bool vmmEnabled) {
+  if (adaptor == NULL || !vmmEnabled)
+    return false;
+  if ((adaptor->internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1) != 0)
+    return true;
+  return adaptor->vmmMrCaps != FLAGCX_VMM_MR_CAP_NONE;
+}
 
 static inline flagcxResult_t
 flagcxDeviceAdaptorGetPointerTypeNotSupported(const void *ptr, int *ptrType) {
@@ -286,14 +355,15 @@ flagcxDeviceAdaptorGetAddressRangeNotSupported(const void *ptr, void **base,
   return flagcxNotSupported;
 }
 
-// Upgrade a v1 plugin struct to latest in-place into dst.
-// Fields added beyond v1 are zeroed. Callers must capability-check optional
-// callbacks before invoking them.
+// Upgrade a v1 plugin struct to latest in-place into dst. Public capability
+// fields added beyond v1 remain zero; only latest-only loader metadata records
+// that the source used the legacy ABI.
 static inline void
 flagcxDeviceAdaptorUpgradeV1(const struct flagcxDeviceAdaptor_v1 *src,
                              struct flagcxDeviceAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxDeviceAdaptor_v1));
+  dst->internalFlags |= FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1;
 }
 
 // Device adaptor plugin API version (independent of CCL/Net versions)

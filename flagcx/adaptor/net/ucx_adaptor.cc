@@ -1486,7 +1486,10 @@ flagcxResult_t flagcxUcxGetDevFromName(char *name, int *dev) {
 // UCX network adaptor structure
 struct flagcxNetAdaptor flagcxNetUcx = {
     // Basic functions
-    "UCX", flagcxUcxInit, flagcxUcxDevices, flagcxUcxGetProperties,
+    "UCX",
+    flagcxUcxInit,
+    flagcxUcxDevices,
+    flagcxUcxGetProperties,
 
     // Setup functions
     flagcxUcxListen,      // listen
@@ -1520,6 +1523,10 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     NULL, // testBatch
     NULL, // igetBatch
     NULL, // getMrInfo
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };
 
 #endif // USE_UCX

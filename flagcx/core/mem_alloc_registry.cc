@@ -82,6 +82,44 @@ flagcxMemAllocRegistry::findRange(const void *ptr, size_t size,
   return flagcxSuccess;
 }
 
+flagcxResult_t
+flagcxMemAllocRegistry::retainWindowRange(const void *ptr, size_t size,
+                                          void **allocationBase) {
+  if (ptr == nullptr || size == 0 || allocationBase == nullptr)
+    return flagcxInvalidArgument;
+
+  uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = allocations_.upper_bound(address);
+  if (it == allocations_.begin())
+    return flagcxInvalidUsage;
+  --it;
+
+  uintptr_t base = it->first;
+  size_t offset = address - base;
+  if (offset > it->second.size || size > it->second.size - offset)
+    return flagcxInvalidUsage;
+  if (it->second.windowRefs == std::numeric_limits<size_t>::max())
+    return flagcxSystemError;
+  it->second.windowRefs++;
+  *allocationBase = it->second.base;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxMemAllocRegistry::releaseWindow(const void *allocationBase) {
+  if (allocationBase == nullptr)
+    return flagcxInvalidArgument;
+
+  uintptr_t base = reinterpret_cast<uintptr_t>(allocationBase);
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = allocations_.find(base);
+  if (it == allocations_.end() || it->second.windowRefs == 0)
+    return flagcxInvalidUsage;
+  it->second.windowRefs--;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxMemAllocRegistry::erase(const void *basePtr) {
   if (basePtr == nullptr)
     return flagcxInvalidArgument;
@@ -90,6 +128,8 @@ flagcxResult_t flagcxMemAllocRegistry::erase(const void *basePtr) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = allocations_.find(base);
   if (it == allocations_.end())
+    return flagcxInvalidUsage;
+  if (it->second.windowRefs != 0)
     return flagcxInvalidUsage;
   allocations_.erase(it);
   return flagcxSuccess;

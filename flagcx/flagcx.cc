@@ -27,6 +27,7 @@
 #include <cassert>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -303,7 +304,15 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
     return flagcxUnhandledDeviceError;
   }
 
-  flagcxMemAllocationInfo info{*ptr, size, allocator, backend};
+  // Latest adaptors explicitly advertise whether their native allocator uses
+  // VMM. A frozen v1 plugin cannot expose that field, so preserve its previous
+  // environment-driven routing through latest-only loader metadata. Local
+  // symmetric flat-map support is a separate capability and is not evidence
+  // about the allocation itself.
+  bool isVmm = backend == flagcxMemAllocBackendNative &&
+               flagcxDeviceAdaptorNativeAllocIsVmm(deviceAdaptor,
+                                                   flagcxParamVmmEnable());
+  flagcxMemAllocationInfo info{*ptr, size, allocator, backend, isVmm};
   res = globalMemAllocRegistry.insert(info);
   if (res != flagcxSuccess) {
     flagcxResult_t freeRes = flagcxMemFreeByBackend(*ptr, backend);
@@ -359,20 +368,31 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator) {
 static flagcxResult_t
 flagcxOneSideConvergeStatus(struct bootstrapState *bootstrap, int rank,
                             int nranks, flagcxResult_t localStatus) {
-  if (bootstrap == NULL || rank < 0 || rank >= nranks)
+  if (bootstrap == NULL || rank < 0 || rank >= nranks || nranks <= 0)
     return flagcxInvalidArgument;
-  std::vector<int> statuses(nranks, static_cast<int>(flagcxSuccess));
-  statuses[rank] = static_cast<int>(localStatus);
-  flagcxResult_t gatherResult =
-      bootstrapCollAllGather(bootstrap, statuses.data(), sizeof(int));
-  if (gatherResult != flagcxSuccess)
-    return gatherResult;
-  for (int peer = 0; peer < nranks; peer++) {
-    flagcxResult_t peerStatus = static_cast<flagcxResult_t>(statuses[peer]);
-    if (peerStatus != flagcxSuccess)
-      return peerStatus;
+  constexpr int root = 0;
+  constexpr int gatherTag = 0x5970;
+  constexpr int broadcastTag = 0x5971;
+  int local = static_cast<int>(localStatus);
+  int common = local;
+  if (rank == root) {
+    for (int peer = 1; peer < nranks; peer++) {
+      int peerStatus = static_cast<int>(flagcxSuccess);
+      FLAGCXCHECK(bootstrapRecv(bootstrap, peer, gatherTag, &peerStatus,
+                                sizeof(peerStatus)));
+      if (common == flagcxSuccess && peerStatus != flagcxSuccess)
+        common = peerStatus;
+    }
+    for (int peer = 1; peer < nranks; peer++)
+      FLAGCXCHECK(bootstrapSend(bootstrap, peer, broadcastTag, &common,
+                                sizeof(common)));
+  } else {
+    FLAGCXCHECK(
+        bootstrapSend(bootstrap, root, gatherTag, &local, sizeof(local)));
+    FLAGCXCHECK(
+        bootstrapRecv(bootstrap, root, broadcastTag, &common, sizeof(common)));
   }
-  return flagcxSuccess;
+  return static_cast<flagcxResult_t>(common);
 }
 
 static flagcxResult_t
@@ -560,9 +580,6 @@ fail_partial:
   info->nContexts = 0;
   return res;
 }
-
-static flagcxResult_t
-flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm);
 
 // Ensure full-mesh one-sided connections exist for this heteroComm.
 // If no data handle has been registered yet, lazily build a connection-only
@@ -793,7 +810,7 @@ static void flagcxOneSideRetainCleanup(struct flagcxHeteroComm *heteroComm,
   heteroComm->pendingOneSideCleanup = info;
 }
 
-static flagcxResult_t
+flagcxResult_t
 flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm) {
   while (heteroComm->pendingOneSideCleanup != NULL) {
     struct flagcxOneSideHandleInfo *info = heteroComm->pendingOneSideCleanup;
@@ -806,8 +823,443 @@ flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxOneSideParseVmmMrMode(const char *value,
+                                           flagcxVmmMrMode_t *mode) {
+  if (mode == nullptr)
+    return flagcxInvalidArgument;
+  if (value == nullptr || value[0] == '\0' || strcasecmp(value, "auto") == 0) {
+    *mode = flagcxVmmMrModeAuto;
+    return flagcxSuccess;
+  }
+  if (strcasecmp(value, "dmabuf") == 0) {
+    *mode = flagcxVmmMrModeDmaBuf;
+    return flagcxSuccess;
+  }
+  if (strcasecmp(value, "va") == 0) {
+    *mode = flagcxVmmMrModeVa;
+    return flagcxSuccess;
+  }
+  WARN("Invalid FLAGCX_VMM_MR_MODE=%s; expected auto, dmabuf, or va", value);
+  return flagcxInvalidArgument;
+}
+
+flagcxVmmMrRoute_t flagcxOneSideSelectVmmMrRoute(uint32_t deviceCaps,
+                                                 int netPtrSupport,
+                                                 bool dmaBufExportSupported,
+                                                 bool hasDmaBufRegistration,
+                                                 bool hasVaRegistration,
+                                                 flagcxVmmMrMode_t mode) {
+  const bool allowDmaBuf = mode != flagcxVmmMrModeVa;
+  const bool allowVa = mode != flagcxVmmMrModeDmaBuf;
+  if (allowDmaBuf && (deviceCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
+      dmaBufExportSupported && (netPtrSupport & FLAGCX_PTR_DMABUF) &&
+      hasDmaBufRegistration)
+    return FLAGCX_VMM_MR_ROUTE_DMABUF;
+  if (allowVa && (deviceCaps & FLAGCX_VMM_MR_CAP_VA) &&
+      (netPtrSupport & FLAGCX_PTR_CUDA) && hasVaRegistration)
+    return FLAGCX_VMM_MR_ROUTE_VA;
+  return FLAGCX_VMM_MR_ROUTE_NONE;
+}
+
+flagcxResult_t flagcxOneSideSelectCommonPublishSlot(const uint8_t *occupancy,
+                                                    int nRanks, int nSlots,
+                                                    int *slot) {
+  if (nRanks <= 0 || nSlots < 0 || slot == nullptr ||
+      (nSlots > 0 && occupancy == nullptr))
+    return flagcxInvalidArgument;
+  if (nSlots == 0) {
+    *slot = 0;
+    return flagcxSuccess;
+  }
+
+  const bool slotZeroOccupied = occupancy[0] != 0;
+  for (int rank = 1; rank < nRanks; rank++) {
+    if ((occupancy[rank * nSlots] != 0) != slotZeroOccupied)
+      return flagcxInvalidUsage;
+  }
+  if (!slotZeroOccupied) {
+    for (int rank = 0; rank < nRanks; rank++) {
+      for (int i = 1; i < nSlots; i++) {
+        if (occupancy[rank * nSlots + i] != 0)
+          return flagcxInvalidUsage;
+      }
+    }
+    *slot = 0;
+    return flagcxSuccess;
+  }
+
+  for (int i = 1; i < nSlots; i++) {
+    bool freeEverywhere = true;
+    for (int rank = 0; rank < nRanks; rank++)
+      freeEverywhere = freeEverywhere && occupancy[rank * nSlots + i] == 0;
+    if (freeEverywhere) {
+      *slot = i;
+      return flagcxSuccess;
+    }
+  }
+  *slot = nSlots;
+  return flagcxSuccess;
+}
+
+bool flagcxOneSideRegistryRangeIsVmm(const void *buff, size_t size) {
+  flagcxMemAllocationInfo allocation = {};
+  return globalMemAllocRegistry.findRange(buff, size, &allocation) ==
+             flagcxSuccess &&
+         allocation.isVmm;
+}
+
+static flagcxResult_t flagcxOneSideValidateRegisteredMr(flagcxResult_t result,
+                                                        const void *mrHandle) {
+  // A provider that reports success without publishing an MR handle violates
+  // the registration contract. Treat that as an internal error rather than a
+  // capability miss so callers cannot silently fall back or skip the failure.
+  return result == flagcxSuccess && mrHandle == NULL ? flagcxInternalError
+                                                     : result;
+}
+
+static flagcxResult_t
+flagcxOneSideGetDmaBufExportRange(void *buff, size_t size, void **exportBase,
+                                  size_t *exportSize, uint64_t *dmaBufOffset) {
+  if (buff == nullptr || size == 0 || exportBase == nullptr ||
+      exportSize == nullptr || dmaBufOffset == nullptr)
+    return flagcxInvalidArgument;
+
+  flagcxMemAllocationInfo allocation = {};
+  flagcxResult_t provenanceResult =
+      globalMemAllocRegistry.findRange(buff, size, &allocation);
+  if (provenanceResult != flagcxSuccess &&
+      provenanceResult != flagcxInvalidUsage)
+    return provenanceResult;
+
+  // The allocation registry deliberately records the user-visible size, not
+  // the allocator's granularity-rounded mapping extent. DMA-BUF export APIs
+  // require the native extent, so always query it from the latest adaptor.
+  // The registry remains the source of truth for ownership and user bounds.
+  if (deviceAdaptor == nullptr || deviceAdaptor->getAddressRange == nullptr)
+    return flagcxNotSupported;
+  void *base = nullptr;
+  size_t allocationSize = 0;
+  flagcxResult_t rangeResult =
+      deviceAdaptor->getAddressRange(buff, &base, &allocationSize);
+  if (rangeResult != flagcxSuccess)
+    return rangeResult;
+
+  uintptr_t address = reinterpret_cast<uintptr_t>(buff);
+  uintptr_t baseAddress = reinterpret_cast<uintptr_t>(base);
+  if (base == nullptr || allocationSize == 0 || address < baseAddress)
+    return flagcxInvalidUsage;
+  size_t userOffset = address - baseAddress;
+  if (userOffset > allocationSize || size > allocationSize - userOffset)
+    return flagcxInvalidUsage;
+  if (provenanceResult == flagcxSuccess) {
+    uintptr_t trackedBase = reinterpret_cast<uintptr_t>(allocation.base);
+    if (trackedBase < baseAddress || allocation.size > allocationSize ||
+        trackedBase - baseAddress > allocationSize - allocation.size)
+      return flagcxInvalidUsage;
+  }
+
+  long pageSizeResult = sysconf(_SC_PAGESIZE);
+  if (pageSizeResult <= 0)
+    return flagcxSystemError;
+  uintptr_t pageSize = static_cast<uintptr_t>(pageSizeResult);
+  uintptr_t registrationAddress = address - address % pageSize;
+  if (registrationAddress < baseAddress)
+    return flagcxInvalidUsage;
+
+  *exportBase = base;
+  *exportSize = allocationSize;
+  *dmaBufOffset = static_cast<uint64_t>(registrationAddress - baseAddress);
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxOneSideChoosePublishSlot(flagcxHeteroComm_t heteroComm,
+                               int *publishSlot) {
+  if (heteroComm == nullptr || heteroComm->bootstrap == nullptr ||
+      heteroComm->nRanks <= 0 || publishSlot == nullptr)
+    return flagcxInvalidArgument;
+
+  int *counts = nullptr;
+  flagcxResult_t prepareResult = flagcxCalloc(&counts, heteroComm->nRanks);
+  flagcxResult_t commonPrepare =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, prepareResult);
+  if (commonPrepare != flagcxSuccess) {
+    free(counts);
+    return commonPrepare;
+  }
+  counts[heteroComm->rank] = heteroComm->oneSideHandleCount;
+  flagcxResult_t result =
+      bootstrapCollAllGather(heteroComm->bootstrap, counts, sizeof(int));
+  if (result != flagcxSuccess) {
+    free(counts);
+    return result;
+  }
+  int maxCount = 0;
+  for (int rank = 0; rank < heteroComm->nRanks; rank++) {
+    int count = counts[rank];
+    if (count < 0) {
+      free(counts);
+      return flagcxInternalError;
+    }
+    if (count > maxCount)
+      maxCount = count;
+  }
+  free(counts);
+  if (maxCount == 0) {
+    *publishSlot = 0;
+    return flagcxSuccess;
+  }
+
+  size_t occupancyCount = 0;
+  if (static_cast<size_t>(maxCount) >
+      SIZE_MAX / static_cast<size_t>(heteroComm->nRanks)) {
+    prepareResult = flagcxSystemError;
+  } else {
+    occupancyCount = static_cast<size_t>(heteroComm->nRanks) * maxCount;
+  }
+  uint8_t *occupancy = nullptr;
+  if (prepareResult == flagcxSuccess)
+    prepareResult = flagcxCalloc(&occupancy, occupancyCount);
+  commonPrepare =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, prepareResult);
+  if (commonPrepare != flagcxSuccess) {
+    free(occupancy);
+    return commonPrepare;
+  }
+  uint8_t *local = occupancy + heteroComm->rank * maxCount;
+  for (int i = 0; i < heteroComm->oneSideHandleCount; i++)
+    local[i] = heteroComm->oneSideHandles[i] != nullptr ? 1 : 0;
+  result = bootstrapCollAllGather(heteroComm->bootstrap, occupancy,
+                                  maxCount * sizeof(uint8_t));
+  if (result == flagcxSuccess)
+    result = flagcxOneSideSelectCommonPublishSlot(occupancy, heteroComm->nRanks,
+                                                  maxCount, publishSlot);
+  free(occupancy);
+  return result;
+}
+
+flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
+                                       void *regComm, void *buff, size_t size,
+                                       int ptrType, bool isVmm, int mrFlags,
+                                       void **mrHandle,
+                                       flagcxVmmMrRoute_t *selectedRoute) {
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL || regComm == NULL ||
+      buff == NULL || size == 0 || mrHandle == NULL || selectedRoute == NULL)
+    return flagcxInvalidArgument;
+  *mrHandle = NULL;
+  *selectedRoute = FLAGCX_VMM_MR_ROUTE_NONE;
+
+  struct flagcxNetAdaptor *net = heteroComm->netAdaptor;
+  if (!isVmm) {
+    if (net->regMr == NULL)
+      return flagcxNotSupported;
+    flagcxResult_t result =
+        net->regMr(regComm, buff, size, ptrType, mrFlags, mrHandle);
+    return flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+  }
+
+  const bool legacyDeviceV1 =
+      deviceAdaptor != NULL && (deviceAdaptor->internalFlags &
+                                FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1) != 0;
+  const bool legacyNetV1 =
+      (net->internalFlags & FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1) != 0;
+  const bool legacyV1 = legacyDeviceV1 || legacyNetV1;
+  if (legacyV1) {
+    // v1 had no explicit per-allocation or MR-route capability. Preserve its
+    // historical behavior exactly: try DMA-BUF when both callbacks exist, but
+    // treat any export failure as a request to use ordinary VA registration.
+    // A failure after a successful export remains a real transport error.
+    if (deviceAdaptor->getHandleForAddressRange != NULL &&
+        net->regMrDmaBuf != NULL) {
+      int dmaBufFd = -1;
+      flagcxResult_t exportResult = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, buff, size, 0);
+      if (exportResult == flagcxSuccess && dmaBufFd >= 0) {
+        flagcxResult_t result = net->regMrDmaBuf(
+            regComm, buff, size, ptrType, 0ULL, dmaBufFd, mrFlags, mrHandle);
+        close(dmaBufFd);
+        result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+        if (result == flagcxSuccess) {
+          *selectedRoute = FLAGCX_VMM_MR_ROUTE_DMABUF;
+          INFO(FLAGCX_REG,
+               "Legacy v1 MR registered through DMA-BUF: buff=%p size=%zu",
+               buff, size);
+        }
+        return result;
+      }
+      if (dmaBufFd >= 0)
+        close(dmaBufFd);
+    }
+
+    if (net->regMr == NULL)
+      return flagcxNotSupported;
+    flagcxResult_t result =
+        net->regMr(regComm, buff, size, ptrType, mrFlags, mrHandle);
+    result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+    if (result == flagcxSuccess) {
+      *selectedRoute = FLAGCX_VMM_MR_ROUTE_VA;
+      INFO(FLAGCX_REG,
+           "Legacy v1 MR registered through VA fallback: buff=%p size=%zu",
+           buff, size);
+    }
+    return result;
+  }
+
+  flagcxVmmMrMode_t mode = flagcxVmmMrModeAuto;
+  flagcxResult_t modeResult =
+      flagcxOneSideParseVmmMrMode(flagcxGetEnv("FLAGCX_VMM_MR_MODE"), &mode);
+  if (modeResult != flagcxSuccess)
+    return modeResult;
+
+  flagcxNetProperties_t properties = {};
+  if (net->getProperties == NULL)
+    return flagcxNotSupported;
+  flagcxResult_t propertiesResult =
+      net->getProperties(heteroComm->netDev, &properties);
+  if (propertiesResult != flagcxSuccess)
+    return propertiesResult;
+
+  // Match NCCL's operation-driven route selection: adaptor and provider
+  // capabilities describe candidates, while exporting/registering this exact
+  // allocation is the authoritative probe. Do not require the allocation to
+  // appear in a private allocator map; externally-created VMM allocations are
+  // valid inputs once symPhysAlloc has identified them as VMM-backed.
+  const uint32_t deviceCaps = deviceAdaptor->vmmMrCaps;
+  const uint32_t providerCaps = net->vmmMrCaps;
+  const uint32_t effectiveCaps = deviceCaps & providerCaps;
+
+  bool dmaBufExportSupported = false;
+  if (mode != flagcxVmmMrModeVa && (effectiveCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
+      deviceAdaptor->dmaSupport != NULL) {
+    flagcxResult_t supportResult =
+        deviceAdaptor->dmaSupport(&dmaBufExportSupported);
+    if (supportResult == flagcxNotSupported) {
+      dmaBufExportSupported = false;
+    } else if (supportResult != flagcxSuccess) {
+      return supportResult;
+    }
+  }
+
+  flagcxVmmMrRoute_t route = flagcxOneSideSelectVmmMrRoute(
+      effectiveCaps, properties.ptrSupport, dmaBufExportSupported,
+      deviceAdaptor->getHandleForAddressRange != NULL &&
+          net->regMrDmaBuf != NULL,
+      net->regMr != NULL, mode);
+  INFO(FLAGCX_REG,
+       "VMM MR route selection: provider=%s mode=%s deviceCaps=0x%x "
+       "providerCaps=0x%x effectiveCaps=0x%x ptrSupport=0x%x "
+       "dmaBufExport=%d regMrDmaBuf=%d regMr=%d selected=%d",
+       net->name != NULL ? net->name : "unknown",
+       mode == flagcxVmmMrModeDmaBuf
+           ? "dmabuf"
+           : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
+       deviceCaps, providerCaps, effectiveCaps, properties.ptrSupport,
+       dmaBufExportSupported ? 1 : 0,
+       deviceAdaptor->getHandleForAddressRange != NULL &&
+               net->regMrDmaBuf != NULL
+           ? 1
+           : 0,
+       net->regMr != NULL ? 1 : 0, static_cast<int>(route));
+  if (route == FLAGCX_VMM_MR_ROUTE_NONE)
+    return flagcxNotSupported;
+
+  flagcxResult_t result = flagcxSuccess;
+  if (route == FLAGCX_VMM_MR_ROUTE_DMABUF) {
+    int dmaBufFd = -1;
+    void *exportBase = nullptr;
+    size_t exportSize = 0;
+    uint64_t dmaBufOffset = 0;
+    result = flagcxOneSideGetDmaBufExportRange(buff, size, &exportBase,
+                                               &exportSize, &dmaBufOffset);
+    if (result == flagcxSuccess)
+      result = deviceAdaptor->getHandleForAddressRange(
+          (void *)&dmaBufFd, exportBase, exportSize, 0);
+    if (result == flagcxSuccess && dmaBufFd < 0)
+      result = flagcxNotSupported;
+    INFO(FLAGCX_REG,
+         "VMM MR DMA-BUF export: provider=%s base=%p size=%zu offset=%llu "
+         "result=%d fdValid=%d",
+         net->name != NULL ? net->name : "unknown", exportBase, exportSize,
+         (unsigned long long)dmaBufOffset, static_cast<int>(result),
+         dmaBufFd >= 0 ? 1 : 0);
+    if (result == flagcxSuccess) {
+      result = net->regMrDmaBuf(regComm, buff, size, FLAGCX_PTR_CUDA,
+                                dmaBufOffset, dmaBufFd, mrFlags, mrHandle);
+      INFO(FLAGCX_REG,
+           "VMM MR NET registration: provider=%s route=dmabuf buff=%p "
+           "size=%zu result=%d handleValid=%d",
+           net->name != NULL ? net->name : "unknown", buff, size,
+           static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
+    }
+    if (dmaBufFd >= 0)
+      close(dmaBufFd);
+
+    // A component may advertise DMA-BUF generally but reject this allocation.
+    // Only an explicit NotSupported result selects the validated VA fallback;
+    // transport/device failures remain visible and are never masked.
+    if (result == flagcxNotSupported && mode == flagcxVmmMrModeAuto) {
+      // A provider may return NotSupported after partially creating an MR.
+      // Do not overwrite that ownership with the VA handle. Complete its
+      // rollback first; if rollback fails, leave the handle visible to the
+      // caller so the normal pending-cleanup state machine can retry it.
+      if (*mrHandle != NULL) {
+        if (net->deregMr == NULL)
+          return flagcxInternalError;
+        flagcxResult_t cleanupResult = net->deregMr(regComm, *mrHandle);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+        *mrHandle = NULL;
+      }
+      route = flagcxOneSideSelectVmmMrRoute(
+          effectiveCaps & ~FLAGCX_VMM_MR_CAP_DMABUF, properties.ptrSupport,
+          false, false, net->regMr != NULL, mode);
+      if (route == FLAGCX_VMM_MR_ROUTE_VA) {
+        *mrHandle = NULL;
+        result =
+            net->regMr(regComm, buff, size, FLAGCX_PTR_CUDA, mrFlags, mrHandle);
+        INFO(FLAGCX_REG,
+             "VMM MR NET registration: provider=%s route=va-fallback "
+             "buff=%p size=%zu result=%d handleValid=%d",
+             net->name != NULL ? net->name : "unknown", buff, size,
+             static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
+      }
+    }
+    if (result != flagcxSuccess) {
+      return result;
+    }
+  } else {
+    result =
+        net->regMr(regComm, buff, size, FLAGCX_PTR_CUDA, mrFlags, mrHandle);
+    INFO(FLAGCX_REG,
+         "VMM MR NET registration: provider=%s route=va buff=%p size=%zu "
+         "result=%d handleValid=%d",
+         net->name != NULL ? net->name : "unknown", buff, size,
+         static_cast<int>(result), *mrHandle != NULL ? 1 : 0);
+  }
+  result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+  if (result == flagcxSuccess) {
+    *selectedRoute = route;
+    INFO(FLAGCX_REG, "VMM MR registered through %s (mode=%s): buff=%p size=%zu",
+         route == FLAGCX_VMM_MR_ROUTE_DMABUF ? "DMA-BUF" : "VA",
+         mode == flagcxVmmMrModeDmaBuf
+             ? "dmabuf"
+             : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
+         buff, size);
+  }
+  return result;
+}
+
 flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
-                                             void *buff, size_t size) {
+                                             void *buff, size_t size,
+                                             bool isVmm, bool acquireWindowRef,
+                                             int *mrIndex,
+                                             bool *rollbackPending) {
+  if (mrIndex != NULL)
+    *mrIndex = -1;
+  if (rollbackPending != NULL)
+    *rollbackPending = false;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
       heteroComm->netAdaptor->regMr == NULL ||
@@ -815,21 +1267,84 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     return flagcxNotSupported;
   }
 
-  // Check for duplicate registration of the same buffer within this comm
-  for (int i = 0; i < heteroComm->oneSideHandleCount; i++) {
-    struct flagcxOneSideHandleInfo *h = heteroComm->oneSideHandles[i];
-    if (h != NULL && h->baseVas != NULL &&
-        h->baseVas[heteroComm->rank] == (uintptr_t)buff) {
-      INFO(FLAGCX_REG,
-           "flagcxOneSideRegister: buffer %p already registered at index %d",
-           buff, i);
-      return flagcxSuccess;
-    }
-  }
-
   if (heteroComm->bootstrap == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: bootstrap is NULL");
     return flagcxNotSupported;
+  }
+
+  // Check for duplicate registration of the same buffer within this comm.
+  // Every registration entry point is collective: all ranks must agree on
+  // the exact reused slot before any rank returns or begins a new metadata
+  // transaction. This also covers public registrations after an asymmetric
+  // deregMr failure left different local handle tables.
+  int existingIndex = -1;
+  flagcxResult_t lookupResult = flagcxSuccess;
+  for (int i = 0; i < heteroComm->oneSideHandleCount; i++) {
+    struct flagcxOneSideHandleInfo *h = heteroComm->oneSideHandles[i];
+    if (h != NULL && h->baseVas != NULL && h->regionSizes != NULL &&
+        h->baseVas[heteroComm->rank] == (uintptr_t)buff) {
+      if (h->regionSizes[heteroComm->rank] != size)
+        lookupResult = flagcxInvalidUsage;
+      else if (isVmm && h->registrationRoute == FLAGCX_VMM_MR_ROUTE_NONE)
+        // Never attach a VMM window to an MR that was registered through the
+        // ordinary-memory path before the native allocation was identified.
+        lookupResult = flagcxInvalidUsage;
+      else
+        existingIndex = i;
+      break;
+    }
+  }
+  lookupResult =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, lookupResult);
+  if (lookupResult != flagcxSuccess)
+    return lookupResult;
+  // Encode index+1 so ranks agree on both reuse-vs-create and the public MR
+  // index. Agreeing only on a boolean could silently pair different slots
+  // after asymmetric cleanup histories.
+  int *reuseDecisions = nullptr;
+  flagcxResult_t allocationResult =
+      flagcxCalloc(&reuseDecisions, heteroComm->nRanks);
+  allocationResult =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, allocationResult);
+  if (allocationResult != flagcxSuccess) {
+    free(reuseDecisions);
+    return allocationResult;
+  }
+  reuseDecisions[heteroComm->rank] = existingIndex + 1;
+  flagcxResult_t gatherResult = bootstrapCollAllGather(
+      heteroComm->bootstrap, reuseDecisions, sizeof(int));
+  if (gatherResult != flagcxSuccess) {
+    free(reuseDecisions);
+    return gatherResult;
+  }
+  for (int peer = 1; peer < heteroComm->nRanks; peer++) {
+    if (reuseDecisions[peer] != reuseDecisions[0]) {
+      free(reuseDecisions);
+      return flagcxInvalidUsage;
+    }
+  }
+  free(reuseDecisions);
+  if (existingIndex >= 0) {
+    struct flagcxOneSideHandleInfo *h =
+        heteroComm->oneSideHandles[existingIndex];
+    INFO(FLAGCX_REG,
+         "flagcxOneSideRegister: buffer %p already registered at index %d",
+         buff, existingIndex);
+    if (acquireWindowRef) {
+      flagcxResult_t refResult = flagcxOneSideConvergeStatus(
+          heteroComm->bootstrap, heteroComm->rank, heteroComm->nRanks,
+          h->windowRefs == UINT32_MAX ? flagcxSystemError : flagcxSuccess);
+      if (refResult != flagcxSuccess)
+        return refResult;
+      h->windowRefs++;
+    } else {
+      h->commOwned = 1;
+    }
+    if (mrIndex != NULL)
+      *mrIndex = existingIndex;
+    return flagcxSuccess;
   }
 
   // A prior rollback may still own an MR whose deregistration failed. Retry
@@ -846,16 +1361,23 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
+  flagcxVmmMrRoute_t selectedRoute = FLAGCX_VMM_MR_ROUTE_NONE;
   struct flagcxOneSideHandleInfo **publishHandles = heteroComm->oneSideHandles;
   int publishCapacity = heteroComm->oneSideHandleCapacity;
   bool replaceHandleArray = false;
+  int publishSlot = -1;
+  res = flagcxOneSideChoosePublishSlot(heteroComm, &publishSlot);
+  if (res != flagcxSuccess)
+    return res;
 
   // Prepare a replacement array locally, but do not attach it until the
   // collective transaction succeeds on every rank.
-  if (heteroComm->oneSideHandleCount >= heteroComm->oneSideHandleCapacity) {
+  if (publishSlot >= heteroComm->oneSideHandleCapacity) {
     int newCap = heteroComm->oneSideHandleCapacity == 0
                      ? 4
-                     : heteroComm->oneSideHandleCapacity * 2;
+                     : heteroComm->oneSideHandleCapacity;
+    while (newCap <= publishSlot)
+      newCap *= 2;
     publishHandles = (struct flagcxOneSideHandleInfo **)calloc(
         newCap, sizeof(struct flagcxOneSideHandleInfo *));
     if (publishHandles == NULL) {
@@ -876,7 +1398,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     return res;
   }
 
-  bool isFirstHandle = (heteroComm->oneSideHandleCount == 0);
+  bool isFirstHandle = (publishSlot == 0);
 
   res = flagcxCalloc(&info, 1);
   res = flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
@@ -900,50 +1422,22 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     regComm = selfRecvComm;
   }
 
-  // Register MR for this buffer
-  {
-    int type = FLAGCX_PTR_CUDA;
-    int dmaBufFd = -1;
-
-    // For VMM-allocated memory, use DMA-BUF registration (ibv_reg_dmabuf_mr)
-    // instead of nvidia-peermem (ibv_reg_mr). nvidia-peermem cannot correctly
-    // map VMM memory for RDMA, causing IBV_WC_REM_ACCESS_ERR at runtime.
-    if (flagcxParamVmmEnable() &&
-        deviceAdaptor->getHandleForAddressRange != NULL &&
-        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
-      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
-          (void *)&dmaBufFd, buff, size, 0);
-      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
-        type = FLAGCX_PTR_DMABUF;
-        INFO(FLAGCX_REG,
-             "[OneSideRegister] using DMA-BUF: buff=%p size=%zu fd=%d", buff,
-             size, dmaBufFd);
-      } else {
-        INFO(FLAGCX_REG,
-             "[OneSideRegister] getHandleForAddressRange failed (res=%d), "
-             "falling back to nvidia-peermem",
-             (int)fdRes);
-        dmaBufFd = -1;
-      }
-    }
-
-    if (dmaBufFd >= 0) {
-      res = heteroComm->netAdaptor->regMrDmaBuf(
-          regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
-          &mrHandle);
-      close(dmaBufFd);
-    } else {
-      res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
-                                          FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
-    }
-  }
+  res = flagcxOneSideRegisterMr(heteroComm, regComm, buff, size,
+                                FLAGCX_PTR_CUDA, isVmm, FLAGCX_NET_MR_FLAG_NONE,
+                                &mrHandle, &selectedRoute);
+  info->registrationRoute = (uint8_t)selectedRoute;
+  info->getCompletionRequiresFlush =
+      isVmm && selectedRoute != FLAGCX_VMM_MR_ROUTE_NONE &&
+      (deviceAdaptor->rmaSemantics &
+       FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH) != 0;
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->ownsLocalMr = 1;
   }
-  if (res != flagcxSuccess || mrHandle == NULL) {
+  if (res == flagcxSuccess && mrHandle == NULL)
+    res = flagcxInternalError;
+  if (res != flagcxSuccess) {
     INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
-    res = flagcxNotSupported;
   } else {
     res =
         flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
@@ -968,7 +1462,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     if (res != flagcxSuccess)
       goto fail_mr;
 
-    int slot = heteroComm->oneSideHandleCount;
+    int slot = publishSlot;
     if (replaceHandleArray) {
       free(heteroComm->oneSideHandles);
       heteroComm->oneSideHandles = publishHandles;
@@ -976,7 +1470,12 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
       replaceHandleArray = false;
     }
     heteroComm->oneSideHandles[slot] = info;
-    heteroComm->oneSideHandleCount = slot + 1;
+    info->windowRefs = acquireWindowRef ? 1 : 0;
+    info->commOwned = acquireWindowRef ? 0 : 1;
+    if (slot >= heteroComm->oneSideHandleCount)
+      heteroComm->oneSideHandleCount = slot + 1;
+    if (mrIndex != NULL)
+      *mrIndex = slot;
 
     // Publish fullSendComms to the RMA proxy on the first registration so
     // its progress thread can look up per-peer sendComms without racing
@@ -996,17 +1495,30 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
   return flagcxSuccess;
 
-fail_mr:
+fail_mr : {
+  flagcxResult_t localCleanupResult = flagcxSuccess;
   if (info != NULL) {
-    flagcxResult_t cleanupResult =
+    localCleanupResult =
         flagcxOneSideCleanupHandle(heteroComm, info, isFirstHandle);
-    if (cleanupResult != flagcxSuccess) {
+    if (localCleanupResult != flagcxSuccess) {
       WARN("flagcxOneSideRegister: rollback retained for retry, res=%d",
-           (int)cleanupResult);
+           (int)localCleanupResult);
       flagcxOneSideRetainCleanup(heteroComm, info);
       info = NULL;
     }
   }
+  flagcxResult_t commonCleanupResult =
+      flagcxOneSideConvergeStatus(heteroComm->bootstrap, heteroComm->rank,
+                                  heteroComm->nRanks, localCleanupResult);
+  if (commonCleanupResult != flagcxSuccess) {
+    // Every symmetric-window caller keeps a cleanup token, including ranks
+    // whose local MR rollback already completed, so its later collective
+    // deregistration cannot leave the failing rank alone in convergence.
+    if (rollbackPending != NULL)
+      *rollbackPending = true;
+    res = commonCleanupResult;
+  }
+}
 fail_info:
   free(info);
   if (replaceHandleArray)
@@ -1019,7 +1531,63 @@ flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
-  return flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
+  return flagcxOneSideRegisterInternal(
+      comm->heteroComm, buff, size,
+      flagcxOneSideRegistryRangeIsVmm(buff, size));
+}
+
+flagcxResult_t
+flagcxOneSideDeregisterInternal(struct flagcxHeteroComm *heteroComm,
+                                int index) {
+  if (heteroComm == NULL || index < 0 ||
+      index >= heteroComm->oneSideHandleCount ||
+      heteroComm->oneSideHandles == NULL)
+    return flagcxInvalidArgument;
+
+  struct flagcxOneSideHandleInfo *info = heteroComm->oneSideHandles[index];
+  if (info == NULL || info->windowRefs == 0)
+    return flagcxInvalidUsage;
+  if (info->windowRefs > 1) {
+    info->windowRefs--;
+    return flagcxSuccess;
+  }
+  if (info->commOwned) {
+    info->windowRefs = 0;
+    return flagcxSuccess;
+  }
+  flagcxResult_t localResult = flagcxSuccess;
+  if (info != NULL && info->localMrHandle != NULL) {
+    if (heteroComm->netAdaptor == NULL ||
+        heteroComm->netAdaptor->deregMr == NULL ||
+        info->localRecvComm == NULL) {
+      localResult = flagcxInternalError;
+    } else {
+      localResult = heteroComm->netAdaptor->deregMr(info->localRecvComm,
+                                                    info->localMrHandle);
+      if (localResult == flagcxSuccess) {
+        info->localMrHandle = NULL;
+        info->ownsLocalMr = 0;
+      }
+    }
+  }
+
+  // Deregistration is deliberately rank-local. Communicator teardown can be
+  // called serially by ranks in one process, and a collective here would
+  // deadlock that valid lifecycle. A failed rank keeps the exact MR object and
+  // its window so that rank can retry; successful ranks may release theirs.
+  if (localResult != flagcxSuccess)
+    return localResult;
+
+  info->windowRefs = 0;
+  flagcxOneSideFreeMrInfo(info);
+  if (info->ownsConnections) {
+    // Slot zero remains as a connection-only owner. Later registrations and
+    // signal/staging MRs still need its recvComm/PD and full-mesh QPs.
+    return flagcxSuccess;
+  }
+  free(info);
+  heteroComm->oneSideHandles[index] = NULL;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
@@ -1058,8 +1626,10 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
-                                           size_t size, int ptrType) {
+flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
+                                                   void *buff, size_t size,
+                                                   int ptrType,
+                                                   bool isVmmAllocation) {
   if (comm == NULL || buff == NULL || size == 0)
     return flagcxInvalidArgument;
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -1103,8 +1673,9 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
 
   // Build the local IPC mapping before attempting any network setup. This is
   // collective and remains valid when the RDMA provider is unavailable.
+  const bool isVmm = ptrType == FLAGCX_PTR_CUDA && isVmmAllocation;
   int ipcSlot = -1;
-  if (ptrType == FLAGCX_PTR_CUDA && !flagcxParamVmmEnable())
+  if (ptrType == FLAGCX_PTR_CUDA && !isVmm)
     ipcSlot = buildIpcPeerPointers(comm, buff, size);
   heteroComm->rmaSignalBase = buff;
   heteroComm->rmaSignalSize = size;
@@ -1155,6 +1726,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
+  flagcxVmmMrRoute_t selectedRoute = FLAGCX_VMM_MR_ROUTE_NONE;
   void *selfRecvComm = firstDataHandle->fullRecvComms[heteroComm->rank];
   regComm = selfRecvComm;
 
@@ -1164,49 +1736,19 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   if (res != flagcxSuccess)
     goto fail_mr;
 
-  // Use self recvComm from this comm's first data handle for MR registration
-  // (PD match)
-  {
-    int dmaBufFd = -1;
-
-    // For VMM-allocated signal buffers (FLAGCX_PTR_CUDA + VMM), use DMA-BUF
-    if (ptrType == FLAGCX_PTR_CUDA && flagcxParamVmmEnable() &&
-        deviceAdaptor->getHandleForAddressRange != NULL &&
-        heteroComm->netAdaptor->regMrDmaBuf != NULL) {
-      flagcxResult_t fdRes = deviceAdaptor->getHandleForAddressRange(
-          (void *)&dmaBufFd, buff, size, 0);
-      if (fdRes == flagcxSuccess && dmaBufFd >= 0) {
-        ptrType = FLAGCX_PTR_DMABUF;
-        INFO(FLAGCX_REG,
-             "[OneSideSignalRegister] using DMA-BUF: buff=%p size=%zu fd=%d",
-             buff, size, dmaBufFd);
-      } else {
-        INFO(FLAGCX_REG,
-             "[OneSideSignalRegister] getHandleForAddressRange failed (res=%d),"
-             " falling back to nvidia-peermem",
-             (int)fdRes);
-        dmaBufFd = -1;
-      }
-    }
-
-    if (dmaBufFd >= 0) {
-      res = heteroComm->netAdaptor->regMrDmaBuf(
-          regComm, buff, size, ptrType, 0ULL, dmaBufFd,
-          FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
-      close(dmaBufFd);
-    } else {
-      res = heteroComm->netAdaptor->regMr(
-          regComm, buff, size, ptrType, FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
-    }
-  }
+  res = flagcxOneSideRegisterMr(heteroComm, regComm, buff, size, ptrType, isVmm,
+                                FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle,
+                                &selectedRoute);
+  info->registrationRoute = (uint8_t)selectedRoute;
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
     info->ownsLocalMr = 1;
   }
-  if (res != flagcxSuccess || mrHandle == NULL) {
+  if (res == flagcxSuccess && mrHandle == NULL)
+    res = flagcxInternalError;
+  if (res != flagcxSuccess) {
     INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);
-    res = flagcxNotSupported;
   } else {
     res =
         flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
@@ -1257,6 +1799,14 @@ fail_mr:
   heteroComm->rmaSignalSize = 0;
   heteroComm->rmaSignalIpcSlot = -1;
   return res;
+}
+
+flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
+                                           size_t size, int ptrType) {
+  const bool isVmmAllocation =
+      ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
+  return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
+                                             isVmmAllocation);
 }
 
 flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
@@ -1640,8 +2190,9 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   // exported lazily by each IPC consumer from the allocation base; a page
   // registration item cannot safely own a single allocation handle.
   {
-    flagcxResult_t regRes =
-        flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
+    flagcxResult_t regRes = flagcxOneSideRegisterInternal(
+        comm->heteroComm, buff, size,
+        flagcxOneSideRegistryRangeIsVmm(buff, size));
     if (regRes != flagcxSuccess) {
       INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
            regRes);
@@ -1721,6 +2272,50 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
+                                   flagcxMemAllocator_t allocator,
+                                   flagcxSymCleanupMode cleanupMode);
+
+static flagcxResult_t flagcxRollbackWindowRegistration(
+    flagcxComm_t comm, flagcxWindow_t *win, flagcxMemAllocator_t allocator,
+    flagcxSymCleanupMode cleanupMode, flagcxResult_t originalResult,
+    const char *phase) {
+  if (win == nullptr || *win == nullptr)
+    return originalResult;
+
+  flagcxWindow_t failedWin = *win;
+  // The lower-level registration path already attempted rollback and retained
+  // this object when provider teardown failed. Do not immediately retry that
+  // teardown here: the non-null output is the caller's cleanup token and must
+  // remain valid until an explicit deregistration retry.
+  if (failedWin->defaultBase != nullptr &&
+      failedWin->defaultBase->state == flagcxSymWindowCleanupRequired) {
+    flagcxResult_t retainResult = flagcxSymRetainPendingCleanup(
+        comm != nullptr ? comm->heteroComm : nullptr, failedWin);
+    return retainResult == flagcxSuccess ? originalResult : retainResult;
+  }
+
+  flagcxResult_t cleanupResult = flagcxCommWindowDeregisterInternal(
+      comm, failedWin, allocator, cleanupMode);
+  if (cleanupResult == flagcxSuccess) {
+    *win = nullptr;
+    return originalResult;
+  }
+
+  // A non-null output on failure is an explicit cleanup token. Keep it out of
+  // the published list, retain it for communicator-destroy fallback, and let
+  // the caller retry flagcxCommWindowDeregister with the same handle.
+  WARN("flagcxCommWindowRegister: %s rollback returned %d; returning cleanup "
+       "token %p",
+       phase, (int)cleanupResult, failedWin);
+  if (comm != nullptr && comm->heteroComm != nullptr &&
+      failedWin->defaultBase != nullptr) {
+    FLAGCXCHECK(flagcxSymRetainPendingCleanup(comm->heteroComm, failedWin));
+  }
+  return cleanupResult;
+}
+
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags,
@@ -1767,97 +2362,126 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     flagcxResult_t res =
         flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
 
-    // Window construction is collective.  Converge the local outcomes before
-    // any rank attempts the next IPC collective so a partial VMM/MR failure
-    // cannot leave successful ranks waiting in a different control-flow path.
-    std::vector<int> windowStatus(comm->nranks, flagcxSuccess);
-    windowStatus[comm->rank] = static_cast<int>(res);
-    flagcxResult_t statusGatherRes = bootstrapCollAllGather(
-        comm->bootstrap, windowStatus.data(), sizeof(int));
-    flagcxResult_t commonWindowRes = statusGatherRes;
-    if (statusGatherRes == flagcxSuccess) {
-      commonWindowRes = flagcxSuccess;
-      for (int peer = 0; peer < comm->nranks; peer++) {
-        flagcxResult_t peerRes =
-            static_cast<flagcxResult_t>(windowStatus[peer]);
-        if (peerRes != flagcxSuccess) {
-          commonWindowRes = peerRes;
-          break;
-        }
-      }
-    }
+    // Window construction is collective. Use the allocation-free convergence
+    // path so even a rank-local ENOMEM cannot strand peers before IPC setup.
+    flagcxResult_t commonWindowRes = flagcxSuccess;
+    flagcxResult_t statusGatherRes =
+        flagcxSymConvergeStatus(comm->heteroComm, res, &commonWindowRes);
+    if (statusGatherRes != flagcxSuccess)
+      commonWindowRes = statusGatherRes;
     if (commonWindowRes != flagcxSuccess) {
-      if (res == flagcxSuccess && *win != nullptr) {
-        flagcxWindow_t failedWin = *win;
-        *win = nullptr;
-        flagcxResult_t cleanupRes =
-            flagcxCommWindowDeregister(comm, failedWin, allocator);
-        if (cleanupRes != flagcxSuccess)
-          WARN("flagcxCommWindowRegister: window rollback after collective "
-               "registration failure returned %d",
-               cleanupRes);
-      }
-      return commonWindowRes;
+      return flagcxRollbackWindowRegistration(
+          comm, win, allocator,
+          statusGatherRes == flagcxSuccess ? flagcxSymCleanupCollective
+                                           : flagcxSymCleanupLocal,
+          commonWindowRes, "collective registration failure");
     }
 
-    // Non-VMM windows need an explicit IPC mapping. VMM windows already expose
-    // peer memory through their flat VA mapping. Failure is non-fatal because
-    // the network MR remains a valid fallback in automatic transport mode.
+    // Only ordinary device allocations may use legacy IPC. A VMM allocation
+    // with no flat mapping is NET-only; exporting it through the legacy IPC
+    // path is unsupported and can split the local collective.
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
-        !(*win)->defaultBase->isVMM) {
+        flagcxSymWindowCanUseLegacyIpc((*win)->defaultBase)) {
       int ipcSlot = buildIpcPeerPointers(comm, buff, size);
-      std::vector<int> ipcReady(comm->nranks, 0);
-      ipcReady[comm->rank] = ipcSlot >= 0 ? 1 : 0;
-      flagcxResult_t gatherRes =
-          bootstrapCollAllGather(comm->bootstrap, ipcReady.data(), sizeof(int));
-      bool allIpcReady = gatherRes == flagcxSuccess;
-      if (allIpcReady) {
-        for (int peer = 0; peer < comm->nranks; peer++)
-          allIpcReady = allIpcReady && ipcReady[peer] != 0;
-      }
+      flagcxResult_t commonIpcStatus = flagcxSuccess;
+      flagcxResult_t gatherRes = flagcxSymConvergeStatus(
+          comm->heteroComm, ipcSlot >= 0 ? flagcxSuccess : flagcxNotSupported,
+          &commonIpcStatus);
+      bool allIpcReady =
+          gatherRes == flagcxSuccess && commonIpcStatus == flagcxSuccess;
 
       if (allIpcReady) {
         (*win)->defaultBase->ipcSlot = ipcSlot;
       } else {
         if (ipcSlot >= 0)
           releaseIpcTableSlot(comm, ipcSlot);
-        INFO(FLAGCX_REG,
-             "flagcxCommWindowRegister: IPC mapping unavailable on at least "
-             "one rank for %p; network fallback remains enabled",
-             buff);
         if (gatherRes != flagcxSuccess) {
-          flagcxWindow_t failedWin = *win;
-          *win = nullptr;
-          flagcxResult_t cleanupRes =
-              flagcxCommWindowDeregister(comm, failedWin, allocator);
-          if (cleanupRes != flagcxSuccess)
-            WARN("flagcxCommWindowRegister: window rollback after IPC "
-                 "collective failure returned %d",
-                 cleanupRes);
-          return gatherRes;
+          return flagcxRollbackWindowRegistration(
+              comm, win, allocator, flagcxSymCleanupLocal, gatherRes,
+              "IPC collective failure");
         }
 
-        // When the network transport is explicitly disabled, IPC is not an
-        // optional optimization: it is the only possible data path.  Roll the
-        // partially published window back collectively instead of returning
-        // success with no usable locator.
-        if (flagcxParamIbDisable()) {
-          flagcxWindow_t failedWin = *win;
-          *win = nullptr;
-          FLAGCXCHECK(flagcxCommWindowDeregister(comm, failedWin, allocator));
-          return flagcxNotSupported;
+        // No local window is published without a real data path. Remote
+        // communicators already acquired an MR in sym_heap; local-only
+        // communicators acquire one lazily here so the normal IPC path does not
+        // pay full-mesh/MR setup cost.
+        flagcxResult_t fallbackCapability =
+            flagcxParamIbDisable() ? flagcxNotSupported : flagcxSuccess;
+        flagcxResult_t commonFallbackCapability = flagcxSuccess;
+        flagcxResult_t fallbackConvergeResult = flagcxSymConvergeStatus(
+            comm->heteroComm, fallbackCapability, &commonFallbackCapability);
+        if (fallbackConvergeResult != flagcxSuccess) {
+          return flagcxRollbackWindowRegistration(
+              comm, win, allocator, flagcxSymCleanupLocal,
+              fallbackConvergeResult, "NET fallback capability convergence");
         }
+        flagcxResult_t fallbackResult = commonFallbackCapability;
+        if (fallbackResult == flagcxSuccess &&
+            !(*win)->defaultBase->hasNetworkMrRef) {
+          fallbackResult = flagcxSymWindowEnsureNetworkMr(comm->heteroComm,
+                                                          (*win)->defaultBase);
+        }
+        flagcxResult_t commonFallbackResult = flagcxSuccess;
+        fallbackConvergeResult = flagcxSymConvergeStatus(
+            comm->heteroComm, fallbackResult, &commonFallbackResult);
+        if (fallbackConvergeResult != flagcxSuccess) {
+          return flagcxRollbackWindowRegistration(
+              comm, win, allocator, flagcxSymCleanupLocal,
+              fallbackConvergeResult, "NET fallback result convergence");
+        }
+        if (commonFallbackResult != flagcxSuccess) {
+          INFO(FLAGCX_REG,
+               "flagcxCommWindowRegister: IPC mapping unavailable for %p and "
+               "no NET MR fallback exists (res=%d)",
+               buff, (int)commonFallbackResult);
+          return flagcxRollbackWindowRegistration(
+              comm, win, allocator, flagcxSymCleanupCollective,
+              commonFallbackResult, "NET MR fallback failure");
+        }
+        INFO(FLAGCX_REG,
+             "flagcxCommWindowRegister: IPC mapping unavailable for %p; using "
+             "registered NET MR fallback at index %d",
+             buff, (*win)->defaultBase->mrIndex);
       }
     }
 
+    // Route readiness is a publish invariant, not an implication of an enabled
+    // environment variable. Converge the actual window state before any rank
+    // makes it visible through comm->symWindows.
+    flagcxResult_t routeResult = flagcxSymWindowValidateDataRoutes(
+        comm->heteroComm, (*win)->defaultBase);
+    flagcxResult_t commonRouteResult = flagcxSuccess;
+    flagcxResult_t routeConvergeResult = flagcxSymConvergeStatus(
+        comm->heteroComm, routeResult, &commonRouteResult);
+    if (routeConvergeResult != flagcxSuccess) {
+      return flagcxRollbackWindowRegistration(
+          comm, win, allocator, flagcxSymCleanupLocal, routeConvergeResult,
+          "route validation convergence");
+    }
+    if (commonRouteResult != flagcxSuccess) {
+      return flagcxRollbackWindowRegistration(
+          comm, win, allocator, flagcxSymCleanupCollective, commonRouteResult,
+          "route validation failure");
+    }
+
+    // Nothing becomes visible through comm->symWindows until VMM/IPC and the
+    // required network MR have all converged successfully.
+    flagcxResult_t publishRes = flagcxSymWindowPublish(comm->heteroComm, *win);
+    if (publishRes != flagcxSuccess) {
+      return flagcxRollbackWindowRegistration(comm, win, allocator,
+                                              flagcxSymCleanupCollective,
+                                              publishRes, "publish failure");
+    }
     return res;
   }
   *win = nullptr;
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
-                                          flagcxMemAllocator_t allocator) {
+static flagcxResult_t
+flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
+                                   flagcxMemAllocator_t allocator,
+                                   flagcxSymCleanupMode cleanupMode) {
   if (win == nullptr) {
     return flagcxSuccess;
   }
@@ -1865,28 +2489,6 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-
-  flagcxHeteroComm_t hetero = comm->heteroComm;
-
-  // Clear symWin pointer in oneSideHandles to prevent use-after-free
-  if (hetero != NULL && win->defaultBase != NULL) {
-    for (int h = 0; h < hetero->oneSideHandleCount; h++) {
-      struct flagcxOneSideHandleInfo *info = hetero->oneSideHandles[h];
-      if (info != NULL && info->symWin == win->defaultBase) {
-        info->symWin = NULL;
-        break;
-      }
-    }
-    // Rebuild IPC state since D2D pointers derived from symWin are now invalid
-    if (hetero->rmaProxy != NULL && hetero->rmaProxy->ipcState != NULL) {
-      flagcxHeteroRmaIpcDestroy(hetero);
-      // Will be lazily re-initialized on next D2D attempt
-    }
-    if (win->defaultBase->ipcSlot >= 0) {
-      releaseIpcTableSlot(comm, win->defaultBase->ipcSlot);
-      win->defaultBase->ipcSlot = -1;
-    }
-  }
 
   // Use isSymmetricDefault flag to determine ownership:
   // - If backend owns it (vendorBase != nullptr && !isSymmetricDefault),
@@ -1902,7 +2504,74 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
     return res; // propagate real errors, don't fall through
   }
   // Sym-heap owns this window (hetero path, or homo fallback)
-  return flagcxSymWindowDeregister(comm->heteroComm, win);
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  flagcxSymWindow_t sym = win->defaultBase;
+  int ipcSlot = sym != NULL ? sym->ipcSlot : -1;
+  int mrIndex = sym != NULL ? sym->mrIndex : -1;
+  bool hasNetworkMrRef = sym != NULL && sym->hasNetworkMrRef;
+  if (sym != NULL)
+    sym->state = flagcxSymWindowCleanupRequired;
+
+  // A registration rollback may have retained an unpublished MR object rather
+  // than a published mrIndex. Retry that exact object before releasing VMM
+  // mappings or the allocation lease. All ranks carry the flag when the
+  // rollback result converged, even though only the rank whose deregMr failed
+  // has an entry in pendingOneSideCleanup.
+  if (sym != NULL && sym->hasPendingNetworkCleanup) {
+    flagcxResult_t pendingResult = flagcxOneSideRetryPendingCleanup(hetero);
+    flagcxResult_t commonPendingResult = pendingResult;
+    if (cleanupMode == flagcxSymCleanupCollective) {
+      FLAGCXCHECK(
+          flagcxSymConvergeStatus(hetero, pendingResult, &commonPendingResult));
+    }
+    if (commonPendingResult != flagcxSuccess)
+      return commonPendingResult;
+    sym->hasPendingNetworkCleanup = false;
+  }
+
+  // Keep a registered VA mapped until deregMr succeeds. The handle cleanup
+  // helper preserves its MR and connection ownership when deregistration
+  // fails, allowing this window operation to be retried unchanged. Every rank
+  // participates in status convergence on every attempt: after a partial
+  // failure, ranks that already released their local MR must still rendezvous
+  // with the rank retrying deregMr.
+  flagcxResult_t mrResult = flagcxSuccess;
+  if (hasNetworkMrRef) {
+    mrResult = flagcxOneSideDeregisterInternal(hetero, mrIndex);
+    if (mrResult == flagcxSuccess) {
+      sym->hasNetworkMrRef = false;
+      sym->mrIndex = -1;
+      sym->mrBase = 0;
+    }
+  }
+  flagcxResult_t commonMrResult = flagcxSuccess;
+  if (cleanupMode == flagcxSymCleanupCollective) {
+    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, mrResult, &commonMrResult));
+  } else {
+    commonMrResult = mrResult;
+  }
+  if (commonMrResult != flagcxSuccess)
+    return commonMrResult;
+
+  flagcxResult_t result = flagcxSymWindowDeregister(hetero, win, cleanupMode);
+  if (result != flagcxSuccess)
+    return result;
+
+  // Drop derived references only after fallible VMM cleanup succeeds. This
+  // preserves a complete, retryable window when teardown reports an error.
+  if (hetero != NULL && sym != NULL) {
+    if (hetero->rmaProxy != NULL && hetero->rmaProxy->ipcState != NULL)
+      flagcxHeteroRmaIpcDestroy(hetero);
+  }
+  if (ipcSlot >= 0)
+    releaseIpcTableSlot(comm, ipcSlot);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
+                                          flagcxMemAllocator_t allocator) {
+  return flagcxCommWindowDeregisterInternal(comm, win, allocator,
+                                            flagcxSymCleanupCollective);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {
@@ -1971,6 +2640,79 @@ flagcxCustomAllReduceImpl(const void *sendbuff, void *recvbuff, size_t count,
                           flagcxDataType_t datatype, flagcxRedOp_t op,
                           flagcxComm_t comm, flagcxStream_t stream);
 
+static flagcxResult_t flagcxDevCommStateDeregisterWindow(
+    flagcxComm_t comm, flagcxWindow_t *window,
+    flagcxSymCleanupMode cleanupMode = flagcxSymCleanupCollective) {
+  if (window == nullptr || *window == nullptr)
+    return flagcxSuccess;
+
+  flagcxWindow_t current = *window;
+  flagcxResult_t result = flagcxSuccess;
+  if (current->vendorBase != nullptr) {
+    result = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homoComm, current->vendorBase);
+    if (result == flagcxSuccess)
+      free(current);
+  } else if (current->isSymmetricDefault) {
+    // Use the public ownership path so a staged window's network MR is
+    // released before its VMM/IPC mapping. Failures leave *window intact.
+    result = flagcxCommWindowDeregisterInternal(comm, current, flagcxMemCCL,
+                                                cleanupMode);
+  } else {
+    free(current);
+  }
+  if (result == flagcxSuccess)
+    *window = nullptr;
+  return result;
+}
+
+static flagcxResult_t flagcxDevCommStateFreeBuffer(void **buffer,
+                                                   bool usesGdrAllocator) {
+  if (buffer == nullptr || *buffer == nullptr)
+    return flagcxSuccess;
+  flagcxResult_t result =
+      usesGdrAllocator ? deviceAdaptor->gdrMemFree(*buffer, nullptr)
+                       : cclAdaptors[flagcxCCLAdaptorDevice]->memFree(*buffer);
+  if (result == flagcxSuccess)
+    *buffer = nullptr;
+  return result;
+}
+
+static flagcxResult_t flagcxDevCommStatePublishWindow(flagcxComm_t comm,
+                                                      flagcxWindow_t window,
+                                                      flagcxDevMem_t devMem) {
+  if (window == nullptr || !window->isSymmetricDefault)
+    return flagcxSuccess;
+  if (comm == nullptr || comm->heteroComm == nullptr ||
+      window->defaultBase == nullptr || devMem == nullptr)
+    return flagcxInvalidArgument;
+
+  flagcxSymWindow_t d = window->defaultBase;
+  // DevMem creates the IPC mapping for a non-VMM staged allocation. Transfer
+  // its ownership before route validation, but do not publish the window until
+  // every rank reports a usable route.
+  if (flagcxSymWindowCanUseLegacyIpc(d) && d->ipcSlot < 0 &&
+      devMem->ipcIndex >= 0) {
+    d->ipcSlot = devMem->ipcIndex;
+    devMem->ipcIndex = -1;
+  }
+
+  flagcxResult_t localResult =
+      flagcxSymWindowValidateDataRoutes(comm->heteroComm, d);
+  flagcxResult_t commonResult = flagcxSuccess;
+  flagcxResult_t convergeResult =
+      flagcxSymConvergeStatus(comm->heteroComm, localResult, &commonResult);
+  if (convergeResult != flagcxSuccess)
+    return convergeResult;
+  if (commonResult != flagcxSuccess)
+    return commonResult;
+
+  localResult = flagcxSymWindowPublish(comm->heteroComm, window);
+  convergeResult =
+      flagcxSymConvergeStatus(comm->heteroComm, localResult, &commonResult);
+  return convergeResult == flagcxSuccess ? commonResult : convergeResult;
+}
+
 static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   if (!flagcxParamCustomOpEnable() || flagcxCustomAllReduceImpl == nullptr) {
     comm->devCommState = nullptr;
@@ -2026,26 +2768,32 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   // 3. Allocate staged buffers
   state->stagedBuffSize = FLAGCX_CUSTOM_OP_STAGED_BUFFER_SIZE;
 
-  // On the default path with multicast, use VMM-backed allocation so that
-  // symPhysAlloc can export the physical handle for flat VA + multicast.
-  bool needVmmAlloc = false;
+  // On the default path with multicast, allocate through the native GDR
+  // owner. Whether that allocation is actually VMM-backed is captured
+  // separately because gdrMemAlloc uses ordinary device memory when VMM is
+  // disabled.
+  bool useGdrAllocator = false;
 #ifndef FLAGCX_DEVICE_API_VENDOR
   {
     int mcSupported = 0;
     if (deviceAdaptor->symMulticastSupported)
       deviceAdaptor->symMulticastSupported(&mcSupported);
-    needVmmAlloc = (mcSupported && deviceAdaptor->gdrMemAlloc != nullptr);
+    useGdrAllocator = mcSupported && deviceAdaptor->gdrMemAlloc != nullptr;
   }
 #endif
 
-  if (needVmmAlloc) {
+  if (useGdrAllocator) {
+    // Record ownership before the first fallible allocation so rollback uses
+    // the matching deallocator even if only one staged buffer is created.
+    state->stagedUsesGdrAllocator = true;
+    state->stagedAllocationIsVmm = flagcxDeviceAdaptorNativeAllocIsVmm(
+        deviceAdaptor, flagcxParamVmmEnable());
     FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->sendStagedBuff,
                                                state->stagedBuffSize, nullptr),
                     res, fail);
     FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->recvStagedBuff,
                                                state->stagedBuffSize, nullptr),
                     res, fail);
-    state->stagedVmmAlloc = true;
   } else {
     FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
                         &state->sendStagedBuff, state->stagedBuffSize),
@@ -2091,17 +2839,19 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
       deviceAdaptor->symMulticastSupported(&mcSupported);
     if (mcSupported && comm->heteroComm != nullptr) {
       // Register send staged buffer
-      FLAGCXCHECKGOTO(
-          flagcxSymWindowRegister(comm->heteroComm, state->sendStagedBuff,
-                                  state->stagedBuffSize, &state->sendStagedWin,
-                                  FLAGCX_WIN_COLL_SYMMETRIC),
-          res, fail);
+      FLAGCXCHECKGOTO(flagcxSymWindowRegisterInternal(
+                          comm->heteroComm, state->sendStagedBuff,
+                          state->stagedBuffSize, &state->sendStagedWin,
+                          FLAGCX_WIN_COLL_SYMMETRIC,
+                          state->stagedAllocationIsVmm),
+                      res, fail);
       // Register recv staged buffer
-      FLAGCXCHECKGOTO(
-          flagcxSymWindowRegister(comm->heteroComm, state->recvStagedBuff,
-                                  state->stagedBuffSize, &state->recvStagedWin,
-                                  FLAGCX_WIN_COLL_SYMMETRIC),
-          res, fail);
+      FLAGCXCHECKGOTO(flagcxSymWindowRegisterInternal(
+                          comm->heteroComm, state->recvStagedBuff,
+                          state->stagedBuffSize, &state->recvStagedWin,
+                          FLAGCX_WIN_COLL_SYMMETRIC,
+                          state->stagedAllocationIsVmm),
+                      res, fail);
     }
   }
 
@@ -2114,6 +2864,25 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
                            state->recvStagedWin, &state->recvStagedMem);
   if (res != flagcxSuccess)
     goto fail;
+
+  // The internal staged-window path deliberately bypasses the public window
+  // registration wrapper. For a non-VMM allocation, DevMem creation above is
+  // therefore the operation that establishes the IPC route. Transfer that
+  // slot's ownership to the window before publishing it: the window remains a
+  // valid route owner for its complete lifetime and DevMem teardown cannot
+  // release the slot early (or release it a second time).
+  if (state->sendStagedWin != nullptr &&
+      state->sendStagedWin->isSymmetricDefault) {
+    FLAGCXCHECKGOTO(flagcxDevCommStatePublishWindow(comm, state->sendStagedWin,
+                                                    state->sendStagedMem),
+                    res, fail);
+  }
+  if (state->recvStagedWin != nullptr &&
+      state->recvStagedWin->isSymmetricDefault) {
+    FLAGCXCHECKGOTO(flagcxDevCommStatePublishWindow(comm, state->recvStagedWin,
+                                                    state->recvStagedMem),
+                    res, fail);
+  }
 
   // Verify multicast is actually available on the staged buffers
   if (state->hasMulticast && state->sendStagedWin != nullptr &&
@@ -2147,43 +2916,47 @@ fail:
     }
     state->devComm = nullptr;
   }
-  if (state->recvStagedMem)
-    flagcxDevMemDestroy(comm, state->recvStagedMem);
-  if (state->sendStagedMem)
-    flagcxDevMemDestroy(comm, state->sendStagedMem);
-  if (state->recvStagedWin) {
-    if (state->recvStagedWin->vendorBase != nullptr) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-          comm->homoComm, state->recvStagedWin->vendorBase);
-      free(state->recvStagedWin);
-    } else if (state->recvStagedWin->isSymmetricDefault) {
-      flagcxSymWindowDeregister(comm->heteroComm, state->recvStagedWin);
-    } else {
-      free(state->recvStagedWin);
+  if (state->recvStagedMem) {
+    flagcxResult_t cleanupResult =
+        flagcxDevMemDestroy(comm, state->recvStagedMem);
+    if (cleanupResult != flagcxSuccess) {
+      comm->devCommState = state;
+      return cleanupResult;
+    }
+    state->recvStagedMem = nullptr;
+  }
+  if (state->sendStagedMem) {
+    flagcxResult_t cleanupResult =
+        flagcxDevMemDestroy(comm, state->sendStagedMem);
+    if (cleanupResult != flagcxSuccess) {
+      comm->devCommState = state;
+      return cleanupResult;
+    }
+    state->sendStagedMem = nullptr;
+  }
+  {
+    flagcxResult_t cleanupResult =
+        flagcxDevCommStateDeregisterWindow(comm, &state->recvStagedWin);
+    if (cleanupResult == flagcxSuccess)
+      cleanupResult =
+          flagcxDevCommStateDeregisterWindow(comm, &state->sendStagedWin);
+    if (cleanupResult != flagcxSuccess) {
+      // Do not free a staged buffer while a failed MR/VMM teardown still owns
+      // it. Communicator teardown can retry through the published state.
+      comm->devCommState = state;
+      return cleanupResult;
     }
   }
-  if (state->sendStagedWin) {
-    if (state->sendStagedWin->vendorBase != nullptr) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-          comm->homoComm, state->sendStagedWin->vendorBase);
-      free(state->sendStagedWin);
-    } else if (state->sendStagedWin->isSymmetricDefault) {
-      flagcxSymWindowDeregister(comm->heteroComm, state->sendStagedWin);
-    } else {
-      free(state->sendStagedWin);
+  {
+    flagcxResult_t cleanupResult = flagcxDevCommStateFreeBuffer(
+        &state->recvStagedBuff, state->stagedUsesGdrAllocator);
+    if (cleanupResult == flagcxSuccess)
+      cleanupResult = flagcxDevCommStateFreeBuffer(
+          &state->sendStagedBuff, state->stagedUsesGdrAllocator);
+    if (cleanupResult != flagcxSuccess) {
+      comm->devCommState = state;
+      return cleanupResult;
     }
-  }
-  if (state->recvStagedBuff) {
-    if (state->stagedVmmAlloc)
-      deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
-    else
-      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
-  }
-  if (state->sendStagedBuff) {
-    if (state->stagedVmmAlloc)
-      deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
-    else
-      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
   }
   free(state);
   comm->devCommState = nullptr;
@@ -2204,44 +2977,34 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
       return result;
     state->devComm = nullptr;
   }
-  if (state->sendStagedMem)
-    flagcxDevMemDestroy(comm, state->sendStagedMem);
-  if (state->recvStagedMem)
-    flagcxDevMemDestroy(comm, state->recvStagedMem);
-  if (state->sendStagedWin) {
-    if (state->sendStagedWin->vendorBase != nullptr) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-          comm->homoComm, state->sendStagedWin->vendorBase);
-      free(state->sendStagedWin);
-    } else if (state->sendStagedWin->isSymmetricDefault) {
-      flagcxSymWindowDeregister(comm->heteroComm, state->sendStagedWin);
-    } else {
-      free(state->sendStagedWin);
-    }
+  if (state->sendStagedMem) {
+    flagcxResult_t result = flagcxDevMemDestroy(comm, state->sendStagedMem);
+    if (result != flagcxSuccess)
+      return result;
+    state->sendStagedMem = nullptr;
   }
-  if (state->recvStagedWin) {
-    if (state->recvStagedWin->vendorBase != nullptr) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-          comm->homoComm, state->recvStagedWin->vendorBase);
-      free(state->recvStagedWin);
-    } else if (state->recvStagedWin->isSymmetricDefault) {
-      flagcxSymWindowDeregister(comm->heteroComm, state->recvStagedWin);
-    } else {
-      free(state->recvStagedWin);
-    }
+  if (state->recvStagedMem) {
+    flagcxResult_t result = flagcxDevMemDestroy(comm, state->recvStagedMem);
+    if (result != flagcxSuccess)
+      return result;
+    state->recvStagedMem = nullptr;
   }
-  if (state->sendStagedBuff) {
-    if (state->stagedVmmAlloc)
-      deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
-    else
-      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
-  }
-  if (state->recvStagedBuff) {
-    if (state->stagedVmmAlloc)
-      deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
-    else
-      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
-  }
+  flagcxResult_t result = flagcxDevCommStateDeregisterWindow(
+      comm, &state->sendStagedWin, flagcxSymCleanupLocal);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevCommStateDeregisterWindow(comm, &state->recvStagedWin,
+                                              flagcxSymCleanupLocal);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevCommStateFreeBuffer(&state->sendStagedBuff,
+                                        state->stagedUsesGdrAllocator);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevCommStateFreeBuffer(&state->recvStagedBuff,
+                                        state->stagedUsesGdrAllocator);
+  if (result != flagcxSuccess)
+    return result;
   free(state);
   comm->devCommState = nullptr;
   return flagcxSuccess;
@@ -2768,6 +3531,15 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   if (cleanupResult != flagcxSuccess)
     return cleanupResult;
 
+  // Custom-op staged windows are also present in symWindows. Remove their
+  // device objects and explicit owners first so the generic live-window drain
+  // below cannot free a handle still referenced by devCommState.
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p", comm);
+  cleanupResult = flagcxDevCommStateDestroy(comm);
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
+
   if (!useHomoComm(comm) || useHeteroComm()) {
     // Each stage retains ownership on failure so the same rank can retry the
     // call safely after transport shutdown coordination has completed.
@@ -2777,6 +3549,23 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     cleanupResult = flagcxOneSideSignalDeregister(comm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;
+    cleanupResult =
+        flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    // Applications are allowed to destroy a communicator without explicitly
+    // deregistering every window. Release local mappings before the shared MR
+    // table and its connections disappear. Each window remains linked if a
+    // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
+    while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
+      flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
+      if (liveWindow == NULL)
+        return flagcxInternalError;
+      cleanupResult = flagcxCommWindowDeregisterInternal(
+          comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+    }
     cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;
@@ -2789,12 +3578,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->localRankToRank);
   free(comm->c2cSchedule);
   free(comm->clusterInterRanks);
-
-  // Destroy custom op state before homo comm — vendor DevCommDestroy
-  // needs the NCCL comm to still be alive.
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p", comm);
-  FLAGCXCHECK(flagcxDevCommStateDestroy(comm));
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
 
   // Destroy homo comms
   TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);

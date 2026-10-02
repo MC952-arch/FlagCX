@@ -4,6 +4,47 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "param.h"
+#include <limits>
+#include <mutex>
+#include <new>
+#include <unistd.h>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+struct DucudaVmmAllocation {
+  CUmemGenericAllocationHandle handle;
+  size_t size;
+  bool mappingOwned;
+  bool vaOwned;
+  bool handleOwned;
+};
+static std::mutex gDucudaVmmAllocationMtx;
+static std::unordered_map<void *, DucudaVmmAllocation> gDucudaVmmAllocations;
+
+struct DucudaSymPhysHandle {
+  CUmemGenericAllocationHandle handle;
+  CUdeviceptr allocationBase;
+  size_t allocationSize;
+  bool releaseOwned;
+};
+
+struct DucudaFlatMapping {
+  size_t allocSize;
+  int nPeers;
+  std::vector<unsigned char> mappedSlots;
+  std::vector<CUmemGenericAllocationHandle> importedHandles;
+  std::vector<unsigned char> importedHandleOwned;
+  bool vaOwned;
+};
+static std::mutex gDucudaFlatMappingMtx;
+static std::unordered_map<void *, DucudaFlatMapping> gDucudaFlatMappings;
+
+static bool ducudaFlatMappingMatches(const DucudaFlatMapping &mapping,
+                                     size_t allocSize, int nPeers) {
+  return mapping.allocSize == allocSize && mapping.nPeers == nPeers;
+}
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -109,12 +150,81 @@ flagcxResult_t ducudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(cudaMalloc(ptr, size));
-  cudaPointerAttributes attrs;
-  DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
-  unsigned flags = 1;
-  DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
-                                 (CUdeviceptr)attrs.devicePointer));
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaMalloc(ptr, size));
+    cudaPointerAttributes attrs;
+    DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
+    unsigned flags = 1;
+    DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
+                                   (CUdeviceptr)attrs.devicePointer));
+    return flagcxSuccess;
+  }
+
+  int device = 0;
+  CUdevice cuDevice;
+  DEVCHECK(cudaGetDevice(&device));
+  DEVCHECK(cuDeviceGet(&cuDevice, device));
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = cuDevice;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  // The DCU CUDA compatibility layer aborts on NVIDIA-only capability enum
+  // 110 instead of returning CUDA_ERROR_NOT_SUPPORTED.  Do not query it here:
+  // DMA-BUF export and provider VA registration are the authoritative probes
+  // for this allocation and are exercised independently by the strict CI
+  // modes.
+
+  size_t granularity = 0;
+  DEVCHECK(cuMemGetAllocationGranularity(&granularity, &prop,
+                                         CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
+  size_t allocSize = size;
+  ALIGN_SIZE(allocSize, granularity);
+
+  CUmemGenericAllocationHandle handle;
+  DEVCHECK(cuMemCreate(&handle, allocSize, &prop, 0));
+  CUdeviceptr address = 0;
+  CUresult result = cuMemAddressReserve(&address, allocSize, granularity, 0, 0);
+  if (result != CUDA_SUCCESS) {
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  result = cuMemMap(address, allocSize, 0, handle, 0);
+  if (result != CUDA_SUCCESS) {
+    cuMemAddressFree(address, allocSize);
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  CUmemAccessDesc access = {};
+  access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  access.location.id = cuDevice;
+  access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  result = cuMemSetAccess(address, allocSize, &access, 1);
+  if (result != CUDA_SUCCESS) {
+    cuMemUnmap(address, allocSize);
+    cuMemAddressFree(address, allocSize);
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
+  *ptr = (void *)address;
+  bool tracked = false;
+  try {
+    std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
+    tracked = gDucudaVmmAllocations
+                  .emplace(*ptr, DucudaVmmAllocation{handle, allocSize, true,
+                                                     true, true})
+                  .second;
+  } catch (const std::bad_alloc &) {
+  }
+  if (!tracked) {
+    cuMemUnmap(address, allocSize);
+    cuMemAddressFree(address, allocSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxSystemError;
+  }
   return flagcxSuccess;
 }
 
@@ -122,7 +232,34 @@ flagcxResult_t ducudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-  DEVCHECK(cudaFree(ptr));
+  std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
+  auto it = gDucudaVmmAllocations.find(ptr);
+  if (it == gDucudaVmmAllocations.end()) {
+    DEVCHECK(cudaFree(ptr));
+    return flagcxSuccess;
+  }
+  DucudaVmmAllocation &allocation = it->second;
+  if (allocation.mappingOwned) {
+    if (cuMemUnmap((CUdeviceptr)ptr, allocation.size) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    allocation.mappingOwned = false;
+  }
+  if (allocation.vaOwned) {
+    if (cuMemAddressFree((CUdeviceptr)ptr, allocation.size) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    allocation.vaOwned = false;
+  }
+  // Keep the handle returned by cuMemCreate alive for the whole allocation
+  // lifetime.  The DCU compatibility layer does not reliably preserve the
+  // backing allocation across repeated retain/release cycles when only VA
+  // mappings hold references. Window registrations borrow this root handle;
+  // only VMM allocations created outside this adaptor retain a private handle.
+  if (allocation.handleOwned) {
+    if (cuMemRelease(allocation.handle) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    allocation.handleOwned = false;
+  }
+  gDucudaVmmAllocations.erase(it);
   return flagcxSuccess;
 }
 
@@ -300,14 +437,24 @@ flagcxResult_t ducudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
-  *dmaBufferSupport = false;
+  // Enum 124 is also unsupported by the DCU compatibility layer and aborts
+  // the process.  Advertise the implemented export path and let
+  // cuMemGetHandleForAddressRange provide the per-allocation result.  Auto
+  // mode falls back to VA only on an explicit flagcxNotSupported result.
+  *dmaBufferSupport = true;
   return flagcxSuccess;
 }
 
 flagcxResult_t ducudaAdaptorMemGetHandleForAddressRange(
     void *handleOut, void *buffer, size_t size, unsigned long long flags) {
-  // unsupportted on dcu
-  return flagcxNotSupported;
+  if (handleOut == NULL || buffer == NULL || size == 0)
+    return flagcxInvalidArgument;
+  CUresult result =
+      cuMemGetHandleForAddressRange(handleOut, (CUdeviceptr)buffer, size,
+                                    CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
+  if (result == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return result == CUDA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t ducudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
@@ -415,7 +562,26 @@ flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
   return flagcxSuccess;
 }
 
-// Symmetric memory VMM stubs (not supported)
+// Symmetric memory VMM handle exchange and flat mapping.
+static flagcxResult_t
+ducudaSymPhysHandleDestroy(DucudaSymPhysHandle *physHandle) {
+  if (physHandle == NULL)
+    return flagcxSuccess;
+  if (physHandle->releaseOwned) {
+    CUresult result = cuMemRelease(physHandle->handle);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM physical handle release failed: result=%d "
+           "allocationBase=%p size=%zu",
+           (int)result, (void *)physHandle->allocationBase,
+           physHandle->allocationSize);
+      return flagcxUnhandledDeviceError;
+    }
+    physHandle->releaseOwned = false;
+  }
+  free(physHandle);
+  return flagcxSuccess;
+}
+
 flagcxResult_t ducudaAdaptorSymPhysAlloc(void *ptr, size_t size,
                                          void **physHandle,
                                          void *shareableHandle,
@@ -424,61 +590,159 @@ flagcxResult_t ducudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   if (ptr == NULL || physHandle == NULL || shareableHandle == NULL ||
       handleSize == NULL || allocSize == NULL)
     return flagcxInvalidArgument;
-
-  CUmemGenericAllocationHandle *cuHandle =
-      (CUmemGenericAllocationHandle *)malloc(
-          sizeof(CUmemGenericAllocationHandle));
-  if (cuHandle == NULL)
-    return flagcxSystemError;
-
-  // Retain the physical allocation handle from the VMM-backed pointer
-  DEVCHECK(cuMemRetainAllocationHandle(cuHandle, ptr));
+  *physHandle = NULL;
+  *allocSize = 0;
+  if (*handleSize < sizeof(int))
+    return flagcxInvalidArgument;
 
   // Discover actual physical allocation size (already granularity-aligned)
+  CUdeviceptr allocationBase = 0;
   size_t actualAllocSize = 0;
-  DEVCHECK(cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr));
-  *allocSize = actualAllocSize;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, &actualAllocSize, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  const CUdeviceptr address = (CUdeviceptr)ptr;
+  if (allocationBase == 0 || actualAllocSize == 0 || address < allocationBase ||
+      address - allocationBase > actualAllocSize ||
+      size > actualAllocSize - (address - allocationBase))
+    return flagcxInvalidUsage;
 
-  // Export as POSIX fd for IPC sharing
-  if (*handleSize < sizeof(int)) {
-    free(cuHandle);
-    return flagcxInvalidArgument;
+  DucudaSymPhysHandle *handle =
+      (DucudaSymPhysHandle *)malloc(sizeof(DucudaSymPhysHandle));
+  if (handle == NULL)
+    return flagcxSystemError;
+  handle->allocationBase = allocationBase;
+  handle->allocationSize = actualAllocSize;
+  handle->releaseOwned = false;
+
+  bool rootAllocationFound = false;
+  {
+    std::lock_guard<std::mutex> lock(gDucudaVmmAllocationMtx);
+    auto it = gDucudaVmmAllocations.find((void *)allocationBase);
+    if (it != gDucudaVmmAllocations.end()) {
+      const DucudaVmmAllocation &allocation = it->second;
+      if (allocation.size != actualAllocSize || !allocation.mappingOwned ||
+          !allocation.vaOwned || !allocation.handleOwned) {
+        free(handle);
+        return flagcxInvalidUsage;
+      }
+      // The allocation registry owns the handle returned by cuMemCreate for
+      // the whole allocation lifetime.  Borrow it for window registration;
+      // repeatedly retaining and releasing this root handle invalidates the
+      // backing allocation on GalaxyHIP after several windows.
+      handle->handle = allocation.handle;
+      rootAllocationFound = true;
+    }
   }
-  DEVCHECK(cuMemExportToShareableHandle(
-      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  if (!rootAllocationFound) {
+    // VMM allocations not created by ducudaAdaptorGdrMemAlloc still require a
+    // private retained reference, released when this window is destroyed.
+    result = cuMemRetainAllocationHandle(&handle->handle, ptr);
+    if (result != CUDA_SUCCESS) {
+      free(handle);
+      if (result == CUDA_ERROR_INVALID_VALUE ||
+          result == CUDA_ERROR_NOT_SUPPORTED)
+        return flagcxNotSupported;
+      return flagcxUnhandledDeviceError;
+    }
+    handle->releaseOwned = true;
+  }
+
+  // Export as POSIX fd for IPC sharing.
+  result =
+      cuMemExportToShareableHandle(shareableHandle, handle->handle,
+                                   CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
+  if (result != CUDA_SUCCESS) {
+    flagcxResult_t cleanupResult = ducudaSymPhysHandleDestroy(handle);
+    if (cleanupResult != flagcxSuccess) {
+      // Preserve the retained provider resource for the common rollback path.
+      *physHandle = handle;
+      return cleanupResult;
+    }
+    return flagcxUnhandledDeviceError;
+  }
+  *allocSize = actualAllocSize;
   *handleSize = sizeof(int); // POSIX fd is an int
-  *physHandle = cuHandle;
+  *physHandle = handle;
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymPhysFree(void *physHandle) {
-  if (physHandle == NULL)
-    return flagcxSuccess;
-  CUmemGenericAllocationHandle *cuHandle =
-      (CUmemGenericAllocationHandle *)physHandle;
-  cuMemRelease(*cuHandle);
-  free(cuHandle);
-  return flagcxSuccess;
+  return ducudaSymPhysHandleDestroy((DucudaSymPhysHandle *)physHandle);
 }
+flagcxResult_t ducudaAdaptorSymFlatMappingUnmap(void *flatBase,
+                                                size_t allocSize, int nPeers);
+flagcxResult_t ducudaAdaptorSymFlatVaFree(void *flatBase, size_t allocSize,
+                                          int nPeers);
 flagcxResult_t ducudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
                                        int selfIndex, void *selfPhysHandle,
                                        size_t allocSize, void **flatBase) {
   if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
-      nPeers <= 0 || allocSize == 0)
+      nPeers <= 0 || selfIndex < 0 || selfIndex >= nPeers || allocSize == 0 ||
+      allocSize > std::numeric_limits<size_t>::max() / (size_t)nPeers)
     return flagcxInvalidArgument;
+  *flatBase = NULL;
 
   CUmemGenericAllocationHandle selfHandle =
-      *(CUmemGenericAllocationHandle *)selfPhysHandle;
+      ((DucudaSymPhysHandle *)selfPhysHandle)->handle;
 
   // allocSize is already granularity-aligned (from cuMemGetAddressRange)
   size_t totalSize = allocSize * nPeers;
 
+  DucudaFlatMapping initialMapping;
+  try {
+    initialMapping.allocSize = allocSize;
+    initialMapping.nPeers = nPeers;
+    initialMapping.mappedSlots.assign(nPeers, 0);
+    initialMapping.importedHandles.resize(nPeers);
+    initialMapping.importedHandleOwned.assign(nPeers, 0);
+    initialMapping.vaOwned = true;
+  } catch (const std::bad_alloc &) {
+    return flagcxSystemError;
+  }
+
   // Reserve the full VA range
   CUdeviceptr base = 0;
-  DEVCHECK(cuMemAddressReserve(&base, totalSize, 0, 0, 0));
+  CUresult result = cuMemAddressReserve(&base, totalSize, 0, 0, 0);
+  if (result != CUDA_SUCCESS) {
+    WARN("DU VMM flat map failed: stage=address-reserve result=%d "
+         "allocSize=%zu nPeers=%d",
+         (int)result, allocSize, nPeers);
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Publish adaptor-private ownership before the first fallible map step.  On
+  // failure the common symmetric-window state machine receives flatBase and
+  // calls the split mapping/VA cleanup callbacks; it does not need to know
+  // which DU slots were mapped successfully.
+  std::unique_lock<std::mutex> lock(gDucudaFlatMappingMtx);
+  bool tracked = false;
+  try {
+    tracked =
+        gDucudaFlatMappings.emplace((void *)base, std::move(initialMapping))
+            .second;
+  } catch (const std::bad_alloc &) {
+  }
+  if (!tracked) {
+    lock.unlock();
+    result = cuMemAddressFree(base, totalSize);
+    if (result != CUDA_SUCCESS)
+      WARN("DU VMM flat map cleanup failed: stage=address-free result=%d "
+           "base=%p size=%zu",
+           (int)result, (void *)base, totalSize);
+    return flagcxSystemError;
+  }
+  DucudaFlatMapping &mapping = gDucudaFlatMappings.at((void *)base);
+  *flatBase = (void *)base;
 
   // Import and map each peer's physical memory
   int cudaDev;
-  DEVCHECK(cudaGetDevice(&cudaDev));
+  cudaError_t cudaResult = cudaGetDevice(&cudaDev);
+  if (cudaResult != cudaSuccess) {
+    WARN("DU VMM flat map failed: stage=get-device result=%d base=%p",
+         (int)cudaResult, (void *)base);
+    return flagcxUnhandledDeviceError;
+  }
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
@@ -490,29 +754,137 @@ flagcxResult_t ducudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
       peerHandle = selfHandle;
     } else {
       int fd = *(int *)peerHandles[i];
-      DEVCHECK(cuMemImportFromShareableHandle(
+      result = cuMemImportFromShareableHandle(
           &peerHandle, (void *)(uintptr_t)fd,
-          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+      if (result != CUDA_SUCCESS) {
+        WARN("DU VMM flat map failed: stage=import result=%d base=%p "
+             "slot=%d fd=%d",
+             (int)result, (void *)base, i, fd);
+        return flagcxUnhandledDeviceError;
+      }
+      mapping.importedHandles[i] = peerHandle;
+      mapping.importedHandleOwned[i] = 1;
     }
     CUdeviceptr slot = base + (CUdeviceptr)i * allocSize;
-    DEVCHECK(cuMemMap(slot, allocSize, 0, peerHandle, 0));
-    DEVCHECK(cuMemSetAccess(slot, allocSize, &accessDesc, 1));
-    if (i != selfIndex) {
-      cuMemRelease(peerHandle);
+    result = cuMemMap(slot, allocSize, 0, peerHandle, 0);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM flat map failed: stage=map result=%d base=%p slot=%d "
+           "slotAddress=%p size=%zu",
+           (int)result, (void *)base, i, (void *)slot, allocSize);
+      return flagcxUnhandledDeviceError;
+    }
+    mapping.mappedSlots[i] = 1;
+    result = cuMemSetAccess(slot, allocSize, &accessDesc, 1);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM flat map failed: stage=set-access result=%d base=%p "
+           "slot=%d slotAddress=%p size=%zu",
+           (int)result, (void *)base, i, (void *)slot, allocSize);
+      return flagcxUnhandledDeviceError;
     }
   }
 
-  *flatBase = (void *)base;
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
                                          int nPeers) {
+  flagcxResult_t result =
+      ducudaAdaptorSymFlatMappingUnmap(flatBase, allocSize, nPeers);
+  return result == flagcxSuccess
+             ? ducudaAdaptorSymFlatVaFree(flatBase, allocSize, nPeers)
+             : result;
+}
+flagcxResult_t ducudaAdaptorSymFlatMappingUnmap(void *flatBase,
+                                                size_t allocSize, int nPeers) {
   if (flatBase == NULL)
     return flagcxSuccess;
+
+  std::lock_guard<std::mutex> lock(gDucudaFlatMappingMtx);
+  auto it = gDucudaFlatMappings.find(flatBase);
+  if (it == gDucudaFlatMappings.end()) {
+    WARN("DU VMM flat unmap failed: untracked base=%p", flatBase);
+    return flagcxInvalidUsage;
+  }
+  DucudaFlatMapping &mapping = it->second;
+  if (!ducudaFlatMappingMatches(mapping, allocSize, nPeers)) {
+    WARN("DU VMM flat unmap failed: geometry mismatch base=%p "
+         "expectedSize=%zu actualSize=%zu expectedPeers=%d actualPeers=%d",
+         flatBase, mapping.allocSize, allocSize, mapping.nPeers, nPeers);
+    return flagcxInvalidArgument;
+  }
+
   CUdeviceptr base = (CUdeviceptr)flatBase;
-  size_t totalSize = allocSize * nPeers;
-  DEVCHECK(cuMemUnmap(base, totalSize));
-  DEVCHECK(cuMemAddressFree(base, totalSize));
+  for (int i = 0; i < nPeers; i++) {
+    if (!mapping.mappedSlots[i])
+      continue;
+    CUdeviceptr slot = base + (CUdeviceptr)i * allocSize;
+    CUresult result = cuMemUnmap(slot, allocSize);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM flat unmap failed: stage=slot-unmap result=%d base=%p "
+           "slot=%d slotAddress=%p size=%zu",
+           (int)result, flatBase, i, (void *)slot, allocSize);
+      return flagcxUnhandledDeviceError;
+    }
+    mapping.mappedSlots[i] = 0;
+  }
+
+  // GalaxyHIP does not reliably keep an imported allocation alive after its
+  // handle is released while an alias mapping still exists.  Keep every
+  // imported handle until all slots have been unmapped.  Returning above on an
+  // unmap failure deliberately preserves every handle for a later retry.
+  for (int i = 0; i < nPeers; i++) {
+    if (!mapping.importedHandleOwned[i])
+      continue;
+    CUresult result = cuMemRelease(mapping.importedHandles[i]);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM flat unmap failed: stage=release-import result=%d "
+           "base=%p slot=%d",
+           (int)result, flatBase, i);
+      return flagcxUnhandledDeviceError;
+    }
+    mapping.importedHandleOwned[i] = 0;
+  }
+  return flagcxSuccess;
+}
+flagcxResult_t ducudaAdaptorSymFlatVaFree(void *flatBase, size_t allocSize,
+                                          int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+
+  std::lock_guard<std::mutex> lock(gDucudaFlatMappingMtx);
+  auto it = gDucudaFlatMappings.find(flatBase);
+  if (it == gDucudaFlatMappings.end()) {
+    WARN("DU VMM flat VA free failed: untracked base=%p", flatBase);
+    return flagcxInvalidUsage;
+  }
+  DucudaFlatMapping &mapping = it->second;
+  if (!ducudaFlatMappingMatches(mapping, allocSize, nPeers)) {
+    WARN("DU VMM flat VA free failed: geometry mismatch base=%p "
+         "expectedSize=%zu actualSize=%zu expectedPeers=%d actualPeers=%d",
+         flatBase, mapping.allocSize, allocSize, mapping.nPeers, nPeers);
+    return flagcxInvalidArgument;
+  }
+  for (int i = 0; i < nPeers; i++) {
+    if (mapping.mappedSlots[i] || mapping.importedHandleOwned[i]) {
+      WARN("DU VMM flat VA free blocked by owned slot: base=%p slot=%d "
+           "mapped=%d importedHandle=%d",
+           flatBase, i, (int)mapping.mappedSlots[i],
+           (int)mapping.importedHandleOwned[i]);
+      return flagcxInvalidUsage;
+    }
+  }
+  if (mapping.vaOwned) {
+    CUresult result =
+        cuMemAddressFree((CUdeviceptr)flatBase, allocSize * (size_t)nPeers);
+    if (result != CUDA_SUCCESS) {
+      WARN("DU VMM flat VA free failed: stage=address-free result=%d "
+           "base=%p size=%zu",
+           (int)result, flatBase, allocSize * (size_t)nPeers);
+      return flagcxUnhandledDeviceError;
+    }
+    mapping.vaOwned = false;
+  }
+  gDucudaFlatMappings.erase(it);
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymMulticastSupported(int *supported) {
@@ -556,9 +928,27 @@ flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *mcBase,
   // not supported on dcu
   return flagcxSuccess;
 }
+flagcxResult_t ducudaAdaptorSymMulticastMappingUnmap(void *mcBase,
+                                                     size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemUnmap((CUdeviceptr)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
+flagcxResult_t ducudaAdaptorSymMulticastVaFree(void *mcBase, size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemAddressFree((CUdeviceptr)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
 flagcxResult_t ducudaAdaptorSymMulticastFree(void *mcHandle) {
   // not supported on dcu
   return flagcxSuccess;
+}
+flagcxResult_t ducudaAdaptorSymMulticastImport(int, void **mcHandle) {
+  if (mcHandle != NULL)
+    *mcHandle = NULL;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t ducudaAdaptorGetAddressRange(const void *ptr, void **base,
@@ -640,7 +1030,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ducudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
-      // Symmetric memory VMM functions (not supported)
+      // Symmetric memory VMM functions
       ducudaAdaptorSymPhysAlloc, ducudaAdaptorSymPhysFree,
       ducudaAdaptorSymFlatMap, ducudaAdaptorSymFlatUnmap,
       ducudaAdaptorSymMulticastSupported, ducudaAdaptorSymMulticastCreate,
@@ -649,6 +1039,11 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
       ducudaAdaptorGetAddressRange,
+      FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
+      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ducudaAdaptorSymMulticastImport,
+      ducudaAdaptorSymFlatMappingUnmap, ducudaAdaptorSymFlatVaFree,
+      ducudaAdaptorSymMulticastMappingUnmap, ducudaAdaptorSymMulticastVaFree,
+      FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH,
 };
 
 #endif // USE_DU_ADAPTOR

@@ -32,6 +32,12 @@ enum flagcxRmaSubmitFlags {
   FLAGCX_RMA_SUBMIT_INDEPENDENT = 1u << 2,
 };
 
+enum flagcxRmaCompletionStage {
+  FLAGCX_RMA_COMPLETION_DATA_POSTED = 0,
+  FLAGCX_RMA_COMPLETION_FLUSH_PENDING = 1,
+  FLAGCX_RMA_COMPLETION_FLUSH_POSTED = 2,
+};
+
 // One-sided adaptors report request-pool or send-queue pressure exclusively as
 // flagcxInProgress. All other errors are permanent for the current RMA epoch.
 static inline bool flagcxRmaPostResultIsRetryable(flagcxResult_t result) {
@@ -67,6 +73,7 @@ struct flagcxRmaDesc {
   uint64_t sequence;
   uint32_t submitFlags;
   flagcxResult_t completionResult;
+  enum flagcxRmaCompletionStage completionStage;
   // Every descriptor in a release group holds a reference. The transport
   // scoreboard may retain the embedded completion gate until that descriptor
   // retires, so the release descriptor cannot be its sole owner.

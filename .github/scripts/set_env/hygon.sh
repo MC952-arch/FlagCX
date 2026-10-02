@@ -61,6 +61,19 @@ FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3
 FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7
 FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7
 
+FLAGCX_CI_NODE1_MPI_ARGS=(
+  -x CUDA_VISIBLE_DEVICES=0,1
+  -x FLAGCX_HOSTID=node0
+  -x NCCL_HOSTID=node0
+  -x FLAGCX_IB_HCA=shca_0
+)
+FLAGCX_CI_NODE2_MPI_ARGS=(
+  -x CUDA_VISIBLE_DEVICES=6,7
+  -x FLAGCX_HOSTID=node1
+  -x NCCL_HOSTID=node1
+  -x FLAGCX_IB_HCA=shca_3
+)
+
 flagcx_ci_configure_suite() {
   local suite=$1
 
@@ -69,11 +82,13 @@ flagcx_ci_configure_suite() {
       export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       ;;
-    runner)
+    runner|symmem)
       export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
-      FLAGCX_CI_RUNNER_NP=4
-      export NP=4
+      if [[ "$suite" == "runner" ]]; then
+        FLAGCX_CI_RUNNER_NP=4
+        export NP=4
+      fi
       ;;
     device_api)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)

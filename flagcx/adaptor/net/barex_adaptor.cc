@@ -2,10 +2,10 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * FlagCX net adaptor "barex": collective/C2C transport over the vendor
- * ACCL library (accl::barex) for PPU + vsolar hosts, where GPU memory
- * cannot be registered via peer-mem or DMA-BUF and must go through
- * ACCL's RegUserMr / XChannel. Requires FLAGCX_VMM_ENABLE=0 (VMM memory
- * is unpinnable) so staging buffers come from cudaMalloc.
+ * ACCL library (accl::barex) for PPU + vsolar hosts. GPU memory registration
+ * goes through ACCL's RegUserMr / XChannel. The currently exposed ACCL API
+ * registers a mapped VA and has no DMA-BUF fd/offset entry point. A future
+ * ACCL DMA-BUF API can be advertised without changing the common route order.
  *
  * Rendezvous (mirrors ibrc's CTS design): connect sends HELLO{commId}
  * over an XChannel; irecv posts CTS{slot,addr,size,rkeys,seq}; isend
@@ -652,7 +652,6 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   p->name = devName[dev];
   p->pciPath = pciPath[dev];
   p->guid = (uint64_t)dev;
-  /* RegUserMr pins cudaMalloc'd PPU memory (VMM off). PPU has no dmabuf. */
   p->ptrSupport = FLAGCX_PTR_HOST | FLAGCX_PTR_CUDA;
   p->regIsGlobal = 1; /* MRs live in the engine-wide mempool */
   p->speed = (int)flagcxParamBarexSpeed();
@@ -1023,10 +1022,8 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
   auto *mr = new BarexMr();
   BarexResult r = e->mempool->RegUserMr(mr->mem, data, size, dtype, devId);
   if (r != accl::barex::BAREX_SUCCESS) {
-    WARN("NET/BAREX : RegUserMr(%p,%zu,%s,dev%d) failed: %s (CUDA-VMM memory "
-         "cannot be pinned — run with FLAGCX_VMM_ENABLE=0)",
-         data, size, dtype == accl::barex::GPU ? "GPU" : "CPU", devId,
-         bxstr(r));
+    WARN("NET/BAREX : RegUserMr(%p,%zu,%s,dev%d) failed: %s", data, size,
+         dtype == accl::barex::GPU ? "GPU" : "CPU", devId, bxstr(r));
     delete mr;
     return barexResult(r);
   }
@@ -1643,7 +1640,7 @@ static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
 } // namespace barexnet
 
 /* BAREX has no remote atomic primitive, so iputSignal remains an optional
-   unsupported capability. PPU also cannot register DMA-BUF file descriptors. */
+   unsupported capability. */
 struct flagcxNetAdaptor flagcxNetBarex = {
     // Basic functions
     "BAREX",
@@ -1661,7 +1658,7 @@ struct flagcxNetAdaptor flagcxNetBarex = {
 
     // Memory region functions
     barexnet::barexRegMr,
-    NULL,
+    NULL, // ACCL currently has no API that consumes a DMA-BUF fd
     barexnet::barexDeregMr,
 
     // Two-sided functions
@@ -1683,6 +1680,11 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     barexnet::barexTestBatch,
     barexnet::barexIgetBatch,
     barexnet::barexGetMrInfo,
+
+    // ACCL RegUserMr cannot currently pin VMM allocations, and ACCL exposes
+    // no API that consumes a DMA-BUF fd. Ordinary GPU MR remains supported.
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };
 
 /* Keep the external plugin ABI at v1. The complete one-sided and batch

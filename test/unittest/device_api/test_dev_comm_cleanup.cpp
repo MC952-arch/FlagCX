@@ -211,6 +211,7 @@ int deviceMallocCallCount = 0;
 int deviceMemsetCallCount = 0;
 int failDeviceMallocCall = -1;
 int failDeviceMemsetCall = -1;
+int gdrFreeCallCount = 0;
 
 enum class CleanupEventKind { Deregister, BufferFree };
 
@@ -236,6 +237,13 @@ flagcxResult_t recordGdrFree(void *ptr, void *) {
   deviceFreedPtrs.push_back(ptr);
   cleanupEvents.push_back({CleanupEventKind::BufferFree, ptr});
   return flagcxSuccess;
+}
+
+flagcxResult_t failGdrFreeOnce(void *ptr, void *memHandle) {
+  gdrFreeCallCount++;
+  if (gdrFreeCallCount == 1)
+    return flagcxRemoteError;
+  return recordGdrFree(ptr, memHandle);
 }
 
 flagcxResult_t recordMrDeregister(void *, void *mrHandle) {
@@ -373,6 +381,7 @@ protected:
     deviceMemsetCallCount = 0;
     failDeviceMallocCall = -1;
     failDeviceMemsetCall = -1;
+    gdrFreeCallCount = 0;
     savedDefaultDevCommDestroy = nullptr;
     observedDestroyCalls = 0;
     handleClearedBeforeDestroy = false;
@@ -614,6 +623,30 @@ TEST_F(DefaultDevCommCleanupTest, IpcBarrierAllocationIsFreedOnce) {
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x5000));
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
   EXPECT_FALSE(devComm.localBarrierFlagsDeviceAllocated);
+}
+
+TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
+  testDeviceAdaptor.gdrMemFree = failGdrFreeOnce;
+
+  flagcxDevCommInternal devComm = {};
+  devComm.barrierIpcIndex = -1;
+  devComm.signalIpcSlot = -1;
+  devComm.signalBuffer = reinterpret_cast<uint64_t *>(0x5800);
+  devComm.signalBufferIsVmm = true;
+
+  ASSERT_EQ(devApiBackend->devCommDestroy(nullptr, &devComm),
+            flagcxRemoteError);
+  EXPECT_EQ(gdrFreeCallCount, 1);
+  EXPECT_EQ(devComm.signalBuffer, reinterpret_cast<uint64_t *>(0x5800));
+  EXPECT_TRUE(devComm.signalBufferIsVmm);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+
+  ASSERT_EQ(devApiBackend->devCommDestroy(nullptr, &devComm), flagcxSuccess);
+  EXPECT_EQ(gdrFreeCallCount, 2);
+  EXPECT_EQ(devComm.signalBuffer, nullptr);
+  EXPECT_FALSE(devComm.signalBufferIsVmm);
+  ASSERT_EQ(deviceFreedPtrs.size(), 1u);
+  EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x5800));
 }
 
 TEST_F(DefaultDevCommCleanupTest,
@@ -938,7 +971,7 @@ flagcxResult_t captureDevMemCreate(flagcxComm_t, void *, size_t, flagcxWindow_t,
   capturedTracked = devMem->allocationTracked;
   if (capturedTracked) {
     capturedAllocation = {devMem->allocationBase, devMem->allocationSize,
-                          devMem->allocator, devMem->allocBackend};
+                          devMem->allocator, devMem->allocBackend, false};
   }
   return flagcxSuccess;
 }
@@ -964,7 +997,8 @@ TEST(DevMemProvenanceTest, PropagatesNativeAllocationProvenance) {
   ASSERT_NE(allocation, nullptr);
   const flagcxMemAllocator_t allocator = flagcxMemCCL;
   const flagcxMemAllocBackend_t backend = flagcxMemAllocBackendNative;
-  TrackedAllocationGuard allocationGuard({allocation, 256, allocator, backend});
+  TrackedAllocationGuard allocationGuard(
+      {allocation, 256, allocator, backend, false});
 
   flagcxDevApiBackend captureBackend = {};
   captureBackend.name = "capture-provenance";
@@ -994,7 +1028,7 @@ TEST(DevMemProvenanceTest, RejectsRangeBeyondTrackedAllocation) {
   void *allocation = malloc(256);
   ASSERT_NE(allocation, nullptr);
   const flagcxMemAllocationInfo info = {allocation, 256, flagcxMemCCL,
-                                        flagcxMemAllocBackendNative};
+                                        flagcxMemAllocBackendNative, false};
   TrackedAllocationGuard allocationGuard(info);
 
   flagcxDevApiBackend captureBackend = {};

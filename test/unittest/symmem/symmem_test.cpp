@@ -57,21 +57,25 @@ void SymMemTest::TearDownTestSuite() {
   if (devHandle == nullptr)
     return;
 
-  if (stream != nullptr)
+  if (stream != nullptr) {
     EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  }
 
   if (comm) {
     EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
     comm = nullptr;
   }
 
-  if (stream != nullptr)
+  if (stream != nullptr) {
     EXPECT_EQ(devHandle->streamDestroy(stream), flagcxSuccess);
+  }
 
-  if (devBuff)
+  if (devBuff) {
     EXPECT_EQ(flagcxMemFree(devBuff, memAllocator), flagcxSuccess);
-  if (devBuff2)
+  }
+  if (devBuff2) {
     EXPECT_EQ(flagcxMemFree(devBuff2, memAllocator), flagcxSuccess);
+  }
   free(hostBuff);
 
   flagcxDeviceHandleFree(devHandle);

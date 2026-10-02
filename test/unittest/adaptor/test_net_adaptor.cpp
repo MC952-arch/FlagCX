@@ -397,6 +397,8 @@ TEST(NetAdaptorInterface, UpgradeV1ZeroInitializesExtensions) {
   EXPECT_EQ(upgraded.testBatch, nullptr);
   EXPECT_EQ(upgraded.igetBatch, nullptr);
   EXPECT_EQ(upgraded.getMrInfo, nullptr);
+  EXPECT_EQ(upgraded.vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
+  EXPECT_EQ(upgraded.internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1);
 }
 
 TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
@@ -420,10 +422,13 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
   EXPECT_NE(net->igetBatch, nullptr);
   if (strcmp(net->name, "IB") == 0) {
     EXPECT_NE(net->iputSignal, nullptr);
+    EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA);
   } else {
     EXPECT_EQ(net->iputSignal, nullptr);
     EXPECT_EQ(net->regMrDmaBuf, nullptr);
+    EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
   }
+  EXPECT_EQ(net->internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_NONE);
 }
 
 TEST(NetAdaptorInterface, IbucAdvertisesTwoSidedContract) {
@@ -460,6 +465,8 @@ TEST(NetAdaptorInterface, IbucAdvertisesTwoSidedContract) {
   EXPECT_EQ(net->iputBatch, nullptr);
   EXPECT_EQ(net->testBatch, nullptr);
   EXPECT_EQ(net->igetBatch, nullptr);
+  EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
+  EXPECT_EQ(net->internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_NONE);
 }
 
 TEST(IbDefensiveContractTest, RejectsNullAndUnreadyCommunicators) {
@@ -1068,7 +1075,7 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
       flagcxSuccess);
   ASSERT_GE(fd, 0);
   void *mr = nullptr;
-  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_DMABUF,
+  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_CUDA,
                               0, fd, FLAGCX_NET_MR_FLAG_NONE, &mr),
             flagcxSuccess);
   EXPECT_NE(mr, nullptr);

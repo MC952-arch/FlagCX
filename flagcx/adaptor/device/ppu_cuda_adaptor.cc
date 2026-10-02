@@ -5,7 +5,18 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "param.h"
+#include <mutex>
+#include <new>
 #include <unistd.h>
+#include <unordered_map>
+
+struct PpuVmmAllocation {
+  size_t size;
+  bool mappingOwned;
+  bool vaOwned;
+};
+static std::mutex gPpuVmmAllocationMtx;
+static std::unordered_map<void *, PpuVmmAllocation> gPpuVmmAllocations;
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -182,7 +193,26 @@ flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxUnhandledDeviceError;
   }
   /* Release the create-time handle reference; the mapping holds its own. */
-  cuMemRelease(handle);
+  if (cuMemRelease(handle) != CUDA_SUCCESS) {
+    cuMemUnmap((CUdeviceptr)*ptr, handleSize);
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  bool tracked = false;
+  try {
+    std::lock_guard<std::mutex> lock(gPpuVmmAllocationMtx);
+    tracked = gPpuVmmAllocations
+                  .emplace(*ptr, PpuVmmAllocation{handleSize, true, true})
+                  .second;
+  } catch (const std::bad_alloc &) {
+  }
+  if (!tracked) {
+    cuMemUnmap((CUdeviceptr)*ptr, handleSize);
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    *ptr = NULL;
+    return flagcxSystemError;
+  }
   return flagcxSuccess;
 }
 
@@ -190,17 +220,24 @@ flagcxResult_t ppucudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-  // PPU SDK version numbering differs from NVIDIA. Use runtime toggle instead
-  // of compile-time CUDART_VERSION guards.
-  if (!flagcxParamVmmEnable()) {
+  std::lock_guard<std::mutex> lock(gPpuVmmAllocationMtx);
+  auto it = gPpuVmmAllocations.find(ptr);
+  if (it == gPpuVmmAllocations.end()) {
     DEVCHECK(cudaFree(ptr));
     return flagcxSuccess;
   }
-
-  size_t size = 0;
-  DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
-  DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
-  DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
+  PpuVmmAllocation &allocation = it->second;
+  if (allocation.mappingOwned) {
+    if (cuMemUnmap((CUdeviceptr)ptr, allocation.size) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    allocation.mappingOwned = false;
+  }
+  if (allocation.vaOwned) {
+    if (cuMemAddressFree((CUdeviceptr)ptr, allocation.size) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    allocation.vaOwned = false;
+  }
+  gPpuVmmAllocations.erase(it);
   return flagcxSuccess;
 }
 
@@ -462,10 +499,14 @@ flagcxResult_t ppucudaAdaptorDmaSupport(bool *dmaBufferSupport) {
 
 flagcxResult_t ppucudaAdaptorMemGetHandleForAddressRange(
     void *handleOut, void *buffer, size_t size, unsigned long long flags) {
-  CUdeviceptr dptr = (CUdeviceptr)buffer;
-  DEVCHECK(cuMemGetHandleForAddressRange(
-      handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags));
-  return flagcxSuccess;
+  if (handleOut == NULL || buffer == NULL || size == 0)
+    return flagcxInvalidArgument;
+  CUresult result =
+      cuMemGetHandleForAddressRange(handleOut, (CUdeviceptr)buffer, size,
+                                    CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
+  if (result == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return result == CUDA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t ppucudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
@@ -535,18 +576,46 @@ flagcxResult_t ppucudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   if (cuHandle == NULL)
     return flagcxSystemError;
 
-  DEVCHECK(cuMemRetainAllocationHandle(cuHandle, ptr));
+  CUresult result = cuMemRetainAllocationHandle(cuHandle, ptr);
+  if (result != CUDA_SUCCESS) {
+    free(cuHandle);
+    if (result == CUDA_ERROR_INVALID_VALUE ||
+        result == CUDA_ERROR_NOT_SUPPORTED)
+      return flagcxNotSupported;
+    return flagcxUnhandledDeviceError;
+  }
 
+  CUdeviceptr allocationBase = 0;
   size_t actualAllocSize = 0;
-  DEVCHECK(cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr));
+  result =
+      cuMemGetAddressRange(&allocationBase, &actualAllocSize, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS) {
+    cuMemRelease(*cuHandle);
+    free(cuHandle);
+    return flagcxUnhandledDeviceError;
+  }
+  const CUdeviceptr address = (CUdeviceptr)ptr;
+  if (allocationBase == 0 || actualAllocSize == 0 || address < allocationBase ||
+      address - allocationBase > actualAllocSize ||
+      size > actualAllocSize - (address - allocationBase)) {
+    cuMemRelease(*cuHandle);
+    free(cuHandle);
+    return flagcxInvalidUsage;
+  }
   *allocSize = actualAllocSize;
 
   if (*handleSize < sizeof(int)) {
+    cuMemRelease(*cuHandle);
     free(cuHandle);
     return flagcxInvalidArgument;
   }
-  DEVCHECK(cuMemExportToShareableHandle(
-      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  result = cuMemExportToShareableHandle(
+      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
+  if (result != CUDA_SUCCESS) {
+    cuMemRelease(*cuHandle);
+    free(cuHandle);
+    return flagcxUnhandledDeviceError;
+  }
   *handleSize = sizeof(int);
   *physHandle = cuHandle;
   return flagcxSuccess;
@@ -557,7 +626,8 @@ flagcxResult_t ppucudaAdaptorSymPhysFree(void *physHandle) {
     return flagcxSuccess;
   CUmemGenericAllocationHandle *cuHandle =
       (CUmemGenericAllocationHandle *)physHandle;
-  cuMemRelease(*cuHandle);
+  if (cuMemRelease(*cuHandle) != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
   free(cuHandle);
   return flagcxSuccess;
 }
@@ -575,35 +645,57 @@ flagcxResult_t ppucudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
   size_t totalSize = allocSize * nPeers;
 
   CUdeviceptr base = 0;
-  DEVCHECK(cuMemAddressReserve(&base, totalSize, 0, 0, 0));
+  CUresult result = cuMemAddressReserve(&base, totalSize, 0, 0, 0);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
 
   int cudaDev;
-  DEVCHECK(cudaGetDevice(&cudaDev));
+  if (cudaGetDevice(&cudaDev) != cudaSuccess) {
+    cuMemAddressFree(base, totalSize);
+    return flagcxUnhandledDeviceError;
+  }
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 
+  int mappedPeers = 0;
   for (int i = 0; i < nPeers; i++) {
     CUmemGenericAllocationHandle peerHandle;
+    bool imported = i != selfIndex;
     if (i == selfIndex) {
       peerHandle = selfHandle;
     } else {
       int fd = *(int *)peerHandles[i];
-      DEVCHECK(cuMemImportFromShareableHandle(
+      result = cuMemImportFromShareableHandle(
           &peerHandle, (void *)(uintptr_t)fd,
-          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+      if (result != CUDA_SUCCESS)
+        goto rollback;
     }
     CUdeviceptr slot = base + (CUdeviceptr)i * allocSize;
-    DEVCHECK(cuMemMap(slot, allocSize, 0, peerHandle, 0));
-    DEVCHECK(cuMemSetAccess(slot, allocSize, &accessDesc, 1));
-    if (i != selfIndex) {
-      cuMemRelease(peerHandle);
+    result = cuMemMap(slot, allocSize, 0, peerHandle, 0);
+    if (result != CUDA_SUCCESS) {
+      if (imported)
+        cuMemRelease(peerHandle);
+      goto rollback;
     }
+    mappedPeers++;
+    result = cuMemSetAccess(slot, allocSize, &accessDesc, 1);
+    if (imported)
+      cuMemRelease(peerHandle);
+    if (result != CUDA_SUCCESS)
+      goto rollback;
   }
 
   *flatBase = (void *)base;
   return flagcxSuccess;
+
+rollback:
+  for (int i = 0; i < mappedPeers; i++)
+    cuMemUnmap(base + (CUdeviceptr)i * allocSize, allocSize);
+  cuMemAddressFree(base, totalSize);
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t ppucudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
@@ -614,6 +706,22 @@ flagcxResult_t ppucudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
   size_t totalSize = allocSize * nPeers;
   DEVCHECK(cuMemUnmap(base, totalSize));
   DEVCHECK(cuMemAddressFree(base, totalSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t ppucudaAdaptorSymFlatMappingUnmap(void *flatBase,
+                                                 size_t allocSize, int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemUnmap((CUdeviceptr)flatBase, allocSize * nPeers));
+  return flagcxSuccess;
+}
+
+flagcxResult_t ppucudaAdaptorSymFlatVaFree(void *flatBase, size_t allocSize,
+                                           int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemAddressFree((CUdeviceptr)flatBase, allocSize * nPeers));
   return flagcxSuccess;
 }
 
@@ -653,9 +761,29 @@ flagcxResult_t ppucudaAdaptorSymMulticastTeardown(void *mcBase,
                                                   size_t mcMapSize) {
   return flagcxSuccess;
 }
+flagcxResult_t ppucudaAdaptorSymMulticastMappingUnmap(void *mcBase,
+                                                      size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemUnmap((CUdeviceptr)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
+flagcxResult_t ppucudaAdaptorSymMulticastVaFree(void *mcBase,
+                                                size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  DEVCHECK(cuMemAddressFree((CUdeviceptr)mcBase, mcMapSize));
+  return flagcxSuccess;
+}
 
 flagcxResult_t ppucudaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
+}
+
+flagcxResult_t ppucudaAdaptorSymMulticastImport(int, void **mcHandle) {
+  if (mcHandle != NULL)
+    *mcHandle = NULL;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t ppucudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
@@ -749,6 +877,11 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       ppucudaAdaptorGetPointerType, ppucudaAdaptorGetAddressRange,
+      FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
+      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ppucudaAdaptorSymMulticastImport,
+      ppucudaAdaptorSymFlatMappingUnmap, ppucudaAdaptorSymFlatVaFree,
+      ppucudaAdaptorSymMulticastMappingUnmap, ppucudaAdaptorSymMulticastVaFree,
+      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_PPU_ADAPTOR

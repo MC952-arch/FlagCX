@@ -6,6 +6,82 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
+    def test_ppu_symmem_requires_vmm_local_and_barex_vmm_net(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        symmem_runner = (
+            REPO_ROOT / "test/script/symmem_test.sh"
+        ).read_text()
+        barex = (
+            REPO_ROOT / "flagcx/adaptor/net/barex_adaptor.cc"
+        ).read_text()
+        accl_p2p = (
+            REPO_ROOT / "flagcx/core/flagcx_p2p_accl.cc"
+        ).read_text()
+
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"', unit_runner
+        )
+        self.assertIn(
+            "FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
+            unit_runner,
+        )
+        self.assertIn("FLAGCX_VMM_MR_MODE=auto", unit_runner)
+        self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
+        self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
+        self.assertIn(
+            'if [[ "$platform_name" == "ppu" || '
+            '"$platform_name" == "hygon" ]]',
+            unit_runner,
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
+        )
+        self.assertIn(
+            "SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback",
+            unit_runner,
+        )
+        self.assertIn("expected_adaptor=BAREX", unit_runner)
+        self.assertIn(
+            "SymMemTest.VmmFlatFallbackPreservesMrRoute", unit_runner
+        )
+        self.assertIn(
+            "SymMemTest.DirectGdrVmmPreservesMrRoute", unit_runner
+        )
+        self.assertIn(
+            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.SignalRegistrationUsesAllocationProvenance",
+            unit_runner,
+        )
+        self.assertNotIn("barexnet::barexRegMrDmaBuf", barex)
+        self.assertIn(
+            "ACCL currently has no API that consumes a DMA-BUF fd", barex
+        )
+        self.assertIn("FLAGCX_VMM_MR_CAP_NONE", barex)
+        self.assertIn("barexnet::barexRegMr", barex)
+        self.assertNotIn("Requires FLAGCX_VMM_ENABLE=0", barex)
+        self.assertNotIn("VMM unpinnable", accl_p2p)
+        self.assertNotIn("VMM memory cannot be registered", accl_p2p)
+
     def test_ppu_runner_executes_barex_heterogeneous_variants(self):
         source = (
             REPO_ROOT / ".github/scripts/set_env/ppu.sh"

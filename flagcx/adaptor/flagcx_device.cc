@@ -471,6 +471,39 @@ flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxConvergeIpcPrepareStatus(flagcxComm_t comm,
+                                                     flagcxResult_t local,
+                                                     flagcxResult_t *common) {
+  if (comm == nullptr || comm->bootstrap == nullptr || common == nullptr ||
+      comm->rank < 0 || comm->rank >= comm->nranks || comm->nranks <= 0)
+    return flagcxInvalidArgument;
+
+  constexpr int root = 0;
+  constexpr int gatherTag = 0x5960;
+  constexpr int broadcastTag = 0x5961;
+  int value = static_cast<int>(local);
+  int result = value;
+  if (comm->rank == root) {
+    for (int peer = 1; peer < comm->nranks; peer++) {
+      int peerValue = static_cast<int>(flagcxSuccess);
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, peer, gatherTag, &peerValue,
+                                sizeof(peerValue)));
+      if (result == flagcxSuccess && peerValue != flagcxSuccess)
+        result = peerValue;
+    }
+    for (int peer = 1; peer < comm->nranks; peer++)
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, peer, broadcastTag, &result,
+                                sizeof(result)));
+  } else {
+    FLAGCXCHECK(
+        bootstrapSend(comm->bootstrap, root, gatherTag, &value, sizeof(value)));
+    FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, broadcastTag, &result,
+                              sizeof(result)));
+  }
+  *common = static_cast<flagcxResult_t>(result);
+  return flagcxSuccess;
+}
+
 int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   int slot = -1;
   for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
@@ -484,7 +517,6 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   if (slot < 0) {
     WARN("buildIpcPeerPointers: IPC table full (max %d entries)",
          FLAGCX_MAX_IPC_ENTRIES);
-    return -1;
   }
 
   int myRank = comm->rank;
@@ -557,8 +589,22 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   // Step 2: All-gather IPC descriptors across local ranks
   allDescs = (struct flagcxIpcPeerDesc *)malloc(
       nRanks * sizeof(struct flagcxIpcPeerDesc));
-  if (!allDescs)
-    return -1;
+  // Converge every rank-local preparation result before any rank enters the
+  // descriptor metadata exchange. In particular, a failed export must not be
+  // represented as an invalid descriptor while peers proceed to all-gather.
+  flagcxResult_t localPrepare = res;
+  if (localPrepare == flagcxSuccess && slot < 0)
+    localPrepare = flagcxNotSupported;
+  if (localPrepare == flagcxSuccess && allDescs == nullptr)
+    localPrepare = flagcxSystemError;
+  flagcxResult_t commonPrepare = flagcxSuccess;
+  FLAGCXCHECKGOTO(
+      flagcxConvergeIpcPrepareStatus(comm, localPrepare, &commonPrepare), res,
+      fail);
+  if (commonPrepare != flagcxSuccess) {
+    res = commonPrepare;
+    goto fail;
+  }
   memset(allDescs, 0, nRanks * sizeof(struct flagcxIpcPeerDesc));
   allDescs[myRank] = myIpcDesc;
 

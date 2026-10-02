@@ -22,6 +22,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <mutex>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -3038,40 +3039,59 @@ flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, int access, bool *supported) {
   return flagcxSuccess;
 }
 
-// Detect whether DMA-BUF support is present in the kernel
-// Returns :
-// flagcxSuccess : DMA-BUF support is available
-// flagcxSystemError : DMA-BUF is not supported by the kernel
-flagcxResult_t flagcxIbDmaBufSupport(int dev) {
-  static int dmaBufSupported = -1;
-  if (dmaBufSupported == -1) {
-    flagcxResult_t res;
-    struct ibv_pd *pd;
-    struct ibv_context *ctx;
-    struct flagcxIbMergedDev *mergedDev = flagcxIbMergedDevs + dev;
+static thread_local int flagcxIbDmaBufProbeDev = -1;
+static std::once_flag flagcxIbDmaBufProbeOnce[MAX_IB_DEVS];
 
-    // Test each dev
-    for (int i = 0; i < mergedDev->ndevs; i++) {
-      int ibDev = mergedDev->devs[i];
-      ctx = flagcxIbDevs[ibDev].context;
-      FLAGCXCHECKGOTO(flagcxWrapIbvAllocPd(&pd, ctx), res, failure);
-      // Test kernel DMA-BUF support with a dummy call (fd=-1)
-      (void)flagcxWrapDirectIbvRegDmabufMr(pd, 0ULL /*offset*/, 0ULL /*len*/,
-                                           0ULL /*iova*/, -1 /*fd*/,
-                                           0 /*flags*/);
-      // ibv_reg_dmabuf_mr() will fail with EOPNOTSUPP/EPROTONOSUPPORT if not
-      // supported (EBADF otherwise)
-      dmaBufSupported =
-          (errno != EOPNOTSUPP && errno != EPROTONOSUPPORT) ? 1 : 0;
-      FLAGCXCHECKGOTO(flagcxWrapIbvDeallocPd(pd), res, failure);
-    }
-  }
-  if (dmaBufSupported == 0)
+static void flagcxIbDmaBufSupportInitOnce() {
+  const int ibDevN = flagcxIbDmaBufProbeDev;
+  if (ibDevN < 0 || ibDevN >= flagcxNIbDevs)
+    return;
+
+  struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
+  struct ibv_pd *pd = NULL;
+  ibDev->dmaBufSupported = -1;
+  if (flagcxWrapIbvAllocPd(&pd, ibDev->context) != flagcxSuccess)
+    return;
+
+  // Match NCCL's capability probe: fd=-1 must fail with EBADF (or another
+  // argument error) when the provider implements ibv_reg_dmabuf_mr. Providers
+  // without DMA-BUF support report EOPNOTSUPP/EPROTONOSUPPORT instead.
+  errno = 0;
+  (void)flagcxWrapDirectIbvRegDmabufMr(pd, 0ULL /*offset*/, 0ULL /*len*/,
+                                       0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
+  const int probeErrno = errno;
+  const bool supported =
+      probeErrno != EOPNOTSUPP && probeErrno != EPROTONOSUPPORT;
+  if (flagcxWrapIbvDeallocPd(pd) != flagcxSuccess)
+    return;
+
+  ibDev->dmaBufSupported = supported ? 1 : -1;
+  INFO(FLAGCX_INIT | FLAGCX_NET,
+       "NET/IB : DMA-BUF probe ibDev=%d (%s) result=%s errno=%d", ibDevN,
+       ibDev->devName, supported ? "supported" : "unsupported", probeErrno);
+}
+
+// Detect whether DMA-BUF support is present in every provider selected for this
+// merged network device. Cache each result independently so probing one HCA
+// cannot overwrite another HCA's capability.
+flagcxResult_t flagcxIbDmaBufSupport(int dev) {
+  if (dev < 0 || dev >= flagcxNMergedIbDevs)
+    return flagcxInvalidArgument;
+  struct flagcxIbMergedDev *mergedDev = flagcxIbMergedDevs + dev;
+  if (mergedDev->ndevs <= 0 || mergedDev->ndevs > FLAGCX_IB_MAX_DEVS_PER_NIC)
     return flagcxSystemError;
+
+  for (int i = 0; i < mergedDev->ndevs; i++) {
+    const int ibDevN = mergedDev->devs[i];
+    if (ibDevN < 0 || ibDevN >= flagcxNIbDevs)
+      return flagcxSystemError;
+    flagcxIbDmaBufProbeDev = ibDevN;
+    std::call_once(flagcxIbDmaBufProbeOnce[ibDevN],
+                   flagcxIbDmaBufSupportInitOnce);
+    if (flagcxIbDevs[ibDevN].dmaBufSupported != 1)
+      return flagcxSystemError;
+  }
   return flagcxSuccess;
-failure:
-  dmaBufSupported = 0;
-  return flagcxSystemError;
 }
 
 flagcxResult_t flagcxIbDevices(int *ndev) {
@@ -3630,4 +3650,8 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbGetDevFromName,
 
     // Optional one-sided batch helpers and MR metadata
-    flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo};
+    flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo,
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE};

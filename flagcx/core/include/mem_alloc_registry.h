@@ -22,6 +22,9 @@ public:
                            flagcxMemAllocationInfo *info) const;
   flagcxResult_t findRange(const void *ptr, size_t size,
                            flagcxMemAllocationInfo *info) const;
+  flagcxResult_t retainWindowRange(const void *ptr, size_t size,
+                                   void **allocationBase);
+  flagcxResult_t releaseWindow(const void *allocationBase);
   flagcxResult_t erase(const void *base);
 
 private:

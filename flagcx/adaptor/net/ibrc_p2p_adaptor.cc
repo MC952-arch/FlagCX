@@ -1117,20 +1117,34 @@ static flagcxResult_t flagcxP2pGetDevFromName(char *name, int *dev) {
 
 struct flagcxNetAdaptor flagcxNetIbP2p = {
     // Basic functions
-    "IB_P2P", flagcxP2pInit, flagcxP2pDevices, flagcxP2pGetProperties,
+    "IB_P2P",
+    flagcxP2pInit,
+    flagcxP2pDevices,
+    flagcxP2pGetProperties,
 
     // Setup functions
-    flagcxP2pListen, flagcxP2pConnect, flagcxP2pAccept, flagcxP2pCloseSend,
-    flagcxP2pCloseRecv, flagcxP2pCloseListen,
+    flagcxP2pListen,
+    flagcxP2pConnect,
+    flagcxP2pAccept,
+    flagcxP2pCloseSend,
+    flagcxP2pCloseRecv,
+    flagcxP2pCloseListen,
 
     // Memory region functions
-    flagcxP2pRegMr, flagcxP2pRegMrDmaBuf, flagcxP2pDeregMr,
+    flagcxP2pRegMr,
+    flagcxP2pRegMrDmaBuf,
+    flagcxP2pDeregMr,
 
     // Two-sided functions (stubs)
-    flagcxP2pIsend, flagcxP2pIrecv, flagcxP2pIflush, flagcxP2pTest,
+    flagcxP2pIsend,
+    flagcxP2pIrecv,
+    flagcxP2pIflush,
+    flagcxP2pTest,
 
     // One-sided functions
-    flagcxP2pIput, flagcxP2pIget, flagcxP2pIputSignal,
+    flagcxP2pIput,
+    flagcxP2pIget,
+    flagcxP2pIputSignal,
 
     // Device name lookup
     flagcxP2pGetDevFromName,
@@ -1140,4 +1154,8 @@ struct flagcxNetAdaptor flagcxNetIbP2p = {
     flagcxP2pTestBatch, // testBatch
     flagcxP2pIgetBatch, // igetBatch
     NULL,               // getMrInfo
+
+    // Latest-only VMM MR capabilities and internal metadata
+    FLAGCX_VMM_MR_CAP_NONE,
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
 };

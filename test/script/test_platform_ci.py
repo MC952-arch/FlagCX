@@ -145,7 +145,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             'export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"',
             configure,
         )
-        self.assertIn('runner)', configure)
+        self.assertIn('runner|symmem)', configure)
         self.assertIn(
             'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
             configure,
@@ -267,7 +267,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
         self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
-    def test_automatic_hardware_ci_covers_all_platforms(self):
+    def test_automatic_hardware_ci_covers_all_platforms_and_suites(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -288,7 +288,67 @@ class PlatformCiRegressionTest(unittest.TestCase):
             '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
 
-        for workflow_name in ("test.yml", "torch-api-test.yml"):
+        expected_suites = {
+            "cuda": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "hygon": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "metax": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "ppu": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+        }
+        for platform, expected in expected_suites.items():
+            config = (
+                REPO_ROOT / f".github/configs/{platform}.yml"
+            ).read_text()
+            suites = config[config.index("unit_test_suites:") :]
+            self.assertEqual(
+                [
+                    line.strip().removeprefix("- ")
+                    for line in suites.splitlines()[1:]
+                    if line.strip().startswith("- ")
+                ],
+                expected,
+                platform,
+            )
+
+        for workflow_name in (
+            "test.yml",
+            "torch-api-test.yml",
+            "format-check.yml",
+        ):
             workflow = (
                 REPO_ROOT / f".github/workflows/{workflow_name}"
             ).read_text()
@@ -347,6 +407,470 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+    def test_symmem_runs_required_local_and_network_vmm_matrix(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        symmem_runner = (
+            REPO_ROOT / "test/script/symmem_test.sh"
+        ).read_text()
+
+        self.assertIn('adaptor|p2p|rma|runner|symmem)', unit_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
+            unit_runner,
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto"', unit_runner
+        )
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
+            unit_runner,
+        )
+        self.assertIn('FLAGCX_VMM_MR_MODE=auto', unit_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
+        self.assertIn(
+            "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
+        )
+        self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
+        self.assertIn(
+            'if [[ "$platform_name" == "ppu" || '
+            '"$platform_name" == "hygon" ]]',
+            unit_runner,
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
+        )
+        self.assertIn(
+            "if ((symmem_run_vmm_net_data == 0)); then", unit_runner
+        )
+        self.assertIn(
+            "Skipping $platform_name VMM + NET data tests", unit_runner
+        )
+        self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_NET_MR=1', unit_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1', unit_runner)
+        self.assertIn(
+            'FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1', unit_runner
+        )
+        self.assertIn('FLAGCX_CI_EXPECT_NET_ADAPTOR="$expected_adaptor"', unit_runner)
+        self.assertIn(
+            "SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.DuplicateWindowsShareMrUntilLastDeregister",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalStatusFailureConvergesDeterministically",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.PublicRegistrationUsesVmmMrRouting",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.VmmFlatFallbackPreservesMrRoute",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.DirectGdrVmmPreservesMrRoute",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.SignalRegistrationUsesAllocationProvenance",
+            unit_runner,
+        )
+        self.assertIn(
+            "SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries",
+            unit_runner,
+        )
+        self.assertNotIn(
+            "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
+            symmem_runner,
+        )
+
+        for platform in ("cuda", "metax", "hygon", "ppu"):
+            config = (
+                REPO_ROOT / f".github/configs/{platform}.yml"
+            ).read_text()
+            source = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn("  - symmem", config)
+            self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", source)
+            self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", source)
+
+    def test_cuda_vmm_allocation_does_not_require_imex_fabric(self):
+        source = (
+            REPO_ROOT / "flagcx/adaptor/device/cuda_adaptor.cc"
+        ).read_text()
+        start = source.index("flagcxResult_t cudaAdaptorGdrMemAlloc")
+        end = source.index("flagcxResult_t cudaAdaptorGdrMemFree", start)
+        allocator = source[start:end]
+
+        self.assertIn("CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR", allocator)
+        self.assertNotIn("CU_MEM_HANDLE_TYPE_FABRIC", allocator)
+
+    def test_symmem_status_convergence_is_allocation_free(self):
+        source = (REPO_ROOT / "flagcx/core/sym_heap.cc").read_text()
+        start = source.index(
+            "static flagcxResult_t flagcxSymGlobalConvergeScalar"
+        )
+        end = source.index("} // namespace", start)
+        convergence = source[start:end]
+
+        self.assertNotIn("flagcxCalloc", convergence)
+        self.assertNotIn("std::vector", convergence)
+        self.assertNotIn("bootstrapCollAllGather", convergence)
+        self.assertIn("bootstrapRecv", convergence)
+        self.assertIn("bootstrapSend", convergence)
+
+        retry_start = source.index(
+            "flagcxResult_t flagcxSymRetryPendingCleanup"
+        )
+        retry_end = source.index(
+            "flagcxResult_t flagcxSymRetainPendingCleanup", retry_start
+        )
+        retry = source[retry_start:retry_end]
+        self.assertNotIn("std::vector", retry)
+        self.assertNotIn("bootstrapCollAllGather", retry)
+        self.assertIn("flagcxSymLogicalOr", retry)
+
+        common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
+        publish_start = common.index(
+            "static flagcxResult_t flagcxDevCommStatePublishWindow"
+        )
+        publish_end = common.index(
+            "static flagcxResult_t flagcxDevCommStateInit", publish_start
+        )
+        staged_publish = common[publish_start:publish_end]
+        self.assertGreaterEqual(
+            staged_publish.count("flagcxSymConvergeStatus"), 2
+        )
+        self.assertIn("flagcxSymWindowValidateDataRoutes", staged_publish)
+        self.assertIn("flagcxSymWindowPublish", staged_publish)
+
+        # Keep the source check independent of clang-format's return-type
+        # wrapping for this long function name.
+        route_start = source.index(
+            "flagcxSymWindowValidateDataRoutesForMode("
+        )
+        route_end = source.index(
+            "static flagcxResult_t flagcxSymCleanupStepConverge", route_start
+        )
+        route_validation = source[route_start:route_end]
+        self.assertIn("localPeerTransportEnabled", route_validation)
+        self.assertIn("hasNetworkMr", route_validation)
+
+        register_start = source.index(
+            "flagcxResult_t flagcxSymWindowRegisterInternal"
+        )
+        register_end = source.index("\nfail:", register_start)
+        registration = source[register_start:register_end]
+        self.assertIn("kSymNetworkRouteGatherTag", registration)
+        self.assertIn("flagcxParamP2pDisable()", registration)
+        self.assertIn("flagcxParamDeviceOneSidedForceNet()", registration)
+        self.assertIn("if (needsNetworkMr)", registration)
+
+        vmm_start = source.index("const bool localVmmAvailable")
+        vmm_end = source.index("flagcxResult_t commonVmmAvailability", vmm_start)
+        vmm_callbacks = source[vmm_start:vmm_end]
+        for callback in (
+            "symPhysAlloc",
+            "symPhysFree",
+            "symFlatMap",
+            "symFlatMappingUnmap",
+            "symFlatVaFree",
+        ):
+            self.assertIn(callback, vmm_callbacks)
+
+    def test_all_device_adaptors_probe_dmabuf_then_va_for_vmm_mr(self):
+        adaptor_sources = (
+            "cuda_adaptor.cc",
+            "maca_adaptor.cc",
+            "ducuda_adaptor.cc",
+            "ppu_cuda_adaptor.cc",
+        )
+        for filename in adaptor_sources:
+            source = (
+                REPO_ROOT / "flagcx/adaptor/device" / filename
+            ).read_text()
+            self.assertIn(
+                "FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA",
+                source,
+                filename,
+            )
+            self.assertIn("SymPhysAlloc", source, filename)
+            self.assertIn("MemGetHandleForAddressRange", source, filename)
+            self.assertNotIn("GetAllocationVmmMrCaps", source, filename)
+
+        # The DCU CUDA compatibility layer aborts instead of returning an
+        # unsupported status for NVIDIA-only attributes 110 and 124.  Its
+        # strict DMA-BUF/VA CI invocations probe the real operations instead.
+        ducuda = (
+            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        ).read_text()
+        self.assertNotIn(
+            "CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED",
+            ducuda,
+        )
+        self.assertNotIn("CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED", ducuda)
+        gdr_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        ]
+        self.assertNotIn("mrCaps", gdr_alloc)
+        dma_support = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorDmaSupport") :
+            ducuda.index(
+                "flagcxResult_t ducudaAdaptorMemGetHandleForAddressRange"
+            )
+        ]
+        self.assertIn("*dmaBufferSupport = true", dma_support)
+
+        # MetaX returns InvalidDevicePointer for valid VMM allocations that
+        # cannot be exported as DMA-BUF.  The latest adaptor must normalize
+        # that allocation-specific capability miss so auto mode can try VA.
+        maca = (
+            REPO_ROOT / "flagcx/adaptor/device/maca_adaptor.cc"
+        ).read_text()
+        maca_export = maca[
+            maca.index("macaAdaptorMemGetHandleForAddressRange") :
+            maca.index("flagcxResult_t macaAdaptorHostRegister")
+        ]
+        self.assertIn("mcErrorInvalidDevicePointer", maca_export)
+        self.assertIn("return flagcxNotSupported", maca_export)
+
+        common = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
+        dma_route = common.index("return FLAGCX_VMM_MR_ROUTE_DMABUF")
+        va_route = common.index("return FLAGCX_VMM_MR_ROUTE_VA")
+        unsupported_route = common.index("return FLAGCX_VMM_MR_ROUTE_NONE")
+        self.assertLess(dma_route, va_route)
+        self.assertLess(va_route, unsupported_route)
+        self.assertIn('flagcxGetEnv("FLAGCX_VMM_MR_MODE")', common)
+        self.assertIn("mode == flagcxVmmMrModeAuto", common)
+        self.assertNotIn("getAllocationVmmMrCaps", common)
+
+        route_tests = (
+            REPO_ROOT / "test/unittest/symmem/test_sym_window_struct.cpp"
+        ).read_text()
+        for test_name in (
+            "StrictVaSkipsDmaBufProbeAndRegistration",
+            "StrictDmaBufNeverFallsBackToVa",
+            "StrictDmaBufUsesDmaBufRoute",
+            "InvalidStrictModeFailsBeforeRegistration",
+            "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
+            "DeviceCapabilitiesCanRejectUnsafeVaRoute",
+            "ProviderCapabilitiesSuppressUnvalidatedVmmRoutes",
+            "PartialDmaBufMrIsReleasedBeforeVaFallback",
+            "PartialDmaBufMrCleanupFailureSuppressesVaFallback",
+        ):
+            self.assertIn(test_name, route_tests)
+
+        mpi_route_tests = (
+            REPO_ROOT / "test/unittest/symmem/coll_sym_register.cpp"
+        ).read_text()
+        self.assertIn("VmmNetRouteCapabilityUnion", mpi_route_tests)
+        self.assertIn("routeSucceeded[0]", mpi_route_tests)
+        self.assertIn("routeSucceeded[1]", mpi_route_tests)
+
+    def test_hygon_flat_vmm_cleanup_tracks_and_unmaps_individual_slots(self):
+        ducuda = (
+            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        ).read_text()
+        self.assertIn(
+            "CUmemGenericAllocationHandle handle;",
+            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+        )
+        self.assertIn(
+            "bool handleOwned;",
+            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+        )
+        self.assertIn("struct DucudaSymPhysHandle", ducuda)
+        self.assertIn("bool releaseOwned;", ducuda)
+
+        gdr_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        ]
+        self.assertNotIn(
+            "if (cuMemRelease(handle) != CUDA_SUCCESS)", gdr_alloc
+        )
+        self.assertIn(
+            "DucudaVmmAllocation{handle,allocSize,true,true,true}",
+            "".join(gdr_alloc.split()),
+        )
+
+        gdr_free = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree") :
+            ducuda.index("flagcxResult_t ducudaAdaptorStreamCreate")
+        ]
+        self.assertLess(
+            gdr_free.index("cuMemUnmap"),
+            gdr_free.index("cuMemRelease(allocation.handle)"),
+        )
+        self.assertLess(
+            gdr_free.index("cuMemAddressFree"),
+            gdr_free.index("cuMemRelease(allocation.handle)"),
+        )
+
+        phys_alloc = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree")
+        ]
+        self.assertLess(
+            phys_alloc.index("cuMemGetAddressRange"),
+            phys_alloc.index("cuMemRetainAllocationHandle"),
+        )
+        self.assertIn("gDucudaVmmAllocations.find", phys_alloc)
+        self.assertIn("handle->handle = allocation.handle", phys_alloc)
+        self.assertIn("handle->releaseOwned = false", phys_alloc)
+        self.assertIn("handle->releaseOwned = true", phys_alloc)
+
+        phys_free = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMappingUnmap")
+        ]
+        self.assertIn("ducudaSymPhysHandleDestroy", phys_free)
+        destroy = ducuda[
+            ducuda.index("ducudaSymPhysHandleDestroy") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc")
+        ]
+        self.assertLess(
+            destroy.index("if (physHandle->releaseOwned)"),
+            destroy.index("cuMemRelease(physHandle->handle)"),
+        )
+
+        self.assertIn("struct DucudaFlatMapping", ducuda)
+        self.assertIn("gDucudaFlatMappings", ducuda)
+        self.assertIn("mappedSlots", ducuda)
+        self.assertIn("importedHandleOwned", ducuda)
+
+        flat_map = ducuda[
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMap(") :
+            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatUnmap(")
+        ]
+        self.assertLess(
+            flat_map.index("gDucudaFlatMappings.emplace"),
+            flat_map.index("cuMemImportFromShareableHandle"),
+        )
+        self.assertLess(
+            flat_map.index("*flatBase = (void *)base"),
+            flat_map.index("cuMemImportFromShareableHandle"),
+        )
+        for stage in (
+            "stage=address-reserve",
+            "stage=import",
+            "stage=map",
+            "stage=set-access",
+        ):
+            self.assertIn(stage, flat_map)
+        self.assertIn("mapping.importedHandleOwned[i] = 1", flat_map)
+        self.assertNotIn("cuMemRelease(peerHandle)", flat_map)
+
+        legacy_unmap = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatUnmap("
+        )
+        mapping_unmap_start = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatMappingUnmap", legacy_unmap
+        )
+        va_free_start = ducuda.index(
+            "flagcxResult_t ducudaAdaptorSymFlatVaFree", mapping_unmap_start
+        )
+        mapping_unmap = ducuda[mapping_unmap_start:va_free_start]
+        self.assertIn("for (int i = 0; i < nPeers; i++)", mapping_unmap)
+        self.assertIn("cuMemUnmap(slot, allocSize)", mapping_unmap)
+        self.assertIn("mapping.mappedSlots[i] = 0", mapping_unmap)
+        self.assertNotIn("cuMemUnmap((CUdeviceptr)flatBase,", mapping_unmap)
+        self.assertIn("stage=release-import", mapping_unmap)
+        self.assertLess(
+            mapping_unmap.index("cuMemUnmap(slot, allocSize)"),
+            mapping_unmap.index("cuMemRelease(mapping.importedHandles[i])"),
+        )
+
+        va_free = ducuda[
+            va_free_start : ducuda.index(
+                "flagcxResult_t ducudaAdaptorSymMulticastSupported"
+            )
+        ]
+        self.assertIn("mapping.mappedSlots[i]", va_free)
+        self.assertIn("mapping.importedHandleOwned[i]", va_free)
+        self.assertIn("cuMemAddressFree", va_free)
+        self.assertIn("gDucudaFlatMappings.erase(it)", va_free)
+
+    def test_multicast_retained_handle_extension_is_latest_only(self):
+        header = (
+            REPO_ROOT / "flagcx/adaptor/include/flagcx_device_adaptor.h"
+        ).read_text()
+        v1 = header[
+            header.index("struct flagcxDeviceAdaptor_v1") :
+            header.index("struct flagcxDeviceAdaptor_latest")
+        ]
+        self.assertNotIn("symMulticastImport", v1)
+        self.assertIn("symMulticastImport", header)
+
+        for filename, symbol in (
+            ("cuda_adaptor.cc", "cudaAdaptorSymMulticastImport"),
+            ("maca_adaptor.cc", "macaAdaptorSymMulticastImport"),
+            ("ducuda_adaptor.cc", "ducudaAdaptorSymMulticastImport"),
+            ("ppu_cuda_adaptor.cc", "ppucudaAdaptorSymMulticastImport"),
+        ):
+            source = (
+                REPO_ROOT / "flagcx/adaptor/device" / filename
+            ).read_text()
+            self.assertIn(symbol, source)
+
+        sym_heap = (REPO_ROOT / "flagcx/core/sym_heap.cc").read_text()
+        self.assertIn("deviceAdaptor->symMulticastImport", sym_heap)
+        self.assertIn("d->mcHandle, /*importFd=*/-1", sym_heap)
+
+    def test_vmm_mr_provider_capability_is_latest_only(self):
+        header = (
+            REPO_ROOT / "flagcx/adaptor/include/flagcx_net_adaptor.h"
+        ).read_text()
+        v1 = header[
+            header.index("struct flagcxNetAdaptor_v1") :
+            header.index("struct flagcxNetAdaptor_latest")
+        ]
+        latest = header[header.index("struct flagcxNetAdaptor_latest") :]
+        self.assertNotIn("vmmMrCaps", v1)
+        self.assertNotIn("internalFlags", v1)
+        self.assertIn("uint32_t vmmMrCaps", latest)
+        self.assertIn("uint32_t internalFlags", latest)
+        self.assertIn(
+            "FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1", latest
+        )
 
     def test_perf_collectives_fail_fast_on_flagcx_errors(self):
         perf_dir = REPO_ROOT / "test/perf/host_api"
