@@ -697,15 +697,12 @@ static void flagcxRmaProxyCompleteDesc(struct flagcxRmaProxyState *proxy,
 
 // Poll every native request, not just the queue head. Native CQEs may arrive
 // out of order; the scoreboard publishes only the contiguous completed prefix.
-static bool
-flagcxRmaGetCompletionRequiresFlush(const struct flagcxHeteroComm *comm,
-                                    const struct flagcxRmaDesc *desc) {
-  if (comm == NULL || desc == NULL || desc->type != FLAGCX_RMA_GET ||
-      desc->dstMrIdx < 0 || desc->dstMrIdx >= comm->oneSideHandleCount ||
+bool flagcxOneSideGetCompletionRequiresFlush(
+    const struct flagcxHeteroComm *comm, int dstMrIdx) {
+  if (comm == NULL || dstMrIdx < 0 || dstMrIdx >= comm->oneSideHandleCount ||
       comm->oneSideHandles == NULL)
     return false;
-  const struct flagcxOneSideHandleInfo *info =
-      comm->oneSideHandles[desc->dstMrIdx];
+  const struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[dstMrIdx];
   return info != NULL && info->getCompletionRequiresFlush != 0;
 }
 
@@ -713,34 +710,39 @@ static int flagcxRmaVisibilityFlushSize(size_t size) {
   return size > static_cast<size_t>(INT_MAX) ? INT_MAX : static_cast<int>(size);
 }
 
-static flagcxResult_t flagcxRmaProxyPostGetFlush(struct flagcxHeteroComm *comm,
-                                                 struct flagcxRmaDesc *desc) {
-  if (comm == NULL || desc == NULL || desc->dstMrIdx < 0 ||
-      desc->dstMrIdx >= comm->oneSideHandleCount ||
+flagcxResult_t
+flagcxOneSidePostGetVisibilityFlush(struct flagcxHeteroComm *comm, int dstMrIdx,
+                                    uint64_t dstOff, size_t size,
+                                    void *recvComm, void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+  if (comm == NULL || dstMrIdx < 0 || dstMrIdx >= comm->oneSideHandleCount ||
       comm->oneSideHandles == NULL)
     return flagcxInternalError;
-  struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[desc->dstMrIdx];
+  struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[dstMrIdx];
   if (info == NULL || info->baseVas == NULL || info->regionSizes == NULL ||
-      info->localRecvComm == NULL || info->localMrHandle == NULL ||
-      comm->rank < 0 || comm->rank >= info->nRanks ||
-      comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
+      info->localMrHandle == NULL || comm->rank < 0 ||
+      comm->rank >= info->nRanks || comm->netAdaptor == NULL ||
+      comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
-  if (desc->dstOff > info->regionSizes[comm->rank] ||
-      desc->size > info->regionSizes[comm->rank] - desc->dstOff)
+  if (recvComm == NULL)
+    recvComm = info->localRecvComm;
+  if (recvComm == NULL)
+    return flagcxNotSupported;
+  if (dstOff > info->regionSizes[comm->rank] ||
+      size > info->regionSizes[comm->rank] - dstOff)
     return flagcxInvalidArgument;
-  if (desc->size == 0)
+  if (size == 0)
     return flagcxSuccess;
 
-  void *data[1] = {
-      (void *)(info->baseVas[comm->rank] + (uintptr_t)desc->dstOff)};
+  void *data[1] = {(void *)(info->baseVas[comm->rank] + (uintptr_t)dstOff)};
   // The legacy iflush ABI uses int sizes only to identify non-empty ranges;
   // providers issue their own fixed-size visibility operation. Saturate the
   // transferred size instead of rejecting a valid UINT32-sized RMA request.
-  int sizes[1] = {flagcxRmaVisibilityFlushSize(desc->size)};
+  int sizes[1] = {flagcxRmaVisibilityFlushSize(size)};
   void *mhandles[1] = {info->localMrHandle};
-  desc->request = NULL;
-  return comm->netAdaptor->iflush(info->localRecvComm, 1, data, sizes, mhandles,
-                                  &desc->request);
+  return comm->netAdaptor->iflush(recvComm, 1, data, sizes, mhandles, request);
 }
 
 static bool
@@ -755,7 +757,8 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     int done = 0;
     flagcxResult_t completionResult = desc->completionResult;
     if (desc->completionStage == FLAGCX_RMA_COMPLETION_FLUSH_PENDING) {
-      flagcxResult_t res = flagcxRmaProxyPostGetFlush(comm, desc);
+      flagcxResult_t res = flagcxOneSidePostGetVisibilityFlush(
+          comm, desc->dstMrIdx, desc->dstOff, desc->size, NULL, &desc->request);
       if (flagcxRmaPostResultIsRetryable(res)) {
         desc = next;
         continue;
@@ -794,7 +797,8 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     }
     if (completionResult == flagcxSuccess &&
         desc->completionStage == FLAGCX_RMA_COMPLETION_DATA_POSTED &&
-        flagcxRmaGetCompletionRequiresFlush(comm, desc)) {
+        desc->type == FLAGCX_RMA_GET &&
+        flagcxOneSideGetCompletionRequiresFlush(comm, desc->dstMrIdx)) {
       // The data CQE only proves NIC completion on providers with this
       // capability. Keep the same descriptor and scoreboard reservation until
       // the local visibility flush has completed.

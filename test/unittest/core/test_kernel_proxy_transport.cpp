@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <climits>
 #include <thread>
 #include <vector>
 
@@ -41,6 +42,49 @@ flagcxNetSubmitContext track(flagcxKernelProxyTransport *transport,
   EXPECT_EQ(flagcxKernelProxyTrackNext(transport, flags, &submit),
             flagcxSuccess);
   return submit;
+}
+
+struct MockKernelRequest {
+  int done = 0;
+  flagcxResult_t result = flagcxSuccess;
+};
+
+struct MockKernelFlush {
+  int backpressure = 0;
+  int posts = 0;
+  int dstMrIdx = -1;
+  uint64_t dstOff = 0;
+  size_t size = 0;
+  void *recvComm = nullptr;
+  flagcxResult_t result = flagcxSuccess;
+  bool synchronous = false;
+  MockKernelRequest requests[4] = {};
+};
+
+flagcxResult_t testKernelRequest(void *request, int *done, int *) {
+  auto *mock = static_cast<MockKernelRequest *>(request);
+  *done = mock->done;
+  return mock->result;
+}
+
+flagcxResult_t postKernelFlush(void *context, void *recvComm, int dstMrIdx,
+                               uint64_t dstOff, size_t size, void **request) {
+  auto *mock = static_cast<MockKernelFlush *>(context);
+  mock->dstMrIdx = dstMrIdx;
+  mock->dstOff = dstOff;
+  mock->size = size;
+  mock->recvComm = recvComm;
+  *request = nullptr;
+  if (mock->backpressure > 0) {
+    mock->backpressure--;
+    return flagcxInProgress;
+  }
+  if (mock->result != flagcxSuccess)
+    return mock->result;
+  int post = mock->posts++;
+  if (!mock->synchronous)
+    *request = &mock->requests[post];
+  return flagcxSuccess;
 }
 
 } // namespace
@@ -309,6 +353,335 @@ TEST(KernelProxyTransportTest, ImmediateEntryWaitsBehindNativeRequest) {
 
   int released = -2;
   ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, flagcxSuccess,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 2u);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest,
+     GetDataCompletionWaitsForFlushAndRetriesBackpressure) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 4, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 1, -1, &slot),
+            flagcxSuccess);
+  const size_t size = static_cast<size_t>(UINT32_MAX);
+  void *flushRecvComm = reinterpret_cast<void *>(0x1234);
+  ASSERT_EQ(flagcxKernelProxyRequireGetFlush(&transport, slot, 3, 17, size,
+                                             flushRecvComm),
+            flagcxSuccess);
+  MockKernelRequest data = {1, flagcxSuccess};
+  ASSERT_EQ(
+      flagcxKernelProxyPublishRequest(&transport, slot, &data, flagcxSuccess),
+      flagcxSuccess);
+
+  MockKernelFlush flush = {};
+  flush.backpressure = 1;
+  int ready = -1;
+  flagcxResult_t completion = flagcxInternalError;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  EXPECT_EQ(transport.nativeInflight, 1u);
+  EXPECT_EQ(transport.requests[slot].completionStage,
+            FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING);
+
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  EXPECT_EQ(flush.posts, 0);
+  EXPECT_EQ(transport.requests[slot].completionStage,
+            FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING);
+
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  EXPECT_EQ(flush.posts, 1);
+  EXPECT_EQ(flush.dstMrIdx, 3);
+  EXPECT_EQ(flush.dstOff, 17u);
+  EXPECT_EQ(flush.size, size);
+  EXPECT_EQ(flush.recvComm, flushRecvComm);
+  EXPECT_EQ(transport.requests[slot].completionStage,
+            FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_POSTED);
+
+  flush.requests[0].done = 1;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 1);
+  EXPECT_EQ(completion, flagcxSuccess);
+  uint32_t advanced = 0;
+  int released = -2;
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  EXPECT_EQ(transport.nativeInflight, 0u);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest, ImmediateGetStillWaitsForSynchronousFlush) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 2, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 0, -1, &slot),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyRequireGetFlush(&transport, slot, 0, 8, 16,
+                                             reinterpret_cast<void *>(0x1234)),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyPublishGetFlushPending(&transport, slot),
+            flagcxSuccess);
+
+  MockKernelFlush flush = {};
+  flush.synchronous = true;
+  int ready = 0;
+  flagcxResult_t completion = flagcxInternalError;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(flush.posts, 1);
+  EXPECT_EQ(ready, 1);
+  EXPECT_EQ(completion, flagcxSuccess);
+
+  uint32_t advanced = 0;
+  int released = -2;
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest, GetFlushFailureBecomesScoreboardError) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 2, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 0, -1, &slot),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyRequireGetFlush(&transport, slot, 0, 0, 8,
+                                             reinterpret_cast<void *>(0x1234)),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyPublishGetFlushPending(&transport, slot),
+            flagcxSuccess);
+
+  MockKernelFlush flush = {};
+  flush.result = flagcxRemoteError;
+  int ready = 0;
+  flagcxResult_t completion = flagcxSuccess;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 1);
+  EXPECT_EQ(completion, flagcxRemoteError);
+
+  uint32_t advanced = 0;
+  int released = -2;
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = 0;
+  flagcxResult_t firstError = flagcxSuccess;
+  ASSERT_EQ(
+      flagcxKernelProxyQuery(&transport, &nextSequence, &inFlight, &firstError),
+      flagcxSuccess);
+  EXPECT_EQ(firstError, flagcxRemoteError);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest, DataFailureSkipsRequiredGetFlush) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 2, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 0, -1, &slot),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyRequireGetFlush(&transport, slot, 0, 0, 8,
+                                             reinterpret_cast<void *>(0x1234)),
+            flagcxSuccess);
+  MockKernelRequest data = {1, flagcxRemoteError};
+  ASSERT_EQ(
+      flagcxKernelProxyPublishRequest(&transport, slot, &data, flagcxSuccess),
+      flagcxSuccess);
+
+  MockKernelFlush flush = {};
+  int ready = 0;
+  flagcxResult_t completion = flagcxSuccess;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 1);
+  EXPECT_EQ(completion, flagcxRemoteError);
+  EXPECT_EQ(flush.posts, 0);
+  EXPECT_EQ(transport.requests[slot].completionStage,
+            FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED);
+  uint32_t advanced = 0;
+  int released = -2;
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = 0;
+  flagcxResult_t firstError = flagcxSuccess;
+  ASSERT_EQ(
+      flagcxKernelProxyQuery(&transport, &nextSequence, &inFlight, &firstError),
+      flagcxSuccess);
+  EXPECT_EQ(inFlight, 0u);
+  EXPECT_EQ(firstError, flagcxRemoteError);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest, AsyncGetFlushFailureBecomesCompletionError) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 2, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 0, -1, &slot),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyRequireGetFlush(&transport, slot, 0, 0, 8,
+                                             reinterpret_cast<void *>(0x1234)),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxKernelProxyPublishGetFlushPending(&transport, slot),
+            flagcxSuccess);
+
+  MockKernelFlush flush = {};
+  int ready = 0;
+  flagcxResult_t completion = flagcxSuccess;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  ASSERT_EQ(flush.posts, 1);
+  flush.requests[0].result = flagcxRemoteError;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slot,
+                                             testKernelRequest, postKernelFlush,
+                                             &flush, &ready, &completion),
+            flagcxSuccess);
+  EXPECT_EQ(ready, 1);
+  EXPECT_EQ(completion, flagcxRemoteError);
+  uint32_t advanced = 0;
+  int released = -2;
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slot, completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 1u);
+  uint64_t nextSequence = 0;
+  uint32_t inFlight = 0;
+  flagcxResult_t firstError = flagcxSuccess;
+  ASSERT_EQ(
+      flagcxKernelProxyQuery(&transport, &nextSequence, &inFlight, &firstError),
+      flagcxSuccess);
+  EXPECT_EQ(inFlight, 0u);
+  EXPECT_EQ(firstError, flagcxRemoteError);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest, AbortReleasesMalformedInflightRequest) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 2, 1, 1, 0),
+            flagcxSuccess);
+  int stagingSlot = -1;
+  ASSERT_EQ(flagcxKernelProxyAcquireStagingSlot(&transport, &stagingSlot),
+            flagcxSuccess);
+  flagcxNetSubmitContext submit = track(&transport);
+  uint32_t slot = 0;
+  ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submit, 0, stagingSlot,
+                                            &slot),
+            flagcxSuccess);
+  MockKernelRequest request = {};
+  ASSERT_EQ(flagcxKernelProxyPublishRequest(&transport, slot, &request,
+                                            flagcxSuccess),
+            flagcxSuccess);
+  EXPECT_EQ(transport.nativeInflight, 1u);
+
+  int released = -1;
+  ASSERT_EQ(flagcxKernelProxyAbortRequest(&transport, slot, &released),
+            flagcxSuccess);
+  EXPECT_EQ(released, stagingSlot);
+  EXPECT_EQ(transport.nativeInflight, 0u);
+  EXPECT_EQ(transport.requests[slot].state, FLAGCX_KERNEL_PROXY_REQUEST_FREE);
+  ASSERT_EQ(flagcxKernelProxyReleaseStagingSlot(&transport, released),
+            flagcxSuccess);
+  flagcxKernelProxyTransportDestroy(&transport);
+}
+
+TEST(KernelProxyTransportTest,
+     OutOfOrderGetFlushesAdvanceOnlyContiguousPrefix) {
+  flagcxKernelProxyTransport transport = {};
+  ASSERT_EQ(flagcxKernelProxyTransportInit(&transport, 4, 0, 1, 0),
+            flagcxSuccess);
+  flagcxNetSubmitContext submits[2] = {track(&transport), track(&transport)};
+  MockKernelRequest data[2] = {{1, flagcxSuccess}, {1, flagcxSuccess}};
+  uint32_t slots[2] = {};
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_EQ(flagcxKernelProxyReserveRequest(&transport, &submits[i], i, -1,
+                                              &slots[i]),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxKernelProxyRequireGetFlush(
+                  &transport, slots[i], i, 0, 8,
+                  reinterpret_cast<void *>(static_cast<uintptr_t>(i + 1))),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxKernelProxyPublishRequest(&transport, slots[i], &data[i],
+                                              flagcxSuccess),
+              flagcxSuccess);
+  }
+
+  MockKernelFlush flush[2] = {};
+  int ready = 0;
+  flagcxResult_t completion = flagcxSuccess;
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_EQ(flagcxKernelProxyProgressRequest(
+                  &transport, slots[i], testKernelRequest, postKernelFlush,
+                  &flush[i], &ready, &completion),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxKernelProxyProgressRequest(
+                  &transport, slots[i], testKernelRequest, postKernelFlush,
+                  &flush[i], &ready, &completion),
+              flagcxSuccess);
+  }
+
+  uint32_t advanced = UINT32_MAX;
+  int released = -2;
+  flush[1].requests[0].done = 1;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slots[1],
+                                             testKernelRequest, postKernelFlush,
+                                             &flush[1], &ready, &completion),
+            flagcxSuccess);
+  ASSERT_EQ(ready, 1);
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slots[1], completion,
+                                             &advanced, &released),
+            flagcxSuccess);
+  EXPECT_EQ(advanced, 0u);
+
+  flush[0].requests[0].done = 1;
+  ASSERT_EQ(flagcxKernelProxyProgressRequest(&transport, slots[0],
+                                             testKernelRequest, postKernelFlush,
+                                             &flush[0], &ready, &completion),
+            flagcxSuccess);
+  ASSERT_EQ(ready, 1);
+  ASSERT_EQ(flagcxKernelProxyCompleteRequest(&transport, slots[0], completion,
                                              &advanced, &released),
             flagcxSuccess);
   EXPECT_EQ(advanced, 2u);
