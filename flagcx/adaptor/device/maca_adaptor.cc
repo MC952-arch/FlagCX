@@ -1121,7 +1121,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, macaAdaptorSymMulticastImport,
       macaAdaptorSymFlatMappingUnmap, macaAdaptorSymFlatVaFree,
       macaAdaptorSymMulticastMappingUnmap, macaAdaptorSymMulticastVaFree,
-      macaAdaptorGetAllocationVmmMrCaps,
+      macaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_METAX_ADAPTOR

@@ -71,7 +71,7 @@ TEST_F(SymMemTest, CrossGpuReadViaIpcPeerPtr) {
 
   const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
   bool localReady = win != nullptr && win->defaultBase != nullptr &&
-                    !win->defaultBase->isVMM &&
+                    !win->defaultBase->hasFlatMapping &&
                     win->defaultBase->localRanks >= 2 &&
                     win->defaultBase->ipcSlot >= 0 &&
                     (requireNetMr ? win->defaultBase->mrIndex >= 0
@@ -121,7 +121,7 @@ TEST_F(SymMemTest, CrossGpuWriteViaIpcPeerPtr) {
 
   const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
   bool localReady = win != nullptr && win->defaultBase != nullptr &&
-                    !win->defaultBase->isVMM &&
+                    !win->defaultBase->hasFlatMapping &&
                     win->defaultBase->localRanks >= 2 &&
                     win->defaultBase->ipcSlot >= 0 &&
                     (requireNetMr ? win->defaultBase->mrIndex >= 0
@@ -184,7 +184,7 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   ASSERT_NE(win->defaultBase, nullptr);
 
   flagcxSymWindow_t d = win->defaultBase;
-  if (!d->isVMM || d->flatBase == nullptr) {
+  if (!d->hasFlatMapping || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
     if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
       FAIL() << "FLAGCX_CI_REQUIRE_VMM forbids IPC fallback";
@@ -261,7 +261,7 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   ASSERT_NE(win->defaultBase, nullptr);
 
   flagcxSymWindow_t d = win->defaultBase;
-  if (!d->isVMM || d->flatBase == nullptr) {
+  if (!d->hasFlatMapping || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
     if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
       FAIL() << "FLAGCX_CI_REQUIRE_VMM forbids IPC fallback";
@@ -349,10 +349,11 @@ TEST_F(SymMemTest, HybridLocalAndRemoteAccess) {
   flagcxSymWindow_t window = win->defaultBase;
 
   if (envEnabled("FLAGCX_CI_REQUIRE_VMM")) {
-    ASSERT_TRUE(allRanksReady(window->isVMM && window->flatBase != nullptr))
+    ASSERT_TRUE(
+        allRanksReady(window->hasFlatMapping && window->flatBase != nullptr))
         << "required VMM invocation fell back to IPC";
   } else {
-    ASSERT_TRUE(allRanksReady(!window->isVMM && window->ipcSlot >= 0))
+    ASSERT_TRUE(allRanksReady(!window->hasFlatMapping && window->ipcSlot >= 0))
         << "required IPC invocation has no local mapping";
   }
   ASSERT_TRUE(allRanksReady(window->mrIndex >= 0))
@@ -454,7 +455,7 @@ TEST_F(SymMemTest, MulticastMappingWhenSupported) {
   ASSERT_NE(win, nullptr);
   ASSERT_NE(win->defaultBase, nullptr);
 
-  if (!win->defaultBase->isVMM) {
+  if (!win->defaultBase->hasFlatMapping) {
     EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
     if (envEnabled("FLAGCX_CI_REQUIRE_VMM"))
       FAIL() << "required VMM invocation fell back to IPC";

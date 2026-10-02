@@ -54,6 +54,14 @@ typedef enum {
   FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
 } flagcxDeviceAdaptorInternalFlags_t;
 
+// Completion semantics advertised only by the latest in-process adaptor.
+// These flags describe provider-specific visibility requirements without
+// changing the frozen v1 plugin ABI.
+typedef enum {
+  FLAGCX_DEVICE_RMA_SEMANTICS_NONE = 0,
+  FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH = 1 << 0,
+} flagcxDeviceRmaSemantics_t;
+
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
 //         stream/event/IPC functions, kernel launch, device properties,
@@ -321,6 +329,10 @@ struct flagcxDeviceAdaptor_latest {
   // capabilities (for example CUDA VMM allocations created without the
   // gpuDirectRDMACapable flag). An interior address is accepted.
   flagcxResult_t (*getAllocationVmmMrCaps)(const void *ptr, uint32_t *caps);
+
+  // Visibility requirements for one-sided operations targeting allocations
+  // owned by this device adaptor. v1 plugins are upgraded with zero here.
+  uint32_t rmaSemantics;
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

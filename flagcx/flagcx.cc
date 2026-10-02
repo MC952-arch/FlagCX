@@ -1426,6 +1426,10 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                 FLAGCX_PTR_CUDA, isVmm, FLAGCX_NET_MR_FLAG_NONE,
                                 &mrHandle, &selectedRoute);
   info->registrationRoute = (uint8_t)selectedRoute;
+  info->getCompletionRequiresFlush =
+      isVmm && selectedRoute != FLAGCX_VMM_MR_ROUTE_NONE &&
+      (deviceAdaptor->rmaSemantics &
+       FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH) != 0;
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->ownsLocalMr = 1;
@@ -1624,7 +1628,7 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
 flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
                                                    void *buff, size_t size,
                                                    int ptrType,
-                                                   bool allocationIsVmm) {
+                                                   bool isVmmAllocation) {
   if (comm == NULL || buff == NULL || size == 0)
     return flagcxInvalidArgument;
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -1668,7 +1672,7 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
 
   // Build the local IPC mapping before attempting any network setup. This is
   // collective and remains valid when the RDMA provider is unavailable.
-  const bool isVmm = ptrType == FLAGCX_PTR_CUDA && allocationIsVmm;
+  const bool isVmm = ptrType == FLAGCX_PTR_CUDA && isVmmAllocation;
   int ipcSlot = -1;
   if (ptrType == FLAGCX_PTR_CUDA && !isVmm)
     ipcSlot = buildIpcPeerPointers(comm, buff, size);
@@ -1798,10 +1802,10 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
-  const bool allocationIsVmm =
+  const bool isVmmAllocation =
       ptrType == FLAGCX_PTR_CUDA && flagcxOneSideMemoryIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
-                                             allocationIsVmm);
+                                             isVmmAllocation);
 }
 
 flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
@@ -2371,11 +2375,11 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
           commonWindowRes, "collective registration failure");
     }
 
-    // Non-VMM windows need an explicit IPC mapping. VMM windows already expose
-    // peer memory through their flat VA mapping. Failure is non-fatal because
-    // the network MR remains a valid fallback in automatic transport mode.
+    // Only ordinary device allocations may use legacy IPC. A VMM allocation
+    // with no flat mapping is NET-only; exporting it through the legacy IPC
+    // path is unsupported and can split the local collective.
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
-        !(*win)->defaultBase->isVMM) {
+        flagcxSymWindowCanUseLegacyIpc((*win)->defaultBase)) {
       int ipcSlot = buildIpcPeerPointers(comm, buff, size);
       flagcxResult_t commonIpcStatus = flagcxSuccess;
       flagcxResult_t gatherRes = flagcxSymConvergeStatus(
@@ -2685,7 +2689,8 @@ static flagcxResult_t flagcxDevCommStatePublishWindow(flagcxComm_t comm,
   // DevMem creates the IPC mapping for a non-VMM staged allocation. Transfer
   // its ownership before route validation, but do not publish the window until
   // every rank reports a usable route.
-  if (!d->isVMM && d->ipcSlot < 0 && devMem->ipcIndex >= 0) {
+  if (flagcxSymWindowCanUseLegacyIpc(d) && d->ipcSlot < 0 &&
+      devMem->ipcIndex >= 0) {
     d->ipcSlot = devMem->ipcIndex;
     devMem->ipcIndex = -1;
   }

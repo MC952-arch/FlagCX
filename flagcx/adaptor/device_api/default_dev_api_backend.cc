@@ -984,7 +984,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
         devMem->mrIndex = d->mrIndex;
         devMem->mrBase = d->mrBase;
       }
-      if ((d == nullptr || !d->isVMM || !d->flatBase) &&
+      if ((d == nullptr || flagcxSymWindowCanUseLegacyIpc(d)) &&
           !flagcxParamDeviceOneSidedForceNet()) {
         // Priority 2: Symmetric IPC fallback (VMM not available)
         int idx = buildIpcPeerPointers(comm, buff, size);
@@ -1076,9 +1076,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       flagcxSymWindow_t d = win->defaultBase;
       WARN("flagcxDevMemCreate: kWin->hasAccess() returned false for symmetric "
            "default window. ipcIndex=%d, intraRank=%d, "
-           "defaultBase=%p, isVMM=%d, flatBase=%p, ipcDevPeerPtrs=%p",
-           devMem->ipcIndex, devMem->intraRank, (void *)d, (d ? d->isVMM : -1),
-           (d ? d->flatBase : nullptr),
+           "defaultBase=%p, hasFlatMapping=%d, flatBase=%p, ipcDevPeerPtrs=%p",
+           devMem->ipcIndex, devMem->intraRank, (void *)d,
+           (d ? d->hasFlatMapping : -1), (d ? d->flatBase : nullptr),
            (devMem->ipcIndex >= 0 && comm)
                ? (void *)comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                : nullptr);

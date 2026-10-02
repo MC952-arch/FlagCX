@@ -507,7 +507,7 @@ TEST_F(SymMemTest,
   if (result == flagcxSuccess) {
     ASSERT_NE(fallbackWindow, nullptr);
     ASSERT_NE(fallbackWindow->defaultBase, nullptr);
-    EXPECT_FALSE(fallbackWindow->defaultBase->isVMM);
+    EXPECT_FALSE(fallbackWindow->defaultBase->hasFlatMapping);
     ASSERT_TRUE(allRanksSucceeded(
         flagcxCommWindowDeregister(testComm, fallbackWindow)));
   } else {
@@ -527,7 +527,7 @@ TEST_F(SymMemTest,
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(retryWindow, nullptr);
   ASSERT_NE(retryWindow->defaultBase, nullptr);
-  EXPECT_TRUE(retryWindow->defaultBase->isVMM);
+  EXPECT_TRUE(retryWindow->defaultBase->hasFlatMapping);
   EXPECT_EQ(testComm->heteroComm->symWindowFdExchangeCount, 1u);
   ASSERT_TRUE(
       allRanksSucceeded(flagcxCommWindowDeregister(testComm, retryWindow)));
@@ -561,8 +561,10 @@ TEST_F(SymMemTest, VmmFlatFallbackPreservesMrRoute) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(fallbackWindow, nullptr);
   ASSERT_NE(fallbackWindow->defaultBase, nullptr);
-  EXPECT_TRUE(fallbackWindow->defaultBase->allocationIsVmm);
-  EXPECT_FALSE(fallbackWindow->defaultBase->isVMM);
+  EXPECT_TRUE(fallbackWindow->defaultBase->isVmmAllocation);
+  EXPECT_FALSE(fallbackWindow->defaultBase->hasFlatMapping);
+  EXPECT_EQ(fallbackWindow->defaultBase->ipcSlot, -1);
+  EXPECT_TRUE(fallbackWindow->defaultBase->hasNetworkMrRef);
   const int mrIndex = fallbackWindow->defaultBase->mrIndex;
   ASSERT_GE(mrIndex, 0);
   ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
@@ -601,13 +603,13 @@ TEST_F(SymMemTest, DirectGdrVmmPreservesMrRoute) {
   flagcxWindow_t window = nullptr;
   result = flagcxSymWindowRegisterInternal(
       testComm->heteroComm, directBuffer, size, &window,
-      FLAGCX_WIN_COLL_SYMMETRIC, /*allocationIsVmm=*/true);
+      FLAGCX_WIN_COLL_SYMMETRIC, /*isVmmAllocation=*/true);
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
   ASSERT_TRUE(
       allRanksSucceeded(flagcxSymWindowPublish(testComm->heteroComm, window)));
-  EXPECT_TRUE(window->defaultBase->allocationIsVmm);
+  EXPECT_TRUE(window->defaultBase->isVmmAllocation);
   const int mrIndex = window->defaultBase->mrIndex;
   ASSERT_GE(mrIndex, 0);
   ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
@@ -668,7 +670,7 @@ TEST_F(SymMemTest, RankLocalMrFailureDoesNotPublishPartialWindow) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(retryWindow, nullptr);
   EXPECT_TRUE(retryWindow->defaultBase->hasNetworkMrRef);
-  if (retryWindow->defaultBase->isVMM) {
+  if (retryWindow->defaultBase->hasFlatMapping) {
     const int mrIndex = retryWindow->defaultBase->mrIndex;
     ASSERT_GE(mrIndex, 0);
     ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
@@ -897,9 +899,10 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   MPI_Allreduce(&localMask, &minimumMask, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   MPI_Allreduce(&localMask, &maximumMask, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   ASSERT_EQ(minimumMask, maximumMask);
-  if (!envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED"))
+  if (!envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED")) {
     EXPECT_NE(minimumMask, 0)
         << "neither DMA-BUF nor VA can register a VMM allocation";
+  }
 }
 
 TEST_F(SymMemTest, AsymmetricDeregisterUsesCollectivePublishSlot) {
@@ -1175,7 +1178,7 @@ TEST_F(SymMemTest, FlatMapRollbackFailureRetainsOwnershipForRetry) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(retryWindow, nullptr);
   EXPECT_EQ(testComm->heteroComm->pendingSymCleanup, nullptr);
-  EXPECT_TRUE(retryWindow->defaultBase->isVMM);
+  EXPECT_TRUE(retryWindow->defaultBase->hasFlatMapping);
   ASSERT_TRUE(
       allRanksSucceeded(flagcxCommWindowDeregister(testComm, retryWindow)));
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
@@ -1245,7 +1248,7 @@ TEST_F(SymMemTest, VmmRollbackFailureConvergesBeforeMrMetadataExchange) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(retryWindow, nullptr);
   EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
-  EXPECT_TRUE(retryWindow->defaultBase->isVMM);
+  EXPECT_TRUE(retryWindow->defaultBase->hasFlatMapping);
   EXPECT_TRUE(retryWindow->defaultBase->hasNetworkMrRef);
 
   ASSERT_TRUE(
@@ -1275,7 +1278,7 @@ TEST_F(SymMemTest, CrossNodeCleanupFailureConvergesBeforeRelease) {
       testComm, buffer, size, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
-  ASSERT_TRUE(window->defaultBase->isVMM);
+  ASSERT_TRUE(window->defaultBase->hasFlatMapping);
 
   savedSymFlatUnmap = deviceAdaptor->symFlatMappingUnmap;
   ASSERT_NE(savedSymFlatUnmap, nullptr);
@@ -1417,7 +1420,7 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   MPI_Allreduce(&multicastSupported, &allMulticastSupported, 1, MPI_INT,
                 MPI_MIN, MPI_COMM_WORLD);
   if (allMulticastQueriesOk != 0 && allMulticastSupported != 0 &&
-      liveWindow->defaultBase->isVMM) {
+      liveWindow->defaultBase->hasFlatMapping) {
     ASSERT_NE(deviceAdaptor->symMulticastImport, nullptr);
     EXPECT_NE(liveWindow->defaultBase->mcBase, nullptr);
     EXPECT_NE(liveWindow->defaultBase->mcHandle, nullptr);

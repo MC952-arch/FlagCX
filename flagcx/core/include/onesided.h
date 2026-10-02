@@ -75,7 +75,7 @@ flagcxResult_t flagcxOneSideDeregisterInternal(flagcxHeteroComm_t comm,
 flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
                                                    void *buff, size_t size,
                                                    int ptrType,
-                                                   bool allocationIsVmm);
+                                                   bool isVmmAllocation);
 
 // Build IPC peer pointer table for a user buffer (intra-node D2D bypass).
 // Stores results in comm->ipcTable and returns the table index.

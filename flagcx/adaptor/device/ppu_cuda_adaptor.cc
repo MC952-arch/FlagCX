@@ -900,7 +900,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ppucudaAdaptorSymMulticastImport,
       ppucudaAdaptorSymFlatMappingUnmap, ppucudaAdaptorSymFlatVaFree,
       ppucudaAdaptorSymMulticastMappingUnmap, ppucudaAdaptorSymMulticastVaFree,
-      ppucudaAdaptorGetAllocationVmmMrCaps,
+      ppucudaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_PPU_ADAPTOR

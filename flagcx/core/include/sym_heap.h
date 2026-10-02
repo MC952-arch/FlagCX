@@ -63,11 +63,11 @@ struct flagcxSymWindow {
   bool hasAllocationLease;
   void *allocationBase;
   // Allocation provenance is independent of whether the optional flat peer
-  // mapping succeeded. Network MR routing must use allocationIsVmm; local
-  // peer-pointer resolution uses isVMM/flatBase.
-  bool allocationIsVmm;
-  bool isVMM;     // true while a VMM flat mapping is active
-  bool published; // linked into comm->symWindows only after full commit
+  // mapping succeeded. Network MR routing must use isVmmAllocation; local
+  // peer-pointer resolution uses hasFlatMapping/flatBase.
+  bool isVmmAllocation;
+  bool hasFlatMapping; // true while a VMM flat mapping is active
+  bool published;      // linked into comm->symWindows only after full commit
   flagcxSymWindowState state;
   struct flagcxSymWindow *next; // intrusive link in comm->symWindows
   struct flagcxSymWindow
@@ -92,7 +92,16 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
                                                void *buff, size_t size,
                                                flagcxWindow_t *win,
                                                int winFlags,
-                                               bool allocationIsVmm);
+                                               bool isVmmAllocation);
+
+// Legacy IPC export is valid only for ordinary device allocations. A VMM
+// allocation whose optional flat mapping failed must use its network MR and
+// must never be passed to the legacy IPC exporter.
+static inline bool
+flagcxSymWindowCanUseLegacyIpc(const struct flagcxSymWindow *window) {
+  return window != nullptr && !window->isVmmAllocation &&
+         !window->hasFlatMapping;
+}
 
 flagcxResult_t flagcxSymWindowDeregister(
     flagcxHeteroComm_t comm, flagcxWindow_t win,

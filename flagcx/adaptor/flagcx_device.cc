@@ -589,9 +589,14 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   // Step 2: All-gather IPC descriptors across local ranks
   allDescs = (struct flagcxIpcPeerDesc *)malloc(
       nRanks * sizeof(struct flagcxIpcPeerDesc));
-  flagcxResult_t localPrepare =
-      slot < 0 ? flagcxNotSupported
-               : (allDescs == nullptr ? flagcxSystemError : flagcxSuccess);
+  // Converge every rank-local preparation result before any rank enters the
+  // descriptor metadata exchange. In particular, a failed export must not be
+  // represented as an invalid descriptor while peers proceed to all-gather.
+  flagcxResult_t localPrepare = res;
+  if (localPrepare == flagcxSuccess && slot < 0)
+    localPrepare = flagcxNotSupported;
+  if (localPrepare == flagcxSuccess && allDescs == nullptr)
+    localPrepare = flagcxSystemError;
   flagcxResult_t commonPrepare = flagcxSuccess;
   FLAGCXCHECKGOTO(
       flagcxConvergeIpcPrepareStatus(comm, localPrepare, &commonPrepare), res,

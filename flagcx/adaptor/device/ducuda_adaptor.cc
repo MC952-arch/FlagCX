@@ -1084,6 +1084,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymFlatMappingUnmap, ducudaAdaptorSymFlatVaFree,
       ducudaAdaptorSymMulticastMappingUnmap, ducudaAdaptorSymMulticastVaFree,
       ducudaAdaptorGetAllocationVmmMrCaps,
+      FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH,
 };
 
 #endif // USE_DU_ADAPTOR

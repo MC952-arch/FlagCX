@@ -329,15 +329,15 @@ TEST(SymWindowStruct, SymWindowStructLayout) {
   sw.localRanks = 2;
   sw.physHandle = nullptr;
   sw.mcHandle = nullptr;
-  sw.allocationIsVmm = true;
-  sw.isVMM = false;
+  sw.isVmmAllocation = true;
+  sw.hasFlatMapping = false;
 
   EXPECT_EQ(sw.mrIndex, -1);
   EXPECT_EQ(sw.heapSize, 1024u);
   EXPECT_EQ(sw.allocSize, 2048u);
   EXPECT_EQ(sw.localRanks, 2);
-  EXPECT_TRUE(sw.allocationIsVmm);
-  EXPECT_FALSE(sw.isVMM);
+  EXPECT_TRUE(sw.isVmmAllocation);
+  EXPECT_FALSE(sw.hasFlatMapping);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +347,18 @@ TEST(SymWindowStruct, SymWindowStructLayout) {
 TEST(SymWindowStruct, WindowFlagConstants) {
   EXPECT_EQ(FLAGCX_WIN_DEFAULT, 0x00);
   EXPECT_EQ(FLAGCX_WIN_COLL_SYMMETRIC, 0x01);
+}
+
+TEST(SymWindowStruct, LegacyIpcRequiresNonVmmAllocationWithoutFlatMapping) {
+  flagcxSymWindow window = {};
+
+  EXPECT_TRUE(flagcxSymWindowCanUseLegacyIpc(&window));
+  window.isVmmAllocation = true;
+  EXPECT_FALSE(flagcxSymWindowCanUseLegacyIpc(&window));
+  window.isVmmAllocation = false;
+  window.hasFlatMapping = true;
+  EXPECT_FALSE(flagcxSymWindowCanUseLegacyIpc(&window));
+  EXPECT_FALSE(flagcxSymWindowCanUseLegacyIpc(nullptr));
 }
 
 TEST(SymWindowMrRoute, PrefersDmaBufWhenEveryLayerSupportsIt) {
@@ -1209,7 +1221,7 @@ TEST(SymWindowRoutes, RequiresAUsablePathForEveryPeer) {
   window.ipcSlot = -1;
 
   // Flat mappings are node-local and cannot satisfy remote peers.
-  window.isVMM = true;
+  window.hasFlatMapping = true;
   window.flatBase = reinterpret_cast<void *>(0x1000);
   EXPECT_EQ(flagcxSymWindowValidateDataRoutes(&comm, &window),
             flagcxNotSupported);
@@ -1227,7 +1239,7 @@ TEST(SymWindowRoutes, RequiresAUsablePathForEveryPeer) {
             flagcxSuccess);
   EXPECT_EQ(flagcxSymWindowValidateDataRoutesForMode(&comm, &window, false),
             flagcxNotSupported);
-  window.isVMM = false;
+  window.hasFlatMapping = false;
   window.flatBase = nullptr;
   EXPECT_EQ(flagcxSymWindowValidateDataRoutesForMode(&comm, &window, true),
             flagcxNotSupported);
@@ -1338,7 +1350,7 @@ TEST(SymWindowOwnership, TeardownFailureRetainsWindowForRetry) {
   win->defaultBase = sym;
   win->isSymmetricDefault = 1;
   sym->owner = win;
-  sym->isVMM = true;
+  sym->hasFlatMapping = true;
   sym->flatBase = reinterpret_cast<void *>(0x1000);
   sym->flatMappingOwned = true;
   sym->flatVaOwned = true;
@@ -1390,7 +1402,7 @@ TEST(SymWindowOwnership, FlatUnmapIsNotRepeatedWhenVaFreeRetryIsRequired) {
   win->defaultBase = sym;
   win->isSymmetricDefault = 1;
   sym->owner = win;
-  sym->isVMM = true;
+  sym->hasFlatMapping = true;
   sym->flatBase = reinterpret_cast<void *>(0x1000);
   sym->flatMappingOwned = true;
   sym->flatVaOwned = true;
@@ -1449,7 +1461,7 @@ TEST(SymWindowOwnership, LocalTeardownSkipsBootstrapRendezvous) {
   win->defaultBase = sym;
   win->isSymmetricDefault = 1;
   sym->owner = win;
-  sym->isVMM = true;
+  sym->hasFlatMapping = true;
   sym->flatBase = reinterpret_cast<void *>(0x1000);
   sym->flatMappingOwned = true;
   sym->flatVaOwned = true;
@@ -1500,7 +1512,7 @@ TEST(SymWindowOwnership, MulticastTeardownCompletesBeforeObjectRelease) {
   win->defaultBase = sym;
   win->isSymmetricDefault = 1;
   sym->owner = win;
-  sym->isVMM = true;
+  sym->hasFlatMapping = true;
   sym->mcBase = reinterpret_cast<void *>(0x1000);
   sym->mcMapSize = 4096;
   sym->multicastMappingOwned = true;
@@ -1575,7 +1587,7 @@ TEST(SymWindowOwnership,
   creatorWin->defaultBase = creatorSym;
   creatorWin->isSymmetricDefault = 1;
   creatorSym->owner = creatorWin;
-  creatorSym->isVMM = true;
+  creatorSym->hasFlatMapping = true;
   creatorSym->mcBase = reinterpret_cast<void *>(0x1000);
   creatorSym->mcMapSize = 4096;
   creatorSym->multicastMappingOwned = true;
@@ -1586,7 +1598,7 @@ TEST(SymWindowOwnership,
   peerWin->defaultBase = peerSym;
   peerWin->isSymmetricDefault = 1;
   peerSym->owner = peerWin;
-  peerSym->isVMM = true;
+  peerSym->hasFlatMapping = true;
   peerSym->mcBase = reinterpret_cast<void *>(0x2000);
   peerSym->mcMapSize = 4096;
   peerSym->multicastMappingOwned = true;

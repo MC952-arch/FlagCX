@@ -163,7 +163,7 @@ flagcxResult_t flagcxSymWindowEnsureNetworkMr(flagcxHeteroComm_t comm,
   int mrIndex = -1;
   bool rollbackPending = false;
   flagcxResult_t result = flagcxOneSideRegisterInternal(
-      comm, window->localBase, window->heapSize, window->allocationIsVmm,
+      comm, window->localBase, window->heapSize, window->isVmmAllocation,
       /*acquireWindowRef=*/true, &mrIndex, &rollbackPending);
   if (result != flagcxSuccess) {
     window->hasPendingNetworkCleanup = rollbackPending;
@@ -194,7 +194,7 @@ flagcxSymWindowValidateDataRoutesForMode(flagcxHeteroComm_t comm,
   const bool hasLocalPeerRoute =
       !needsLocalPeerRoute || hasNetworkMr ||
       (localPeerTransportEnabled &&
-       ((window->isVMM && window->flatBase != nullptr) ||
+       ((window->hasFlatMapping && window->flatBase != nullptr) ||
         window->ipcSlot >= 0));
   const bool hasRemotePeerRoute =
       comm->localRanks == comm->nRanks || hasNetworkMr;
@@ -283,8 +283,10 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
                 ? deviceAdaptor->symFlatMappingUnmap(d->flatBase, d->allocSize,
                                                      d->localRanks)
                 : flagcxInternalError;
-    if (local == flagcxSuccess)
+    if (local == flagcxSuccess) {
       d->flatMappingOwned = false;
+      d->hasFlatMapping = false;
+    }
   }
   FLAGCXCHECK(
       flagcxSymCleanupStepConverge(comm, local, /*tag=*/0x5944, mode, &common));
@@ -320,7 +322,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
   if (common == flagcxSuccess && d != nullptr && !d->flatMappingOwned &&
       !d->flatVaOwned && !d->multicastMappingOwned && !d->multicastVaOwned &&
       d->mcHandle == nullptr && d->physHandle == nullptr) {
-    d->isVMM = false;
+    d->hasFlatMapping = false;
     d->allocSize = 0;
   }
   return common;
@@ -455,7 +457,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
                                                void *buff, size_t size,
                                                flagcxWindow_t *win,
                                                int winFlags,
-                                               bool allocationIsVmm) {
+                                               bool isVmmAllocation) {
   if (comm == nullptr || buff == nullptr || size == 0 || win == nullptr)
     return flagcxInvalidArgument;
   *win = nullptr;
@@ -549,7 +551,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   d->ipcSlot = -1;
   d->localBase = buff;
   d->owner = w;
-  d->allocationIsVmm = allocationIsVmm;
+  d->isVmmAllocation = isVmmAllocation;
   d->state = flagcxSymWindowPreparing;
 
   // Buffers owned by flagcxMemAlloc carry a lease for the full lifetime of
@@ -724,7 +726,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
           d->flatBase = flatBase;
           d->physHandle = physHandle;
           d->allocSize = allocSize;
-          d->isVMM = true;
+          d->hasFlatMapping = false;
           d->flatMappingOwned = flatBase != nullptr;
           d->flatVaOwned = flatBase != nullptr;
           physHandle = nullptr;
@@ -737,6 +739,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
                                                  /*tag=*/0x5935, &mapStatus),
                           res, fail);
           if (mapStatus == flagcxSuccess) {
+            d->hasFlatMapping = true;
             vmmOk = true;
 
             // Try multicast setup
@@ -1025,7 +1028,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
               localPrepareStatus = cleanupRes;
               retainCleanupForRetry = true;
             } else {
-              d->isVMM = false;
+              d->hasFlatMapping = false;
               d->allocSize = 0;
             }
           }
@@ -1044,7 +1047,6 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
           // Some ranks may already own a physical allocation. Make every local
           // rank enter the same cleanup phases, retaining ownership if release
           // fails, before allowing IPC fallback.
-          d->isVMM = true;
           d->allocSize = allocSize;
           if (physHandle != nullptr) {
             d->physHandle = physHandle;
@@ -1062,7 +1064,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
             localPrepareStatus = cleanupRes;
             retainCleanupForRetry = true;
           } else {
-            d->isVMM = false;
+            d->hasFlatMapping = false;
             d->allocSize = 0;
           }
         }
@@ -1095,7 +1097,6 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
       if (physHandle != nullptr) {
         d->physHandle = physHandle;
         physHandle = nullptr;
-        d->isVMM = true;
         flagcxResult_t cleanupRes =
             flagcxSymCleanupMappings(comm, d, flagcxSymCleanupCollective);
         if (cleanupRes != flagcxSuccess) {
@@ -1107,7 +1108,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
         d->flatBase = nullptr;
         d->mcBase = nullptr;
         d->physHandle = nullptr;
-        d->isVMM = false;
+        d->hasFlatMapping = false;
         d->allocSize = 0;
       }
     }
@@ -1131,7 +1132,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
         localRollbackStatus =
             flagcxSymCleanupMappings(comm, d, flagcxSymCleanupCollective);
         if (localRollbackStatus == flagcxSuccess) {
-          d->isVMM = false;
+          d->hasFlatMapping = false;
           d->allocSize = 0;
         } else {
           retainCleanupForRetry = true;
@@ -1152,11 +1153,14 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   // ---- Network MR registration ----
   // Remote peers always require NET. A local-only communicator also requires
   // NET when P2P is disabled because runtime PUT/signal paths intentionally
-  // bypass its flat/IPC mappings.
+  // bypass its flat/IPC mappings. A VMM allocation whose optional flat mapping
+  // failed is also NET-only: it must never enter legacy IPC export.
+  if (d->isVmmAllocation && !d->hasFlatMapping)
+    needsNetworkMr = 1;
   if (needsNetworkMr) {
     INFO(FLAGCX_INIT,
          "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
-         (int)d->isVMM, buff, size);
+         (int)d->hasFlatMapping, buff, size);
     FLAGCXCHECKGOTO(flagcxSymWindowEnsureNetworkMr(comm, d), res, fail);
   }
 
@@ -1183,12 +1187,10 @@ fail:
   // release can be represented by the returned cleanup token.
   if (d != nullptr && physHandle != nullptr) {
     d->physHandle = physHandle;
-    d->isVMM = true;
     physHandle = nullptr;
   }
   if (d != nullptr && mcHandle != nullptr) {
     d->mcHandle = mcHandle;
-    d->isVMM = true;
     mcHandle = nullptr;
   }
   if (retainCleanupForRetry && d != nullptr) {
@@ -1347,7 +1349,7 @@ flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
     return flagcxSuccess;
   }
 
-  if (window->isVMM && window->flatBase != nullptr) {
+  if (window->hasFlatMapping && window->flatBase != nullptr) {
     *ptr = (void *)((uintptr_t)window->flatBase +
                     (size_t)peerLocalRank * window->allocSize + offset);
     return flagcxSuccess;

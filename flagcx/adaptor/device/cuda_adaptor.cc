@@ -1229,7 +1229,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, cudaAdaptorSymMulticastImport,
       cudaAdaptorSymFlatMappingUnmap, cudaAdaptorSymFlatVaFree,
       cudaAdaptorSymMulticastMappingUnmap, cudaAdaptorSymMulticastVaFree,
-      cudaAdaptorGetAllocationVmmMrCaps,
+      cudaAdaptorGetAllocationVmmMrCaps, FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
 };
 
 #endif // USE_NVIDIA_ADAPTOR
