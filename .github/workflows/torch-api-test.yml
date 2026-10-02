@@ -1,7 +1,12 @@
 name: Torch API Tests in Container
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   load-hardware-container-configs:

@@ -153,12 +153,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
         self.assertIn("export NP=4", configure)
 
-    def test_cuda_ibuc_path_remains_available_but_is_not_scheduled(self):
+    def test_cuda_runs_ibuc_after_ibrc_in_adaptor_suite(self):
         cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
         cuda_env = (
             REPO_ROOT / ".github/scripts/set_env/cuda.sh"
         ).read_text()
-        self.assertNotIn("  - adaptor", cuda_config)
+        self.assertIn("  - adaptor", cuda_config)
         self.assertNotIn("  - ibuc", cuda_config)
         self.assertNotIn("ibuc)", cuda_env)
         self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", cuda_env)
@@ -267,7 +267,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
         self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
-    def test_automatic_hardware_ci_runs_only_symmem_on_all_platforms(self):
+    def test_automatic_hardware_ci_covers_all_platforms_and_suites(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -288,14 +288,59 @@ class PlatformCiRegressionTest(unittest.TestCase):
             '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
 
-        for platform in ("cuda", "hygon", "metax", "ppu"):
+        expected_suites = {
+            "cuda": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "hygon": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "metax": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "ppu": [
+                "adaptor",
+                "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+        }
+        for platform, expected in expected_suites.items():
             config = (
                 REPO_ROOT / f".github/configs/{platform}.yml"
             ).read_text()
             suites = config[config.index("unit_test_suites:") :]
             self.assertEqual(
-                [line.strip() for line in suites.splitlines()[1:] if line.strip()],
-                ["- symmem"],
+                [
+                    line.strip().removeprefix("- ")
+                    for line in suites.splitlines()[1:]
+                    if line.strip().startswith("- ")
+                ],
+                expected,
                 platform,
             )
 
@@ -308,9 +353,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 REPO_ROOT / f".github/workflows/{workflow_name}"
             ).read_text()
             trigger = workflow[: workflow.index("\njobs:")]
-            self.assertIn("workflow_dispatch:", trigger)
-            self.assertNotIn("pull_request:", trigger)
-            self.assertNotIn("push:", trigger)
+            self.assertIn("pull_request:", trigger)
+            self.assertIn("push:", trigger)
 
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
@@ -1070,7 +1114,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("flagcxOneSideRegister", registration_test)
 
-    def test_kernel_proxy_regressions_remain_available_outside_symmem_ci(self):
+    def test_kernel_proxy_transport_regressions_are_in_ci(self):
         core_makefile = (
             REPO_ROOT / "test/unittest/core/Makefile"
         ).read_text()
@@ -1094,7 +1138,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             config = (
                 REPO_ROOT / f".github/configs/{platform}.yml"
             ).read_text()
-            self.assertNotIn("  - core", config, platform)
+            self.assertIn("  - core", config, platform)
 
         self.assertIn(
             "OutOfOrderRequestsAdvanceOnlyContiguousPrefix", transport_test
@@ -1128,7 +1172,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         cuda_config = (
             REPO_ROOT / ".github/configs/cuda.yml"
         ).read_text()
-        self.assertNotIn("  - device_api_host", cuda_config)
+        self.assertIn("  - device_api_host", cuda_config)
         cleanup_test = (
             REPO_ROOT
             / "test/unittest/device_api/test_dev_comm_cleanup.cpp"

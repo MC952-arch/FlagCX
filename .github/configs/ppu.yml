@@ -44,8 +44,13 @@ docker_options:
 
 set_env: .github/scripts/set_env/ppu.sh
 
-# This correctness PR intentionally limits automatic hardware CI to symmetric
-# memory. Other suites remain available locally and can be restored here after
-# the symmetric-memory matrix is stable.
+# PPU validates both P2P and RMA through ACCL. Device-kernel suites remain
+# excluded until their PPU support is available in CI.
 unit_test_suites:
+  - adaptor
+  - core
+  - p2p
+  - rma
+  - runner
+  - service
   - symmem
