@@ -1143,6 +1143,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "OutOfOrderRequestsAdvanceOnlyContiguousPrefix", transport_test
         )
+        for test_name in (
+            "GetDataCompletionWaitsForFlushAndRetriesBackpressure",
+            "ImmediateGetStillWaitsForSynchronousFlush",
+            "GetFlushFailureBecomesScoreboardError",
+            "DataFailureSkipsRequiredGetFlush",
+            "AsyncGetFlushFailureBecomesCompletionError",
+            "AbortReleasesMalformedInflightRequest",
+            "OutOfOrderGetFlushesAdvanceOnlyContiguousPrefix",
+        ):
+            self.assertIn(test_name, transport_test)
         self.assertIn(
             "StagingSlotsRemainOwnedUntilRequestCompletion", transport_test
         )
@@ -1190,6 +1200,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
             : terminal_publish.index("flagcxKernelProxyAdvanceCompleted(")
         ]
         self.assertNotIn("kernelState.fifos[", terminal_publish)
+        immediate_completion = proxy_source[
+            proxy_source.index("if (!postedIB) {") :
+        ]
+        immediate_completion = immediate_completion[
+            : immediate_completion.index("hasPending = false;")
+        ]
+        self.assertLess(
+            immediate_completion.index("flagcxKernelProxyPublishTerminal("),
+            immediate_completion.index("flagcxKernelProxyAdvanceCompleted("),
+        )
         kernel_join = proxy_source.index(
             "pthread_join(comm->proxyState->kernelState.threads[i]"
         )

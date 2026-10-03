@@ -7,6 +7,7 @@
 
 #include "net_transport.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 enum flagcxKernelProxyRequestState {
@@ -15,13 +16,31 @@ enum flagcxKernelProxyRequestState {
   FLAGCX_KERNEL_PROXY_REQUEST_POSTED = 2,
 };
 
+enum flagcxKernelProxyCompletionStage {
+  FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED = 0,
+  FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING = 1,
+  FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_POSTED = 2,
+};
+
+typedef flagcxResult_t (*flagcxKernelProxyTestRequestFn)(void *request,
+                                                         int *done, int *sizes);
+typedef flagcxResult_t (*flagcxKernelProxyPostFlushFn)(
+    void *context, void *recvComm, int dstMrIdx, uint64_t dstOff, size_t size,
+    void **request);
+
 struct flagcxKernelProxyRequest {
   void *request;
+  void *flushRecvComm;
   struct flagcxNetSubmitContext submit;
   flagcxResult_t completionResult;
+  uint64_t dstOff;
+  size_t size;
   int peer;
+  int dstMrIdx;
   int stagingSlot;
   uint32_t state;
+  uint8_t requiresGetFlush;
+  uint8_t completionStage;
 };
 
 // Per-kernel-context ordering state. The completion scoreboard orders the
@@ -71,8 +90,22 @@ flagcxResult_t
 flagcxKernelProxyPublishRequest(struct flagcxKernelProxyTransport *transport,
                                 uint32_t slot, void *request,
                                 flagcxResult_t completionResult);
+flagcxResult_t
+flagcxKernelProxyRequireGetFlush(struct flagcxKernelProxyTransport *transport,
+                                 uint32_t slot, int dstMrIdx, uint64_t dstOff,
+                                 size_t size, void *flushRecvComm);
+flagcxResult_t flagcxKernelProxyPublishGetFlushPending(
+    struct flagcxKernelProxyTransport *transport, uint32_t slot);
+flagcxResult_t flagcxKernelProxyProgressRequest(
+    struct flagcxKernelProxyTransport *transport, uint32_t slot,
+    flagcxKernelProxyTestRequestFn testRequest,
+    flagcxKernelProxyPostFlushFn postFlush, void *flushContext, int *ready,
+    flagcxResult_t *completionResult);
 void flagcxKernelProxyCancelRequest(
     struct flagcxKernelProxyTransport *transport, uint32_t slot);
+flagcxResult_t
+flagcxKernelProxyAbortRequest(struct flagcxKernelProxyTransport *transport,
+                              uint32_t slot, int *releasedStagingSlot);
 flagcxResult_t
 flagcxKernelProxyCompleteRequest(struct flagcxKernelProxyTransport *transport,
                                  uint32_t slot, flagcxResult_t result,

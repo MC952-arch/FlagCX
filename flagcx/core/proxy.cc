@@ -1706,6 +1706,15 @@ flagcxKernelProxyAdvanceCompleted(struct flagcxKernelProxyState *state,
       (flagcxCompletionWord_t)advanced, __ATOMIC_RELEASE);
 }
 
+static flagcxResult_t
+flagcxKernelProxyPostGetVisibilityFlush(void *context, void *recvComm,
+                                        int dstMrIdx, uint64_t dstOff,
+                                        size_t size, void **request) {
+  return flagcxOneSidePostGetVisibilityFlush(
+      static_cast<struct flagcxHeteroComm *>(context), dstMrIdx, dstOff, size,
+      recvComm, request);
+}
+
 class flagcxKernelSubmitScope {
 public:
   explicit flagcxKernelSubmitScope(
@@ -1735,16 +1744,28 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
     struct flagcxKernelProxyRequest *entry = &state->transport.requests[i];
     if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED)
       continue;
-    int done = 0;
-    flagcxResult_t completionResult = entry->completionResult;
-    flagcxResult_t testResult = net->test(entry->request, &done, NULL);
-    if (testResult != flagcxSuccess) {
-      WARN("flagcxKernelProxyPoll: test failed peer=%d res=%d", entry->peer,
-           (int)testResult);
-      completionResult = testResult;
-      done = 1;
+    int ready = 0;
+    flagcxResult_t completionResult = flagcxSuccess;
+    flagcxResult_t progressResult = flagcxKernelProxyProgressRequest(
+        &state->transport, i, net->test,
+        flagcxKernelProxyPostGetVisibilityFlush, comm, &ready,
+        &completionResult);
+    if (progressResult != flagcxSuccess) {
+      WARN("flagcxKernelProxyPoll: progress failed peer=%d res=%d", entry->peer,
+           (int)progressResult);
+      int stagingSlot = -1;
+      flagcxResult_t abortResult =
+          flagcxKernelProxyAbortRequest(&state->transport, i, &stagingSlot);
+      if (abortResult == flagcxSuccess && stagingSlot >= 0)
+        abortResult =
+            flagcxKernelProxyReleaseStagingSlot(&state->transport, stagingSlot);
+      if (abortResult != flagcxSuccess)
+        WARN("flagcxKernelProxyPoll: abort failed slot=%u res=%d", i,
+             (int)abortResult);
+      flagcxKernelProxyPublishTerminal(state, comm, progressResult);
+      continue;
     }
-    if (!done)
+    if (!ready)
       continue;
 
     uint32_t advanced = 0;
@@ -1752,6 +1773,14 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
     flagcxResult_t result = flagcxKernelProxyCompleteRequest(
         &state->transport, i, completionResult, &advanced, &stagingSlot);
     if (result != flagcxSuccess) {
+      flagcxResult_t abortResult =
+          flagcxKernelProxyAbortRequest(&state->transport, i, &stagingSlot);
+      if (abortResult == flagcxSuccess && stagingSlot >= 0)
+        abortResult =
+            flagcxKernelProxyReleaseStagingSlot(&state->transport, stagingSlot);
+      if (abortResult != flagcxSuccess)
+        WARN("flagcxKernelProxyPoll: completion abort failed slot=%u res=%d", i,
+             (int)abortResult);
       flagcxKernelProxyPublishTerminal(state, comm, result);
       continue;
     }
@@ -1761,9 +1790,12 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
       if (result != flagcxSuccess)
         flagcxKernelProxyPublishTerminal(state, comm, result);
     }
-    flagcxKernelProxyAdvanceCompleted(state, advanced);
     if (completionResult != flagcxSuccess)
       flagcxKernelProxyPublishTerminal(state, comm, completionResult);
+    // Publish a terminal error before advancing completed. The GPU performs an
+    // acquire load of completed and may return immediately once it reaches its
+    // snapshot, so the terminal word must already be visible at that point.
+    flagcxKernelProxyAdvanceCompleted(state, advanced);
   }
 }
 
@@ -1848,6 +1880,24 @@ static flagcxResult_t flagcxKernelProxyPost(
     return reserveResult;
   }
 
+  const bool requiresGetFlush =
+      type == FLAGCX_RMA_GET && size != 0 &&
+      flagcxOneSideGetCompletionRequiresFlush(comm, dstMrIdx);
+  if (requiresGetFlush) {
+    void *flushRecvComm = h0->contextRecvComms != NULL && ctx < h0->nContexts &&
+                                  h0->contextRecvComms[ctx] != NULL
+                              ? h0->contextRecvComms[ctx][comm->rank]
+                              : NULL;
+    flagcxResult_t configureResult = flagcxKernelProxyRequireGetFlush(
+        &state->transport, requestSlot, dstMrIdx, dstOff, size, flushRecvComm);
+    if (configureResult != flagcxSuccess) {
+      flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+      if (stagingSlot >= 0)
+        flagcxKernelProxyReleaseStagingSlot(&state->transport, stagingSlot);
+      return configureResult;
+    }
+  }
+
   void *request = NULL;
   flagcxResult_t res = flagcxSuccess;
   {
@@ -1928,6 +1978,18 @@ static flagcxResult_t flagcxKernelProxyPost(
     *posted = true;
     if (completionResult != flagcxSuccess)
       flagcxKernelProxyPublishTerminal(state, comm, completionResult);
+    return flagcxSuccess;
+  }
+
+  if (res == flagcxSuccess && requiresGetFlush) {
+    flagcxResult_t publishResult =
+        flagcxKernelProxyPublishGetFlushPending(&state->transport, requestSlot);
+    if (publishResult != flagcxSuccess) {
+      flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+      flagcxKernelProxyPublishTerminal(state, comm, publishResult);
+      return publishResult;
+    }
+    *posted = true;
     return flagcxSuccess;
   }
 
@@ -2393,6 +2455,10 @@ init_done:
           &kproxyState->transport, &submit, res, &advanced);
       if (completeResult != flagcxSuccess)
         res = completeResult;
+      // Match the asynchronous completion path: a waiter that observes the
+      // completed counter must also observe the terminal error.
+      if (res != flagcxSuccess)
+        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
       flagcxKernelProxyAdvanceCompleted(kproxyState, advanced);
     }
     hasPending = false;

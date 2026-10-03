@@ -17,8 +17,10 @@ flagcxKernelProxyRequestReset(struct flagcxKernelProxyRequest *request) {
   memset(request, 0, sizeof(*request));
   request->completionResult = flagcxSuccess;
   request->peer = -1;
+  request->dstMrIdx = -1;
   request->stagingSlot = -1;
   request->state = FLAGCX_KERNEL_PROXY_REQUEST_FREE;
+  request->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED;
 }
 
 flagcxResult_t
@@ -165,6 +167,99 @@ flagcxKernelProxyPublishRequest(struct flagcxKernelProxyTransport *transport,
   return flagcxSuccess;
 }
 
+flagcxResult_t
+flagcxKernelProxyRequireGetFlush(struct flagcxKernelProxyTransport *transport,
+                                 uint32_t slot, int dstMrIdx, uint64_t dstOff,
+                                 size_t size, void *flushRecvComm) {
+  if (transport == NULL || slot >= transport->capacity || dstMrIdx < 0 ||
+      size == 0 || flushRecvComm == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
+  if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_RESERVED)
+    return flagcxInvalidArgument;
+  entry->dstMrIdx = dstMrIdx;
+  entry->dstOff = dstOff;
+  entry->size = size;
+  entry->flushRecvComm = flushRecvComm;
+  entry->requiresGetFlush = 1;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxKernelProxyPublishGetFlushPending(
+    struct flagcxKernelProxyTransport *transport, uint32_t slot) {
+  if (transport == NULL || slot >= transport->capacity)
+    return flagcxInvalidArgument;
+  struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
+  if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_RESERVED ||
+      entry->requiresGetFlush == 0)
+    return flagcxInvalidArgument;
+  entry->request = NULL;
+  entry->completionResult = flagcxSuccess;
+  entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING;
+  entry->state = FLAGCX_KERNEL_PROXY_REQUEST_POSTED;
+  transport->nativeInflight++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxKernelProxyProgressRequest(
+    struct flagcxKernelProxyTransport *transport, uint32_t slot,
+    flagcxKernelProxyTestRequestFn testRequest,
+    flagcxKernelProxyPostFlushFn postFlush, void *flushContext, int *ready,
+    flagcxResult_t *completionResult) {
+  if (transport == NULL || slot >= transport->capacity || ready == NULL ||
+      completionResult == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
+  if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED)
+    return flagcxInvalidArgument;
+
+  *ready = 0;
+  *completionResult = entry->completionResult;
+  if (entry->completionStage == FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING) {
+    if (postFlush == NULL)
+      return flagcxInvalidArgument;
+    void *flushRequest = NULL;
+    flagcxResult_t result =
+        postFlush(flushContext, entry->flushRecvComm, entry->dstMrIdx,
+                  entry->dstOff, entry->size, &flushRequest);
+    if (result == flagcxInProgress)
+      return flagcxSuccess;
+    if (result != flagcxSuccess) {
+      entry->completionResult = result;
+      *completionResult = result;
+      *ready = 1;
+      return flagcxSuccess;
+    }
+    if (flushRequest == NULL) {
+      *ready = 1;
+      return flagcxSuccess;
+    }
+    entry->request = flushRequest;
+    entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_POSTED;
+    return flagcxSuccess;
+  }
+
+  if (entry->request == NULL || testRequest == NULL)
+    return flagcxInvalidArgument;
+  int done = 0;
+  flagcxResult_t result = testRequest(entry->request, &done, NULL);
+  if (result != flagcxSuccess) {
+    entry->completionResult = result;
+    *completionResult = result;
+    done = 1;
+  }
+  if (!done)
+    return flagcxSuccess;
+  if (*completionResult == flagcxSuccess && entry->requiresGetFlush != 0 &&
+      entry->completionStage == FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED) {
+    entry->request = NULL;
+    entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING;
+    return flagcxSuccess;
+  }
+  *ready = 1;
+  return flagcxSuccess;
+}
+
 void flagcxKernelProxyCancelRequest(
     struct flagcxKernelProxyTransport *transport, uint32_t slot) {
   if (transport == NULL || slot >= transport->capacity)
@@ -172,6 +267,22 @@ void flagcxKernelProxyCancelRequest(
   struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
   if (entry->state == FLAGCX_KERNEL_PROXY_REQUEST_RESERVED)
     flagcxKernelProxyRequestReset(entry);
+}
+
+flagcxResult_t
+flagcxKernelProxyAbortRequest(struct flagcxKernelProxyTransport *transport,
+                              uint32_t slot, int *releasedStagingSlot) {
+  if (transport == NULL || releasedStagingSlot == NULL ||
+      slot >= transport->capacity)
+    return flagcxInvalidArgument;
+  struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
+  if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED ||
+      transport->nativeInflight == 0)
+    return flagcxInvalidArgument;
+  *releasedStagingSlot = entry->stagingSlot;
+  transport->nativeInflight--;
+  flagcxKernelProxyRequestReset(entry);
+  return flagcxSuccess;
 }
 
 flagcxResult_t

@@ -170,6 +170,16 @@ struct flagcxRmaProxyState {
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
+// Internal one-sided GET visibility contract shared by the host RMA proxy and
+// the Device API kernel proxy. A provider may require a local flush after the
+// GET data request completes before the destination is visible to the device.
+bool flagcxOneSideGetCompletionRequiresFlush(
+    const struct flagcxHeteroComm *comm, int dstMrIdx);
+flagcxResult_t
+flagcxOneSidePostGetVisibilityFlush(struct flagcxHeteroComm *comm, int dstMrIdx,
+                                    uint64_t dstOff, size_t size,
+                                    void *recvComm, void **request);
+
 flagcxResult_t flagcxHeteroGetVersion(int *version);
 
 /* C++ style */
