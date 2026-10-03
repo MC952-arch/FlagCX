@@ -210,6 +210,10 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   int ptrType = 0;
   flagcxResult_t result = deviceAdaptor->getPointerType(nullptr, &ptrType);
   if (result == flagcxNotSupported) {
+    // DU relies on this query to distinguish mapped host memory from device
+    // memory. Its IPC exporter accepts both and therefore cannot be used as a
+    // pointer-type probe by the P2P registration path.
+    EXPECT_STRNE(deviceAdaptor->name, "DUCUDA");
     EXPECT_EQ(deviceAdaptor->getPointerType(this, nullptr), flagcxNotSupported);
     return;
   }

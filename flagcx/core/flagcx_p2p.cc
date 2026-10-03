@@ -1583,39 +1583,67 @@ static void traceP2pAddressRange(const char *stage, FlagcxP2pEngine *engine,
         reinterpret_cast<void *>(handleBase));
 }
 
-static int detectPtrTypeAndMaybeCacheIpc(void *ptr, char *ipcHandleBuf,
-                                         uint32_t *ipcHandleSize) {
+static flagcxResult_t detectPtrTypeAndMaybeCacheIpc(void *ptr, int *ptrType,
+                                                    char *ipcHandleBuf,
+                                                    uint32_t *ipcHandleSize) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
   if (ipcHandleBuf)
     memset(ipcHandleBuf, 0, FLAGCX_P2P_IPC_HANDLE_BYTES);
   if (ipcHandleSize)
     *ipcHandleSize = 0;
 
+  // Pointer classification and IPC export answer different questions. In
+  // particular, DU can export an IPC handle for mapped host memory. Prefer an
+  // authoritative type query and use IPC only to cache optional sharing data.
+  bool typeKnown = false;
+  if (deviceAdaptor != NULL && deviceAdaptor->getPointerType != NULL) {
+    const flagcxResult_t typeResult =
+        deviceAdaptor->getPointerType(ptr, ptrType);
+    if (typeResult == flagcxSuccess) {
+      if (*ptrType != FLAGCX_PTR_HOST && *ptrType != FLAGCX_PTR_CUDA)
+        return flagcxInternalError;
+      typeKnown = true;
+    } else if (typeResult != flagcxNotSupported) {
+      return typeResult;
+    }
+  }
+
+  if (typeKnown && *ptrType == FLAGCX_PTR_HOST)
+    return flagcxSuccess;
+
   if (deviceAdaptor == NULL || deviceAdaptor->ipcMemHandleCreate == NULL ||
       deviceAdaptor->ipcMemHandleGet == NULL ||
       deviceAdaptor->ipcMemHandleFree == NULL) {
-    return FLAGCX_PTR_HOST;
+    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
+    return flagcxSuccess;
   }
 
   flagcxIpcMemHandle_t handle = NULL;
   size_t handleSize = 0;
   if (deviceAdaptor->ipcMemHandleCreate(&handle, &handleSize) !=
       flagcxSuccess) {
-    return FLAGCX_PTR_HOST;
+    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
+    return flagcxSuccess;
   }
 
   const flagcxResult_t getRes = deviceAdaptor->ipcMemHandleGet(handle, ptr);
-  if (getRes == flagcxSuccess && handleSize <= FLAGCX_P2P_IPC_HANDLE_BYTES) {
-    if (ipcHandleBuf)
-      memcpy(ipcHandleBuf, handle, handleSize);
-    if (ipcHandleSize)
-      *ipcHandleSize = (uint32_t)handleSize;
-    deviceAdaptor->ipcMemHandleFree(handle);
-    return FLAGCX_PTR_CUDA;
+  if (getRes == flagcxSuccess) {
+    *ptrType = FLAGCX_PTR_CUDA;
+    if (handleSize <= FLAGCX_P2P_IPC_HANDLE_BYTES) {
+      if (ipcHandleBuf)
+        memcpy(ipcHandleBuf, handle, handleSize);
+      if (ipcHandleSize)
+        *ipcHandleSize = (uint32_t)handleSize;
+    }
+  } else {
+    if (deviceAdaptor->getLastError)
+      deviceAdaptor->getLastError();
+    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
   }
-  if (deviceAdaptor->getLastError)
-    deviceAdaptor->getLastError();
   deviceAdaptor->ipcMemHandleFree(handle);
-  return FLAGCX_PTR_HOST;
+  return flagcxSuccess;
 }
 
 static void serializeIpcInfo(const FlagcxP2pIpcInfo &info, char *buf) {
@@ -2887,15 +2915,16 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   if (flagcxP2pIsAccl(engine))
     return flagcxAcclEngineReg(engine, data, size, mrId);
 
-  auto resolvePtrType = [&](char *ipcHandleBuf,
-                            uint32_t *ipcHandleSize) -> int {
+  auto resolvePtrType = [&](int *ptrType, char *ipcHandleBuf,
+                            uint32_t *ipcHandleSize) -> flagcxResult_t {
     if (hintType == FLAGCX_PTR_HOST || hintType == FLAGCX_PTR_CUDA) {
       if (ipcHandleSize)
         *ipcHandleSize = 0;
-      return hintType;
+      *ptrType = hintType;
+      return flagcxSuccess;
     }
     return detectPtrTypeAndMaybeCacheIpc(reinterpret_cast<void *>(data),
-                                         ipcHandleBuf, ipcHandleSize);
+                                         ptrType, ipcHandleBuf, ipcHandleSize);
   };
 
   if (!flagcxParamMrSortedLookup()) {
@@ -2927,7 +2956,13 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
     entry.ibDevN = ibDevN;
 
     setEngineDevice(engine);
-    entry.ptrType = resolvePtrType(entry.ipcHandle, &entry.ipcHandleSize);
+    const flagcxResult_t ptrTypeResult =
+        resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize);
+    if (ptrTypeResult != flagcxSuccess) {
+      WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
+           (int)ptrTypeResult);
+      return -1;
+    }
     entry.hasIpc = entry.ptrType == FLAGCX_PTR_CUDA && entry.ipcHandleSize > 0;
 
     if (engine->adaptor->regMr(&devCtx, reinterpret_cast<void *>(data), size,
@@ -2984,7 +3019,15 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   memset(ipcHandle, 0, sizeof(ipcHandle));
 
   setEngineDevice(engine);
-  int ptrType = resolvePtrType(ipcHandle, &ipcHandleSize);
+  int ptrType = FLAGCX_PTR_HOST;
+  const flagcxResult_t ptrTypeResult =
+      resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize);
+  if (ptrTypeResult != flagcxSuccess) {
+    WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
+         (int)ptrTypeResult);
+    pthread_mutex_unlock(&gMrLifecycleMutex);
+    return -1;
+  }
   bool hasIpc = ptrType == FLAGCX_PTR_CUDA && ipcHandleSize > 0;
 
   /* Register with adaptor */
