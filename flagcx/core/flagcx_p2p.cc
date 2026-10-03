@@ -21,9 +21,11 @@
 #include "flagcx_p2p_accl.h"
 #include "ib_common.h"
 #include "ibvwrap.h"
+#include "p2p.h"
 #include "p2p_control.h"
 #include "p2p_scheduler.h"
 #include "p2p_topo.h"
+#include "p2p_visibility.h"
 #include "param.h"
 #include "socket.h"
 
@@ -3265,6 +3267,18 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   if (getCommView(conn->sendComm)->ibDevN != localEntry.ibDevN)
     return -1;
 
+  const uint32_t requirements = flagcxResolveGdrFlushRequirements(
+      deviceAdaptor == NULL ? FLAGCX_GDR_FLUSH_NONE
+                            : deviceAdaptor->gdrFlushRequirements);
+  const flagcxResult_t visibilityResult = flagcxP2pValidateReadVisibility(
+      requirements, conn->engine->adaptor->gdrFlushCaps, localEntry.ptrType,
+      size, 0);
+  if (visibilityResult != flagcxSuccess) {
+    WARN("P2P read rejected: GPU destination requires a post-READ visibility "
+         "flush, but the direct P2P completion path has none");
+    return -1;
+  }
+
   FlagcxP2pMrHandleView *localMr =
       reinterpret_cast<FlagcxP2pMrHandleView *>(localEntry.mhandle);
 
@@ -3370,6 +3384,22 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
               "[FlagCX P2P] ReadVector memReg bounds check failed: iov=%d, "
               "mr=%lu, addr=%p, size=%zu\n",
               i, (unsigned long)mrIds[i], dstVec[i], sizeVec[i]);
+      return -1;
+    }
+  }
+
+  const uint32_t requirements = flagcxResolveGdrFlushRequirements(
+      deviceAdaptor == NULL ? FLAGCX_GDR_FLUSH_NONE
+                            : deviceAdaptor->gdrFlushRequirements);
+  for (int i = 0; i < numIovs; i++) {
+    const flagcxResult_t visibilityResult = flagcxP2pValidateReadVisibility(
+        requirements, conn->engine->adaptor->gdrFlushCaps,
+        localEntries[i].ptrType, sizeVec[i], 0);
+    if (visibilityResult != flagcxSuccess) {
+      WARN("P2P ReadVector rejected: GPU destination iov=%d requires a "
+           "post-READ visibility flush, but the direct P2P completion path "
+           "has none",
+           i);
       return -1;
     }
   }

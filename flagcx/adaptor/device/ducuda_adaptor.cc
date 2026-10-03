@@ -1043,7 +1043,10 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ducudaAdaptorSymMulticastImport,
       ducudaAdaptorSymFlatMappingUnmap, ducudaAdaptorSymFlatVaFree,
       ducudaAdaptorSymMulticastMappingUnmap, ducudaAdaptorSymMulticastVaFree,
-      FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH,
+      // Hygon requires the local post-READ flush for ordinary allocations as
+      // well as VMM. Its current DU runtime cannot provide stream acquire for
+      // incoming WRITEs, so strong WRITE consumers fail safely as unsupported.
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_DU_ADAPTOR
