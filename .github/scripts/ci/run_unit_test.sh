@@ -65,7 +65,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -183,13 +183,11 @@ run_device_api_unified_ir() {
   local -a common_env=(
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_VMM_ENABLE=0
-    -x FLAGCX_IB_GID_INDEX=3
-    -x NCCL_DEBUG=INFO
-    -x NCCL_DEBUG_SUBSYS=INIT
-    -x NCCL_NVLS_ENABLE=0
-    -x NCCL_IB_GID_INDEX=3
     -x LD_LIBRARY_PATH
   )
+  if declare -p FLAGCX_CI_UNIFIED_IR_MPI_ARGS >/dev/null 2>&1; then
+    common_env+=("${FLAGCX_CI_UNIFIED_IR_MPI_ARGS[@]}")
+  fi
   local -a intra_env=(
     "${common_env[@]}"
     -x FLAGCX_DEBUG=INFO
