@@ -37,6 +37,8 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
   EXPECT_EQ(latest.symMulticastVaFree, nullptr);
   EXPECT_EQ(latest.gdrFlushRequirements,
             static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
+  EXPECT_EQ(latest.gdrDeviceFamily, FLAGCX_GDR_DEVICE_UNKNOWN);
+  EXPECT_EQ(latest.getDeviceArchitecture, nullptr);
   EXPECT_EQ(latest.vmmMrCaps, static_cast<uint32_t>(FLAGCX_VMM_MR_CAP_NONE));
   EXPECT_NE(latest.internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1,
             0u);
@@ -236,6 +238,10 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   ASSERT_NE(hostPtr, nullptr);
   EXPECT_EQ(deviceAdaptor->getPointerType(hostPtr, &ptrType), flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
+  EXPECT_EQ(deviceAdaptor->getPointerType(static_cast<char *>(hostPtr) + 64,
+                                          &ptrType),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
   EXPECT_EQ(devHandle->deviceFree(hostPtr, flagcxMemHost, nullptr),
             flagcxSuccess);
 
@@ -246,6 +252,10 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   ASSERT_NE(devicePtr, nullptr);
   EXPECT_EQ(deviceAdaptor->getPointerType(devicePtr, &ptrType), flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(deviceAdaptor->getPointerType(static_cast<char *>(devicePtr) + 64,
+                                          &ptrType),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(devHandle->deviceFree(devicePtr, flagcxMemDevice, nullptr),
             flagcxSuccess);
 
@@ -255,6 +265,10 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
             flagcxSuccess);
   ASSERT_NE(managedPtr, nullptr);
   EXPECT_EQ(deviceAdaptor->getPointerType(managedPtr, &ptrType), flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(deviceAdaptor->getPointerType(static_cast<char *>(managedPtr) + 64,
+                                          &ptrType),
+            flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(devHandle->deviceFree(managedPtr, flagcxMemManaged, nullptr),
             flagcxSuccess);
@@ -283,6 +297,10 @@ TEST_F(DeviceAdaptorTest, GetAddressRangeForInteriorGdrPointer) {
             flagcxSuccess);
   ASSERT_NE(allocation, nullptr);
 
+  int ptrType = -1;
+  ASSERT_EQ(deviceAdaptor->getPointerType(allocation, &ptrType), flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+
   void *allocationBase = nullptr;
   size_t queriedAllocationSize = 0;
   ASSERT_EQ(deviceAdaptor->getAddressRange(allocation, &allocationBase,
@@ -300,6 +318,8 @@ TEST_F(DeviceAdaptorTest, GetAddressRangeForInteriorGdrPointer) {
   const size_t offsets[] = {interiorOffset, allocationSize - 64};
   for (size_t offset : offsets) {
     void *interior = reinterpret_cast<void *>(allocationAddress + offset);
+    ASSERT_EQ(deviceAdaptor->getPointerType(interior, &ptrType), flagcxSuccess);
+    EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
     void *interiorBase = nullptr;
     size_t interiorRangeSize = 0;
     ASSERT_EQ(deviceAdaptor->getAddressRange(interior, &interiorBase,

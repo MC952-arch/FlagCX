@@ -26,7 +26,6 @@ all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
-
 $(OBJDIR)/device_api.o: device_api.cu
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_api.cu (DU)"

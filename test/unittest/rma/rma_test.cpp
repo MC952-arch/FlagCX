@@ -3,6 +3,7 @@
 #include "comm.h"
 #include "flagcx_hetero.h"
 #include "global_comm.h"
+#include "onesided_types.h"
 #include "sym_heap.h"
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,7 @@ size_t RmaTest::size = 0;
 size_t RmaTest::signalSize = 0;
 bool RmaTest::requireIpc = false;
 bool RmaTest::windowAvailable = false;
+flagcxResult_t RmaTest::windowRegistrationResult = flagcxInternalError;
 bool RmaTest::networkRmaAvailable = false;
 bool RmaTest::ipcRmaAvailable = false;
 bool RmaTest::dataRmaAvailable = false;
@@ -54,6 +56,7 @@ void RmaTest::SetUpTestSuite() {
   requireIpc = ibDisabled && !p2pDisabled;
   const bool requireNet = !ibDisabled && p2pDisabled;
   windowAvailable = false;
+  windowRegistrationResult = flagcxInternalError;
   networkRmaAvailable = false;
   ipcRmaAvailable = false;
   dataRmaAvailable = false;
@@ -142,6 +145,7 @@ void RmaTest::SetUpTestSuite() {
   // Register the data buffer only after every rank has allocated it.
   res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
                                  FLAGCX_WIN_COLL_SYMMETRIC);
+  windowRegistrationResult = res;
   bool localWindowReady = res == flagcxSuccess && dataWin != nullptr &&
                           dataWin->isSymmetricDefault &&
                           dataWin->defaultBase != nullptr;
@@ -230,18 +234,27 @@ void RmaTest::SetUpTestSuite() {
     return;
   }
 
-  // Verify the exact acquire semantics required by flagcxWaitSignal before a
-  // test can submit a network PUT/signal.  The probe waits on a value already
-  // stored in local device memory, so it cannot depend on remote progress.
+  // Verify the exact policy-selected acquire semantics required by
+  // flagcxWaitSignal before a test can submit a network PUT/signal. The probe
+  // waits on a value already stored in local device memory, so it cannot
+  // depend on remote progress. Platforms with a deliberate NONE policy (PPU's
+  // transitional BAREX path) must not be rejected by an unconditional strong
+  // wait probe.
   int localSignalStatus = allSignalsCapable ? 0 : 1;
   if (localSignalStatus == 0) {
     uint64_t probeValue = 1;
     res = devHandle->deviceMemcpy(signalBuff, &probeValue, sizeof(probeValue),
                                   flagcxMemcpyHostToDevice, nullptr);
     if (res == flagcxSuccess) {
-      res = deviceAdaptor->streamWaitValue64(
-          stream, signalBuff, probeValue,
-          FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
+      const uint32_t requirements =
+          comm->heteroComm->signalHandle == nullptr
+              ? FLAGCX_GDR_WRITE_REQUIRES_FLUSH
+              : comm->heteroComm->signalHandle->gdrFlushRequirements;
+      const int waitFlags = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH)
+                                ? FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES
+                                : FLAGCX_STREAM_WAIT_VALUE_DEFAULT;
+      res = deviceAdaptor->streamWaitValue64(stream, signalBuff, probeValue,
+                                             waitFlags);
     }
     if (res == flagcxSuccess)
       res = devHandle->streamSynchronize(stream);
@@ -334,6 +347,30 @@ void RmaTest::TearDownTestSuite() {
 
 void RmaTest::SetUp() {
   FlagCXTest::SetUp();
+  const char *setupExpectation =
+      std::getenv("FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP");
+  if (setupExpectation != nullptr && setupExpectation[0] != '\0') {
+    const bool requireUnsupported =
+        std::strcmp(setupExpectation, "unsupported") == 0;
+    const bool allowUnsupported =
+        requireUnsupported ||
+        std::strcmp(setupExpectation, "success_or_unsupported") == 0;
+    ASSERT_TRUE(requireUnsupported ||
+                std::strcmp(setupExpectation, "success") == 0 ||
+                std::strcmp(setupExpectation, "success_or_unsupported") == 0)
+        << "FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP must be success, "
+           "unsupported, or success_or_unsupported";
+    if (requireUnsupported) {
+      ASSERT_EQ(windowRegistrationResult, flagcxNotSupported)
+          << "strict VMM route must fail closed with NotSupported";
+      GTEST_SKIP() << "strict VMM MR route is explicitly unsupported";
+    }
+    if (windowRegistrationResult == flagcxNotSupported && allowUnsupported) {
+      GTEST_SKIP() << "strict VMM MR route is explicitly unsupported";
+    }
+    ASSERT_EQ(windowRegistrationResult, flagcxSuccess)
+        << "strict VMM route failed with a non-capability error";
+  }
   ASSERT_TRUE(windowAvailable) << "RMA data window is unavailable";
   ASSERT_TRUE(dataRmaAvailable) << dataRmaSkipReason;
   ASSERT_NE(dataWin, nullptr);
