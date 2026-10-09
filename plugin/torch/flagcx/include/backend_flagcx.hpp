@@ -70,6 +70,20 @@ public:
 #elif USE_SUNRISE_ADAPTOR
     event_ = std::make_unique<flagcxPtpuEvent>();
 #endif
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+    // Keep a private copy of the stream handle.
+    //
+    // On this path flagcxStream_t points into the backend's aclStreams_ slot,
+    // which the next getStreamByIndex() call overwrites. A Work outlives the
+    // call that created it, so without this copy an asynchronous Work
+    // submitted on one stream could observe another one by the time wait()
+    // runs, and streamSynchronize() would then synchronize the wrong stream
+    // for isBarrierOp_ Works.
+    if (stream != nullptr) {
+      ownedStream_ = *reinterpret_cast<aclrtStream *>(stream);
+      stream_ = reinterpret_cast<flagcxStream_t>(&ownedStream_);
+    }
+#endif
   }
   bool isCompleted() override;
   bool isSuccess() const override;
@@ -77,6 +91,10 @@ public:
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
 
 private:
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  // Storage behind stream_; never rewritten for the lifetime of this Work.
+  aclrtStream ownedStream_ = nullptr;
+#endif
   flagcxStream_t stream_;
   flagcxDeviceHandle_t devHandle_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
@@ -307,7 +325,13 @@ protected:
   bool recordingEnded = false;
 #endif
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-  aclrtStream acl_stream;
+  // One slot per stream id. This used to be a single aclrtStream member while
+  // flagcxStreams_ stored a pointer to it, so different stream ids aliased the
+  // same storage.
+  std::unordered_map<int, aclrtStream> aclStreams_;
+  // Set while a coalesced pair-comm batch is open, so that getStreamByIndex()
+  // keeps returning the stream the batch started on.
+  bool coalescedStreamPinned_ = false;
 #endif
 
   // Heterogeneous P2P uses the process-group communicator. Homogeneous P2P

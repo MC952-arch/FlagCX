@@ -394,9 +394,19 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
 #endif
 
 flagcxBackend::~flagcxBackend() {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  // On Ascend, flagcxStreams_ holds pointers into aclStreams_. The streams
+  // themselves are owned by PyTorch and were never produced by streamCreate(),
+  // so destroying them frees memory this backend does not own. This showed up
+  // as "free(): invalid pointer" followed by SIGABRT at interpreter shutdown,
+  // making every run exit non-zero even after the work had completed.
+  flagcxStreams_.clear();
+  aclStreams_.clear();
+#else
   for (auto &s : flagcxStreams_) {
     devHandle_->streamDestroy(s.second);
   }
+#endif
   // Pair communicators can be initialized lazily by send/recv, before the
   // process-group communicator is initialized.
   for (auto &kv : pairComms_) {
@@ -416,22 +426,52 @@ flagcxBackend::~flagcxBackend() {
 }
 
 flagcxStream_t flagcxBackend::getStreamByIndex(int streamId) {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  // Always resolve PyTorch's *current* NPU stream; never cache it.
+  //
+  // The previous code captured the current stream on the first call and cached
+  // the pointer for the lifetime of the backend. Whenever PyTorch switched
+  // streams afterwards - communication/computation overlap, or an explicit
+  // side stream - collectives were still issued on the stale stream and had no
+  // ordering relationship with the stream that produced or consumed the data.
+  //
+  // stream(need_empty=true) additionally drains torch_npu's asynchronous task
+  // queue before returning the raw ACL stream. With need_empty=false the queue
+  // is not drained, so a kernel still sitting in the software queue can reach
+  // the stream *after* a collective that was submitted directly to it, and the
+  // collective then operates on pre-reduction data.
+  //
+  // Measured on Ascend 910C (4096 elements, 16 ranks): all_reduce returned a
+  // wrong result on 2 of 400 calls before this change, and running the same
+  // call from an explicit side stream failed on 59 of 60. HCCL under identical
+  // conditions had no failures.
+  //
+  // While a coalesced pair-comm batch is open the slot is pinned. The deferred
+  // send and recv lambdas each hold a pointer to this one slot, so refreshing
+  // it here would silently move the operations enqueued earlier in the batch
+  // onto whichever stream the last one resolved, losing their ordering against
+  // the kernels that produced their data. startCoalescing() resolves the slot
+  // once and endCoalescing() releases it, so a batch is submitted on a single
+  // stream - the same guarantee the NCCL backend gives for coalesced
+  // operations.
+  if (!coalescedStreamPinned_ ||
+      aclStreams_.find(streamId) == aclStreams_.end()) {
+    aclStreams_[streamId] = c10_npu::getCurrentNPUStream().stream(true);
+  }
+  flagcxStreams_[streamId] =
+      reinterpret_cast<flagcxStream_t>(&aclStreams_[streamId]);
+  return flagcxStreams_[streamId];
+#else
   if (auto search = flagcxStreams_.find(streamId);
       search != flagcxStreams_.end()) {
     return search->second;
   } else {
     flagcxStreams_[streamId] = nullptr;
-#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-    // TODO: The getStreamFromExternal interface is not supported at this stage
-    // on NPU. Adaptation modifications will be made in the future.
-    acl_stream = c10_npu::getCurrentNPUStream().stream(false);
-    flagcxStreams_[streamId] = reinterpret_cast<flagcxStream_t>(&acl_stream);
-#else
     C10D_FLAGCX_CHECK(devHandle_->streamCreate(&flagcxStreams_[streamId]),
                       std::nullopt);
-#endif
     return flagcxStreams_[streamId];
   }
+#endif
 }
 
 std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
@@ -619,6 +659,13 @@ void flagcxBackend::startCoalescing() {
                 "Nested coalescing is not supported for pair P2P operations");
     pairCoalesce_.active = true;
     pairCoalesce_.pendingOps.clear();
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+    // Pin the submission stream for the whole batch. The operations below are
+    // deferred until endCoalescing() and all refer to the same slot, so the
+    // slot is resolved once, here, rather than on every send/recv.
+    aclStreams_[0] = c10_npu::getCurrentNPUStream().stream(true);
+    coalescedStreamPinned_ = true;
+#endif
   } else {
     TORCH_CHECK(status_ == 1,
                 "Heterogeneous P2P communicator was not eagerly initialized");
@@ -635,8 +682,38 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
     std::stable_sort(
         pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
         [](const auto &a, const auto &b) { return a.first < b.first; });
-    for (auto &kv : pairCoalesce_.pendingOps) {
-      kv.second();
+    // Submit the pending operations of each peer inside one group.
+    //
+    // Without a group the HCCL adaptor takes its groupDepth == 0 path and calls
+    // the blocking HcclSend/HcclRecv. batch_isend_irecv posts a send before a
+    // recv on both sides of a pair, so both ranks block in their send waiting
+    // for the peer to post the matching recv, and the call never returns. This
+    // makes any pipeline-parallel run (PP > 1) hang on its first step, because
+    // Megatron's send_forward_recv_backward is built on batch_isend_irecv.
+    //
+    // Inside a group the adaptor accumulates the operations and submits them as
+    // a single HcclBatchSendRecv, which performs the exchange in both
+    // directions at once. The non-pair-communicator branch of this function
+    // already wraps its operations in groupStart()/groupEnd().
+    //
+    // pendingOps is already sorted by peer, so group each run of equal peers.
+    {
+      size_t i = 0;
+      const size_t n = pairCoalesce_.pendingOps.size();
+      while (i < n) {
+        const int peer = pairCoalesce_.pendingOps[i].first;
+        size_t j = i;
+        while (j < n && pairCoalesce_.pendingOps[j].first == peer) {
+          ++j;
+        }
+        auto pairComm = getOrCreatePairComm(peer);
+        C10D_FLAGCX_CHECK(flagcxGroupStart(pairComm), std::nullopt);
+        for (size_t k = i; k < j; ++k) {
+          pairCoalesce_.pendingOps[k].second();
+        }
+        C10D_FLAGCX_CHECK(flagcxGroupEnd(pairComm), std::nullopt);
+        i = j;
+      }
     }
     pairCoalesce_.pendingOps.clear();
     pairCoalesce_.active = false;
@@ -657,6 +734,11 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()));
   work->future_->markCompleted(c10::IValue(0));
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  // Released only now: the Work above represents the batch, and its completion
+  // event has to be recorded on the same stream the batch was submitted on.
+  coalescedStreamPinned_ = false;
+#endif
   return work;
 }
 

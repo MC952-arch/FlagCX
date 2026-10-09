@@ -25,6 +25,7 @@
 #elif USE_ASCEND_ADAPTOR
 #include "torch_npu/csrc/core/npu/NPUEvent.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
+#include <acl/acl.h>
 #elif USE_ILUVATAR_ADAPTOR
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
@@ -228,26 +229,64 @@ public:
 private:
   aclrtEvent event_ = nullptr;
 #else
-  flagcxCannEvent() { npu_event = c10_npu::NPUEvent(); }
-
-  void record(const int device_id) override {
-    npu_event.record(c10_npu::getCurrentNPUStream(device_id));
+  // Driven as an ACL event, like the FLAGOS path above.
+  //
+  // The streams this backend hands out are raw ACL stream handles that
+  // torch_npu does not own, and torch_npu's NPUEvent only accepts streams it
+  // manages: wrapping one with getStreamFromExternal() and passing it to
+  // NPUEvent::block() fails outright with "External NPU stream is not
+  // supported in NPUEvent::block. This path requires a torch_npu-managed
+  // stream." The ACL event API takes the stream handle as it is.
+  //
+  // ACL_EVENT_SYNC is the flag for stream-ordering events; events created with
+  // ACL_EVENT_TIME_LINE are rejected by aclrtStreamWaitEvent on CANN 9.0.1.
+  flagcxCannEvent() {
+    auto ret = aclrtCreateEventWithFlag(&event_, ACL_EVENT_SYNC);
+    TORCH_CHECK(ret == ACL_SUCCESS, "aclrtCreateEventWithFlag failed: ", ret);
   }
 
-  void record(const flagcxStream_t &stream, const int device_id) override {
-    npu_event.record(c10_npu::getNPUStreamFromPool(device_id));
+  ~flagcxCannEvent() override {
+    if (event_ != nullptr) {
+      aclrtDestroyEvent(event_);
+    }
+  }
+
+  void record(const int device_id) override {
+    auto stream = c10_npu::getCurrentNPUStream(device_id).stream(true);
+    auto ret = aclrtRecordEvent(event_, stream);
+    TORCH_CHECK(ret == ACL_SUCCESS, "aclrtRecordEvent failed: ", ret);
+  }
+
+  void record(const flagcxStream_t &stream, const int /*device_id*/) override {
+    // Place the event on the stream the operation was actually submitted to.
+    //
+    // Both stream-taking overloads used to ignore the stream argument and use
+    // an unrelated stream from the pool. That stream carries no work, so the
+    // event was satisfied immediately and neither ordering edge existed:
+    // flagcxWork::wait() blocks on this event, and syncStream() uses the
+    // block() overload below to make the submission stream wait for the
+    // caller's stream. Measured on Ascend 910C, a side-stream all_reduce
+    // followed only by work.wait() returned pre-reduction data on 21 of 60
+    // calls.
+    auto ret =
+        aclrtRecordEvent(event_, *reinterpret_cast<aclrtStream *>(stream));
+    TORCH_CHECK(ret == ACL_SUCCESS, "aclrtRecordEvent failed: ", ret);
   }
 
   void block(const int device_id) override {
-    npu_event.block(c10_npu::getCurrentNPUStream(device_id));
+    auto stream = c10_npu::getCurrentNPUStream(device_id).stream(true);
+    auto ret = aclrtStreamWaitEvent(stream, event_);
+    TORCH_CHECK(ret == ACL_SUCCESS, "aclrtStreamWaitEvent failed: ", ret);
   }
 
-  void block(const flagcxStream_t &stream, const int device_id) override {
-    npu_event.block(c10_npu::getNPUStreamFromPool(device_id));
+  void block(const flagcxStream_t &stream, const int /*device_id*/) override {
+    auto ret =
+        aclrtStreamWaitEvent(*reinterpret_cast<aclrtStream *>(stream), event_);
+    TORCH_CHECK(ret == ACL_SUCCESS, "aclrtStreamWaitEvent failed: ", ret);
   }
 
 private:
-  c10_npu::NPUEvent npu_event;
+  aclrtEvent event_ = nullptr;
 #endif
 };
 #elif USE_CAMBRICON_ADAPTOR
