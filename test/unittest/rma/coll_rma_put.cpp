@@ -248,6 +248,15 @@ TEST_F(RmaTest, PutSignalSmall) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  uint64_t completionBefore = 0;
+  flagcxResult_t counterRes = !requireIpc && rank == 0
+                                  ? flagcxReadCounter(comm, &completionBefore)
+                                  : flagcxSuccess;
+  if (collectiveOpStatus(counterRes) != 0) {
+    devHandle->streamDestroy(s);
+    FAIL() << "Network RMA completion-counter setup failed";
+  }
+
   flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     // Fill source with 0xAB pattern
@@ -273,6 +282,8 @@ TEST_F(RmaTest, PutSignalSmall) {
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     waitRes = devHandle->streamSynchronize(s);
+    if (waitRes == flagcxSuccess && !requireIpc)
+      waitRes = flagcxWaitCounter(comm, completionBefore + 1);
   } else if (rank == 1) {
     // Wait for signal from rank 0
     flagcxWaitSignalDesc_t desc = {1, 0};
@@ -333,6 +344,15 @@ TEST_F(RmaTest, PutSignalLarge) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  uint64_t completionBefore = 0;
+  flagcxResult_t counterRes = !requireIpc && rank == 0
+                                  ? flagcxReadCounter(comm, &completionBefore)
+                                  : flagcxSuccess;
+  if (collectiveOpStatus(counterRes) != 0) {
+    devHandle->streamDestroy(s);
+    FAIL() << "Network RMA completion-counter setup failed";
+  }
+
   flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     // Fill with ascending byte pattern
@@ -360,6 +380,8 @@ TEST_F(RmaTest, PutSignalLarge) {
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     waitRes = devHandle->streamSynchronize(s);
+    if (waitRes == flagcxSuccess && !requireIpc)
+      waitRes = flagcxWaitCounter(comm, completionBefore + 1);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};
     waitRes = flagcxWaitSignal(1, &desc, comm, s);

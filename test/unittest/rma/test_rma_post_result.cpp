@@ -1018,6 +1018,21 @@ TEST(RmaTransportSelection, SignalOnlyRequiresNetworkSignalRegistration) {
   EXPECT_EQ(fixture.opSeq, 0u);
 }
 
+TEST(RmaCompletionCounter, ReportsTerminalErrorAtOrBeforeTarget) {
+  flagcxRmaProxyState proxy = {};
+  flagcxHeteroComm comm = {};
+  comm.rmaProxy = &proxy;
+
+  proxy.completionCount = 1;
+  EXPECT_EQ(flagcxHeteroWaitCounter(&comm, 1), flagcxSuccess);
+
+  proxy.rmaError = 1;
+  EXPECT_EQ(flagcxHeteroWaitCounter(&comm, 1), flagcxRemoteError);
+
+  proxy.completionCount = 0;
+  EXPECT_EQ(flagcxHeteroWaitCounter(&comm, 1), flagcxRemoteError);
+}
+
 TEST_F(ForcedNetworkFixture,
        IpcOnlyWindowsAreRejectedWithoutCopyingOrEnqueueing) {
   flagcxStream_t stream = reinterpret_cast<flagcxStream_t>(0x1);
