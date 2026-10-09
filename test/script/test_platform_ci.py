@@ -52,7 +52,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 line for line in result.stdout.splitlines()
                 if "/bin/nvcc " in line and kernel in line
             )
-            self.assertIn("-Xcompiler -fPIC", compile_line)
+            self.assertNotIn("-Xcompiler -fPIC", compile_line)
+        for target in (
+            "test_device_api_intra", "test_device_api_inter",
+            "test_device_ir_intra", "test_device_ir_inter",
+            "test_device_ir_unified_intra", "test_device_ir_unified_inter",
+        ):
+            link_line = next(
+                line for line in result.stdout.splitlines()
+                if line.startswith("g++ ") and f"/bin/{target} " in line
+            )
+            self.assertIn("-no-pie", link_line)
 
         for suite in ("device_api", "device_api_unified_ir"):
             configured = subprocess.run(

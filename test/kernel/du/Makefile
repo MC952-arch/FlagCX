@@ -18,9 +18,7 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
     $(CCL_INCLUDE) \
     $(DEVICE_INCLUDE)
 
-# The Hygon host compiler defaults to PIE executables. Match the DU library's
-# host PIC flag so these kernel objects can be linked into the test binaries.
-DU_TEST_COMPILE_FLAGS := -c -Xcompiler -fPIC
+NVCC_RDC_FLAG := -c
 
 .PHONY: all clean device_api.o device_ir.o
 
@@ -31,13 +29,13 @@ device_ir.o: $(OBJDIR)/device_ir.o
 $(OBJDIR)/device_api.o: device_api.cu
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_api.cu (DU)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(DU_TEST_COMPILE_FLAGS) -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) -o $@ $< \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 $(OBJDIR)/device_ir.o: device_ir.cu
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_ir.cu (DU)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(DU_TEST_COMPILE_FLAGS) -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) -o $@ $< \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
 # DU does not use SHMEM device-link targets
