@@ -2,6 +2,7 @@
 # Modified by 2025 MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved
 # Modified by 2025 DU. All Rights Reserved.
 BUILDDIR ?= $(abspath ./build)
+.DEFAULT_GOAL := all
 
 # USE_ILUVATAR_COREX is the pre-0.13 spelling of USE_ILUVATAR. It is honored
 # only when it comes from the command line or the environment, so the defaults
@@ -31,6 +32,9 @@ USE_UCX ?= 0
 USE_IBUC ?= 0
 USE_SHCA ?= 0
 USE_ACCL_BAREX ?= 0
+# Keep the proven P2P IBRC/ACCL engines as the default until the shared Engine
+# has passed end-to-end disaggregated-prefill performance validation.
+USE_SHARED_P2P_ENGINE ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
 USE_PPU ?= 0
@@ -318,11 +322,30 @@ LIBSRCFILES:= \
 # Platform .mk provides extra sources (device_api backend, shmem adaptor)
 LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
 
+# The legacy and shared implementations export the same public flagcx_p2p.h
+# symbols and therefore must never be linked into one library together.
+ifeq ($(USE_SHARED_P2P_ENGINE), 1)
+NET_ADAPTOR_FLAG += -DUSE_SHARED_P2P_ENGINE=1
+LIBSRCFILES := $(filter-out \
+	flagcx/core/flagcx_p2p.cc \
+	flagcx/core/flagcx_p2p_accl.cc \
+	flagcx/adaptor/net/ibrc_p2p_adaptor.cc,$(LIBSRCFILES))
+else ifeq ($(USE_SHARED_P2P_ENGINE), 0)
+LIBSRCFILES := $(filter-out \
+	flagcx/core/flagcx_p2p_shared.cc,$(LIBSRCFILES))
+else
+$(error USE_SHARED_P2P_ENGINE must be 0 or 1)
+endif
+
 ifeq ($(COMPILE_KERNEL), 1)
 DEVSRCFILES := $(PLATFORM_KERNEL_SRCS)
 DEVOBJ := $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
 LIBOBJ := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
+P2P_ENGINE_MODE_FILE := $(BUILDDIR)/.p2p-engine-mode
+
+.PHONY: p2p_engine_mode_force
+p2p_engine_mode_force:
 
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
@@ -360,6 +383,7 @@ print_var:
 	@echo "UCX_INCLUDE: $(UCX_INCLUDE)"
 	@echo "USE_IBUC: $(USE_IBUC)"
 	@echo "USE_SHCA: $(USE_SHCA)"
+	@echo "USE_SHARED_P2P_ENGINE: $(USE_SHARED_P2P_ENGINE)"
 	@echo "NET_ADAPTOR_FLAG: $(NET_ADAPTOR_FLAG)"
 	@echo "DEVSRCFILES: $(DEVSRCFILES)"
 	@echo "DEVICE_NEEDS_DLINK: $(DEVICE_NEEDS_DLINK)"
@@ -383,10 +407,15 @@ ifeq ($(COMPILE_KERNEL)$(USE_DU),11)
   LINKER := $(DEVICE_LINKER)
 endif
 
-$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
+$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
 	@mkdir -p `dirname $@`
-	@echo "Linking   $@"
-	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g
+	@mode=$$(test -f $(P2P_ENGINE_MODE_FILE) && sed -n '1p' $(P2P_ENGINE_MODE_FILE)); \
+	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
+	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
+	    echo "Linking   $@"; \
+	    $(LINKER) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
+	  fi
 
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).

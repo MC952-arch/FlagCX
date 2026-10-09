@@ -38,6 +38,7 @@ export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_PPU=1 USE_ACCL_BAREX=1)
+FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 FLAGCX_CI_INTRA_NP=8
 FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=8
@@ -65,8 +66,8 @@ flagcx_ci_configure_suite() {
       ;;
     p2p)
       # These suites call the IBRC vtable directly. The Engine tests use the
-      # runtime transport selector and are retained for ACCL coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
+      # runtime transport selector and are retained for BAREX coverage.
+      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)
