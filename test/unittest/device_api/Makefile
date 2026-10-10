@@ -49,6 +49,7 @@ ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 # executables without PIE so the host linker accepts those relocations.
 ifeq ($(USE_DU), 1)
 ALL_LINK += -no-pie
+CXXFLAGS += -DFLAGCX_TEST_DU_BARRIER_PROBE
 endif
 
 # Kunlunxin: device_api.o (xshmem Device API kernel) references xshmem host symbols

@@ -1087,6 +1087,51 @@ flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
+// Exercise the exact IPC buffer and atomic operations used by the intra
+// barrier, without a device-side wait. Each rank writes a distinct inbox slot
+// on its next peer; the next kernel reads and clears the local slot.
+FLAGCX_GLOBAL_DECORATOR void
+flagcxIntraBarrierIpcWriteProbeKernel(flagcxDevComm devComm) {
+  const auto &dc = devComm._commBase;
+  int peer = (dc.intraRank + 1) % dc.intraSize;
+  int slot = dc.intraRank * dc.nBarriers + FLAGCX_DEVICE_CTA_COUNT - 1;
+  cuda::atomic_ref<uint64_t, cuda::thread_scope_system> flag(
+      dc.barrierPeers[peer][slot]);
+  flag.store((uint64_t)dc.intraRank + 1, cuda::memory_order_release);
+}
+
+FLAGCX_GLOBAL_DECORATOR void
+flagcxIntraBarrierIpcReadProbeKernel(flagcxDevComm devComm, int *result) {
+  const auto &dc = devComm._commBase;
+  int prev = (dc.intraRank + dc.intraSize - 1) % dc.intraSize;
+  int slot = prev * dc.nBarriers + FLAGCX_DEVICE_CTA_COUNT - 1;
+  cuda::atomic_ref<uint64_t, cuda::thread_scope_system> flag(
+      dc.barrierPeers[dc.intraRank][slot]);
+  result[0] = (int)flag.load(cuda::memory_order_acquire);
+  flag.store(0, cuda::memory_order_relaxed);
+}
+
+flagcxResult_t launchKernelIntraBarrierIpcWriteProbe(flagcxDevComm_t devComm,
+                                                     flagcxStream_t stream) {
+  if (!devComm || !stream) return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxIntraBarrierIpcWriteProbeKernel<<<1, 1, 0,
+                                          *(cudaStream_t *)stream>>>(dc);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t launchKernelIntraBarrierIpcReadProbe(flagcxDevComm_t devComm,
+                                                    int *result,
+                                                    flagcxStream_t stream) {
+  if (!devComm || !result || !stream) return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxIntraBarrierIpcReadProbeKernel<<<1, 1, 0,
+                                         *(cudaStream_t *)stream>>>(dc, result);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 // K3: Peer Pointer (team-based)
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxIntraTestPeerPointerKernel(flagcxDevMem devMem, flagcxDevComm devComm,
