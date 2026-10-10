@@ -94,10 +94,18 @@ static flagcxResult_t flagcxProxyReleaseRelayImport(flagcxProxyAsyncOp *op) {
     return flagcxSuccess;
   auto *resources =
       static_cast<sendNetResources *>(op->connection->transportResources);
-  if (resources != NULL && resources->cpStream != NULL)
+  // A completed NET send has already waited for the copy event and retired
+  // the network request. Synchronizing the stream again can block the proxy
+  // service thread on device runtimes that serialize IPC close with the
+  // source process. On failure, the copy may still be in flight, so wait.
+  if (!op->args.done && resources != NULL && resources->cpStream != NULL) {
+    INFO(FLAGCX_PROXY, "PXN relay waiting for copy stream before IPC close");
     FLAGCXCHECK(deviceAdaptor->streamSynchronize(resources->cpStream));
+  }
+  INFO(FLAGCX_PROXY, "PXN relay closing imported IPC buffer");
   flagcxResult_t result =
       deviceAdaptor->ipcMemHandleClose(op->relayImportedBuffer);
+  INFO(FLAGCX_PROXY, "PXN relay IPC close returned %d", result);
   if (result == flagcxSuccess)
     op->relayImportedBuffer = NULL;
   return result;
