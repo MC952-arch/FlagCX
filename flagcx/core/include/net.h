@@ -35,10 +35,18 @@ int flagcxNetVersion(struct flagcxHeteroComm *comm);
 // Test whether the current GPU support GPU Direct RDMA.
 flagcxResult_t flagcxGpuGdrSupport(struct flagcxHeteroComm *comm,
                                    int *gdrSupport);
+bool flagcxNetCanUseDeviceMemory(struct flagcxNetAdaptor *netAdaptor,
+                                 const flagcxNetProperties_t *properties);
 
 // Network adaptor declarations
 extern struct flagcxNetAdaptor flagcxNetSocket;
 extern struct flagcxNetAdaptor flagcxNetIb;
+#ifdef USE_IBUC
+extern struct flagcxNetAdaptor flagcxNetIbuc;
+#endif
+#ifdef USE_ACCL_BAREX
+extern struct flagcxNetAdaptor flagcxNetBarex;
+#endif
 
 struct sendNetResources {
   void *netSendComm;
@@ -70,6 +78,35 @@ struct sendNetResources {
   flagcxNetDeviceHandle_t *netDeviceHandle;
   flagcxStream_t cpStream;
   flagcxEvent_t cpEvents[FLAGCX_NET_MAX_STEPS];
+};
+
+// Initialize NET send resources in the process that owns the send proxy.
+flagcxResult_t flagcxNetInitSendResources(struct flagcxNetAdaptor *netAdaptor,
+                                          int netDev,
+                                          struct sendNetResources *resources);
+flagcxResult_t flagcxNetDevFromGuid(struct flagcxNetAdaptor *netAdaptor,
+                                    uint64_t netGuid, int *netDev);
+
+struct flagcxNetSendSetupRequest {
+  // NET device numbers are process-local; the relay resolves this identity.
+  uint64_t netGuid;
+};
+
+// One bounded source-to-relay chunk. Only device IPC handle bytes and scalar
+// metadata cross the process boundary; no local pointers are serialized.
+struct flagcxNetRelaySendRequest {
+  flagcxIpcHandleData handleData;
+  size_t handleSize;
+  size_t bytes;
+  uint64_t requestId;
+  uint64_t generation;
+  uint64_t orderingKey;
+  uint64_t sequence;
+  uint32_t submitFlags;
+};
+
+struct flagcxNetRelayCancelRequest {
+  uint64_t requestId;
 };
 
 struct recvNetResources {
@@ -152,6 +189,8 @@ flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
 flagcxResult_t
 flagcxNetProgressProxyOp(struct flagcxProxyConnection *connection,
                          struct flagcxProxyOp *op);
+void flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op);
+void flagcxNetAbandonRelaySendOp(struct flagcxProxyOp *op);
 flagcxResult_t
 flagcxNetCleanupProxyConnection(struct flagcxProxyConnection *connection,
                                 int cleanupPhase);
