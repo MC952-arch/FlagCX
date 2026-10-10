@@ -568,7 +568,10 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
  * the operation is submitted to the network RMA proxy. Completion on stream
  * makes the destination device-visible. A successful operation also advances
  * the RMA completion counter once, after data movement has completed.
- * localbuff must belong to a live symmetric window. flags is reserved (0). */
+ * localbuff must belong to a live symmetric window. flags is reserved (0).
+ * Keep both windows registered until stream completion (or the corresponding
+ * completion-counter advance); the peer must likewise keep its source window
+ * valid until the read has finished. */
 flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
                               flagcxDataType_t datatype, int peer,
                               flagcxWindow_t peerWin, size_t peerWinOffset,
