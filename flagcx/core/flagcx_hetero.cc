@@ -27,6 +27,8 @@
 #endif
 #define FLAGCX_RMA_BATCH_MAX_LIMIT 256
 
+static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);
+
 static_assert(static_cast<uint32_t>(FLAGCX_RMA_SUBMIT_DATA) ==
                   static_cast<uint32_t>(FLAGCX_NET_SUBMIT_DATA),
               "RMA and transport data flags must match");
@@ -2205,13 +2207,85 @@ flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
                                      flagcxSymWindow_t srcWindow,
                                      flagcxSymWindow_t dstWindow,
                                      flagcxStream_t stream) {
-  (void)srcWindow;
-  (void)dstWindow;
   if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxInternalError;
+
+  if (!flagcxParamP2pDisable() && flagcxIsIntraNode(comm, peer) &&
+      srcWindow != NULL && dstWindow != NULL && dstWindow->localBase != NULL &&
+      dstOffset <= dstWindow->heapSize &&
+      size <= dstWindow->heapSize - dstOffset && deviceAdaptor != NULL &&
+      deviceAdaptor->deviceMemcpy != NULL &&
+      deviceAdaptor->eventCreate != NULL &&
+      deviceAdaptor->eventRecord != NULL && deviceAdaptor->eventQuery != NULL) {
+    void *srcBuf = NULL;
+    flagcxResult_t mapResult = flagcxSymWindowResolveIpcPeerPtr(
+        comm, srcWindow, peer, srcOffset, size, &srcBuf);
+    if (mapResult == flagcxSuccess && srcBuf != NULL) {
+      void *dstBuf = (void *)((uintptr_t)dstWindow->localBase + dstOffset);
+      flagcxEvent_t doneEvent = NULL;
+      flagcxResult_t result =
+          deviceAdaptor->eventCreate(&doneEvent, flagcxEventDisableTiming);
+      if (result != flagcxSuccess)
+        return result;
+      struct flagcxRmaDesc *desc =
+          (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+      if (desc == NULL) {
+        deviceAdaptor->eventDestroy(doneEvent);
+        return flagcxSystemError;
+      }
+      desc->type = FLAGCX_RMA_IPC_GET;
+      desc->streamEvent = doneEvent;
+      desc->ipcStatus = flagcxSuccess;
+      desc->submitFlags = FLAGCX_RMA_SUBMIT_DATA;
+      desc->srcMrIdx = -1;
+      desc->dstMrIdx = -1;
+
+      pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+      while (true) {
+        if (__atomic_load_n(&proxy->quiesced, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&proxy->pendingError, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+          pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+          flagcxRmaDescDestroy(desc);
+          return flagcxInvalidUsage;
+        }
+        result = flagcxInProgress;
+        if (!flagcxRmaProxyCircularBufFull(proxy, peer))
+          result = flagcxRmaProxyPrepareDesc(proxy, peer, desc);
+        if (result == flagcxSuccess)
+          break;
+        if (result != flagcxInProgress) {
+          pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+          flagcxRmaDescDestroy(desc);
+          return result;
+        }
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+        sched_yield();
+        pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+      }
+      uint32_t pi = __atomic_load_n(&proxy->pis[peer], __ATOMIC_RELAXED);
+      proxy->circularBuffers[(size_t)peer * proxy->queueSize +
+                             (pi & proxy->queueMask)] = desc;
+      __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
+
+      // Submission remains under the producer lock until eventArmed is set.
+      // The error drain takes this lock, so it cannot free desc mid-submit.
+      if (desc->opSeq > 1)
+        result = flagcxRmaWaitDone(proxy, peer, desc->opSeq - 1, stream);
+      if (result == flagcxSuccess && size > 0)
+        result = deviceAdaptor->deviceMemcpy(
+            dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+      if (result == flagcxSuccess)
+        result = deviceAdaptor->eventRecord(doneEvent, stream);
+      desc->ipcStatus = result;
+      __atomic_store_n(&desc->eventArmed, 1, __ATOMIC_RELEASE);
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      return result;
+    }
+  }
 
   uint64_t assignedSeq = 0;
   if (deviceAdaptor == NULL || deviceAdaptor->eventCreate == NULL ||
