@@ -10,7 +10,6 @@
 #include <pthread.h>
 
 #include <atomic>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -41,6 +40,7 @@ public:
   public:
     Worker(const Worker &) = delete;
     Worker &operator=(const Worker &) = delete;
+    ~Worker() { (void)pthread_cond_destroy(&initCond_); }
 
   private:
     friend class flagcxWorkerPool;
@@ -56,7 +56,7 @@ public:
     std::atomic<bool> stop_{false};
     std::atomic<flagcxResult_t> result_{flagcxInProgress};
     std::mutex initMutex_;
-    std::condition_variable initCond_;
+    pthread_cond_t initCond_ = PTHREAD_COND_INITIALIZER;
     bool initDone_ = false;
     flagcxResult_t initResult_ = flagcxSuccess;
     std::mutex joinMutex_;

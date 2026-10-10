@@ -39,7 +39,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +52,7 @@
 #include <string>
 #include <strings.h>
 #include <thread>
+#include <time.h>
 #include <unordered_map>
 #include <vector>
 #if defined(__linux__)
@@ -415,18 +415,20 @@ struct FlagcxP2pXfer {
 };
 
 struct FlagcxP2pXferRecord {
+  ~FlagcxP2pXferRecord() { (void)pthread_cond_destroy(&waitCond); }
   uint64_t id = 0;
   FlagcxP2pXfer xfer;
   std::atomic<bool> done{false};
   std::atomic<flagcxResult_t> result{flagcxSuccess};
   std::mutex waitMutex;
-  std::condition_variable waitCond;
+  pthread_cond_t waitCond = PTHREAD_COND_INITIALIZER;
 };
 
 struct FlagcxP2pWorkerState {
+  ~FlagcxP2pWorkerState() { (void)pthread_cond_destroy(&cond); }
   int index = -1;
   std::mutex mutex;
-  std::condition_variable cond;
+  pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
   std::vector<std::shared_ptr<FlagcxP2pXferRecord>> active;
   size_t cursor = 0;
 };
@@ -439,7 +441,7 @@ struct FlagcxP2pWorkerGroup {
   ~FlagcxP2pWorkerGroup() {
     pool.requestStopAll();
     for (const auto &worker : workers)
-      worker->cond.notify_one();
+      (void)pthread_cond_signal(&worker->cond);
     (void)pool.joinAll();
   }
 };
@@ -568,7 +570,7 @@ static bool registerP2pTransfer(FlagcxP2pConn *conn, uint64_t id,
       xfer = std::move(record->xfer);
     return false;
   }
-  conn->worker->cond.notify_one();
+  (void)pthread_cond_signal(&conn->worker->cond);
   return true;
 }
 #define gDeferredIpcCleanups deferredIpcCleanups()
@@ -2107,8 +2109,15 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
     if (worker->active.empty() && !stopping) {
       // PR1's pool has no wake operation. A bounded wait also lets stopAll()
       // terminate an idle worker without relying on a new submission.
-      worker->cond.wait_for(lock, std::chrono::milliseconds(10),
-                            [worker] { return !worker->active.empty(); });
+      struct timespec deadline;
+      clock_gettime(CLOCK_REALTIME, &deadline);
+      deadline.tv_nsec += 10 * 1000 * 1000;
+      if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+        deadline.tv_nsec -= 1000 * 1000 * 1000;
+        ++deadline.tv_sec;
+      }
+      (void)pthread_cond_timedwait(&worker->cond, worker->mutex.native_handle(),
+                                   &deadline);
     }
     if (worker->active.empty()) {
       *outstanding = false;
@@ -2199,7 +2208,7 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
       record->result.store(terminalResult, std::memory_order_relaxed);
       record->done.store(true, std::memory_order_release);
     }
-    record->waitCond.notify_all();
+    (void)pthread_cond_broadcast(&record->waitCond);
     *madeProgress = true;
   } else {
     std::lock_guard<std::mutex> lock(worker->mutex);
@@ -3318,8 +3327,9 @@ static bool readEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
 static void
 waitForP2pRecord(const std::shared_ptr<FlagcxP2pXferRecord> &record) {
   std::unique_lock<std::mutex> lock(record->waitMutex);
-  record->waitCond.wait(
-      lock, [record] { return record->done.load(std::memory_order_acquire); });
+  while (!record->done.load(std::memory_order_acquire))
+    (void)pthread_cond_wait(&record->waitCond,
+                            record->waitMutex.native_handle());
 }
 
 static void drainConnectionTransfers(FlagcxP2pConn *conn) {

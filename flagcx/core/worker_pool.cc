@@ -22,7 +22,7 @@ void *flagcxWorkerPool::run(void *arg) {
     worker->initResult_ = initResult;
     worker->initDone_ = true;
   }
-  worker->initCond_.notify_one();
+  (void)pthread_cond_signal(&worker->initCond_);
 
   flagcxResult_t result = initResult;
   if (initResult == flagcxSuccess) {
@@ -87,7 +87,9 @@ flagcxResult_t flagcxWorkerPool::start(const flagcxWorkerOps *ops, void *state,
   flagcxResult_t initResult = flagcxSystemError;
   try {
     std::unique_lock<std::mutex> initLock(entry->initMutex_);
-    entry->initCond_.wait(initLock, [entry] { return entry->initDone_; });
+    while (!entry->initDone_)
+      (void)pthread_cond_wait(&entry->initCond_,
+                              entry->initMutex_.native_handle());
     initResult = entry->initResult_;
   } catch (...) {
     // The candidate remains registered until its thread has exited.
