@@ -1797,7 +1797,11 @@ flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
       return flagcxRemoteError;
     sched_yield();
   }
-  return flagcxSuccess;
+  // The counter tracks successful operations, but a concurrent transport
+  // error may become terminal as the target is reached. Never hide it.
+  return __atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE)
+             ? flagcxRemoteError
+             : flagcxSuccess;
 }
 
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,

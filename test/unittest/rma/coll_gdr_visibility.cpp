@@ -209,6 +209,23 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
 
   const ExpectedResult expected =
       expectedResult("FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE");
+  if (expected == ExpectedResult::NotSupported) {
+    // Verify the public wait rejects the missing acquire capability without
+    // posting a PUT whose completion nobody will consume. A zero target also
+    // makes an unexpected successful wait safe to drain before failing.
+    flagcxResult_t waitResult = flagcxSuccess;
+    if (rank == 1) {
+      flagcxWaitSignalDesc_t desc = {0, 0};
+      waitResult = flagcxWaitSignal(1, &desc, comm, stream);
+      if (waitResult == flagcxSuccess)
+        EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+    }
+    int waitCode = static_cast<int>(waitResult);
+    MPI_Bcast(&waitCode, 1, MPI_INT, 1, MPI_COMM_WORLD);
+    EXPECT_EQ(waitCode, static_cast<int>(flagcxNotSupported));
+    return;
+  }
+
   // The capability probe is collective. Skip on every rank before posting a
   // PUT or enqueuing a GPU wait: an unsupported sender cannot signal a peer
   // that has already entered streamSynchronize().
@@ -245,6 +262,16 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
+  uint64_t before = 0;
+  flagcxResult_t counterSetup = rank == 0 && expected == ExpectedResult::Success
+                                    ? flagcxReadCounter(comm, &before)
+                                    : flagcxSuccess;
+  if (anyRankFailed(counterSetup)) {
+    freeStatus(deviceStatus);
+    ADD_FAILURE() << "completion-counter setup failed on at least one rank";
+    return;
+  }
+
   flagcxResult_t putResult = flagcxSuccess;
   flagcxResult_t waitResult = flagcxSuccess;
   flagcxResult_t launch = flagcxSuccess;
@@ -253,6 +280,8 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
                                 dataWin, 0, 0, comm, stream);
     if (putResult == flagcxSuccess)
       putResult = devHandle->streamSynchronize(stream);
+    if (putResult == flagcxSuccess && expected == ExpectedResult::Success)
+      putResult = flagcxWaitCounter(comm, before + 1);
   } else {
     flagcxWaitSignalDesc_t desc = {1, 0};
     waitResult = flagcxWaitSignal(1, &desc, comm, stream);
@@ -274,9 +303,7 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
   MPI_Bcast(&waitCode, 1, MPI_INT, 1, MPI_COMM_WORLD);
   MPI_Bcast(&launchCode, 1, MPI_INT, 1, MPI_COMM_WORLD);
   EXPECT_EQ(putCode, static_cast<int>(flagcxSuccess));
-  if (expected == ExpectedResult::NotSupported) {
-    EXPECT_EQ(waitCode, static_cast<int>(flagcxNotSupported));
-  } else if (expected == ExpectedResult::RemoteError) {
+  if (expected == ExpectedResult::RemoteError) {
     EXPECT_EQ(waitCode, static_cast<int>(flagcxRemoteError));
   } else {
     EXPECT_EQ(waitCode, static_cast<int>(flagcxSuccess));

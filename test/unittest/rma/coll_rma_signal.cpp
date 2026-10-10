@@ -30,6 +30,15 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  uint64_t completionBefore = 0;
+  flagcxResult_t counterRes = !requireIpc && rank == 0
+                                  ? flagcxReadCounter(comm, &completionBefore)
+                                  : flagcxSuccess;
+  if (collectiveOpStatus(counterRes) != 0) {
+    devHandle->streamDestroy(s);
+    FAIL() << "Network RMA completion-counter setup failed";
+  }
+
   flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     opRes = flagcxSignal(1, 0, comm, s);
@@ -48,6 +57,8 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     waitRes = devHandle->streamSynchronize(s);
+    if (waitRes == flagcxSuccess && !requireIpc)
+      waitRes = flagcxWaitCounter(comm, completionBefore + 1);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};
     waitRes = flagcxWaitSignal(1, &desc, comm, s);
@@ -88,6 +99,14 @@ TEST_F(RmaTest, MultipleSignals) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   const int numSignals = 4;
+  uint64_t completionBefore = 0;
+  flagcxResult_t counterRes = !requireIpc && rank == 0
+                                  ? flagcxReadCounter(comm, &completionBefore)
+                                  : flagcxSuccess;
+  if (collectiveOpStatus(counterRes) != 0) {
+    devHandle->streamDestroy(s);
+    FAIL() << "Network RMA completion-counter setup failed";
+  }
 
   flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
@@ -112,6 +131,8 @@ TEST_F(RmaTest, MultipleSignals) {
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     waitRes = devHandle->streamSynchronize(s);
+    if (waitRes == flagcxSuccess && !requireIpc)
+      waitRes = flagcxWaitCounter(comm, completionBefore + numSignals);
   } else if (rank == 1) {
     // Wait for all 4 signals from rank 0
     flagcxWaitSignalDesc_t desc = {(uint64_t)numSignals, 0};
