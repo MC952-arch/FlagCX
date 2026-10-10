@@ -306,7 +306,6 @@ struct flagcxProxyAsyncOp {
   int reqSize, respSize;
   char *reqBuff, *respBuff;
   void *opId;
-  void *relayImportedBuffer;
   flagcxProxyAsyncOp *prev;
   flagcxProxyAsyncOp *next;
 };
@@ -446,6 +445,10 @@ struct flagcxProxyConnection {
   uint64_t collDataLaneMask;
   // Service-thread owner of this NET connection's shared copy stream/events.
   struct flagcxProxyAsyncOp *activeRelayOp;
+  // Caller-side PXN mapping of the relay-owned send buffer.
+  void *relayBufferImport;
+  size_t relayBufferCapacity;
+  uint32_t relayActiveOps;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -496,7 +499,8 @@ enum flagcxProxyMsgType {
   flagcxProxyMsgRegMr = 12,
   flagcxProxyMsgDeregMr = 13,
   flagcxProxyMsgSendRecv = 14,
-  flagcxProxyMsgCancelRelay = 15
+  flagcxProxyMsgCancelRelay = 15,
+  flagcxProxyMsgReleaseRelay = 16
 };
 
 // This function is called by a client of the proxy that needs to invoke any of

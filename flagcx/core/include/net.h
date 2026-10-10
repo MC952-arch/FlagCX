@@ -78,12 +78,19 @@ struct sendNetResources {
   flagcxNetDeviceHandle_t *netDeviceHandle;
   flagcxStream_t cpStream;
   flagcxEvent_t cpEvents[FLAGCX_NET_MAX_STEPS];
+  // PXN: the relay owns this exported NET buffer for the connection lifetime.
+  flagcxIpcHandleData relayHandleData;
+  size_t relayHandleSize;
+  char *relayExportBuffer;
+  bool relayIpcBuffer;
+  bool relaySourceReleased;
 };
 
 // Initialize NET send resources in the process that owns the send proxy.
 flagcxResult_t flagcxNetInitSendResources(struct flagcxNetAdaptor *netAdaptor,
                                           int netDev,
-                                          struct sendNetResources *resources);
+                                          struct sendNetResources *resources,
+                                          bool relay = false);
 flagcxResult_t flagcxNetDevFromGuid(struct flagcxNetAdaptor *netAdaptor,
                                     uint64_t netGuid, int *netDev);
 
@@ -92,11 +99,15 @@ struct flagcxNetSendSetupRequest {
   uint64_t netGuid;
 };
 
-// One bounded source-to-relay chunk. Only device IPC handle bytes and scalar
-// metadata cross the process boundary; no local pointers are serialized.
-struct flagcxNetRelaySendRequest {
+struct flagcxNetRelayBufferInfo {
   flagcxIpcHandleData handleData;
   size_t handleSize;
+  size_t capacity;
+};
+
+// One bounded source-to-relay chunk. The source writes into the persistent
+// relay-owned buffer before this request; only scalar metadata crosses RPC.
+struct flagcxNetRelaySendRequest {
   size_t bytes;
   uint64_t requestId;
   uint64_t generation;

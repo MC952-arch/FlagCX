@@ -46,11 +46,12 @@ static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
 }
 
 static flagcxResult_t waitForProxyConnect(struct flagcxHeteroComm *comm,
-                                          struct flagcxConnector *connector) {
+                                          struct flagcxConnector *connector,
+                                          void *response = NULL) {
   flagcxResult_t result;
   do {
-    result =
-        flagcxPollProxyResponse(comm, &connector->proxyConn, NULL, connector);
+    result = flagcxPollProxyResponse(comm, &connector->proxyConn, response,
+                                     connector);
   } while (result == flagcxInProgress);
   if (result == flagcxSuccess && !connector->proxyConn.sameProcess &&
       connector->proxyConn.connection != NULL)
@@ -266,7 +267,9 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           }
           FLAGCXCHECK(flagcxProxyCallAsync(
               comm, &conn->proxyConn, flagcxProxyMsgConnect,
-              &listenInfo->handle, sizeof(flagcxIbHandle), 0, conn));
+              &listenInfo->handle, sizeof(flagcxIbHandle),
+              proxyRank == comm->rank ? 0 : sizeof(flagcxNetRelayBufferInfo),
+              conn));
           free(listenInfo);
         }
       }
@@ -347,7 +350,29 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Send connect: rank %d -> peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(waitForProxyConnect(comm, conn));
+          if (conn->proxyConn.sameProcess) {
+            FLAGCXCHECK(waitForProxyConnect(comm, conn));
+          } else {
+            flagcxNetRelayBufferInfo relayBuffer = {};
+            FLAGCXCHECK(waitForProxyConnect(comm, conn, &relayBuffer));
+            if (relayBuffer.handleSize == 0 ||
+                relayBuffer.handleSize > sizeof(relayBuffer.handleData) ||
+                relayBuffer.capacity < size_t(flagcxNetChunkSize))
+              return flagcxInternalError;
+            flagcxP2pIpcDesc desc = {};
+            desc.handleData = relayBuffer.handleData;
+            desc.handleSize = relayBuffer.handleSize;
+            desc.size = relayBuffer.capacity;
+            void *mapped = NULL;
+            FLAGCXCHECK(flagcxP2pImportShareableBuffer(
+                comm, conn->proxyConn.tpRank, desc.size, &desc, &mapped));
+            conn->proxyConn.connection->relayBufferImport = mapped;
+            conn->proxyConn.connection->relayBufferCapacity = desc.size;
+            INFO(FLAGCX_NET,
+                 "PXN imported registered relay buffer: source %d relay %d "
+                 "channel %d capacity %zu",
+                 comm->rank, conn->proxyConn.tpRank, c, desc.size);
+          }
         }
         comm->channels[c].peers[peer]->send[0].connected = 1;
         comm->connectSend[peer] ^= (1UL << c);
