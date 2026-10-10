@@ -2104,7 +2104,8 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
-                               bool independent) {
+                               bool independent, bool streamSyncReady,
+                               uint64_t *assignedSeq) {
   if (comm == NULL)
     return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iget == NULL)
@@ -2133,10 +2134,40 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   desc->orderingKey = independent ? orderingKey : 0;
   desc->submitFlags = FLAGCX_RMA_SUBMIT_DATA |
                       (independent ? FLAGCX_RMA_SUBMIT_INDEPENDENT : 0);
-  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
+  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc,
+                                                 streamSyncReady, assignedSeq);
   if (res != flagcxSuccess)
     free(desc);
   return res;
+}
+
+flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream) {
+  (void)srcWindow;
+  (void)dstWindow;
+  if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxInternalError;
+
+  uint64_t assignedSeq = 0;
+  const bool streamReady = proxy->readySeqsCpu != NULL;
+  flagcxResult_t res =
+      flagcxHeteroGet(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                      dstMrIdx, 0, false, streamReady, &assignedSeq);
+  if (res != flagcxSuccess)
+    return res;
+  if (streamReady) {
+    res = flagcxRmaSignalReady(proxy, peer, assignedSeq, stream);
+    if (res != flagcxSuccess)
+      return res;
+  }
+  return flagcxRmaWaitDone(proxy, peer, assignedSeq, stream);
 }
 
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
