@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unistd.h>
 
@@ -38,6 +39,13 @@
 
 static void printResult(const char *name, bool ok, int rank) {
   printf("[rank %d] %-35s %s\n", rank, name, ok ? "PASS" : "FAIL");
+}
+
+static void traceIntraPointer(int rank, const char *phase) {
+  if (std::getenv("FLAGCX_DEVICE_API_TRACE_K5") == nullptr)
+    return;
+  fprintf(stderr, "[rank %d] K5 IntraPointer: %s\n", rank, phase);
+  fflush(stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +240,9 @@ int main(int argc, char *argv[]) {
     // -----------------------------------------------------------------------
     // K5: Intra Pointer
     // -----------------------------------------------------------------------
+    traceIntraPointer(proc, "entering initial MPI barrier");
     MPI_Barrier(MPI_COMM_WORLD);
+    traceIntraPointer(proc, "initial MPI barrier complete");
 
     // Write known pattern: each rank fills regBuff with its rank value
     for (size_t i = 0; i < count; i++)
@@ -240,18 +250,75 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, hostBuf, count * sizeof(float),
                                         flagcxMemcpyHostToDevice, stream));
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    traceIntraPointer(proc, "host-to-device copy complete");
     MPI_Barrier(MPI_COMM_WORLD);
+    traceIntraPointer(proc, "peer data ready");
+
+    // K6's peer-read kernel has no device barrier. Run it first when tracing
+    // so a stalled K5 can be attributed to peer reads or its barrier path.
+    if (std::getenv("FLAGCX_DEVICE_API_TRACE_K5") != nullptr) {
+      traceIntraPointer(proc, "barrier-free peer-read probe launch");
+      FLAGCXCHECK(
+          launchKernelPeerPointer(devMem, devComm, devOutput, count, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      traceIntraPointer(proc, "barrier-free peer-read probe complete");
+      float probeValue = 0.0f;
+      FLAGCXCHECK(devHandle->deviceMemcpy(&probeValue, devOutput,
+                                          sizeof(probeValue),
+                                          flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      fprintf(
+          stderr,
+          "[rank %d] K5 IntraPointer: peer-read probe value=%g expected=%d\n",
+          proc, probeValue, peer);
+      fflush(stderr);
+
+#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
+      traceIntraPointer(proc, "IPC barrier atomic write probe launch");
+      FLAGCXCHECK(launchKernelIntraBarrierIpcWriteProbe(devComm, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      traceIntraPointer(proc, "IPC barrier atomic write probe complete");
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      traceIntraPointer(proc, "IPC barrier atomic read probe launch");
+      FLAGCXCHECK(
+          launchKernelIntraBarrierIpcReadProbe(devComm, devResults, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      traceIntraPointer(proc, "IPC barrier atomic read probe complete");
+      int observed = 0;
+      FLAGCXCHECK(devHandle->deviceMemcpy(&observed, devResults,
+                                          sizeof(observed),
+                                          flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      int prev = (proc + totalProcs - 1) % totalProcs;
+      fprintf(stderr,
+              "[rank %d] K5 IntraPointer: IPC barrier atomic probe "
+              "value=%d expected=%d\n",
+              proc, observed, prev + 1);
+      fflush(stderr);
+      int failed = observed != prev + 1;
+      int anyFailed = 0;
+      MPI_Allreduce(&failed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+      if (anyFailed)
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      traceIntraPointer(proc, "IPC barrier atomic probe passed");
+#endif
+    }
 
     FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
                                         flagcxMemDevice, stream));
+    traceIntraPointer(proc, "output reset submitted");
 
     FLAGCXCHECK(
         launchKernelIntraPointer(devMem, devComm, devOutput, count, stream));
+    traceIntraPointer(proc, "kernel launch submitted");
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
+    traceIntraPointer(proc, "kernel complete");
 
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
                                         count * sizeof(float),
                                         flagcxMemcpyDeviceToHost, stream));
+    traceIntraPointer(proc, "device-to-host copy complete");
     bool k5Ok = true;
     for (size_t i = 0; i < count; i++) {
       if (fabsf(hostBuf[i] - (float)peer) > 1e-3f) {

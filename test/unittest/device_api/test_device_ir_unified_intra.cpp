@@ -178,8 +178,10 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
                                           FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
                                           flagcxMemDevice, stream));
+      RPRINTF("S16 BarrierSync: kernel launch\n");
       launchKernelDevBarrierIntraWorldS(devCommPtr, devResults, stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      RPRINTF("S16 BarrierSync: kernel complete\n");
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
                                           4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
@@ -195,9 +197,11 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
                                           FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
                                           flagcxMemDevice, stream));
+      RPRINTF("S16 BarrierArriveWait: kernel launch\n");
       launchKernelDevBarrierArriveWaitIntraWorldS(devCommPtr, devResults,
                                                   stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      RPRINTF("S16 BarrierArriveWait: kernel complete\n");
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
                                           4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
