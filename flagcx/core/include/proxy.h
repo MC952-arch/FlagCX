@@ -406,6 +406,11 @@ struct flagcxProxyState {
   struct flagcxExpectedProxyResponse *expectedResponses;
   // Failed relay ops wait here until their GPU-side semaphore finishes.
   struct flagcxProxyOp *deferredRelayOps;
+  // Service-thread owned pools, and caller-side IPC imports of remote pools.
+  struct flagcxNetRelayPool *relayPools;
+  uint64_t nextRelayPoolId;
+  struct flagcxNetRelayImport *relayImports;
+  pthread_mutex_t relayImportMutex;
 
   // flag indicating if the proxy is initialized.
   // This flag is used for lazy initialization of the proxy.
@@ -425,7 +430,7 @@ enum proxyConnectState {
 
 struct flagcxProxyConnection {
   int send, transport, shared;
-  int tpLocalRank, sameProcess;
+  int tpRank, tpLocalRank, sameProcess;
   int cudaDev;
   struct flagcxSocket *sock;
   struct flagcxTransportComm *tcomm;
@@ -448,6 +453,7 @@ struct flagcxProxyConnection {
   // Caller-side PXN mapping of the relay-owned send buffer.
   void *relayBufferImport;
   size_t relayBufferCapacity;
+  struct flagcxNetRelayImport *relayImport;
   uint32_t relayActiveOps;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
@@ -500,7 +506,8 @@ enum flagcxProxyMsgType {
   flagcxProxyMsgDeregMr = 13,
   flagcxProxyMsgSendRecv = 14,
   flagcxProxyMsgCancelRelay = 15,
-  flagcxProxyMsgReleaseRelay = 16
+  flagcxProxyMsgReleaseRelay = 16,
+  flagcxProxyMsgLeaseRelay = 17
 };
 
 // This function is called by a client of the proxy that needs to invoke any of

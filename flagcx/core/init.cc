@@ -311,6 +311,7 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     pthread_mutexattr_setpshared(&mutexAttr, PTHREAD_PROCESS_SHARED);
     pthread_mutex_init(&comm->proxyState->mutex, &mutexAttr);
     pthread_mutex_init(&comm->proxyState->rpcMutex, NULL);
+    pthread_mutex_init(&comm->proxyState->relayImportMutex, NULL);
     pthread_condattr_t condAttr;
     pthread_condattr_init(&condAttr);
     pthread_condattr_setpshared(&condAttr, PTHREAD_PROCESS_SHARED);
@@ -509,6 +510,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   }
   pthread_mutex_destroy(&comm->proxyState->mutex);
   pthread_mutex_destroy(&comm->proxyState->rpcMutex);
+  pthread_mutex_destroy(&comm->proxyState->relayImportMutex);
   pthread_cond_destroy(&comm->proxyState->cond);
 
   free(comm->connectSend);

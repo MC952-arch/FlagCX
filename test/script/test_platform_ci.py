@@ -1048,6 +1048,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner PPU PXN eight-rank"', ppu_forced_net)
         self.assertIn("FLAGCX_PXN_DISABLE=0", ppu_forced_net)
+        self.assertIn("FLAGCX_CI_PXN_RANKS_PER_NODE=4", ppu_forced_net)
         self.assertIn("FLAGCX_CI_EXPECT_PXN=1", ppu_forced_net)
 
     def test_p2p_ci_runs_write_only_engine_coverage(self):
@@ -1174,6 +1175,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=0', runner_case)
+        self.assertIn('FLAGCX_CI_PXN_RANKS_PER_NODE=4', runner_case)
         self.assertNotIn('FLAGCX_CI_ENABLE_PXN_INTERSERVER', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET', runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)

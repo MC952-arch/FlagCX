@@ -9,6 +9,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <vector>
 
 enum class FlagCXPxnTraffic { AllToAll, RingP2P, ConnectedCollective };
@@ -20,8 +21,8 @@ inline uint64_t flagcxRunnerRelayChunks(flagcxComm_t comm) {
                                __ATOMIC_ACQUIRE);
 }
 
-// Inspect only the connections used by this operation. RingP2P uses channel
-// zero; collectives use edge-specific internal channels. The hybrid collective
+// Inspect only the connections used by this operation. P2P uses channel zero;
+// collectives use edge-specific internal channels. The hybrid collective
 // planner can choose non-neighbor ranks, so inspect its connected cross-cluster
 // edges. AllToAll uses every cross-cluster edge. Sample the completion counter
 // around each operation so an earlier test cannot satisfy its relay check.
@@ -48,7 +49,8 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   const bool enabled = minMode == 1;
   const int localReady = comm != nullptr && comm->clusterIds != nullptr &&
                          comm->heteroComm != nullptr &&
-                         comm->heteroComm->netAdaptor != nullptr;
+                         comm->heteroComm->netAdaptor != nullptr &&
+                         (!enabled || comm->heteroComm->topoServer != nullptr);
   int allReady = 0;
   MPI_Allreduce(&localReady, &allReady, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   ASSERT_EQ(allReady, 1) << operation << " PXN assertion setup failed";
@@ -88,8 +90,14 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   int localConnectionErrors = 0;
   int localRouteErrors = 0;
   int localRelayed = 0;
-  const int nextRank = (rank + 1) % nranks;
-  const int prevRank = (rank - 1 + nranks) % nranks;
+  int localRelayedByGroup[2] = {0, 0};
+  std::map<std::pair<int, uint64_t>, flagcxNetRelayImport *> importsByPool;
+  const int nextRank = enabled && traffic == FlagCXPxnTraffic::RingP2P
+                           ? (rank + nranks / 2) % nranks
+                           : (rank + 1) % nranks;
+  const int prevRank = enabled && traffic == FlagCXPxnTraffic::RingP2P
+                           ? nextRank
+                           : (rank - 1 + nranks) % nranks;
   for (int peer = 0; peer < nranks; ++peer) {
     if (comm->clusterIds[rank] == comm->clusterIds[peer])
       continue;
@@ -137,21 +145,67 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
             ++localRouteErrors;
           } else if (proxyRank != rank) {
             ++localRelayed;
+            if (nranks == 8)
+              ++localRelayedByGroup[rank < 4 ? 0 : 1];
             if (send.proxyConn.sameProcess ||
                 send.proxyConn.connection == send.proxyConn.remoteConnection ||
+                comm->clusterIds[proxyRank] != comm->clusterIds[rank] ||
                 hcomm->peerInfo[proxyRank].hostHash !=
                     hcomm->peerInfo[rank].hostHash)
               ++localRouteErrors;
+            auto *topo = hcomm->topoServer;
+            int sourceIndex = -1;
+            int relayIndex = -1;
+            int netIndex = -1;
+            for (int i = 0; i < topo->nodes[APU].count; ++i) {
+              if (topo->nodes[APU].nodes[i].apu.rank == rank)
+                sourceIndex = i;
+              if (topo->nodes[APU].nodes[i].apu.rank == proxyRank)
+                relayIndex = i;
+            }
+            for (int i = 0; i < topo->nodes[NET].count; ++i) {
+              if (topo->nodes[NET].nodes[i].net.dev == send.proxyConn.netDev)
+                netIndex = i;
+            }
+            if (sourceIndex < 0 || relayIndex < 0 || netIndex < 0 ||
+                topo->nodes[APU].nodes[sourceIndex].paths[APU] == nullptr ||
+                topo->nodes[APU].nodes[relayIndex].paths[NET] == nullptr ||
+                topo->nodes[APU]
+                        .nodes[sourceIndex]
+                        .paths[APU][relayIndex]
+                        .type > PATH_CCI ||
+                topo->nodes[APU].nodes[relayIndex].paths[NET][netIndex].type >
+                    PATH_PXB)
+              ++localRouteErrors;
+            auto *connection = send.proxyConn.connection;
+            auto *import = connection->relayImport;
+            if (import == nullptr || import->base == nullptr ||
+                import->poolId == 0 ||
+                connection->relayBufferImport != import->base ||
+                connection->relayBufferCapacity != import->capacity ||
+                import->capacity != static_cast<size_t>(flagcxNetBufferSize)) {
+              ++localRouteErrors;
+            } else {
+              const auto key = std::make_pair(proxyRank, import->poolId);
+              const auto inserted = importsByPool.emplace(key, import);
+              if (!inserted.second && inserted.first->second != import)
+                ++localRouteErrors;
+            }
           }
           if (send.proxyConn.netDev < 0 || send.proxyConn.peerNetDev < 0 ||
               listenerGuids[peer] == 0) {
             ++localRouteErrors;
           } else {
             flagcxNetProperties_t sendProps = {};
+            flagcxNetProperties_t recvProps = {};
             if (hcomm->netAdaptor->getProperties(send.proxyConn.netDev,
                                                  &sendProps) != flagcxSuccess ||
-                sendProps.guid != listenerGuids[peer])
+                hcomm->netAdaptor->getProperties(send.proxyConn.peerNetDev,
+                                                 &recvProps) != flagcxSuccess ||
+                sendProps.guid == 0 || recvProps.guid != listenerGuids[peer])
               ++localRouteErrors;
+            // Different NICs are allowed when the single-host test simulates
+            // two nodes. A successful NET transfer validates that NIC pair.
           }
         }
       }
@@ -182,6 +236,7 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   int globalConnectionErrors = 0;
   int globalRouteErrors = 0;
   int globalRelayed = 0;
+  int globalRelayedByGroup[2] = {0, 0};
   int globalCompletionErrors = 0;
   MPI_Allreduce(&localLayoutErrors, &globalLayoutErrors, 1, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
@@ -193,6 +248,8 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
                 MPI_COMM_WORLD);
   MPI_Allreduce(&localRelayed, &globalRelayed, 1, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
+  MPI_Allreduce(localRelayedByGroup, globalRelayedByGroup, 2, MPI_INT, MPI_SUM,
+                MPI_COMM_WORLD);
   MPI_Allreduce(&localCompletionErrors, &globalCompletionErrors, 1, MPI_INT,
                 MPI_SUM, MPI_COMM_WORLD);
   EXPECT_EQ(globalLayoutErrors, 0) << operation << " has an invalid PXN layout";
@@ -203,8 +260,12 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
       << operation << " selected an invalid NET NIC or proxy rank";
   EXPECT_EQ(globalCompletionErrors, 0)
       << operation << " has no completed relay chunk on a relaying source";
-  if (enabled)
-    EXPECT_GT(globalRelayed, 0) << operation << " did not use a PXN relay";
-  else
+  if (enabled) {
+    EXPECT_GT(globalRelayedByGroup[0], 0)
+        << operation << " did not relay from ranks 0-3";
+    EXPECT_GT(globalRelayedByGroup[1], 0)
+        << operation << " did not relay from ranks 4-7";
+  } else {
     EXPECT_EQ(globalRelayed, 0) << operation << " unexpectedly used PXN";
+  }
 }

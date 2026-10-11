@@ -695,6 +695,7 @@ run_suite() {
           -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
           -x FLAGCX_P2P_DISABLE=1 \
           -x FLAGCX_PXN_DISABLE=0 \
+          -x FLAGCX_CI_PXN_RANKS_PER_NODE=4 \
           -x FLAGCX_VMM_ENABLE=0 \
           -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
           -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \

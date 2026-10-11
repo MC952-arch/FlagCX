@@ -11,6 +11,7 @@
 #include "transport.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <string.h>
 #include <string>
 #include <time.h>
@@ -74,6 +75,180 @@ int64_t flagcxNetBufferSize;
 int64_t flagcxNetChunkSize;
 int64_t flagcxNetChunks;
 
+struct flagcxNetRelaySlot {
+  struct flagcxProxyConnection *owner;
+  uint64_t requestId;
+};
+
+struct flagcxNetRelayPool {
+  struct flagcxNetRelayPool *next;
+  struct flagcxProxyState *owner;
+  int sourceRank;
+  uint64_t id;
+  char *base;
+  size_t capacity;
+  uint32_t slotCount;
+  // A connector keeps one home slot. A full slab creates another 64 MiB pool
+  // so a send waiting for its matching receive cannot block another peer.
+  uint32_t assignedCount;
+  struct flagcxNetRelaySlot *slots;
+  flagcxIpcHandleData handleData;
+  size_t handleSize;
+  uint32_t refs;
+  bool unsafe;
+};
+
+size_t flagcxNetRelaySlotOffset(uint32_t slot) {
+  return static_cast<size_t>(slot) * static_cast<size_t>(flagcxNetChunkSize);
+}
+
+flagcxResult_t
+flagcxNetAttachRelayPool(struct flagcxProxyState *proxyState, int sourceRank,
+                         struct flagcxProxyConnection *connection,
+                         struct sendNetResources *resources) {
+  if (proxyState == NULL || resources == NULL || connection == NULL ||
+      sourceRank < 0 || flagcxNetBufferSize <= 0 ||
+      flagcxNetBufferSize > INT_MAX || flagcxNetChunkSize <= 0 ||
+      flagcxNetChunkSize > flagcxNetBufferSize)
+    return flagcxInvalidArgument;
+
+  flagcxNetRelayPool *pool = proxyState->relayPools;
+  while (pool != NULL && (pool->sourceRank != sourceRank ||
+                          pool->assignedCount == pool->slotCount))
+    pool = pool->next;
+  if (pool == NULL) {
+    pool = static_cast<flagcxNetRelayPool *>(calloc(1, sizeof(*pool)));
+    if (pool == NULL)
+      return flagcxSystemError;
+    pool->owner = proxyState;
+    pool->sourceRank = sourceRank;
+    pool->capacity = static_cast<size_t>(flagcxNetBufferSize);
+    const size_t slots =
+        pool->capacity / static_cast<size_t>(flagcxNetChunkSize);
+    if (slots == 0 || slots > UINT32_MAX) {
+      free(pool);
+      return flagcxInvalidArgument;
+    }
+    pool->slotCount = static_cast<uint32_t>(slots);
+    pool->slots = static_cast<flagcxNetRelaySlot *>(
+        calloc(pool->slotCount, sizeof(*pool->slots)));
+    if (pool->slots == NULL) {
+      free(pool);
+      return flagcxSystemError;
+    }
+    INFO(FLAGCX_NET,
+         "PXN relay allocating shared %zu-byte GDR pool for "
+         "source %d",
+         pool->capacity, sourceRank);
+    flagcxResult_t result = deviceAdaptor->gdrMemAlloc(
+        reinterpret_cast<void **>(&pool->base), pool->capacity, NULL);
+    if (result == flagcxSuccess) {
+      flagcxP2pIpcDesc desc = {};
+      result =
+          flagcxP2pExportShareableBuffer(pool->base, pool->capacity, &desc);
+      if (result == flagcxSuccess) {
+        pool->handleData = desc.handleData;
+        pool->handleSize = desc.handleSize;
+      }
+    }
+    if (result != flagcxSuccess) {
+      if (pool->base != NULL)
+        (void)deviceAdaptor->gdrMemFree(pool->base, NULL);
+      free(pool->slots);
+      free(pool);
+      return result;
+    }
+    pool->id = ++proxyState->nextRelayPoolId;
+    pool->next = proxyState->relayPools;
+    proxyState->relayPools = pool;
+    INFO(FLAGCX_NET, "PXN relay shared pool %llu source %d base %p slots %u",
+         static_cast<unsigned long long>(pool->id), sourceRank, pool->base,
+         pool->slotCount);
+  }
+  ++pool->refs;
+  const uint32_t slot = pool->assignedCount++;
+  pool->slots[slot].owner = connection;
+  resources->relayPool = pool;
+  resources->relaySlot = slot;
+  resources->relayIpcBuffer = true;
+  resources->relaySourceReleased = true;
+  resources->relayExportBuffer = pool->base;
+  resources->buffers[0] = pool->base;
+  resources->buffSizes[0] = static_cast<int>(pool->capacity);
+  resources->relayHandleData = pool->handleData;
+  resources->relayHandleSize = pool->handleSize;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetLeaseRelaySlot(struct sendNetResources *resources,
+                                       struct flagcxProxyConnection *connection,
+                                       uint64_t requestId, uint32_t *slot) {
+  if (resources == NULL || resources->relayPool == NULL || connection == NULL ||
+      requestId == 0 || slot == NULL)
+    return flagcxInvalidArgument;
+  flagcxNetRelayPool *pool = resources->relayPool;
+  if (resources->relaySlot >= pool->slotCount ||
+      pool->slots[resources->relaySlot].owner != connection)
+    return flagcxInternalError;
+  auto &entry = pool->slots[resources->relaySlot];
+  // Serialize concurrent operations on this connector without borrowing a
+  // slot reserved for a different NET connection.
+  if (entry.requestId != 0 && entry.requestId != requestId)
+    return flagcxInProgress;
+  entry.requestId = requestId;
+  *slot = resources->relaySlot;
+  return flagcxSuccess;
+}
+
+bool flagcxNetRelaySlotOwned(struct sendNetResources *resources,
+                             struct flagcxProxyConnection *connection,
+                             uint64_t requestId, uint32_t slot) {
+  if (resources == NULL || resources->relayPool == NULL ||
+      slot != resources->relaySlot || slot >= resources->relayPool->slotCount)
+    return false;
+  const auto &entry = resources->relayPool->slots[slot];
+  return entry.owner == connection && entry.requestId == requestId;
+}
+
+void flagcxNetReleaseRelaySlot(struct sendNetResources *resources,
+                               struct flagcxProxyConnection *connection,
+                               uint64_t requestId) {
+  if (resources == NULL || resources->relayPool == NULL)
+    return;
+  flagcxNetRelayPool *pool = resources->relayPool;
+  if (resources->relaySlot < pool->slotCount) {
+    auto &entry = pool->slots[resources->relaySlot];
+    if (entry.owner == connection && entry.requestId == requestId)
+      entry.requestId = 0;
+  }
+}
+
+bool flagcxNetRelayConnectionHasSlot(struct sendNetResources *resources,
+                                     struct flagcxProxyConnection *connection) {
+  if (resources == NULL || resources->relayPool == NULL)
+    return false;
+  return resources->relaySlot < resources->relayPool->slotCount &&
+         resources->relayPool->slots[resources->relaySlot].owner ==
+             connection &&
+         resources->relayPool->slots[resources->relaySlot].requestId != 0;
+}
+
+uint64_t flagcxNetRelayPoolId(struct sendNetResources *resources) {
+  return resources != NULL && resources->relayPool != NULL
+             ? resources->relayPool->id
+             : 0;
+}
+
+void flagcxNetPoisonRelayPool(struct sendNetResources *resources) {
+  if (resources != NULL && resources->relayPool != NULL)
+    resources->relayPool->unsafe = true;
+}
+
+bool flagcxNetRelayPoolUnsafe(struct sendNetResources *resources) {
+  return resources == NULL || resources->relayPool == NULL ||
+         resources->relayPool->unsafe;
+}
+
 struct flagcxNetRelaySendState {
   bool counted;
   flagcxStream_t stream;
@@ -83,9 +258,11 @@ struct flagcxNetRelaySendState {
   uint64_t requestId;
   uint64_t cancelDeadlineNs;
   flagcxResult_t terminalResult;
+  uint32_t slot;
   uint8_t sendReleased;
   uint8_t cancelReleased;
-  int phase; // 0: ready, 1: copying, 2: send reply, 3/4: cancel send/reply
+  int phase; // 0: ready, 1: lease reply, 2: copy, 3: send reply,
+             // 4: cancel send, 5: cancel reply
 };
 
 static uint64_t flagcxNextRelayRequestId = 0;
@@ -103,15 +280,8 @@ void flagcxNetCleanupRelaySendOp(struct flagcxProxyOp *op) {
   auto *state = static_cast<flagcxNetRelaySendState *>(op->relaySendState);
   // An uncertain RPC keeps the connection mapping alive until process exit.
   // The relay owns the allocation and can still be reading from it.
-  if (state->phase >= 2) {
-    WARN("PXN relay reply lost; retaining connection IPC mapping until process "
-         "exit");
-    op->relaySendState = NULL;
-    return;
-  }
-  if (state->phase == 1 && state->stream != NULL &&
-      deviceAdaptor->streamSynchronize(state->stream) != flagcxSuccess) {
-    WARN("PXN relay copy completion is unknown; retaining connection IPC "
+  if (state->phase != 0) {
+    WARN("PXN relay slot ownership is uncertain; retaining shared IPC "
          "mapping until process exit");
     op->relaySendState = NULL;
     return;
@@ -155,15 +325,50 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
     state->chunkBytes =
         std::min(static_cast<size_t>(flagcxNetChunkSize),
                  static_cast<size_t>(op->nbytes) - state->offset);
-    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-        op->connection->relayBufferImport,
-        reinterpret_cast<char *>(op->recvbuff) + state->offset,
-        state->chunkBytes, flagcxMemcpyDeviceToDevice, state->stream, NULL));
+    state->requestId =
+        __atomic_add_fetch(&flagcxNextRelayRequestId, 1, __ATOMIC_RELAXED);
+    state->slot = UINT32_MAX;
+    flagcxNetRelayLeaseRequest lease = {state->requestId};
+    auto *connector =
+        &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
+    // A partially written request can still reserve a slot on the relay.
     state->phase = 1;
-    FLAGCXCHECK(deviceAdaptor->eventRecord(state->event, state->stream));
+    FLAGCXCHECK(flagcxProxyCallAsync(
+        op->comm, connector, flagcxProxyMsgLeaseRelay, &lease, sizeof(lease),
+        sizeof(state->slot), state));
   }
 
   if (state->phase == 1) {
+    auto *connector =
+        &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
+    bool responseReceived = false;
+    flagcxResult_t result = flagcxPollProxyResponseWithStatus(
+        op->comm, connector, &state->slot, state, &responseReceived);
+    if (result == flagcxInProgress)
+      return flagcxSuccess;
+    if (!responseReceived || result != flagcxSuccess ||
+        state->slot == UINT32_MAX ||
+        flagcxNetRelaySlotOffset(state->slot) + state->chunkBytes >
+            op->connection->relayBufferCapacity) {
+      state->terminalResult =
+          result == flagcxSuccess ? flagcxInternalError : result;
+      state->phase = 4;
+    } else {
+      state->phase = 2;
+    }
+  }
+
+  if (state->phase == 2) {
+    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+        static_cast<char *>(op->connection->relayBufferImport) +
+            flagcxNetRelaySlotOffset(state->slot),
+        reinterpret_cast<char *>(op->recvbuff) + state->offset,
+        state->chunkBytes, flagcxMemcpyDeviceToDevice, state->stream, NULL));
+    FLAGCXCHECK(deviceAdaptor->eventRecord(state->event, state->stream));
+    state->phase = 6; // copy in flight
+  }
+
+  if (state->phase == 6) {
     int completed = 0;
     FLAGCXCHECK(flagcxTransportClassifyCompletion(
         deviceAdaptor->eventQuery(state->event), &completed));
@@ -171,9 +376,8 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
       return flagcxSuccess;
     flagcxNetRelaySendRequest request = {};
     request.bytes = state->chunkBytes;
-    state->requestId =
-        __atomic_add_fetch(&flagcxNextRelayRequestId, 1, __ATOMIC_RELAXED);
     request.requestId = state->requestId;
+    request.slot = state->slot;
     request.generation = op->args.collTransport.generation;
     request.orderingKey = op->args.collTransport.orderingKey;
     request.sequence = state->offset / flagcxNetChunkSize;
@@ -183,13 +387,13 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
     state->sendReleased = 0;
     // A failed socket write may already have delivered a complete request.
     // Treat ownership as uncertain before publishing any part of the frame.
-    state->phase = 2;
+    state->phase = 3;
     FLAGCXCHECK(flagcxProxyCallAsync(op->comm, connector,
                                      flagcxProxyMsgSendRecv, &request,
                                      sizeof(request), 1, op));
   }
 
-  if (state->phase == 2) {
+  if (state->phase == 3) {
     auto *connector =
         &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
     bool responseReceived = false;
@@ -199,7 +403,7 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
       return flagcxSuccess;
     if (!responseReceived) {
       state->terminalResult = result;
-      state->phase = 3;
+      state->phase = 4;
     } else if (state->sendReleased == 0) {
       // The relay replied, but did not certify that this slot is idle.
       return result == flagcxSuccess ? flagcxInternalError : result;
@@ -217,7 +421,7 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
       }
     }
   }
-  if (state->phase == 3) {
+  if (state->phase == 4) {
     auto *connector =
         &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
     flagcxNetRelayCancelRequest cancel = {state->requestId};
@@ -226,14 +430,14 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
                              &cancel, sizeof(cancel), 1,
                              state) != flagcxSuccess) {
       // No reliable reply is possible. Retain the connection IPC mapping.
-      state->phase = 2;
+      state->phase = 3;
       return state->terminalResult;
     }
     const uint64_t now = flagcxRelayMonotonicNs();
     state->cancelDeadlineNs = now == 0 ? 0 : now + 30000000000ULL;
-    state->phase = 4;
+    state->phase = 5;
   }
-  if (state->phase == 4) {
+  if (state->phase == 5) {
     auto *connector =
         &op->comm->channels[op->channelId].peers[op->root]->send[0].proxyConn;
     bool responseReceived = false;
@@ -247,7 +451,7 @@ static flagcxResult_t flagcxNetProgressRelaySend(struct flagcxProxyOp *op) {
       flagcxProxyForgetResponse(op->comm, op);
       state->phase = 0;
     } else {
-      state->phase = 2;
+      state->phase = 3;
     }
     return state->terminalResult;
   }
@@ -286,7 +490,8 @@ flagcxResult_t flagcxNetInitSendResources(struct flagcxNetAdaptor *netAdaptor,
                                           struct sendNetResources *resources,
                                           bool relay) {
   if (netAdaptor == NULL || resources == NULL || netDev < 0 ||
-      flagcxNetChunks > FLAGCX_NET_MAX_STEPS)
+      flagcxNetChunks > FLAGCX_NET_MAX_STEPS ||
+      (relay && flagcxNetChunkSize <= 0))
     return flagcxInvalidArgument;
 
   resources->netDev = netDev;
@@ -305,18 +510,7 @@ flagcxResult_t flagcxNetInitSendResources(struct flagcxNetAdaptor *netAdaptor,
       if ((resources->ptrSupport & FLAGCX_PTR_CUDA) == 0)
         return flagcxNotSupported;
     }
-    FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(
-        reinterpret_cast<void **>(&resources->buffers[0]),
-        resources->buffSizes[0], NULL));
-    resources->relayExportBuffer = resources->buffers[0];
-    resources->relayIpcBuffer = true;
-    // No descriptor has been published yet, so the source cannot own a map.
-    resources->relaySourceReleased = true;
-    flagcxP2pIpcDesc desc = {};
-    FLAGCXCHECK(flagcxP2pExportShareableBuffer(resources->relayExportBuffer,
-                                               resources->buffSizes[0], &desc));
-    resources->relayHandleData = desc.handleData;
-    resources->relayHandleSize = desc.handleSize;
+    // The service thread attaches this connection to its source-rank pool.
   } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
     resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
     if (resources->buffers[0] == NULL)
@@ -1068,20 +1262,32 @@ flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
     flagcxProxyCleanupResult(closeResult, &result);
     resources->netSendComm = NULL;
   }
-  if (resources->relayIpcBuffer) {
-    if (!relayNetReleased) {
-      WARN("PXN relay NET resources were not fully released; retaining GPU "
-           "buffers until process exit");
-    } else {
-      if (!resources->relaySourceReleased) {
-        WARN("PXN relay source did not confirm IPC close; retaining exported "
-             "NET buffer until process exit");
-      } else if (resources->relayExportBuffer != NULL) {
-        flagcxProxyCleanupResult(
-            deviceAdaptor->gdrMemFree(resources->relayExportBuffer, NULL),
-            &result);
-      }
+  if (resources->relayPool != NULL) {
+    flagcxNetRelayPool *pool = resources->relayPool;
+    if (!relayNetReleased || !resources->relaySourceReleased)
+      pool->unsafe = true;
+    for (uint32_t i = 0; i < pool->slotCount; ++i) {
+      if (pool->slots[i].requestId != 0)
+        pool->unsafe = true;
     }
+    if (--pool->refs == 0) {
+      flagcxNetRelayPool **link = &pool->owner->relayPools;
+      while (*link != NULL && *link != pool)
+        link = &(*link)->next;
+      if (*link == pool)
+        *link = pool->next;
+      if (pool->unsafe) {
+        WARN("PXN shared relay pool %llu may still be in use; retaining %zu "
+             "bytes until process exit",
+             static_cast<unsigned long long>(pool->id), pool->capacity);
+      } else {
+        flagcxProxyCleanupResult(deviceAdaptor->gdrMemFree(pool->base, NULL),
+                                 &result);
+      }
+      free(pool->slots);
+      free(pool);
+    }
+    resources->relayPool = NULL;
     resources->relayExportBuffer = NULL;
     resources->buffers[0] = NULL;
   } else if (resources->buffers[0] != NULL) {

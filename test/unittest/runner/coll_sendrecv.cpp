@@ -1,6 +1,6 @@
 // Point-to-point Send/Recv correctness test.
-// Ring pattern: each rank sends to (rank+1)%nranks, receives from
-// (rank-1+nranks)%nranks. Each rank fills its sendbuff with its own rank ID.
+// Normally uses a ring. PXN CI pairs ranks across the two logical nodes so
+// sends from GPUs away from the NIC exercise sender-side relay paths.
 // After the exchange, each rank verifies it received the sender's rank ID.
 
 #include "comm.h"
@@ -18,8 +18,15 @@
 
 TEST_F(FlagCXCollTest, SendRecv) {
 
-  int sendPeer = (rank + 1) % nranks;
-  int recvPeer = (rank - 1 + nranks) % nranks;
+  const char *expectPxn = std::getenv("FLAGCX_CI_EXPECT_PXN");
+  const bool pxnCrossPairs =
+      expectPxn != nullptr && std::strcmp(expectPxn, "1") == 0 && nranks == 8;
+  // The normal ring crosses between ranks 3/4 and 7/0, which are NIC-local
+  // on the PPU host. Pair opposite logical nodes in PXN CI so both directions
+  // actually exercise sender-side relays.
+  int sendPeer =
+      pxnCrossPairs ? (rank + nranks / 2) % nranks : (rank + 1) % nranks;
+  int recvPeer = pxnCrossPairs ? sendPeer : (rank - 1 + nranks) % nranks;
 
   // Fill sendbuff with my rank
   float *hsend = static_cast<float *>(hostsendbuff);

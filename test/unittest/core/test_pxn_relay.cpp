@@ -114,6 +114,12 @@ TEST_F(PxnRelayTest, ChoosesLocalGdrRelayWithBetterNicPath) {
   EXPECT_EQ(selectedRank(), 1);
 }
 
+TEST_F(PxnRelayTest, AggregatesThroughNicLocalGpuAtEqualBandwidth) {
+  topo->nodes[APU].nodes[0].paths[NET][0].type = PATH_PXB;
+  topo->nodes[APU].nodes[0].paths[NET][0].bw = 24;
+  EXPECT_EQ(selectedRank(), 1);
+}
+
 TEST_F(PxnRelayTest, KeepsDirectPathWhenPeerLinkCannotCarryPxn) {
   topo->nodes[APU].nodes[0].paths[APU][1].type = PATH_PHB;
   EXPECT_EQ(selectedRank(), 0);
@@ -181,7 +187,7 @@ TEST_F(PxnRelayTest, RejectsPxnPathWithoutLocalRelay) {
             flagcxInternalError);
 }
 
-TEST(PxnRelayTopology, EightRankTwoFabricLayoutSelectsDestinationFabric) {
+TEST(PxnRelayTopology, EightRankSimulationKeepsRelayOnSendingSide) {
   auto topo = std::make_unique<flagcxTopoServer>();
   topo->nodes[APU].count = 8;
   topo->nodes[NET].count = 2;
@@ -190,6 +196,7 @@ TEST(PxnRelayTopology, EightRankTwoFabricLayoutSelectsDestinationFabric) {
     auto &nic = topo->nodes[NET].nodes[net];
     nic.id = FLAGCX_TOPO_ID(0, 100 + net);
     nic.net.dev = net;
+    nic.net.guid = 100 + net;
     nic.net.bw = 24;
     nic.net.gdrSupport = 1;
   }
@@ -197,13 +204,17 @@ TEST(PxnRelayTopology, EightRankTwoFabricLayoutSelectsDestinationFabric) {
     auto &apu = topo->nodes[APU].nodes[rank];
     apu.id = FLAGCX_TOPO_ID(0, rank + 1);
     apu.apu.rank = rank;
+    apu.apu.dev = rank;
     apu.paths[APU] = new flagcxTopoPath[8]();
     apu.paths[NET] = new flagcxTopoPath[2]();
     const int ownFabric = rank < 4 ? 0 : 1;
     apu.apu.gdrSupport = 1;
     for (int net = 0; net < 2; ++net) {
-      apu.paths[NET][net].type = net == ownFabric ? PATH_PIX : PATH_PHB;
-      apu.paths[NET][net].bw = net == ownFabric ? 24 : 8;
+      const bool nearNic = net == ownFabric && (rank % 4) >= 2;
+      apu.paths[NET][net].type = net != ownFabric ? PATH_PHB
+                                 : nearNic        ? PATH_PIX
+                                                  : PATH_PXB;
+      apu.paths[NET][net].bw = net != ownFabric ? 8 : nearNic ? 24 : 12;
     }
   }
   for (int rank = 0; rank < 8; ++rank) {
@@ -212,48 +223,41 @@ TEST(PxnRelayTopology, EightRankTwoFabricLayoutSelectsDestinationFabric) {
     for (int peer = 0; peer < 8; ++peer)
       topo->nodes[APU].nodes[rank].paths[APU][peer].bw = 24;
   }
-  for (int rank : {0, 1, 4, 6}) {
-    const int destinationFabric = rank < 4 ? 1 : 0;
+  for (int rank : {0, 1, 4, 5}) {
+    const int sourceFabric = rank < 4 ? 0 : 1;
     int selected = -1;
-    ASSERT_EQ(flagcxTopoSelectPxnRelay(topo.get(), rank, destinationFabric,
-                                       &selected),
-              flagcxSuccess);
-    EXPECT_NE(selected, rank);
-    EXPECT_EQ(selected < 4, destinationFabric == 0);
+    ASSERT_EQ(
+        flagcxTopoSelectPxnRelay(topo.get(), rank, sourceFabric, &selected, 4),
+        flagcxSuccess);
+    EXPECT_EQ(selected, rank < 4 ? 2 : 6);
   }
   for (int sourceRank = 0; sourceRank < 8; ++sourceRank) {
     for (int peerRank = 0; peerRank < 8; ++peerRank) {
-      if (sourceRank == peerRank)
+      if ((sourceRank < 4) == (peerRank < 4))
         continue;
       const int receiverNetDev = peerRank < 4 ? 0 : 1;
       int sendNetDev = -1;
       int relayRank = -1;
       ASSERT_EQ(flagcxTopoSelectNetRoute(
                     topo.get(), topo.get(), interServer.get(), sourceRank,
-                    peerRank, receiverNetDev, &sendNetDev, &relayRank),
+                    peerRank, receiverNetDev, &sendNetDev, &relayRank, 4),
                 flagcxSuccess);
-      EXPECT_EQ(sendNetDev, receiverNetDev);
-      const bool relayOnReceiverFabric =
-          (relayRank < 4) == (receiverNetDev == 0);
-      EXPECT_TRUE(relayOnReceiverFabric)
-          << "source " << sourceRank << " peer " << peerRank;
-      const bool crossesFabric = (sourceRank < 4) != (receiverNetDev == 0);
-      if (crossesFabric)
-        EXPECT_NE(relayRank, sourceRank);
-      else
-        EXPECT_EQ(relayRank, sourceRank);
+      EXPECT_EQ(sendNetDev, sourceRank < 4 ? 0 : 1);
+      EXPECT_EQ(relayRank, sourceRank % 4 == 2 ? sourceRank
+                           : sourceRank < 4    ? 2
+                                               : 6);
+      EXPECT_EQ(relayRank < 4, sourceRank < 4);
     }
   }
-  // A direct PCI route exists, but no GPU on the receiver's fabric supports
-  // GDR. The source's distant path is not a usable PXN route either.
-  for (int rank : {4, 5, 6, 7})
-    topo->nodes[APU].nodes[rank].apu.gdrSupport = 0;
-  int unsupportedDev = -1;
-  int unsupportedRelay = -1;
-  EXPECT_EQ(flagcxTopoSelectNetRoute(topo.get(), topo.get(), interServer.get(),
-                                     0, 4, 1, &unsupportedDev,
-                                     &unsupportedRelay),
-            flagcxNotSupported);
+  // The physical topology alone cannot represent the two logical nodes.
+  int physicalOnlyRelay = -1;
+  ASSERT_EQ(flagcxTopoSelectPxnRelay(topo.get(), 0, 1, &physicalOnlyRelay),
+            flagcxSuccess);
+  EXPECT_EQ(physicalOnlyRelay, 6);
+  int simulatedRelay = -1;
+  ASSERT_EQ(flagcxTopoSelectPxnRelay(topo.get(), 0, 1, &simulatedRelay, 4),
+            flagcxSuccess);
+  EXPECT_EQ(simulatedRelay, 0);
   for (int rank = 0; rank < 8; ++rank) {
     delete[] topo->nodes[APU].nodes[rank].paths[APU];
     delete[] topo->nodes[APU].nodes[rank].paths[NET];
@@ -276,8 +280,10 @@ TEST(PxnRelayTopology, ChoosesRouteToReceiversSelectedNic) {
   auto &relay = local->nodes[APU].nodes[1];
   source.id = FLAGCX_TOPO_ID(0, 1);
   source.apu.rank = 0;
+  source.apu.dev = 0;
   relay.id = FLAGCX_TOPO_ID(0, 2);
   relay.apu.rank = 1;
+  relay.apu.dev = 1;
   relay.apu.gdrSupport = 1;
   source.paths[APU] = new flagcxTopoPath[2]();
   source.paths[APU][1].type = PATH_CCI;
@@ -297,7 +303,7 @@ TEST(PxnRelayTopology, ChoosesRouteToReceiversSelectedNic) {
   }
   auto &receiver = remote->nodes[APU].nodes[0];
   receiver.apu.rank = 2;
-  receiver.apu.dev = 0;
+  receiver.apu.dev = 1;
   receiver.paths[NET] = new flagcxTopoPath[1]();
   receiver.paths[NET][0].type = PATH_PIX;
   receiver.paths[NET][0].bw = 24;
@@ -353,6 +359,38 @@ TEST(PxnRelayTopology, ChoosesRouteToReceiversSelectedNic) {
                                      &relayRank),
             flagcxSuccess);
   EXPECT_EQ(netDev, 1);
+  EXPECT_EQ(relayRank, 1);
+
+  // If only a third local NIC can reach the advertised receiver NIC, keep it
+  // as a route fallback after the two topology-preferred choices.
+  local->nodes[NET].count = 3;
+  auto &fallbackNet = local->nodes[NET].nodes[2];
+  fallbackNet.id = FLAGCX_TOPO_ID(0, 102);
+  fallbackNet.net.dev = 2;
+  fallbackNet.net.guid = 102;
+  fallbackNet.net.bw = 24;
+  fallbackNet.net.gdrSupport = 1;
+  auto *sourcePaths = new flagcxTopoPath[3]();
+  auto *relayPaths = new flagcxTopoPath[3]();
+  for (int n = 0; n < 2; ++n) {
+    sourcePaths[n] = source.paths[NET][n];
+    relayPaths[n] = relay.paths[NET][n];
+  }
+  delete[] source.paths[NET];
+  delete[] relay.paths[NET];
+  source.paths[NET] = sourcePaths;
+  relay.paths[NET] = relayPaths;
+  sourcePaths[2].type = PATH_PHB;
+  sourcePaths[2].bw = 8;
+  relayPaths[2].type = PATH_PXB;
+  relayPaths[2].bw = 12;
+  interServer->routeMap.clear();
+  interServer->routeMap[102][301] = route.get();
+  EXPECT_EQ(flagcxTopoSelectNetRoute(local.get(), remote.get(),
+                                     interServer.get(), 0, 2, 1, &netDev,
+                                     &relayRank),
+            flagcxSuccess);
+  EXPECT_EQ(netDev, 2);
   EXPECT_EQ(relayRank, 1);
 
   delete[] source.paths[APU];

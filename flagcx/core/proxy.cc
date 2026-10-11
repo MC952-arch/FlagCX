@@ -51,6 +51,7 @@ static bool proxyMatchOpType(int type) {
     case flagcxProxyMsgSendRecv:
     case flagcxProxyMsgCancelRelay:
     case flagcxProxyMsgReleaseRelay:
+    case flagcxProxyMsgLeaseRelay:
       return true;
     default:
       return false;
@@ -208,6 +209,11 @@ static flagcxResult_t flagcxNetRelaySendRpc(flagcxProxyAsyncOp *op,
   if (request->bytes == 0 || request->bytes > (size_t)flagcxNetChunkSize ||
       request->sequence == UINT64_MAX || request->requestId == 0)
     return flagcxInvalidArgument;
+  if (!flagcxNetRelaySlotOwned(resources, op->connection, request->requestId,
+                               request->slot) ||
+      flagcxNetRelaySlotOffset(request->slot) + request->bytes >
+          static_cast<size_t>(resources->buffSizes[0]))
+    return flagcxInvalidArgument;
 
   if (op->connection->activeRelayOp != NULL &&
       op->connection->activeRelayOp != op)
@@ -236,9 +242,18 @@ static flagcxResult_t flagcxNetRelaySendRpc(flagcxProxyAsyncOp *op,
     op->args.semaphore->signalStart();
   }
 
-  FLAGCXCHECK(flagcxProxySend(resources, resources->relayExportBuffer,
-                              request->bytes, &op->args));
+  flagcxResult_t sendResult = flagcxProxySend(
+      resources,
+      resources->relayExportBuffer + flagcxNetRelaySlotOffset(request->slot),
+      request->bytes, &op->args);
+  if (sendResult != flagcxSuccess) {
+    // A failed NET operation may still have an outstanding DMA read.
+    flagcxNetPoisonRelayPool(resources);
+    return sendResult;
+  }
   *done = op->args.done;
+  if (*done)
+    flagcxNetReleaseRelaySlot(resources, op->connection, request->requestId);
   return flagcxSuccess;
 }
 
@@ -385,6 +400,7 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
   if ((*connection)->tcomm == NULL)
     return flagcxNotSupported;
   (*connection)->tpLocalRank = req->tpLocalRank;
+  (*connection)->tpRank = req->tpRank;
   (*connection)->sameProcess = req->sameProcess;
   (*connection)->cudaDev = comm->cudaDev;
   peer->tpLocalRank = req->tpLocalRank;
@@ -1101,8 +1117,12 @@ flagcxNetSendProxySetup(struct flagcxProxyConnection *connection,
   // The service thread runs on the relay rank's device. Connection cleanup
   // releases the allocated stream, events, and NET buffer at proxy teardown.
   connection->transportResources = resources;
+  INFO(FLAGCX_NET, "PXN relay setup received: source local rank %d NET/%d",
+       connection->tpLocalRank, relayNetDev);
   FLAGCXCHECK(
       flagcxNetInitSendResources(netAdaptor, relayNetDev, resources, true));
+  FLAGCXCHECK(flagcxNetAttachRelayPool(proxyState, connection->tpRank,
+                                       connection, resources));
   *done = 1;
   return flagcxSuccess;
 }
@@ -1160,6 +1180,10 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
           resources->netSendComm, resources->buffers[0],
           resources->buffSizes[0], type, 0, &resources->mhandles[0]);
     };
+    if (resources->relayIpcBuffer)
+      INFO(FLAGCX_NET, "PXN relay registering %d-byte buffer %p on NET/%d",
+           resources->buffSizes[0], resources->relayExportBuffer,
+           resources->netDev);
     FLAGCXCHECK(registerSendBuffer());
     if (resources->relayIpcBuffer) {
       if (resources->mhandles[0] == NULL)
@@ -1168,6 +1192,8 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
       info->handleData = resources->relayHandleData;
       info->handleSize = resources->relayHandleSize;
       info->capacity = resources->buffSizes[0];
+      info->chunkSize = static_cast<size_t>(flagcxNetChunkSize);
+      info->poolId = flagcxNetRelayPoolId(resources);
       // A reply may be lost after publication; require an explicit source
       // release acknowledgement before freeing the exported allocation.
       resources->relaySourceReleased = false;
@@ -1334,6 +1360,29 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
         return flagcxNotSupported;
       FLAGCXCHECK(tcomm->proxyDeregister(op->connection, NULL, op->reqBuff,
                                          op->reqSize, &done));
+    } else if (op->type == flagcxProxyMsgLeaseRelay) {
+      if (op->reqSize != sizeof(flagcxNetRelayLeaseRequest) ||
+          op->respSize != sizeof(uint32_t) || op->reqBuff == NULL ||
+          op->connection == NULL || !op->connection->send ||
+          op->connection->transport != TRANSPORT_NET ||
+          op->connection->state != connConnected ||
+          op->connection->transportResources == NULL)
+        return flagcxInvalidArgument;
+      if (op->done) {
+        *reinterpret_cast<uint32_t *>(op->respBuff) = UINT32_MAX;
+        done = 1;
+      } else {
+        auto *request =
+            reinterpret_cast<const flagcxNetRelayLeaseRequest *>(op->reqBuff);
+        auto *resources =
+            static_cast<sendNetResources *>(op->connection->transportResources);
+        auto *slot = reinterpret_cast<uint32_t *>(op->respBuff);
+        flagcxResult_t leaseResult = flagcxNetLeaseRelaySlot(
+            resources, op->connection, request->requestId, slot);
+        if (leaseResult != flagcxSuccess && leaseResult != flagcxInProgress)
+          return leaseResult;
+        done = leaseResult == flagcxSuccess;
+      }
     } else if (op->type == flagcxProxyMsgSendRecv) {
       FLAGCXCHECK(flagcxNetRelaySendRpc(op, comm, peer->tpRank, &done));
     } else if (op->type == flagcxProxyMsgCancelRelay) {
@@ -1347,6 +1396,18 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
       done = 1;
       for (flagcxProxyAsyncOp *pending = peer->asyncOps; pending != NULL;
            pending = pending->next) {
+        if (pending->connection != op->connection)
+          continue;
+        if (pending->type == flagcxProxyMsgLeaseRelay &&
+            pending->reqSize == sizeof(flagcxNetRelayLeaseRequest) &&
+            pending->reqBuff != NULL &&
+            reinterpret_cast<const flagcxNetRelayLeaseRequest *>(
+                pending->reqBuff)
+                    ->requestId == cancel->requestId) {
+          pending->done = true;
+          done = 0;
+          continue;
+        }
         if (pending->type != flagcxProxyMsgSendRecv ||
             pending->reqSize != sizeof(flagcxNetRelaySendRequest) ||
             pending->reqBuff == NULL)
@@ -1361,8 +1422,14 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
           break;
         }
       }
-      if (done)
+      if (done) {
+        auto *resources =
+            static_cast<sendNetResources *>(op->connection->transportResources);
+        if (flagcxNetRelayPoolUnsafe(resources))
+          return flagcxInternalError;
+        flagcxNetReleaseRelaySlot(resources, op->connection, cancel->requestId);
         op->respBuff[0] = 1;
+      }
     } else if (op->type == flagcxProxyMsgReleaseRelay) {
       if (op->reqSize != 0 || op->respSize != 0 || op->connection == NULL ||
           !op->connection->send || op->connection->transport != TRANSPORT_NET ||
@@ -1370,7 +1437,8 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
         return flagcxInvalidArgument;
       auto *resources =
           static_cast<sendNetResources *>(op->connection->transportResources);
-      if (!resources->relayIpcBuffer || op->connection->activeRelayOp != NULL)
+      if (!resources->relayIpcBuffer || op->connection->activeRelayOp != NULL ||
+          flagcxNetRelayConnectionHasSlot(resources, op->connection))
         return flagcxInvalidArgument;
       resources->relaySourceReleased = true;
       done = 1;
@@ -3043,57 +3111,76 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
   bool relayDeviceSet = false;
   const uint64_t nowNs = flagcxProxyMonotonicNs();
   const uint64_t releaseDeadlineNs = nowNs == 0 ? 0 : nowNs + 30000000000ULL;
-  for (int peer = 0; peer < comm->nRanks; ++peer) {
-    for (int channel = 0; channel < MAXCHANNELS; ++channel) {
-      if (comm->channels[channel].peers == NULL ||
-          comm->channels[channel].peers[peer] == NULL)
-        continue;
-      for (int index = 0; index < FLAGCX_MAX_CONNS; ++index) {
-        auto *connector =
-            &comm->channels[channel].peers[peer]->send[index].proxyConn;
-        auto *connection = connector->connection;
-        if (connection == NULL || connection->relayBufferImport == NULL)
-          continue;
-        if (!relayDeviceSet) {
-          flagcxResult_t setResult = deviceAdaptor->setDevice(comm->cudaDev);
-          if (setResult != flagcxSuccess) {
-            if (relayCleanupResult == flagcxSuccess)
-              relayCleanupResult = setResult;
+  for (auto *import = comm->proxyState->relayImports; import != NULL;
+       import = import->next) {
+    bool active = false;
+    do {
+      active = false;
+      for (int peer = 0; peer < comm->nRanks; ++peer) {
+        for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+          if (comm->channels[channel].peers == NULL ||
+              comm->channels[channel].peers[peer] == NULL)
             continue;
+          for (int index = 0; index < FLAGCX_MAX_CONNS; ++index) {
+            auto *connection = comm->channels[channel]
+                                   .peers[peer]
+                                   ->send[index]
+                                   .proxyConn.connection;
+            if (connection != NULL && connection->relayImport == import &&
+                __atomic_load_n(&connection->relayActiveOps,
+                                __ATOMIC_ACQUIRE) != 0)
+              active = true;
           }
-          relayDeviceSet = true;
         }
-        while (__atomic_load_n(&connection->relayActiveOps, __ATOMIC_ACQUIRE) !=
-                   0 &&
-               releaseDeadlineNs != 0 &&
-               flagcxProxyMonotonicNs() < releaseDeadlineNs)
-          usleep(1000);
-        if (__atomic_load_n(&connection->relayActiveOps, __ATOMIC_ACQUIRE) !=
-            0) {
-          WARN("PXN relay mapping still has active sends at shutdown; "
-               "retaining it until process exit");
-          if (relayCleanupResult == flagcxSuccess)
-            relayCleanupResult = flagcxInternalError;
+      }
+      if (active && releaseDeadlineNs != 0 &&
+          flagcxProxyMonotonicNs() < releaseDeadlineNs)
+        usleep(1000);
+      else
+        break;
+    } while (true);
+    if (active) {
+      WARN("PXN shared relay mapping has active sends at shutdown; "
+           "retaining it until process exit");
+      if (relayCleanupResult == flagcxSuccess)
+        relayCleanupResult = flagcxInternalError;
+      continue;
+    }
+    if (!relayDeviceSet) {
+      flagcxResult_t setResult = deviceAdaptor->setDevice(comm->cudaDev);
+      if (setResult != flagcxSuccess) {
+        if (relayCleanupResult == flagcxSuccess)
+          relayCleanupResult = setResult;
+        continue;
+      }
+      relayDeviceSet = true;
+    }
+    INFO(FLAGCX_PROXY, "PXN closing shared relay import %llu from relay %d",
+         static_cast<unsigned long long>(import->poolId), import->proxyRank);
+    flagcxResult_t closeResult = deviceAdaptor->ipcMemHandleClose(import->base);
+    if (closeResult != flagcxSuccess) {
+      if (relayCleanupResult == flagcxSuccess)
+        relayCleanupResult = closeResult;
+      continue;
+    }
+    import->closed = true;
+    for (int peer = 0; peer < comm->nRanks; ++peer) {
+      for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+        if (comm->channels[channel].peers == NULL ||
+            comm->channels[channel].peers[peer] == NULL)
           continue;
+        for (int index = 0; index < FLAGCX_MAX_CONNS; ++index) {
+          auto *connector =
+              &comm->channels[channel].peers[peer]->send[index].proxyConn;
+          if (connector->connection == NULL ||
+              connector->connection->relayImport != import)
+            continue;
+          connector->connection->relayBufferImport = NULL;
+          flagcxResult_t ackResult = flagcxProxyAcknowledgeRelayRelease(
+              comm, connector, releaseDeadlineNs);
+          if (ackResult != flagcxSuccess && relayCleanupResult == flagcxSuccess)
+            relayCleanupResult = ackResult;
         }
-        INFO(FLAGCX_PROXY,
-             "PXN closing persistent relay import: source %d peer %d "
-             "channel %d",
-             comm->rank, peer, channel);
-        flagcxResult_t closeResult =
-            deviceAdaptor->ipcMemHandleClose(connection->relayBufferImport);
-        INFO(FLAGCX_PROXY, "PXN persistent relay close returned %d",
-             closeResult);
-        if (closeResult != flagcxSuccess) {
-          if (relayCleanupResult == flagcxSuccess)
-            relayCleanupResult = closeResult;
-          continue;
-        }
-        connection->relayBufferImport = NULL;
-        flagcxResult_t ackResult = flagcxProxyAcknowledgeRelayRelease(
-            comm, connector, releaseDeadlineNs);
-        if (ackResult != flagcxSuccess && relayCleanupResult == flagcxSuccess)
-          relayCleanupResult = ackResult;
       }
     }
   }
@@ -3148,6 +3235,11 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
     // Free transport resources (must happen after thread join)
     flagcxProxyFree(comm);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: done");
+  }
+  while (comm->proxyState->relayImports != NULL) {
+    auto *import = comm->proxyState->relayImports;
+    comm->proxyState->relayImports = import->next;
+    free(import);
   }
   // free peerSocks
   if (comm->proxyState->peerSocks != NULL) {

@@ -142,6 +142,7 @@ flagcx_ci_run_suite_override() {
         -x FLAGCX_P2P_TRANSPORT=accl \
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_PXN_DISABLE=0 \
+        -x FLAGCX_CI_PXN_RANKS_PER_NODE=4 \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
