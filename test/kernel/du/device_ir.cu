@@ -20,6 +20,7 @@
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
 #include "device_ir.h"
+#include "intra_barrier_probe.cuh"
 
 // Resolve the backend's completion width without inspecting its storage.
 static constexpr int kCompletionBits =
@@ -1825,6 +1826,26 @@ void launchKernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, 
 // 2 combos: BLOCK cooperation × 2 teams.
 // Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
+flagcxResult_t launchKernelDevIntraBarrierLiveProbeS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
+    flagcxStream_t stream) {
+  if (!devCommPtr || !result || !stream) return flagcxInternalError;
+  flagcxDuIntraBarrierProbeByPointer<<<1, 256, 0, stream->base>>>(
+      devCommPtr, result);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t launchKernelDevIntraBarrierSnapshotS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
+    flagcxStream_t stream) {
+  if (!devCommPtr || !result || !stream) return flagcxInternalError;
+  flagcxDuIntraBarrierSnapshotByPointer<<<1, 256, 0, stream->base>>>(
+      devCommPtr, result);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 __global__ void kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();

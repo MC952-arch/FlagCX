@@ -51,6 +51,14 @@
 // Intra-Node Scalar IR kernel launchers (S1–S10)
 // =========================================================================
 
+// DU diagnostic: bounded all-peer IPC barrier notification probe.
+flagcxResult_t launchKernelDevIntraBarrierLiveProbeS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
+    flagcxStream_t stream);
+flagcxResult_t launchKernelDevIntraBarrierSnapshotS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
+    flagcxStream_t stream);
+
 // S1: Comm Queries — rank, size, intraRank, intraSize
 void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               int *devResults, flagcxStream_t stream);

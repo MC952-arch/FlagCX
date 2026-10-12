@@ -103,6 +103,12 @@ flagcxResult_t launchKernelIntraBarrierIpcWriteProbe(flagcxDevComm_t devComm,
 flagcxResult_t launchKernelIntraBarrierIpcReadProbe(flagcxDevComm_t devComm,
                                                     int *result,
                                                     flagcxStream_t stream);
+flagcxResult_t launchKernelIntraBarrierLiveProbe(flagcxDevComm_t devComm,
+                                                 int *result,
+                                                 flagcxStream_t stream);
+flagcxResult_t launchKernelIntraBarrierSnapshot(flagcxDevComm_t devComm,
+                                                int *result,
+                                                flagcxStream_t stream);
 
 // K3: Peer Pointer (team) — read peer via flagcxGetPeerPointer(mem, off, team,
 // peer)

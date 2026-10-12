@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <vector>
 
 #define DATATYPE flagcxFloat
 
@@ -302,6 +303,49 @@ int main(int argc, char *argv[]) {
       if (anyFailed)
         MPI_Abort(MPI_COMM_WORLD, 1);
       traceIntraPointer(proc, "IPC barrier atomic probe passed");
+
+      if (totalProcs > 64) {
+        fprintf(stderr, "K5 barrier probe supports at most 64 ranks\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+      std::vector<int> live(totalProcs), after(totalProcs);
+      traceIntraPointer(proc, "IPC barrier all-peer live probe launch");
+      FLAGCXCHECK(
+          launchKernelIntraBarrierLiveProbe(devComm, devResults, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      traceIntraPointer(proc, "IPC barrier all-peer live probe complete");
+      FLAGCXCHECK(devHandle->deviceMemcpy(live.data(), devResults,
+                                          totalProcs * sizeof(int),
+                                          flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      FLAGCXCHECK(
+          launchKernelIntraBarrierSnapshot(devComm, devResults, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      FLAGCXCHECK(devHandle->deviceMemcpy(after.data(), devResults,
+                                          totalProcs * sizeof(int),
+                                          flagcxMemcpyDeviceToHost, stream));
+      FLAGCXCHECK(devHandle->streamSynchronize(stream));
+      failed = 0;
+      fprintf(stderr, "[rank %d] K5 barrier initial epoch=%d expected=0\n",
+              proc, after[proc]);
+      if (after[proc] != 0)
+        failed = 1;
+      for (int p = 0; p < totalProcs; ++p) {
+        if (p == proc)
+          continue;
+        fprintf(stderr,
+                "[rank %d] K5 barrier peer %d: live=%d after=%d expected=%d\n",
+                proc, p, live[p], after[p], p + 1);
+        if (live[p] != p + 1 || after[p] != p + 1)
+          failed = 1;
+      }
+      fflush(stderr);
+      MPI_Allreduce(&failed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+      if (anyFailed)
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      traceIntraPointer(proc, "IPC barrier all-peer live probe passed");
 #endif
     }
 

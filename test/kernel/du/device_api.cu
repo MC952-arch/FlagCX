@@ -31,6 +31,7 @@
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
+#include "intra_barrier_probe.cuh"
 
 // Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
 FLAGCX_DEVICE_DECORATOR size_t
@@ -1128,6 +1129,26 @@ flagcxResult_t launchKernelIntraBarrierIpcReadProbe(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxIntraBarrierIpcReadProbeKernel<<<1, 1, 0,
                                          *(cudaStream_t *)stream>>>(dc, result);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t launchKernelIntraBarrierLiveProbe(flagcxDevComm_t devComm,
+                                                int *result,
+                                                flagcxStream_t stream) {
+  if (!devComm || !result || !stream) return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxDuIntraBarrierProbeByValue<<<1, 256, 0, stream->base>>>(dc, result);
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t launchKernelIntraBarrierSnapshot(flagcxDevComm_t devComm,
+                                                int *result,
+                                                flagcxStream_t stream) {
+  if (!devComm || !result || !stream) return flagcxInternalError;
+  flagcxDevComm dc(*devComm);
+  flagcxDuIntraBarrierSnapshotByValue<<<1, 256, 0, stream->base>>>(dc, result);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
