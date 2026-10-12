@@ -15,7 +15,8 @@
 namespace flagcx_test {
 
 inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
-                                        int netDeviceCount, int *netDev) {
+                                        int netDeviceCount, int *netDev,
+                                        int *selectedGpu = nullptr) {
   if (netAdaptor == nullptr || netDeviceCount <= 0 || netDev == nullptr)
     return flagcxInvalidArgument;
 
@@ -50,6 +51,8 @@ inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
     return result;
   if (*netDev < 0 || *netDev >= netDeviceCount)
     return flagcxInternalError;
+  if (selectedGpu != nullptr)
+    *selectedGpu = gpuDev;
 
   if (netAdaptor->getProperties != nullptr) {
     flagcxNetProperties_t properties = {};

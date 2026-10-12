@@ -336,8 +336,11 @@ protected:
     ASSERT_GT(nDevs_, 0)
         << "The net adaptor integration suite requires at least one usable "
            "network device";
-    ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_),
+    ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_, &gpuDev_),
               flagcxSuccess);
+    ASSERT_NE(deviceAdaptor, nullptr);
+    ASSERT_NE(deviceAdaptor->setDevice, nullptr);
+    ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
     ASSERT_EQ(net_->listen(netDev_, handle_, &listenComm_), flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
 
@@ -389,6 +392,7 @@ protected:
   struct flagcxNetAdaptor *net_ = nullptr;
   int nDevs_ = 0;
   int netDev_ = -1;
+  int gpuDev_ = -1;
   char handle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
   void *sendComm_ = nullptr;
@@ -1166,7 +1170,7 @@ TEST_F(NetAdaptorLoopback, RegisterGpuMr) {
   ASSERT_NE(deviceAdaptor->setDevice, nullptr);
   ASSERT_NE(deviceAdaptor->deviceMalloc, nullptr);
   ASSERT_NE(deviceAdaptor->deviceFree, nullptr);
-  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
   ASSERT_EQ(deviceAdaptor->deviceMalloc(&deviceBuffer_, kBufferSize,
                                         flagcxMemDevice, nullptr),
             flagcxSuccess);
@@ -1192,7 +1196,7 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
       deviceAdaptor->gdrMemFree == nullptr ||
       deviceAdaptor->getHandleForAddressRange == nullptr)
     GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
-  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
   bool supported = false;
   ASSERT_EQ(deviceAdaptor->dmaSupport(&supported), flagcxSuccess);
   if (!supported)
@@ -1404,7 +1408,7 @@ TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {
   ASSERT_NE(properties.ptrSupport & FLAGCX_PTR_CUDA, 0)
       << "IBUC collective data path requires GPU MR support";
 
-  ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
   ASSERT_EQ(deviceAdaptor->deviceMalloc(&deviceBuffer_, kBufferSize,
                                         flagcxMemDevice, nullptr),
             flagcxSuccess);
