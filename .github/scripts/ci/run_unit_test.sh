@@ -280,13 +280,20 @@ run_suite() {
       local ibuc_status=0
       local ipc_status=0
       local geometry_status=0
+      local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
+      rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
       # layer can express QP selection together with ordering boundaries.
       FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        GTEST_OUTPUT="xml:$gpu_result_xml" \
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
+      if ((unit_status == 0)); then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
+          "$gpu_result_xml" || unit_status=$?
+      fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
         # IBUC is another implementation of the net-adaptor contract, not an
