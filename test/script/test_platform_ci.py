@@ -1390,13 +1390,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
             immediate_completion.index("flagcxKernelProxyPublishTerminal("),
             immediate_completion.index("flagcxKernelProxyAdvanceCompleted("),
         )
-        kernel_join = proxy_source.index(
-            "pthread_join(comm->proxyState->kernelState.threads[i]"
+        kernel_retire = proxy_source.index(
+            "// Retire all kernel workers before destroying any GPU-visible FIFO."
         )
         deferred_fifo_destroy = proxy_source.index(
-            "fifo->flagcxFifoDestroy()", kernel_join
+            "fifo->flagcxFifoDestroy()", kernel_retire
         )
-        self.assertLess(kernel_join, deferred_fifo_destroy)
+        self.assertLess(
+            proxy_source.index("comm->workerPool->retire(", kernel_retire),
+            deferred_fifo_destroy,
+        )
 
         device_api_case = unit_runner[
             unit_runner.index("run_device_api() {") :

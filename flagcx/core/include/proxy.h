@@ -20,6 +20,7 @@
 #include "reg_pool.h"
 #include "socket.h"
 #include "uni_runner_impl.h"
+#include "worker_pool.h"
 #include <memory>
 #include <pthread.h>
 
@@ -33,16 +34,12 @@ enum flagcxProxyOpState {
 };
 
 struct flagcxProxyKernelState {
-  pthread_t threads[FLAGCX_DEVICE_CTA_COUNT];
+  flagcxWorkerPool::Worker *workers[FLAGCX_DEVICE_CTA_COUNT];
+  struct flagcxKernelWorkerState *workerStates[FLAGCX_DEVICE_CTA_COUNT];
   flagcxFifo_t fifos[FLAGCX_DEVICE_CTA_COUNT];
   int contextCount = 0;
   flagcxStream_t stream;
   int stop = 0;
-  // Synchronization for initialization
-  pthread_mutex_t initMutex;
-  pthread_cond_t initCond;
-  int ready = 0;
-  int initFailed = 0;
   // First permanent kernel-proxy transport failure. Device FIFO terminal
   // words mirror this value so GPU waiters can stop spinning.
   volatile flagcxResult_t terminalResult = flagcxSuccess;
@@ -274,11 +271,12 @@ struct flagcxSharedNetComms {
 
 struct flagcxProxyPool;
 struct flagcxProxyProgressState {
-  // Used by main threads to send work to progress thread
+  // Used by producers to send work to the collective worker
   struct flagcxProxyOpsPool *opsPool;
   char opsPoolShmSuffix[6];
 
-  pthread_t thread;
+  flagcxWorkerPool::Worker *worker;
+  int appendCounter;
   volatile int stop;
   struct flagcxProxyPeer **localPeers;
   struct flagcxSharedNetComms *netComms[FLAGCX_MAX_NETDEVS];
@@ -395,10 +393,10 @@ struct flagcxProxyState {
   struct flagcxIpcSocket peerIpcSock; // cuMEM API support (UDS)
   uint64_t *peerAddressesUDS;         // cuMem API support (UDS)
 
-  // Progress thread
+  // Collective progress worker
   struct flagcxProxyProgressState progressState;
 
-  // Kernel thread
+  // One worker per kernel context
   struct flagcxProxyKernelState kernelState;
   flagcxUniRunnerState uniRunnerState;
 
@@ -486,8 +484,6 @@ flagcxResult_t flagcxProxyCreate(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
                                   int send, int proxyRank,
                                   struct flagcxProxyConnector *proxyConn);
-
-void *flagcxProxyKernelService(void *args);
 
 // Only flagcxProxyMsgConnect & flagcxProxyMsgStop types are used for now.
 enum flagcxProxyMsgType {

@@ -19,6 +19,7 @@
 #include "p2p.h"
 #include "socket.h"
 #include "transport.h"
+#include "worker_pool.h"
 #define ENABLE_TIMER 0
 #include "timer.h"
 
@@ -803,9 +804,16 @@ flagcxProxyGetPostedOps(struct flagcxProxyState *proxyState, int *added) {
 FLAGCX_PARAM(ProgressAppendOpFreq, "PROGRESS_APPENDOP_FREQ", 8);
 FLAGCX_PARAM(KernelProxyParallelism, "KERNEL_PROXY_PARALLELISM", 4);
 
-inline void *flagcxProxyProgress(void *proxyState_) {
-  struct flagcxProxyState *proxyState = (flagcxProxyState *)proxyState_;
-  // flag indicating if there is any in-operating operation
+static flagcxResult_t flagcxCollWorkerInit(void *state) {
+  struct flagcxProxyState *proxyState = (flagcxProxyState *)state;
+  return deviceAdaptor->setDevice(proxyState->cudaDev);
+}
+
+static flagcxResult_t flagcxCollWorkerProgressOnce(void *state, bool stopping,
+                                                   bool *madeProgress,
+                                                   bool *outstanding) {
+  struct flagcxProxyState *proxyState = (flagcxProxyState *)state;
+  struct flagcxProxyProgressState *progress = &proxyState->progressState;
   int idle = 1;
   /* Too frequent call of flagcxProxyGetPostedOps() will result in perf
    * regression for small message communication. proxyOpAppendCounter is a
@@ -814,31 +822,29 @@ inline void *flagcxProxyProgress(void *proxyState_) {
    * environment variable flagcxParamProgressAppendOpFreq(). If they are equal,
    * we will append proxy ops. This will decrease the frequency of calling
    * flagcxProxyGetPostedOps() and reduce the perf impact. */
-  int proxyOpAppendCounter = 0;
-  deviceAdaptor->setDevice(proxyState->cudaDev);
-  struct flagcxProxyProgressState *state = &proxyState->progressState;
-
-  while (state->stop == 0 || idle == 0) {
-    idle = 1;
-    // consume the operations in the consumer queue
-    progressOps(proxyState, &idle);
-
-    if (idle || (++proxyOpAppendCounter == flagcxParamProgressAppendOpFreq())) {
-      int added = 0;
-      proxyOpAppendCounter = 0;
-      if (state->stop == 0) {
-        // move all the operations from the producer queue to the consumer queue
-        flagcxProxyGetPostedOps(proxyState, &added);
-      }
-      if (added == 0) {
-        sched_yield(); // No request progressed. Let others run.
-      }
-    }
+  progressOps(proxyState, &idle);
+  bool append =
+      idle || (++progress->appendCounter == flagcxParamProgressAppendOpFreq());
+  int added = 0;
+  if (append) {
+    progress->appendCounter = 0;
+    if (!stopping && __atomic_load_n(&progress->stop, __ATOMIC_ACQUIRE) == 0)
+      flagcxProxyGetPostedOps(proxyState, &added);
   }
-
-  flagcxProgressQueEmptyCheck(proxyState);
-  return NULL;
+  // Preserve the old loop's cadence: an active consumer queue only yields
+  // when it was time to check the producer queue and no work was appended.
+  *madeProgress = !append || added != 0;
+  *outstanding = idle == 0;
+  return flagcxSuccess;
 }
+
+static void flagcxCollWorkerFinish(void *state) {
+  struct flagcxProxyState *proxyState = (flagcxProxyState *)state;
+  flagcxProgressQueEmptyCheck(proxyState);
+}
+
+static const flagcxWorkerOps flagcxCollWorkerOps = {
+    flagcxCollWorkerInit, flagcxCollWorkerProgressOnce, flagcxCollWorkerFinish};
 
 static flagcxResult_t expectedProxyResponseStore(struct flagcxProxyState *state,
                                                  void *opId, void *respBuff,
@@ -1703,10 +1709,30 @@ fail:
   goto exit;
 }
 
-struct flagcxProxyKernelServiceArg {
+struct flagcxKernelWorkerState {
   struct flagcxHeteroComm *comm;
   int contextId;
+  flagcxDeviceTrigger_t ptr = NULL;
+  flagcxFifo_t fifo = NULL;
+  flagcxStream_t stream = NULL;
+  struct flagcxKernelProxyState *kproxyState = NULL;
+  int groupCount = 0;
+  int termCount = 0;
+  bool hasPending = false;
+  bool pendingTracked = false;
+  struct flagcxDeviceTrigger pending = {};
+  struct flagcxNetSubmitContext submit = {};
+  flagcxResult_t result = flagcxSuccess;
 };
+
+static flagcxResult_t flagcxKernelWorkerInit(void *state);
+static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
+                                                     bool *madeProgress,
+                                                     bool *outstanding);
+static void flagcxKernelWorkerFinish(void *state);
+static const flagcxWorkerOps flagcxKernelWorkerOps = {
+    flagcxKernelWorkerInit, flagcxKernelWorkerProgressOnce,
+    flagcxKernelWorkerFinish};
 
 flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
                                   int send, int proxyRank,
@@ -1815,62 +1841,100 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   comm->proxyState->cleanupResult = flagcxSuccess;
   comm->proxyState->stop = 0;
   comm->proxyState->rpcStopping = 0;
-  pthread_create(&comm->proxyState->thread, NULL, flagcxProxyService,
-                 (void *)comm);
-  pthread_create(&comm->proxyState->progressState.thread, NULL,
-                 flagcxProxyProgress, comm->proxyState);
+  __atomic_store_n(&comm->proxyState->progressState.stop, 0, __ATOMIC_RELEASE);
+  comm->proxyState->progressState.appendCounter = 0;
+  __atomic_store_n(&comm->proxyState->kernelState.stop, 0, __ATOMIC_RELEASE);
+  comm->proxyState->kernelState.contextCount = 0;
+  const bool createdWorkerPool = comm->workerPool == NULL;
+  if (createdWorkerPool)
+    comm->workerPool = new (std::nothrow) flagcxWorkerPool;
+  if (comm->workerPool == NULL) {
+    flagcxSocketClose(&comm->proxyState->listenSock);
+    return flagcxSystemError;
+  }
+
+  flagcxResult_t startResult =
+      comm->workerPool->start(&flagcxCollWorkerOps, comm->proxyState,
+                              &comm->proxyState->progressState.worker);
+  if (startResult != flagcxSuccess)
+    goto fail_workers;
 #ifdef COMPILE_KERNEL_HOST
-  // Initialize synchronization primitives before creating threads
-  pthread_mutex_init(&comm->proxyState->kernelState.initMutex, NULL);
-  pthread_cond_init(&comm->proxyState->kernelState.initCond, NULL);
-  comm->proxyState->kernelState.ready = 0;
-  comm->proxyState->kernelState.terminalResult = flagcxSuccess;
+  {
+    comm->proxyState->kernelState.terminalResult = flagcxSuccess;
 
-  int nKernelProxies = flagcxParamKernelProxyParallelism();
-  if (nKernelProxies < 1)
-    nKernelProxies = 1;
-  if (nKernelProxies > FLAGCX_DEVICE_CTA_COUNT)
-    nKernelProxies = FLAGCX_DEVICE_CTA_COUNT;
-  comm->proxyState->kernelState.contextCount = nKernelProxies;
-
-  int nStarted = 0;
-  for (int i = 0; i < nKernelProxies; i++) {
-    flagcxProxyKernelServiceArg *arg = new flagcxProxyKernelServiceArg{comm, i};
-    if (pthread_create(&comm->proxyState->kernelState.threads[i], NULL,
-                       flagcxProxyKernelService, arg) != 0) {
-      WARN("flagcxProxyInit: failed to create kernel proxy thread %d", i);
-      delete arg;
-      break;
+    int nKernelProxies = flagcxParamKernelProxyParallelism();
+    if (nKernelProxies < 1)
+      nKernelProxies = 1;
+    if (nKernelProxies > FLAGCX_DEVICE_CTA_COUNT)
+      nKernelProxies = FLAGCX_DEVICE_CTA_COUNT;
+    for (int i = 0; i < nKernelProxies; i++) {
+      flagcxKernelWorkerState *arg =
+          new (std::nothrow) flagcxKernelWorkerState{comm, i};
+      if (arg == NULL) {
+        startResult = flagcxSystemError;
+        goto fail_workers;
+      }
+      comm->proxyState->kernelState.workerStates[i] = arg;
+      startResult =
+          comm->workerPool->start(&flagcxKernelWorkerOps, arg,
+                                  &comm->proxyState->kernelState.workers[i]);
+      if (startResult != flagcxSuccess) {
+        WARN("flagcxProxyInit: failed to start kernel worker %d res=%d", i,
+             (int)startResult);
+        goto fail_workers;
+      }
+      comm->proxyState->kernelState.contextCount = i + 1;
     }
-    nStarted++;
-  }
-  // Adjust contextCount to the number of threads actually started so the
-  // cond-wait below and the stop/join loop use a consistent count.
-  comm->proxyState->kernelState.contextCount = nStarted;
-
-  // Wait for all started kernel proxy threads to finish initialization
-  pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
-  while (comm->proxyState->kernelState.ready < nStarted) {
-    pthread_cond_wait(&comm->proxyState->kernelState.initCond,
-                      &comm->proxyState->kernelState.initMutex);
-  }
-  int initFailed = comm->proxyState->kernelState.initFailed;
-  pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
-
-  if (initFailed > 0) {
-    WARN("flagcxProxyInit: %d kernel proxy thread(s) failed initialization",
-         initFailed);
-    return flagcxSystemError;
-  }
-
-  if (nStarted == 0) {
-    WARN("flagcxProxyInit: no kernel proxy threads started");
-    return flagcxSystemError;
   }
 #endif
 
+  // All worker initialization is complete before the service can expose a
+  // connection. This also makes a failed start safe to roll back locally.
+  if (pthread_create(&comm->proxyState->thread, NULL, flagcxProxyService,
+                     (void *)comm) != 0) {
+    startResult = flagcxSystemError;
+    goto fail_workers;
+  }
+
   comm->proxyState->initialized = 1;
   return flagcxSuccess;
+
+fail_workers:
+  __atomic_store_n(&comm->proxyState->kernelState.stop, 1, __ATOMIC_RELEASE);
+#ifdef COMPILE_KERNEL_HOST
+  (void)deviceAdaptor->setDevice(comm->cudaDev);
+  for (int i = 0; i < FLAGCX_DEVICE_CTA_COUNT; i++) {
+    if (comm->proxyState->kernelState.workers[i] != NULL)
+      (void)comm->workerPool->retire(&comm->proxyState->kernelState.workers[i]);
+  }
+  for (int i = 0; i < FLAGCX_DEVICE_CTA_COUNT; i++) {
+    if (comm->proxyState->kernelState.workers[i] != NULL)
+      continue;
+    delete comm->proxyState->kernelState.workerStates[i];
+    comm->proxyState->kernelState.workerStates[i] = NULL;
+    flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
+    if (fifo != NULL) {
+      if (fifo->buffer != NULL)
+        fifo->flagcxFifoDestroy();
+      delete fifo;
+      comm->proxyState->kernelState.fifos[i] = NULL;
+    }
+    comm->fifoBuffers[i] = NULL;
+  }
+  comm->proxyState->kernelState.contextCount = 0;
+#endif
+  pthread_mutex_lock(&comm->proxyState->mutex);
+  __atomic_store_n(&comm->proxyState->progressState.stop, 1, __ATOMIC_RELEASE);
+  pthread_cond_signal(&comm->proxyState->cond);
+  pthread_mutex_unlock(&comm->proxyState->mutex);
+  if (comm->proxyState->progressState.worker != NULL)
+    (void)comm->workerPool->retire(&comm->proxyState->progressState.worker);
+  if (createdWorkerPool && comm->workerPool->workerCount() == 0) {
+    delete comm->workerPool;
+    comm->workerPool = NULL;
+  }
+  flagcxSocketClose(&comm->proxyState->listenSock);
+  return startResult;
 }
 
 void *flagcxProxyService(void *args) {
@@ -2069,32 +2133,49 @@ void *flagcxProxyService(void *args) {
       break;
   }
 out:
+  bool allWorkersRetired = true;
   // Stop progress thread before freeing any resource
   pthread_mutex_lock(&comm->proxyState->mutex);
-  comm->proxyState->progressState.stop = 1;
+  __atomic_store_n(&comm->proxyState->progressState.stop, 1, __ATOMIC_RELEASE);
   pthread_cond_signal(&comm->proxyState->cond);
   pthread_mutex_unlock(&comm->proxyState->mutex);
-  pthread_join(comm->proxyState->progressState.thread, nullptr);
+  if (comm->proxyState->progressState.worker != NULL) {
+    flagcxResult_t workerResult =
+        comm->workerPool->retire(&comm->proxyState->progressState.worker);
+    if (workerResult != flagcxSuccess)
+      WARN("[Service thread] coll worker exited with result %d",
+           (int)workerResult);
+    if (comm->proxyState->progressState.worker != NULL)
+      allWorkersRetired = false;
+  }
 #ifdef COMPILE_KERNEL_HOST
-  // Stop all kernel threads and cleanup
+  // Retire all kernel workers before destroying any GPU-visible FIFO.
   for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
-    pthread_join(comm->proxyState->kernelState.threads[i], nullptr);
+    flagcxResult_t workerResult =
+        comm->workerPool->retire(&comm->proxyState->kernelState.workers[i]);
+    if (workerResult != flagcxSuccess)
+      WARN("[Service thread] kernel worker %d exited with result %d", i,
+           (int)workerResult);
+    if (comm->proxyState->kernelState.workers[i] != NULL)
+      allWorkersRetired = false;
   }
   // FIFO memory remains GPU-visible after a worker observes a terminal error.
   // Keep every FIFO alive until all workers have exited so terminal publication
   // cannot race another worker's teardown and GPU waiters have a stable word to
   // observe.
-  for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
-    flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
-    if (fifo != nullptr) {
-      fifo->flagcxFifoDestroy();
-      delete fifo;
-      comm->proxyState->kernelState.fifos[i] = nullptr;
+  if (allWorkersRetired) {
+    for (int i = 0; i < comm->proxyState->kernelState.contextCount; i++) {
+      delete comm->proxyState->kernelState.workerStates[i];
+      comm->proxyState->kernelState.workerStates[i] = NULL;
+      flagcxFifo_t fifo = comm->proxyState->kernelState.fifos[i];
+      if (fifo != nullptr) {
+        fifo->flagcxFifoDestroy();
+        delete fifo;
+        comm->proxyState->kernelState.fifos[i] = nullptr;
+      }
+      comm->fifoBuffers[i] = nullptr;
     }
-    comm->fifoBuffers[i] = nullptr;
   }
-  pthread_mutex_destroy(&comm->proxyState->kernelState.initMutex);
-  pthread_cond_destroy(&comm->proxyState->kernelState.initCond);
 #endif
 
   // Close sockets and drain any remaining async ops
@@ -2110,7 +2191,8 @@ out:
   // Free all connections from pool (all resource cleanup happens
   // inside the service thread before it exits)
   flagcxResult_t cleanupResult =
-      flagcxProxyFreeConnections(&connectionPool, comm);
+      allWorkersRetired ? flagcxProxyFreeConnections(&connectionPool, comm)
+                        : flagcxSystemError;
   if (cleanupResult != flagcxSuccess && cleanupResult != flagcxInProgress) {
     flagcxResult_t expected = flagcxSuccess;
     __atomic_compare_exchange_n(&comm->proxyState->cleanupResult, &expected,
@@ -2124,8 +2206,8 @@ out:
   free(pollfds);
   free(peers);
 
-  INFO(FLAGCX_PROXY,
-       "[Service thread] Wait for progress thread joined and free resources");
+  INFO(FLAGCX_PROXY, "[Service thread] Cleanup finished, workers retired=%d",
+       allWorkersRetired ? 1 : 0);
   return NULL;
 }
 
@@ -2559,426 +2641,439 @@ flagcxKernelProxySubmitFlags(struct flagcxDeviceTrigger *trigger) {
   }
 }
 
-void *flagcxProxyKernelService(void *args) {
-  int groupCount = 0;
-  int termCount = 0;
-  flagcxDeviceTrigger_t ptr = NULL;
-  flagcxFifo_t fifo = NULL;
-  flagcxStream_t stream = NULL;
-  struct flagcxKernelProxyState *kproxyState = NULL;
-  flagcxProxyKernelServiceArg *arg = (flagcxProxyKernelServiceArg *)args;
+static flagcxResult_t flagcxKernelWorkerInit(void *state) {
+  flagcxKernelWorkerState *arg = (flagcxKernelWorkerState *)state;
   struct flagcxHeteroComm *comm = arg->comm;
   int contextId = arg->contextId;
-  delete arg;
   flagcxResult_t res = flagcxSuccess;
   flagcxResult_t existingTerminal = flagcxSuccess;
   uint64_t generation = 1;
-  bool hasPending = false;
-  bool pendingTracked = false;
-  struct flagcxDeviceTrigger pending = {};
-  struct flagcxNetSubmitContext submit = {};
-
-  int ctx = contextId + 1; // kernel proxy context index
 
   // Set device context
-  FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
+  FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, done);
 
   // Create FIFO for this thread
   comm->proxyState->kernelState.fifos[contextId] = new flagcxFifo();
+  comm->proxyState->kernelState.fifos[contextId]->buffer = NULL;
   FLAGCXCHECKGOTO(
       comm->proxyState->kernelState.fifos[contextId]->flagcxFifoInit(), res,
-      out);
-  fifo = comm->proxyState->kernelState.fifos[contextId];
+      done);
+  arg->fifo = comm->proxyState->kernelState.fifos[contextId];
   FLAGCXCHECKGOTO(
       deviceAdaptor->hostGetDevicePointer(
           &comm->fifoBuffers[contextId],
           (void *)comm->proxyState->kernelState.fifos[contextId]->buffer),
-      res, out);
+      res, done);
   existingTerminal = __atomic_load_n(
       &comm->proxyState->kernelState.terminalResult, __ATOMIC_ACQUIRE);
   if (existingTerminal != flagcxSuccess)
-    __atomic_store_n(&fifo->buffer[flagcxFifoIdxTerminalStatus],
+    __atomic_store_n(&arg->fifo->buffer[flagcxFifoIdxTerminalStatus],
                      (uint64_t)existingTerminal, __ATOMIC_RELEASE);
 
   // Create a dedicated stream
-  FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
-  INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank, (uintptr_t)stream);
+  FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&arg->stream), res, done);
+  INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank,
+       (uintptr_t)arg->stream);
 
   // Allocate trigger structure
-  FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
+  FLAGCXCHECKGOTO(flagcxCalloc(&arg->ptr, sizeof(flagcxDeviceTrigger)), res,
+                  done);
 
   // Initialize direct posting state (bypasses RMA Proxy for one-sided ops)
-  kproxyState =
-      (struct flagcxKernelProxyState *)calloc(1, sizeof(*kproxyState));
-  if (kproxyState == NULL) {
+  arg->kproxyState = (struct flagcxKernelProxyState *)calloc(
+      1, sizeof(flagcxKernelProxyState));
+  if (arg->kproxyState == NULL) {
     WARN("flagcxProxyKernelService: failed to allocate kproxyState");
     res = flagcxSystemError;
-    goto init_done;
+    goto done;
   }
-  kproxyState->nRanks = comm->nRanks;
-  kproxyState->fifo = fifo;
-  kproxyState->contextId = contextId;
+  arg->kproxyState->nRanks = comm->nRanks;
+  arg->kproxyState->fifo = arg->fifo;
+  arg->kproxyState->contextId = contextId;
   generation = comm->rmaProxy != NULL && comm->rmaProxy->generation != 0
                    ? comm->rmaProxy->generation
                    : 1;
   res = flagcxKernelProxyTransportInit(
-      &kproxyState->transport, FLAGCX_KERNEL_PROXY_MAX_INFLIGHT,
+      &arg->kproxyState->transport, FLAGCX_KERNEL_PROXY_MAX_INFLIGHT,
       FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS, generation, (uint64_t)contextId);
   if (res != flagcxSuccess) {
     WARN("flagcxProxyKernelService: transport init failed res=%d", (int)res);
-    goto init_done;
+  }
+done:
+  arg->result = res;
+  return res;
+}
+
+static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
+                                                     bool *madeProgress,
+                                                     bool *outstanding) {
+  flagcxKernelWorkerState *arg = (flagcxKernelWorkerState *)state;
+  struct flagcxHeteroComm *comm = arg->comm;
+  const int contextId = arg->contextId;
+  const int ctx = contextId + 1;
+  struct flagcxKernelProxyState *kproxyState = arg->kproxyState;
+  flagcxFifo_t fifo = arg->fifo;
+  flagcxStream_t stream = arg->stream;
+  flagcxDeviceTrigger_t ptr = arg->ptr;
+  int &groupCount = arg->groupCount;
+  int &termCount = arg->termCount;
+  bool &hasPending = arg->hasPending;
+  bool &pendingTracked = arg->pendingTracked;
+  struct flagcxDeviceTrigger &pending = arg->pending;
+  struct flagcxNetSubmitContext &submit = arg->submit;
+  flagcxResult_t res = flagcxSuccess;
+  *madeProgress = false;
+  *outstanding = false;
+  if (stopping || __atomic_load_n(&comm->proxyState->kernelState.stop,
+                                  __ATOMIC_ACQUIRE) != 0) {
+    // Stop taking FIFO entries, but retire every accepted native request on
+    // this worker before the pool lets finishOnThread release its transport.
+    uint32_t before = kproxyState->transport.nativeInflight;
+    if (before != 0)
+      flagcxKernelProxyPoll(kproxyState, comm);
+    *outstanding = kproxyState->transport.nativeInflight != 0;
+    *madeProgress = before != kproxyState->transport.nativeInflight;
+    return flagcxSuccess;
   }
 
-init_done:
-  // Signal initialization complete (even on failure, so init thread doesn't
-  // deadlock)
-  pthread_mutex_lock(&comm->proxyState->kernelState.initMutex);
-  comm->proxyState->kernelState.ready++;
-  if (res != flagcxSuccess)
-    comm->proxyState->kernelState.initFailed++;
-  pthread_cond_broadcast(&comm->proxyState->kernelState.initCond);
-  pthread_mutex_unlock(&comm->proxyState->kernelState.initMutex);
+  flagcxKernelProxyPoll(kproxyState, comm);
+  flagcxResult_t terminal = __atomic_load_n(
+      &comm->proxyState->kernelState.terminalResult, __ATOMIC_ACQUIRE);
+  if (terminal != flagcxSuccess) {
+    flagcxKernelProxyStoreLocalTerminal(fifo, terminal);
+    res = terminal;
+    arg->result = res;
+    return res;
+  }
 
-  if (res != flagcxSuccess)
-    goto out;
-
-  while (true) {
-    if (comm->proxyState->kernelState.stop == 1)
-      break;
-
-    flagcxKernelProxyPoll(kproxyState, comm);
-    flagcxResult_t terminal = __atomic_load_n(
-        &comm->proxyState->kernelState.terminalResult, __ATOMIC_ACQUIRE);
-    if (terminal != flagcxSuccess) {
-      flagcxKernelProxyStoreLocalTerminal(fifo, terminal);
-      res = terminal;
-      break;
+  if (!hasPending) {
+    res = dequeue(fifo->buffer, ptr);
+    if (res == flagcxInProgress) {
+      return flagcxSuccess;
     }
-
-    if (!hasPending) {
-      res = dequeue(fifo->buffer, ptr);
-      if (res == flagcxInProgress) {
-        sched_yield();
-        continue;
-      }
-      if (res != flagcxSuccess) {
-        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
-        break;
-      }
-      pending = *ptr;
-      hasPending = true;
-      pendingTracked = false;
+    if (res != flagcxSuccess) {
+      flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+      arg->result = res;
+      return res;
     }
+    pending = *ptr;
+    hasPending = true;
+    pendingTracked = false;
+    *madeProgress = true;
+  }
 
-    if (!pendingTracked) {
-      res = flagcxKernelProxyTrackNext(&kproxyState->transport,
-                                       flagcxKernelProxySubmitFlags(&pending),
-                                       &submit);
-      if (res == flagcxInProgress) {
-        sched_yield();
-        continue;
-      }
-      if (res != flagcxSuccess) {
-        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
-        break;
-      }
-      pendingTracked = true;
+  if (!pendingTracked) {
+    res = flagcxKernelProxyTrackNext(&kproxyState->transport,
+                                     flagcxKernelProxySubmitFlags(&pending),
+                                     &submit);
+    if (res == flagcxInProgress) {
+      return flagcxSuccess;
     }
-
-    bool retryPending = false;
-    bool postedIB = false;
-    res = flagcxSuccess;
-    if ((submit.flags & FLAGCX_NET_SUBMIT_RELEASE) != 0) {
-      int ready = 0;
-      flagcxResult_t firstError = flagcxSuccess;
-      res = flagcxKernelProxyReleaseReady(&kproxyState->transport, &submit,
-                                          &ready, &firstError);
-      if (res == flagcxSuccess && firstError != flagcxSuccess)
-        res = firstError;
-      if (res == flagcxSuccess && !ready) {
-        sched_yield();
-        continue;
-      }
-      if (res != flagcxSuccess) {
-        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
-      }
+    if (res != flagcxSuccess) {
+      flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+      arg->result = res;
+      return res;
     }
+    pendingTracked = true;
+  }
 
-    if (res == flagcxSuccess)
-      switch (pending.getPrim()) {
-        case flagcxDevicePrimSend:
-          if (groupCount == 0) {
-            res = flagcxHeteroGroupStart();
-            TRACE(
-                FLAGCX_P2P,
+  bool retryPending = false;
+  bool postedIB = false;
+  res = flagcxSuccess;
+  if ((submit.flags & FLAGCX_NET_SUBMIT_RELEASE) != 0) {
+    int ready = 0;
+    flagcxResult_t firstError = flagcxSuccess;
+    res = flagcxKernelProxyReleaseReady(&kproxyState->transport, &submit,
+                                        &ready, &firstError);
+    if (res == flagcxSuccess && firstError != flagcxSuccess)
+      res = firstError;
+    if (res == flagcxSuccess && !ready) {
+      return flagcxSuccess;
+    }
+    if (res != flagcxSuccess) {
+      flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+    }
+  }
+
+  if (res == flagcxSuccess)
+    switch (pending.getPrim()) {
+      case flagcxDevicePrimSend:
+        if (groupCount == 0) {
+          res = flagcxHeteroGroupStart();
+          TRACE(FLAGCX_P2P,
                 "rank=%d flagcxHeteroGroupStart called by proxyKernelService.",
                 comm->rank);
-            groupCount++;
-          }
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimSend called by proxyKernelService.",
-                comm->rank);
-          res = flagcxHeteroSend((const void *)(uintptr_t)(pending.getAddr()),
-                                 pending.getCount(),
-                                 (flagcxDataType_t)(pending.getDatatype()),
-                                 pending.getPeerRank(), comm, stream);
-          break;
-        case flagcxDevicePrimRecv:
-          if (groupCount == 0) {
-            res = flagcxHeteroGroupStart();
-            TRACE(
-                FLAGCX_P2P,
-                "rank=%d flagcxHeteroGroupStart called by proxyKernelService.",
-                comm->rank);
-            groupCount++;
-          }
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimRecv called by proxyKernelService.",
-                comm->rank);
-          res = flagcxHeteroRecv((void *)(uintptr_t)(pending.getAddr()),
-                                 pending.getCount(),
-                                 (flagcxDataType_t)(pending.getDatatype()),
-                                 pending.getPeerRank(), comm, stream);
-          break;
-        case flagcxDevicePrimTerm: {
-          termCount++;
-          int totalCoops = (int)pending.getTotalCoops();
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimTerm called by proxyKernelService "
-                "groupCount=%d termCount=%d/%d.",
-                comm->rank, groupCount, termCount, totalCoops);
-          if (groupCount > 0 && termCount >= totalCoops) {
-            res = flagcxHeteroGroupEnd();
-            TRACE(FLAGCX_P2P,
-                  "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
-                  comm->rank);
-            groupCount--;
-            termCount = 0;
-          }
-          break;
+          groupCount++;
         }
-        case flagcxDevicePrimPut: {
-          INFO(FLAGCX_P2P,
-               "rank=%d PrimPut peer=%d srcOff=%lu dstOff=%lu size=%lu "
-               "inflight=%u",
-               comm->rank, (int)pending.getPeerRank(),
-               (unsigned long)pending.getSrcOffset(),
-               (unsigned long)pending.getDstOffset(),
-               (unsigned long)pending.getSize(),
-               kproxyState->transport.nativeInflight);
-          int peerRank = (int)pending.getPeerRank();
-          res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
-            break;
-          int srcMrIdx = (int)pending.getSrcMrIdx();
-          int dstMrIdx = (int)pending.getDstMrIdx();
-          size_t srcOffset = (size_t)pending.getSrcOffset();
-          size_t dstOffset = (size_t)pending.getDstOffset();
-          size_t size = (size_t)pending.getSize();
-          res = flagcxKernelProxyPost(kproxyState, comm, &submit, peerRank,
-                                      FLAGCX_RMA_PUT, contextId, srcOffset,
-                                      dstOffset, size, srcMrIdx, dstMrIdx, 0, 0,
-                                      0, &postedIB);
-          retryPending = res == flagcxInProgress;
-          INFO(FLAGCX_P2P, "rank=%d PrimPut posted res=%d postedIB=%d",
-               comm->rank, (int)res, postedIB ? 1 : 0);
-          break;
-        }
-        case flagcxDevicePrimSignal:
-        case flagcxDevicePrimSignalValue: {
-          uint64_t bufType = pending.getBufferType();
-          int signalIdx = (int)pending.getSignalIdx();
-          uint64_t signalValue = pending.getSignalValue();
-          size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
-
-          if (bufType == 0) {
-            // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
-            int peerRank = (int)pending.getPeerRank();
-            res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-            if (res != flagcxSuccess) {
-              break;
-            }
-            if (comm->signalHandle == NULL) {
-              res = flagcxInternalError;
-              break;
-            }
-            res = flagcxKernelProxyPost(kproxyState, comm, &submit, peerRank,
-                                        FLAGCX_RMA_PUT_SIGNAL, contextId, 0, 0,
-                                        0, -1, -1, signalOff, signalValue, 0,
-                                        &postedIB);
-            retryPending = res == flagcxInProgress;
-          } else {
-            flagcxDevComm_t dc = comm->devCommHandle;
-            if (dc == NULL || dc->counterBuffer == NULL) {
-              res = flagcxInternalError;
-              break;
-            }
-            int contextCount = dc->contextCount > 0 ? dc->contextCount : 1;
-            size_t totalCounterCount =
-                (size_t)contextCount * (size_t)dc->counterCount;
-            if (dc->counterCount <= 0 || signalIdx < 0 ||
-                (size_t)signalIdx >= totalCounterCount) {
-              WARN("rank=%d invalid encoded counter index=%d count=%d "
-                   "contexts=%d",
-                   comm->rank, signalIdx, dc->counterCount, contextCount);
-              res = flagcxInvalidArgument;
-              break;
-            }
-            int encodedContext = signalIdx / dc->counterCount;
-            int counterId = signalIdx % dc->counterCount;
-            if (encodedContext != contextId) {
-              WARN("rank=%d counter context mismatch proxy=%d encoded=%d "
-                   "counter=%d",
-                   comm->rank, contextId, encodedContext, counterId);
-              res = flagcxInternalError;
-              break;
-            }
-            // enqueueFifoSignal has already flattened context and counter into
-            // signalIdx. Use that offset directly; applying the context stride
-            // here again would address the wrong slot.
-            size_t counterOffset = (size_t)signalIdx;
-            uint64_t *counterPtr =
-                (uint64_t *)dc->counterBuffer + counterOffset;
-            __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
-          }
-          break;
-        }
-        case flagcxDevicePrimWaitSignal: {
-          // No-op: GPU now polls signal buffer directly (NCCL-style).
-          // The proxy no longer needs to call streamWaitValue64.
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimWaitSignal (no-op) by "
-                "proxyKernelService.",
-                comm->rank);
-          break;
-        }
-        case flagcxDevicePrimPutSignal: {
-          TRACE(
-              FLAGCX_P2P,
-              "rank=%d flagcxDevicePrimPutSignal called by proxyKernelService.",
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimSend called by proxyKernelService.",
               comm->rank);
+        res = flagcxHeteroSend((const void *)(uintptr_t)(pending.getAddr()),
+                               pending.getCount(),
+                               (flagcxDataType_t)(pending.getDatatype()),
+                               pending.getPeerRank(), comm, stream);
+        break;
+      case flagcxDevicePrimRecv:
+        if (groupCount == 0) {
+          res = flagcxHeteroGroupStart();
+          TRACE(FLAGCX_P2P,
+                "rank=%d flagcxHeteroGroupStart called by proxyKernelService.",
+                comm->rank);
+          groupCount++;
+        }
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimRecv called by proxyKernelService.",
+              comm->rank);
+        res = flagcxHeteroRecv((void *)(uintptr_t)(pending.getAddr()),
+                               pending.getCount(),
+                               (flagcxDataType_t)(pending.getDatatype()),
+                               pending.getPeerRank(), comm, stream);
+        break;
+      case flagcxDevicePrimTerm: {
+        termCount++;
+        int totalCoops = (int)pending.getTotalCoops();
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimTerm called by proxyKernelService "
+              "groupCount=%d termCount=%d/%d.",
+              comm->rank, groupCount, termCount, totalCoops);
+        if (groupCount > 0 && termCount >= totalCoops) {
+          res = flagcxHeteroGroupEnd();
+          TRACE(FLAGCX_P2P,
+                "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
+                comm->rank);
+          groupCount--;
+          termCount = 0;
+        }
+        break;
+      }
+      case flagcxDevicePrimPut: {
+        INFO(FLAGCX_P2P,
+             "rank=%d PrimPut peer=%d srcOff=%lu dstOff=%lu size=%lu "
+             "inflight=%u",
+             comm->rank, (int)pending.getPeerRank(),
+             (unsigned long)pending.getSrcOffset(),
+             (unsigned long)pending.getDstOffset(),
+             (unsigned long)pending.getSize(),
+             kproxyState->transport.nativeInflight);
+        int peerRank = (int)pending.getPeerRank();
+        res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
+        if (res != flagcxSuccess)
+          break;
+        int srcMrIdx = (int)pending.getSrcMrIdx();
+        int dstMrIdx = (int)pending.getDstMrIdx();
+        size_t srcOffset = (size_t)pending.getSrcOffset();
+        size_t dstOffset = (size_t)pending.getDstOffset();
+        size_t size = (size_t)pending.getSize();
+        res = flagcxKernelProxyPost(
+            kproxyState, comm, &submit, peerRank, FLAGCX_RMA_PUT, contextId,
+            srcOffset, dstOffset, size, srcMrIdx, dstMrIdx, 0, 0, 0, &postedIB);
+        retryPending = res == flagcxInProgress;
+        INFO(FLAGCX_P2P, "rank=%d PrimPut posted res=%d postedIB=%d",
+             comm->rank, (int)res, postedIB ? 1 : 0);
+        break;
+      }
+      case flagcxDevicePrimSignal:
+      case flagcxDevicePrimSignalValue: {
+        uint64_t bufType = pending.getBufferType();
+        int signalIdx = (int)pending.getSignalIdx();
+        uint64_t signalValue = pending.getSignalValue();
+        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
+
+        if (bufType == 0) {
+          // Signal buffer: RDMA FETCH_AND_ADD to peer's signalBuffer
           int peerRank = (int)pending.getPeerRank();
           res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
+          if (res != flagcxSuccess) {
             break;
-          int srcMrIdx = (int)pending.getSrcMrIdx();
-          int dstMrIdx = (int)pending.getDstMrIdx();
-          size_t srcOffset = (size_t)pending.getSrcOffset();
-          size_t dstOffset = (size_t)pending.getDstOffset();
-          size_t size = (size_t)pending.getSize();
-          int signalIdx = (int)pending.getSignalIdx();
-          uint64_t signalValue = pending.getSignalValue();
-          size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
+          }
           if (comm->signalHandle == NULL) {
             res = flagcxInternalError;
             break;
           }
           res = flagcxKernelProxyPost(
               kproxyState, comm, &submit, peerRank, FLAGCX_RMA_PUT_SIGNAL,
-              contextId, srcOffset, dstOffset, size, srcMrIdx, dstMrIdx,
-              signalOff, signalValue, 0, &postedIB);
+              contextId, 0, 0, 0, -1, -1, signalOff, signalValue, 0, &postedIB);
           retryPending = res == flagcxInProgress;
-          break;
-        }
-        case flagcxDevicePrimPutValue: {
-          int peerRank = (int)pending.getPeerRank();
-          res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
+        } else {
+          flagcxDevComm_t dc = comm->devCommHandle;
+          if (dc == NULL || dc->counterBuffer == NULL) {
+            res = flagcxInternalError;
             break;
-          int dstMrIdx = (int)pending.getDstMrIdx();
-          size_t dstOffset = (size_t)pending.getDstOffset();
-          uint64_t value = pending.getValue();
-          res = flagcxKernelProxyPost(
-              kproxyState, comm, &submit, peerRank, FLAGCX_RMA_PUT_VALUE,
-              contextId, 0, dstOffset, 0, -1, dstMrIdx, 0, 0, value, &postedIB);
-          retryPending = res == flagcxInProgress;
-          break;
-        }
-        case flagcxDevicePrimGet: {
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimGet called by proxyKernelService.",
-                comm->rank);
-          int peerRank = (int)pending.getPeerRank();
-          res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
-          if (res != flagcxSuccess)
+          }
+          int contextCount = dc->contextCount > 0 ? dc->contextCount : 1;
+          size_t totalCounterCount =
+              (size_t)contextCount * (size_t)dc->counterCount;
+          if (dc->counterCount <= 0 || signalIdx < 0 ||
+              (size_t)signalIdx >= totalCounterCount) {
+            WARN("rank=%d invalid encoded counter index=%d count=%d "
+                 "contexts=%d",
+                 comm->rank, signalIdx, dc->counterCount, contextCount);
+            res = flagcxInvalidArgument;
             break;
-          int srcMrIdx = (int)pending.getSrcMrIdx();
-          int dstMrIdx = (int)pending.getDstMrIdx();
-          size_t srcOffset = (size_t)pending.getSrcOffset();
-          size_t dstOffset = (size_t)pending.getDstOffset();
-          size_t size = (size_t)pending.getSize();
-          res = flagcxKernelProxyPost(kproxyState, comm, &submit, peerRank,
-                                      FLAGCX_RMA_GET, contextId, srcOffset,
-                                      dstOffset, size, srcMrIdx, dstMrIdx, 0, 0,
-                                      0, &postedIB);
-          retryPending = res == flagcxInProgress;
-          break;
+          }
+          int encodedContext = signalIdx / dc->counterCount;
+          int counterId = signalIdx % dc->counterCount;
+          if (encodedContext != contextId) {
+            WARN("rank=%d counter context mismatch proxy=%d encoded=%d "
+                 "counter=%d",
+                 comm->rank, contextId, encodedContext, counterId);
+            res = flagcxInternalError;
+            break;
+          }
+          // enqueueFifoSignal has already flattened context and counter into
+          // signalIdx. Use that offset directly; applying the context stride
+          // here again would address the wrong slot.
+          size_t counterOffset = (size_t)signalIdx;
+          uint64_t *counterPtr = (uint64_t *)dc->counterBuffer + counterOffset;
+          __atomic_fetch_add(counterPtr, signalValue, __ATOMIC_RELEASE);
         }
-        case flagcxDevicePrimWait:
-          // No-op: GPU now polls FIFO completed counter directly (NCCL-style).
-          // The proxy no longer needs to call streamSynchronize.
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimWait (no-op) by proxyKernelService.",
-                comm->rank);
-          break;
-        case flagcxDevicePrimBarrierSignal: {
-          // Legacy: no longer used by NCCL GIN-style barriers.
-          // New barriers use per-peer PrimSignal entries (async, non-blocking).
-          TRACE(FLAGCX_P2P,
-                "rank=%d flagcxDevicePrimBarrierSignal (legacy no-op)",
-                comm->rank);
-          break;
-        }
-        default:
-          break;
+        break;
       }
-
-    if (retryPending) {
-      sched_yield();
-      continue;
+      case flagcxDevicePrimWaitSignal: {
+        // No-op: GPU now polls signal buffer directly (NCCL-style).
+        // The proxy no longer needs to call streamWaitValue64.
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimWaitSignal (no-op) by "
+              "proxyKernelService.",
+              comm->rank);
+        break;
+      }
+      case flagcxDevicePrimPutSignal: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimPutSignal called by proxyKernelService.",
+              comm->rank);
+        int peerRank = (int)pending.getPeerRank();
+        res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
+        if (res != flagcxSuccess)
+          break;
+        int srcMrIdx = (int)pending.getSrcMrIdx();
+        int dstMrIdx = (int)pending.getDstMrIdx();
+        size_t srcOffset = (size_t)pending.getSrcOffset();
+        size_t dstOffset = (size_t)pending.getDstOffset();
+        size_t size = (size_t)pending.getSize();
+        int signalIdx = (int)pending.getSignalIdx();
+        uint64_t signalValue = pending.getSignalValue();
+        size_t signalOff = (size_t)signalIdx * sizeof(uint64_t);
+        if (comm->signalHandle == NULL) {
+          res = flagcxInternalError;
+          break;
+        }
+        res = flagcxKernelProxyPost(kproxyState, comm, &submit, peerRank,
+                                    FLAGCX_RMA_PUT_SIGNAL, contextId, srcOffset,
+                                    dstOffset, size, srcMrIdx, dstMrIdx,
+                                    signalOff, signalValue, 0, &postedIB);
+        retryPending = res == flagcxInProgress;
+        break;
+      }
+      case flagcxDevicePrimPutValue: {
+        int peerRank = (int)pending.getPeerRank();
+        res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
+        if (res != flagcxSuccess)
+          break;
+        int dstMrIdx = (int)pending.getDstMrIdx();
+        size_t dstOffset = (size_t)pending.getDstOffset();
+        uint64_t value = pending.getValue();
+        res = flagcxKernelProxyPost(
+            kproxyState, comm, &submit, peerRank, FLAGCX_RMA_PUT_VALUE,
+            contextId, 0, dstOffset, 0, -1, dstMrIdx, 0, 0, value, &postedIB);
+        retryPending = res == flagcxInProgress;
+        break;
+      }
+      case flagcxDevicePrimGet: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimGet called by proxyKernelService.",
+              comm->rank);
+        int peerRank = (int)pending.getPeerRank();
+        res = flagcxKernelProxyValidatePeer(comm, peerRank, ctx);
+        if (res != flagcxSuccess)
+          break;
+        int srcMrIdx = (int)pending.getSrcMrIdx();
+        int dstMrIdx = (int)pending.getDstMrIdx();
+        size_t srcOffset = (size_t)pending.getSrcOffset();
+        size_t dstOffset = (size_t)pending.getDstOffset();
+        size_t size = (size_t)pending.getSize();
+        res = flagcxKernelProxyPost(
+            kproxyState, comm, &submit, peerRank, FLAGCX_RMA_GET, contextId,
+            srcOffset, dstOffset, size, srcMrIdx, dstMrIdx, 0, 0, 0, &postedIB);
+        retryPending = res == flagcxInProgress;
+        break;
+      }
+      case flagcxDevicePrimWait:
+        // No-op: GPU now polls FIFO completed counter directly (NCCL-style).
+        // The proxy no longer needs to call streamSynchronize.
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimWait (no-op) by proxyKernelService.",
+              comm->rank);
+        break;
+      case flagcxDevicePrimBarrierSignal: {
+        // Legacy: no longer used by NCCL GIN-style barriers.
+        // New barriers use per-peer PrimSignal entries (async, non-blocking).
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimBarrierSignal (legacy no-op)",
+              comm->rank);
+        break;
+      }
+      default:
+        break;
     }
 
-    // Mark item as consumed AFTER processing.
-    // Release ensures the GPU's fifoEnqueue space-check (acquire load of
-    // consumed) observes all prior CPU writes (slot clear, etc.).
-    flagcxCompletionWord_t nextCons =
-        __atomic_load_n(
-            flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
-            __ATOMIC_RELAXED) +
-        1;
-    __atomic_store_n(flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
-                     nextCons, __ATOMIC_RELEASE);
-    if (!postedIB) {
-      uint32_t advanced = 0;
-      flagcxResult_t completeResult = flagcxKernelProxyCompleteImmediate(
-          &kproxyState->transport, &submit, res, &advanced);
-      if (completeResult != flagcxSuccess)
-        res = completeResult;
-      // Match the asynchronous completion path: a waiter that observes the
-      // completed counter must also observe the terminal error.
-      if (res != flagcxSuccess)
-        flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
-      flagcxKernelProxyAdvanceCompleted(kproxyState, advanced);
-    }
-    hasPending = false;
-    pendingTracked = false;
-    if (res != flagcxSuccess) {
-      flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
-      break;
-    }
+  if (retryPending) {
+    return flagcxSuccess;
   }
 
-  INFO(FLAGCX_PROXY,
-       "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu completed=%lu",
-       comm->rank, comm->proxyState->kernelState.stop, (int)res,
-       (unsigned long)__atomic_load_n(
-           flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxProduced),
-           __ATOMIC_ACQUIRE),
-       (unsigned long)__atomic_load_n(
-           flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
-           __ATOMIC_ACQUIRE));
+  // Mark item as consumed AFTER processing.
+  // Release ensures the GPU's fifoEnqueue space-check (acquire load of
+  // consumed) observes all prior CPU writes (slot clear, etc.).
+  flagcxCompletionWord_t nextCons =
+      __atomic_load_n(flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
+                      __ATOMIC_RELAXED) +
+      1;
+  __atomic_store_n(flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
+                   nextCons, __ATOMIC_RELEASE);
+  if (!postedIB) {
+    uint32_t advanced = 0;
+    flagcxResult_t completeResult = flagcxKernelProxyCompleteImmediate(
+        &kproxyState->transport, &submit, res, &advanced);
+    if (completeResult != flagcxSuccess)
+      res = completeResult;
+    // Match the asynchronous completion path: a waiter that observes the
+    // completed counter must also observe the terminal error.
+    if (res != flagcxSuccess)
+      flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+    flagcxKernelProxyAdvanceCompleted(kproxyState, advanced);
+  }
+  hasPending = false;
+  pendingTracked = false;
+  *madeProgress = true;
+  if (res != flagcxSuccess) {
+    flagcxKernelProxyPublishTerminal(kproxyState, comm, res);
+    arg->result = res;
+    return res;
+  }
+  return flagcxSuccess;
+}
 
-out:
+static void flagcxKernelWorkerFinish(void *state) {
+  flagcxKernelWorkerState *arg = (flagcxKernelWorkerState *)state;
+  struct flagcxHeteroComm *comm = arg->comm;
+  flagcxFifo_t fifo = arg->fifo;
+  flagcxStream_t stream = arg->stream;
+  flagcxDeviceTrigger_t ptr = arg->ptr;
+  struct flagcxKernelProxyState *kproxyState = arg->kproxyState;
+  flagcxResult_t res = arg->result;
+
+  if (fifo != NULL && fifo->buffer != NULL)
+    INFO(FLAGCX_PROXY,
+         "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu "
+         "completed=%lu",
+         comm->rank, comm->proxyState->kernelState.stop, (int)res,
+         (unsigned long)__atomic_load_n(
+             flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxProduced),
+             __ATOMIC_ACQUIRE),
+         (unsigned long)__atomic_load_n(
+             flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
+             __ATOMIC_ACQUIRE));
+
   // Drain all in-flight direct IB requests before teardown
   if (kproxyState != NULL) {
     bool producerGateClosed = false;
@@ -3033,16 +3128,17 @@ out:
     }
     flagcxKernelProxyTransportDestroy(&kproxyState->transport);
     free(kproxyState);
-    kproxyState = NULL;
+    arg->kproxyState = NULL;
   }
   // destroy stream (only if created)
   if (stream != nullptr) {
     deviceAdaptor->streamSynchronize(stream);
     deviceAdaptor->streamDestroy(stream);
+    arg->stream = NULL;
   }
   // deallocate trigger structure (only if allocated)
   free(ptr);
-  return NULL;
+  arg->ptr = NULL;
 }
 
 flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
@@ -3218,7 +3314,7 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
     free(response);
   }
   pthread_mutex_unlock(&comm->proxyState->rpcMutex);
-  comm->proxyState->kernelState.stop = 1;
+  __atomic_store_n(&comm->proxyState->kernelState.stop, 1, __ATOMIC_RELEASE);
   INFO(FLAGCX_PROXY, "flagcxProxyStop: done");
   return relayCleanupResult;
 }
