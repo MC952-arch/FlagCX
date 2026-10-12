@@ -1631,7 +1631,7 @@ TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
   std::vector<uint8_t> expectedDestination(kBufferSize, 0x72);
   std::vector<uint8_t> actual(kBufferSize);
   for (size_t i = 0; i < source.size(); ++i)
-    source[i] = static_cast<uint8_t>((i * 13 + 11) & 0xff);
+    source[i] = static_cast<uint8_t>((i * 13 + (i / 1024) * 53 + 11) & 0xff);
 
   GpuTestWindow sourceGpu(net_, sendComm_);
   GpuTestWindow remoteGpu(net_, recvComm_);
@@ -1650,10 +1650,19 @@ TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
   const size_t sizes[count] = {512, 512, 512};
   void *requests[count] = {};
   int posted = -1;
-  ASSERT_EQ(net_->iputBatch(sendComm_, count, sourceOffsets, remoteOffsets,
-                            sizes, kLocalRank, kRemoteRank, sourceGpu.opaque(),
-                            remoteGpu.opaque(), requests, &posted),
-            flagcxSuccess);
+  const flagcxResult_t postResult = net_->iputBatch(
+      sendComm_, count, sourceOffsets, remoteOffsets, sizes, kLocalRank,
+      kRemoteRank, sourceGpu.opaque(), remoteGpu.opaque(), requests, &posted);
+  if (postResult != flagcxSuccess || posted != count) {
+    // A batch may accept a prefix even when the final return is an error.
+    // Keep every GPU MR alive until those accepted requests finish.
+    for (int i = 0; i < std::min(posted, count); ++i) {
+      if (requests[i] != nullptr) {
+        EXPECT_EQ(waitRequest(net_, requests[i]), flagcxSuccess);
+      }
+    }
+  }
+  ASSERT_EQ(postResult, flagcxSuccess);
   ASSERT_EQ(posted, count);
   for (void *request : requests)
     ASSERT_NE(request, nullptr);
