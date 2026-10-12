@@ -169,6 +169,7 @@ struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 struct flagcxOneSideHandleInfo;
 struct flagcxOneSideMeshCleanup;
 struct flagcxSymWindow;
+class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
   uint64_t startMagic;
@@ -369,7 +370,9 @@ struct flagcxHeteroComm {
   bool oneSideQuiesced;
   int nInterPeers;
   int *interPeerRanks;
-  // Async RMA proxy state (one-sided Put/Get offload thread).
+  // Per-communicator worker registrations. Each registration owns a thread.
+  flagcxWorkerPool *workerPool;
+  // Async RMA proxy state (one-sided Put/Get offload worker).
   struct flagcxRmaProxyState *rmaProxy;
 
   // One-sided signal / staging handle

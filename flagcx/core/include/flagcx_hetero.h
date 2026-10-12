@@ -3,6 +3,7 @@
 
 #include "flagcx.h"
 #include "type.h"
+#include "worker_pool.h"
 #include <climits>
 #include <pthread.h>
 #include <stdint.h>
@@ -98,8 +99,8 @@ struct flagcxRmaIpcState {
 };
 
 // Per-comm async RMA proxy state.
-// pending queues: producer = caller (proxy kernel thread), consumer = progress
-// thread. inProgress queues: progress thread only (no locking needed).
+// pending queues: producer = caller (proxy kernel thread), consumer = RMA
+// worker. inProgress queues: RMA worker only (no locking needed).
 struct flagcxRmaProxyState {
   uint32_t queueSize;                     // power of two
   uint32_t queueMask;                     // queueSize - 1
@@ -181,8 +182,7 @@ struct flagcxRmaProxyState {
   pthread_mutex_t doneMutex;
   pthread_cond_t doneCond;
 
-  pthread_t thread;
-  volatile int stop;
+  flagcxWorkerPool::Worker *worker;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;

@@ -498,6 +498,8 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   // joined. Continue releasing communicator-owned host state before returning
   // that error; returning immediately here would leak the communicator.
   flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
+  delete comm->workerPool;
+  comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);

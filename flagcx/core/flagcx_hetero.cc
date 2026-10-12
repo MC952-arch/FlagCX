@@ -12,6 +12,7 @@
 #include "type.h"
 
 #include <climits>
+#include <new>
 #include <pthread.h>
 #include <sched.h>
 #include <stdlib.h>
@@ -1406,24 +1407,35 @@ flagcxHeteroRmaProxyProgressOnce(struct flagcxRmaProxyState *proxy,
   return flagcxSuccess;
 }
 
-static void *flagcxRmaProxyProgressThread(void *arg) {
-  struct flagcxRmaProxyState *proxy = (struct flagcxRmaProxyState *)arg;
+static flagcxResult_t flagcxRmaWorkerInit(void *arg) {
+  struct flagcxRmaProxyState *proxy =
+      static_cast<struct flagcxRmaProxyState *>(arg);
   if (deviceAdaptor != NULL && deviceAdaptor->setDevice != NULL &&
       deviceAdaptor->setDevice(proxy->comm->cudaDev) != flagcxSuccess)
     flagcxRmaProxyPublishError(proxy);
-  bool stopping = false;
-  while (true) {
-    if (__atomic_load_n(&proxy->stop, __ATOMIC_ACQUIRE))
-      stopping = true;
-    bool anyOutstanding = false;
-    bool did = flagcxRmaProxyProgress(proxy, stopping, &anyOutstanding);
-    if (stopping && !anyOutstanding && !did)
-      break;
-    if (!did)
-      sched_yield();
-  }
-  return NULL;
+  // The old progress thread published an RMA error and kept running so it
+  // could fail accepted descriptors. Keep that behavior on init failure.
+  return flagcxSuccess;
 }
+
+static flagcxResult_t flagcxRmaWorkerProgressOnce(void *arg, bool stopping,
+                                                  bool *madeProgress,
+                                                  bool *outstanding) {
+  struct flagcxRmaProxyState *proxy =
+      static_cast<struct flagcxRmaProxyState *>(arg);
+  int progressed = 0;
+  int pending = 0;
+  flagcxResult_t result =
+      flagcxHeteroRmaProxyProgressOnce(proxy, stopping, &progressed, &pending);
+  *madeProgress = progressed != 0;
+  // The previous thread exited only after a pass with neither outstanding
+  // work nor progress. Request one more pass after the final completion.
+  *outstanding = pending != 0 || (stopping && progressed != 0);
+  return result;
+}
+
+static const flagcxWorkerOps flagcxRmaWorkerOps = {
+    flagcxRmaWorkerInit, flagcxRmaWorkerProgressOnce, NULL};
 
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   int nRanks = comm->nRanks;
@@ -1613,12 +1625,28 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   INFO(FLAGCX_INIT, "RMA proxy sync method: %s",
        proxy->useStreamOps ? "STREAM_OPS" : "HOST_FUNC");
 
-  proxy->stop = 0;
   comm->rmaProxy = proxy;
-
-  if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
-                     proxy) != 0) {
-    WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
+  const bool createdWorkerPool = comm->workerPool == NULL;
+  if (createdWorkerPool)
+    comm->workerPool = new (std::nothrow) flagcxWorkerPool;
+  flagcxResult_t workerResult =
+      comm->workerPool == NULL
+          ? flagcxSystemError
+          : comm->workerPool->start(&flagcxRmaWorkerOps, proxy, &proxy->worker);
+  if (workerResult != flagcxSuccess) {
+    WARN("flagcxHeteroRmaProxyStart: RMA worker start failed res=%d",
+         (int)workerResult);
+    // If initialization failed after pthread_create, start() normally joins
+    // the worker itself. Retain the proxy if a failed join left it running.
+    if (proxy->worker != NULL) {
+      flagcxResult_t retireResult = comm->workerPool->retire(&proxy->worker);
+      if (proxy->worker != NULL)
+        return retireResult;
+    }
+    if (createdWorkerPool) {
+      delete comm->workerPool;
+      comm->workerPool = NULL;
+    }
     if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
       if (proxy->doneSeqsCpu != NULL)
         deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
@@ -1654,11 +1682,10 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free((void *)proxy->groupSeqs);
     free(proxy);
     comm->rmaProxy = NULL;
-    return flagcxSystemError;
+    return workerResult;
   }
 
-  INFO(FLAGCX_INIT, "RMA progress thread started (nRanks=%d queueSize=%u)",
-       nRanks, qs);
+  INFO(FLAGCX_INIT, "RMA worker started (nRanks=%d queueSize=%u)", nRanks, qs);
   return flagcxSuccess;
 }
 
@@ -1667,8 +1694,11 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   if (proxy == NULL)
     return flagcxSuccess;
 
-  __atomic_store_n(&proxy->stop, 1, __ATOMIC_RELEASE);
-  pthread_join(proxy->thread, NULL);
+  if (comm->workerPool == NULL || proxy->worker == NULL)
+    return flagcxInternalError;
+  flagcxResult_t workerResult = comm->workerPool->retire(&proxy->worker);
+  if (proxy->worker != NULL)
+    return workerResult;
 
   // Free IPC state (D2D bypass peer pointers)
   flagcxHeteroRmaIpcDestroy(comm);
@@ -1714,7 +1744,7 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   free((void *)proxy->groupSeqs);
   free(proxy);
   comm->rmaProxy = NULL;
-  return flagcxSuccess;
+  return workerResult;
 }
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm) {

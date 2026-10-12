@@ -5,8 +5,14 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstdlib>
+#include <future>
+#include <signal.h>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 #include "adaptor.h"
 #include "comm.h"
@@ -318,7 +324,251 @@ protected:
   pthread_mutex_t producerMutex_;
 };
 
+struct RmaWorkerProbe {
+  std::atomic<int> device{-1};
+  std::atomic<int> posts{0};
+  std::atomic<int> polls{0};
+  std::atomic<int> requestDone{0};
+  std::atomic<int> wrongContext{0};
+  std::atomic<int> wrongThread{0};
+  flagcxResult_t setDeviceResult = flagcxSuccess;
+  pthread_t thread{};
+  void *sendComm = nullptr;
+};
+
+RmaWorkerProbe *activeRmaWorkerProbe = nullptr;
+
+// Fork before starting an RMA worker. If a lifecycle operation gets stuck,
+// the parent can report the timeout without waiting for a std::async future
+// or freeing fixture state that the worker still uses.
+template <typename Scenario>
+int runRmaWorkerInChild(Scenario scenario, std::chrono::milliseconds timeout) {
+  const pid_t child = fork();
+  if (child < 0)
+    return -2;
+  if (child == 0) {
+    scenario();
+    _exit(::testing::Test::HasFailure() ? 1 : 0);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  int status = 0;
+  while (true) {
+    const pid_t observed = waitpid(child, &status, WNOHANG);
+    if (observed == child)
+      break;
+    if (observed < 0) {
+      if (errno == EINTR)
+        continue;
+      kill(child, SIGKILL);
+      while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+      }
+      return -3;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      kill(child, SIGKILL);
+      while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+      }
+      return -1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  return WIFSIGNALED(status) ? -100 - WTERMSIG(status) : -4;
+}
+
+flagcxResult_t rmaWorkerSetDevice(int device) {
+  RmaWorkerProbe *probe = activeRmaWorkerProbe;
+  probe->thread = pthread_self();
+  probe->device.store(device, std::memory_order_release);
+  return probe->setDeviceResult;
+}
+
+flagcxResult_t rmaWorkerPut(void *sendComm, uint64_t, uint64_t, size_t, int,
+                            int, void **, void **, void **request) {
+  RmaWorkerProbe *probe = activeRmaWorkerProbe;
+  if (sendComm != probe->sendComm)
+    probe->wrongContext.fetch_add(1);
+  if (!pthread_equal(pthread_self(), probe->thread))
+    probe->wrongThread.fetch_add(1);
+  probe->posts.fetch_add(1, std::memory_order_release);
+  *request = &probe->requestDone;
+  return flagcxSuccess;
+}
+
+flagcxResult_t rmaWorkerTest(void *request, int *done, int *) {
+  RmaWorkerProbe *probe = activeRmaWorkerProbe;
+  if (request != &probe->requestDone)
+    return flagcxInvalidArgument;
+  if (!pthread_equal(pthread_self(), probe->thread))
+    probe->wrongThread.fetch_add(1);
+  probe->polls.fetch_add(1, std::memory_order_release);
+  *done = probe->requestDone.load(std::memory_order_acquire);
+  return flagcxSuccess;
+}
+
+class RmaWorkerFixture : public ::testing::Test {
+protected:
+  void SetUp() override {
+    savedDeviceAdaptor_ = deviceAdaptor;
+    deviceAdaptor_ = {};
+    deviceAdaptor_.setDevice = rmaWorkerSetDevice;
+    deviceAdaptor = &deviceAdaptor_;
+    activeRmaWorkerProbe = &probe_;
+
+    netAdaptor_ = {};
+    netAdaptor_.iput = rmaWorkerPut;
+    netAdaptor_.test = rmaWorkerTest;
+    comm_.nRanks = 1;
+    comm_.cudaDev = 7;
+    comm_.netAdaptor = &netAdaptor_;
+    comm_.oneSideHandleCount = 1;
+    oneSideHandles_[0] = &handle_;
+    comm_.oneSideHandles = oneSideHandles_;
+    sendComms_[0] = reinterpret_cast<void *>(0x1234);
+    probe_.sendComm = sendComms_[0];
+  }
+
+  void TearDown() override {
+    probe_.requestDone.store(1, std::memory_order_release);
+    if (comm_.rmaProxy != nullptr)
+      EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+    delete comm_.workerPool;
+    comm_.workerPool = nullptr;
+    activeRmaWorkerProbe = nullptr;
+    deviceAdaptor = savedDeviceAdaptor_;
+  }
+
+  void Start() {
+    ASSERT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStart(&comm_));
+    ASSERT_NE(nullptr, comm_.rmaProxy);
+    ASSERT_NE(nullptr, comm_.workerPool);
+    ASSERT_NE(nullptr, comm_.rmaProxy->worker);
+    EXPECT_EQ(1u, comm_.workerPool->workerCount());
+    ASSERT_EQ(flagcxSuccess,
+              flagcxHeteroRmaProxyPublishSendComms(&comm_, sendComms_));
+  }
+
+  template <typename Predicate>
+  bool WaitUntil(Predicate predicate) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!predicate() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return predicate();
+  }
+
+  RmaWorkerProbe probe_;
+  flagcxDeviceAdaptor_latest *savedDeviceAdaptor_ = nullptr;
+  flagcxDeviceAdaptor_latest deviceAdaptor_ = {};
+  flagcxNetAdaptor_latest netAdaptor_ = {};
+  flagcxHeteroComm comm_ = {};
+  flagcxOneSideHandleInfo handle_ = {};
+  flagcxOneSideHandleInfo *oneSideHandles_[1] = {};
+  void *sendComms_[1] = {};
+};
+
 } // namespace
+
+TEST_F(RmaWorkerFixture, PostsAndPollsContextZeroWithoutCallerProgress) {
+  Start();
+  ASSERT_NE(nullptr, comm_.rmaProxy);
+  EXPECT_EQ(7, probe_.device.load(std::memory_order_acquire));
+  uint64_t sequence = 0;
+  ASSERT_EQ(flagcxSuccess,
+            flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0, false, &sequence));
+  ASSERT_EQ(1u, sequence);
+  ASSERT_TRUE(WaitUntil([&] { return probe_.polls.load() > 0; }));
+  EXPECT_EQ(0u,
+            __atomic_load_n(&comm_.rmaProxy->doneSeqs[0], __ATOMIC_ACQUIRE));
+  probe_.requestDone.store(1, std::memory_order_release);
+  ASSERT_TRUE(WaitUntil([&] {
+    return __atomic_load_n(&comm_.rmaProxy->doneSeqs[0], __ATOMIC_ACQUIRE) ==
+           sequence;
+  }));
+  EXPECT_EQ(flagcxSuccess, flagcxHeteroWaitCounter(&comm_, 1));
+  EXPECT_EQ(1, probe_.posts.load());
+  EXPECT_EQ(0, probe_.wrongContext.load());
+  EXPECT_EQ(0, probe_.wrongThread.load());
+}
+
+TEST_F(RmaWorkerFixture, StopWaitsForAcceptedNativeRequest) {
+  EXPECT_EQ(
+      0, runRmaWorkerInChild(
+             [&] {
+               Start();
+               ASSERT_NE(nullptr, comm_.rmaProxy);
+               ASSERT_EQ(flagcxSuccess,
+                         flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+               ASSERT_TRUE(WaitUntil([&] { return probe_.polls.load() > 0; }));
+
+               auto stopping = std::async(std::launch::async, [&] {
+                 return flagcxHeteroRmaProxyStop(&comm_);
+               });
+               EXPECT_EQ(std::future_status::timeout,
+                         stopping.wait_for(std::chrono::milliseconds(20)));
+               probe_.requestDone.store(1, std::memory_order_release);
+               // Exit the isolated process directly if stop remains stuck;
+               // destroying the future here would wait forever.
+               if (stopping.wait_for(std::chrono::seconds(2)) !=
+                   std::future_status::ready)
+                 _exit(2);
+               EXPECT_EQ(flagcxSuccess, stopping.get());
+               EXPECT_EQ(nullptr, comm_.rmaProxy);
+               EXPECT_EQ(0u, comm_.workerPool->workerCount());
+             },
+             std::chrono::seconds(8)))
+      << "RMA stop child failed: 2 means stop timeout; -1 means watchdog "
+         "timeout";
+}
+
+TEST_F(RmaWorkerFixture, QuiesceDrainsAcceptedRequestBeforeStoppingWorker) {
+  EXPECT_EQ(
+      0, runRmaWorkerInChild(
+             [&] {
+               Start();
+               ASSERT_NE(nullptr, comm_.rmaProxy);
+               ASSERT_EQ(flagcxSuccess,
+                         flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+               ASSERT_TRUE(WaitUntil([&] { return probe_.polls.load() > 0; }));
+
+               auto quiescing = std::async(std::launch::async, [&] {
+                 return flagcxHeteroRmaProxyQuiesce(&comm_);
+               });
+               EXPECT_EQ(std::future_status::timeout,
+                         quiescing.wait_for(std::chrono::milliseconds(20)));
+               probe_.requestDone.store(1, std::memory_order_release);
+               if (quiescing.wait_for(std::chrono::seconds(2)) !=
+                   std::future_status::ready)
+                 _exit(2);
+               EXPECT_EQ(flagcxSuccess, quiescing.get());
+               EXPECT_EQ(flagcxInvalidUsage,
+                         flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+               EXPECT_EQ(0u, comm_.workerPool->workerCount());
+             },
+             std::chrono::seconds(8)))
+      << "RMA quiesce child failed: 2 means quiesce timeout; -1 means "
+         "watchdog timeout";
+}
+
+TEST(RmaWorkerChild, WatchdogReapsTimedOutProcess) {
+  EXPECT_EQ(-1, runRmaWorkerInChild(
+                    [] {
+                      while (true)
+                        pause();
+                    },
+                    std::chrono::milliseconds(20)));
+}
+
+TEST_F(RmaWorkerFixture, DeviceSetupFailurePublishesExistingRmaError) {
+  probe_.setDeviceResult = flagcxSystemError;
+  Start();
+  ASSERT_NE(nullptr, comm_.rmaProxy);
+  EXPECT_NE(0, __atomic_load_n(&comm_.rmaProxy->rmaError, __ATOMIC_ACQUIRE));
+  EXPECT_EQ(flagcxRemoteError, flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+}
 
 TEST(RmaPostResult, RetriesOnlyExplicitBackpressure) {
   EXPECT_TRUE(flagcxRmaPostResultIsRetryable(flagcxInProgress));
