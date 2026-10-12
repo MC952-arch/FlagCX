@@ -35,7 +35,7 @@ def check_results(path: Path) -> list[str]:
         case = matches[0]
         if (
             case.get("status") != "run"
-            or case.get("result") == "skipped"
+            or case.get("result") != "completed"
             or case.find("skipped") is not None
         ):
             errors.append(f"NetAdaptorLoopback.{name}: skipped or not run")

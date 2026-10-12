@@ -191,11 +191,13 @@ struct GpuTestWindow {
   GpuTestWindow &operator=(const GpuTestWindow &) = delete;
 
   ~GpuTestWindow() {
-    if (mr != nullptr)
+    if (mr != nullptr) {
       EXPECT_EQ(net->deregMr(comm, mr), flagcxSuccess);
-    if (buffer != nullptr)
+    }
+    if (buffer != nullptr) {
       EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
                 flagcxSuccess);
+    }
   }
 
   flagcxResult_t init(size_t bytes, int rank) {
