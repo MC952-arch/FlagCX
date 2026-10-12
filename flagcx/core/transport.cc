@@ -18,6 +18,35 @@ struct flagcxNetListenInfo {
   uint64_t netGuid;
 };
 
+flagcxResult_t
+flagcxNetFinalizePxnSendRoute(struct flagcxNetAdaptor *netAdaptor,
+                              int sourceRank, int sourceNetDev, int *sendNetDev,
+                              int *proxyRank, uint64_t *relayNetGuid) {
+  if (netAdaptor == NULL || sendNetDev == NULL || proxyRank == NULL ||
+      relayNetGuid == NULL)
+    return flagcxInvalidArgument;
+  *relayNetGuid = 0;
+  if (*proxyRank == sourceRank)
+    return flagcxSuccess;
+
+  flagcxNetProperties_t sendProps = {};
+  if (netAdaptor->getProperties == NULL)
+    return flagcxNotSupported;
+  FLAGCXCHECK(netAdaptor->getProperties(*sendNetDev, &sendProps));
+  if ((sendProps.ptrSupport & FLAGCX_PTR_CUDA) == 0 ||
+      netAdaptor->regMr == NULL) {
+    // The relay exports an IPC allocation and registers it with regMr, even
+    // when direct NET would use regMrDmaBuf for this NIC.
+    *sendNetDev = sourceNetDev;
+    *proxyRank = sourceRank;
+    return flagcxSuccess;
+  }
+  if (sendProps.guid == 0)
+    return flagcxNotSupported;
+  *relayNetGuid = sendProps.guid;
+  return flagcxSuccess;
+}
+
 static flagcxResult_t
 flagcxGetRelayImport(struct flagcxHeteroComm *comm, int proxyRank,
                      const flagcxNetRelayBufferInfo *buffer,
@@ -288,30 +317,33 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                   flagcxTopoSelectNetRoute(
                       comm->topoServer, remote, comm->interServerTopo,
                       comm->rank, peer, peerNetDev, &sendNetDev, &proxyRank,
-                      logicalRanksPerNode) == flagcxSuccess) {
-                INFO(FLAGCX_NET,
-                     "PXN route: %d -> %d channel %d recv NET/%d send "
-                     "NET/%d proxy rank %d",
-                     comm->rank, peer, c, listenInfo->netDev, sendNetDev,
-                     proxyRank);
-              } else {
+                      logicalRanksPerNode) != flagcxSuccess) {
                 sendNetDev = comm->netDev;
                 proxyRank = comm->rank;
               }
             }
           }
           uint64_t relayNetGuid = 0;
-          if (proxyRank != comm->rank) {
-            flagcxNetProperties_t sendProps = {};
-            flagcxResult_t propsResult =
-                comm->netAdaptor->getProperties(sendNetDev, &sendProps);
-            if (propsResult != flagcxSuccess || sendProps.guid == 0) {
-              free(listenInfo);
-              return propsResult != flagcxSuccess ? propsResult
-                                                  : flagcxNotSupported;
-            }
-            relayNetGuid = sendProps.guid;
+          const int selectedProxyRank = proxyRank;
+          const int selectedSendNetDev = sendNetDev;
+          flagcxResult_t routeResult = flagcxNetFinalizePxnSendRoute(
+              comm->netAdaptor, comm->rank, comm->netDev, &sendNetDev,
+              &proxyRank, &relayNetGuid);
+          if (routeResult != flagcxSuccess) {
+            free(listenInfo);
+            return routeResult;
           }
+          if (selectedProxyRank != comm->rank && proxyRank == comm->rank)
+            INFO(FLAGCX_NET,
+                 "PXN fallback to direct NET: rank %d peer %d channel %d "
+                 "selected relay %d NET/%d lacks ordinary device MR",
+                 comm->rank, peer, c, selectedProxyRank, selectedSendNetDev);
+          if (proxyRank != comm->rank)
+            INFO(FLAGCX_NET,
+                 "PXN route: %d -> %d channel %d recv NET/%d send "
+                 "NET/%d proxy rank %d",
+                 comm->rank, peer, c, listenInfo->netDev, sendNetDev,
+                 proxyRank);
           FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_NET, 1, proxyRank,
                                          &conn->proxyConn));
           conn->proxyConn.netDev = sendNetDev;

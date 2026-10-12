@@ -68,6 +68,72 @@ TEST(PxnRelayTopology, ResolvesListenerByNicGuid) {
             flagcxNotSupported);
 }
 
+TEST(PxnRelayTransport, DmaBufOnlyNicFallsBackBeforeRelaySetup) {
+  static int ptrSupport = FLAGCX_PTR_DMABUF;
+  static int propertiesCalls = 0;
+  struct flagcxNetAdaptor netAdaptor = {};
+  netAdaptor.getProperties = [](int dev, void *output) {
+    ++propertiesCalls;
+    if (dev != 1)
+      return flagcxInvalidArgument;
+    auto *props = static_cast<flagcxNetProperties_t *>(output);
+    props->guid = 101;
+    props->ptrSupport = ptrSupport;
+    return flagcxSuccess;
+  };
+  // The adaptor has regMr, but the chosen NIC only accepts device memory
+  // through regMrDmaBuf. PXN relay setup must be skipped on this route.
+  netAdaptor.regMr = [](void *, void *, size_t, int, int, void **) {
+    return flagcxSystemError;
+  };
+  netAdaptor.regMrDmaBuf = [](void *, void *, size_t, int, uint64_t, int, int,
+                              void **) { return flagcxSuccess; };
+  ptrSupport = FLAGCX_PTR_DMABUF;
+  propertiesCalls = 0;
+  int sendNetDev = 1;
+  int proxyRank = 2;
+  uint64_t relayNetGuid = 77;
+  ASSERT_EQ(flagcxNetFinalizePxnSendRoute(&netAdaptor, 0, 0, &sendNetDev,
+                                          &proxyRank, &relayNetGuid),
+            flagcxSuccess);
+  EXPECT_EQ(propertiesCalls, 1);
+  EXPECT_EQ(sendNetDev, 0);
+  EXPECT_EQ(proxyRank, 0);
+  EXPECT_EQ(relayNetGuid, 0u);
+
+  // A NIC that also supports ordinary device-memory MR remains eligible.
+  ptrSupport = FLAGCX_PTR_CUDA | FLAGCX_PTR_DMABUF;
+  sendNetDev = 1;
+  proxyRank = 2;
+  ASSERT_EQ(flagcxNetFinalizePxnSendRoute(&netAdaptor, 0, 0, &sendNetDev,
+                                          &proxyRank, &relayNetGuid),
+            flagcxSuccess);
+  EXPECT_EQ(sendNetDev, 1);
+  EXPECT_EQ(proxyRank, 2);
+  EXPECT_EQ(relayNetGuid, 101u);
+
+  // A CUDA capability bit alone is insufficient without regMr.
+  netAdaptor.regMr = NULL;
+  sendNetDev = 1;
+  proxyRank = 2;
+  ASSERT_EQ(flagcxNetFinalizePxnSendRoute(&netAdaptor, 0, 0, &sendNetDev,
+                                          &proxyRank, &relayNetGuid),
+            flagcxSuccess);
+  EXPECT_EQ(sendNetDev, 0);
+  EXPECT_EQ(proxyRank, 0);
+  EXPECT_EQ(relayNetGuid, 0u);
+
+  // A direct NET route does not query relay NIC properties.
+  propertiesCalls = 0;
+  sendNetDev = 0;
+  proxyRank = 0;
+  ASSERT_EQ(flagcxNetFinalizePxnSendRoute(&netAdaptor, 0, 0, &sendNetDev,
+                                          &proxyRank, &relayNetGuid),
+            flagcxSuccess);
+  EXPECT_EQ(propertiesCalls, 0);
+  EXPECT_EQ(relayNetGuid, 0u);
+}
+
 class PxnRelayTest : public ::testing::Test {
 protected:
   void SetUp() override {

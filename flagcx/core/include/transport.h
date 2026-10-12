@@ -35,6 +35,7 @@ struct flagcxRing;
 struct flagcxConnector;
 struct flagcxHeteroComm;
 struct flagcxProxyOp;
+struct flagcxNetAdaptor;
 
 struct flagcxPeerInfo {
   int rank;
@@ -164,6 +165,13 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                                        struct flagcxTopoGraph *graph,
                                        int connIndex,
                                        int *highestTransportType = NULL);
+
+// PXN relay buffers use ordinary device-memory regMr. If the selected NIC
+// supports device memory only through DMA-BUF, send from the source rank.
+flagcxResult_t
+flagcxNetFinalizePxnSendRoute(struct flagcxNetAdaptor *netAdaptor,
+                              int sourceRank, int sourceNetDev, int *sendNetDev,
+                              int *proxyRank, uint64_t *relayNetGuid);
 
 flagcxResult_t flagcxNvlsInit(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxNvlsSetup(struct flagcxHeteroComm *comm,

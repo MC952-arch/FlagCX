@@ -26,6 +26,8 @@ inline uint64_t flagcxRunnerRelayChunks(flagcxComm_t comm) {
 // planner can choose non-neighbor ranks, so inspect its connected cross-cluster
 // edges. AllToAll uses every cross-cluster edge. Sample the completion counter
 // around each operation so an earlier test cannot satisfy its relay check.
+// The connected collective may choose NIC-local inter-ranks and use direct
+// NET; validate any relays it does choose without requiring one.
 inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
                                          int nranks, FlagCXPxnTraffic traffic,
                                          uint64_t relayChunksBefore,
@@ -87,6 +89,7 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   }
 
   int localChecked = 0;
+  int localNetSends = 0;
   int localConnectionErrors = 0;
   int localRouteErrors = 0;
   int localRelayed = 0;
@@ -136,14 +139,21 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
             send.proxyConn.connection == nullptr) {
           ++localConnectionErrors;
         } else if (!enabled) {
+          ++localNetSends;
           if (send.proxyConn.tpRank != rank ||
               send.proxyConn.connection != send.proxyConn.remoteConnection)
             ++localRouteErrors;
         } else {
+          ++localNetSends;
           const int proxyRank = send.proxyConn.tpRank;
           if (proxyRank < 0 || proxyRank >= nranks) {
             ++localRouteErrors;
-          } else if (proxyRank != rank) {
+          } else if (proxyRank == rank) {
+            if (!send.proxyConn.sameProcess ||
+                send.proxyConn.connection != send.proxyConn.remoteConnection ||
+                send.proxyConn.connection->relayImport != nullptr)
+              ++localRouteErrors;
+          } else {
             ++localRelayed;
             if (nranks == 8)
               ++localRelayedByGroup[rank < 4 ? 0 : 1];
@@ -233,6 +243,7 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
       flagcxRunnerRelayChunks(comm) <= relayChunksBefore;
   int globalLayoutErrors = 0;
   int globalChecked = 0;
+  int globalNetSends = 0;
   int globalConnectionErrors = 0;
   int globalRouteErrors = 0;
   int globalRelayed = 0;
@@ -241,6 +252,8 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   MPI_Allreduce(&localLayoutErrors, &globalLayoutErrors, 1, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
   MPI_Allreduce(&localChecked, &globalChecked, 1, MPI_INT, MPI_SUM,
+                MPI_COMM_WORLD);
+  MPI_Allreduce(&localNetSends, &globalNetSends, 1, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
   MPI_Allreduce(&localConnectionErrors, &globalConnectionErrors, 1, MPI_INT,
                 MPI_SUM, MPI_COMM_WORLD);
@@ -254,18 +267,20 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
                 MPI_SUM, MPI_COMM_WORLD);
   EXPECT_EQ(globalLayoutErrors, 0) << operation << " has an invalid PXN layout";
   EXPECT_GT(globalChecked, 0) << operation << " used no cross-cluster NET edge";
+  EXPECT_GT(globalNetSends, 0)
+      << operation << " established no cross-cluster NET send";
   EXPECT_EQ(globalConnectionErrors, 0)
       << operation << " did not establish the expected NET connections";
   EXPECT_EQ(globalRouteErrors, 0)
       << operation << " selected an invalid NET NIC or proxy rank";
   EXPECT_EQ(globalCompletionErrors, 0)
       << operation << " has no completed relay chunk on a relaying source";
-  if (enabled) {
+  if (enabled && traffic != FlagCXPxnTraffic::ConnectedCollective) {
     EXPECT_GT(globalRelayedByGroup[0], 0)
         << operation << " did not relay from ranks 0-3";
     EXPECT_GT(globalRelayedByGroup[1], 0)
         << operation << " did not relay from ranks 4-7";
-  } else {
+  } else if (!enabled) {
     EXPECT_EQ(globalRelayed, 0) << operation << " unexpectedly used PXN";
   }
 }
