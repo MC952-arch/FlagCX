@@ -1688,6 +1688,49 @@ TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
   EXPECT_EQ(actual, expectedDestination);
 }
 
+TEST_F(NetAdaptorLoopback, GpuBounds) {
+  REQUIRE_GPU_ONE_SIDED();
+  SKIP_IF_CALLBACK_NULL(net_, iput);
+  SKIP_IF_CALLBACK_NULL(net_, iget);
+
+  GpuTestWindow sourceGpu(net_, sendComm_);
+  GpuTestWindow remoteGpu(net_, recvComm_);
+  GpuTestWindow destinationGpu(net_, sendComm_);
+  ASSERT_EQ(sourceGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.init(kBufferSize, kRemoteRank), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+
+  constexpr uint64_t beyondEnd = kBufferSize - 256;
+  constexpr size_t bytes = 512;
+  void *request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iput(sendComm_, beyondEnd, 128, bytes, kLocalRank,
+                       kRemoteRank, sourceGpu.opaque(), remoteGpu.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iput(sendComm_, 128, beyondEnd, bytes, kLocalRank,
+                       kRemoteRank, sourceGpu.opaque(), remoteGpu.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, beyondEnd, 128, bytes, kRemoteRank,
+                       kLocalRank, remoteGpu.opaque(), destinationGpu.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net_->iget(sendComm_, 128, beyondEnd, bytes, kRemoteRank,
+                       kLocalRank, remoteGpu.opaque(), destinationGpu.opaque(),
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+}
+
 TEST_F(NetAdaptorLoopback, IputIgetAndPerRankBounds) {
   SKIP_IF_CALLBACK_NULL(net_, getMrInfo);
   SKIP_IF_CALLBACK_NULL(net_, iput);
