@@ -166,11 +166,11 @@ int main(int argc, char *argv[]) {
   }
   std::vector<int> live(totalProcs), after(totalProcs);
   MPI_Barrier(MPI_COMM_WORLD);
-  RPRINTF("S16 IPC barrier all-peer live probe launch\n");
+  RPRINTF("S16 intra barrier all-peer live probe launch\n");
   FLAGCXCHECK(
       launchKernelDevIntraBarrierLiveProbeS(devCommPtr, devResults, stream));
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
-  RPRINTF("S16 IPC barrier all-peer live probe complete\n");
+  RPRINTF("S16 intra barrier all-peer live probe complete\n");
   FLAGCXCHECK(devHandle->deviceMemcpy(live.data(), devResults,
                                       totalProcs * sizeof(int),
                                       flagcxMemcpyDeviceToHost, stream));

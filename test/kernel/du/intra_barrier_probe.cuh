@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Bounded, test-only probe for the IPC inbox used by the intra barrier.
+ * Bounded, test-only probe for the inbox used by the intra barrier.
  ************************************************************************/
 
 #ifndef FLAGCX_TEST_DU_INTRA_BARRIER_PROBE_CUH_
@@ -15,13 +15,20 @@ static __device__ void flagcxDuProbeIntraBarrier(const flagcxDevComm &comm,
                                                   int *live) {
   const auto &dc = comm._commBase;
   int peer = threadIdx.x;
+  cuda::atomic_ref<uint64_t, cuda::thread_scope_system> epoch(
+      dc.epochBuffer[0]);
+  // The device_api suite reuses this communicator across sizes. Make this
+  // probe's values newer than inbox values left by earlier barrier epochs.
+  uint64_t tagBase = epoch.load(cuda::memory_order_acquire) *
+                     ((uint64_t)dc.intraSize + 1);
   if (peer < dc.intraSize) {
     live[peer] = 0;
     if (peer != dc.intraRank) {
       int slot = dc.intraRank * dc.nBarriers;
       cuda::atomic_ref<uint64_t, cuda::thread_scope_system> remote(
           dc.barrierPeers[peer][slot]);
-      remote.store((uint64_t)dc.intraRank + 1, cuda::memory_order_release);
+      remote.store(tagBase + (uint64_t)dc.intraRank + 1,
+                   cuda::memory_order_release);
     }
   }
   __syncthreads();
@@ -35,7 +42,7 @@ static __device__ void flagcxDuProbeIntraBarrier(const flagcxDevComm &comm,
     // entire CI timeout. The production barrier remains unchanged.
     for (int iter = 0; iter < 100000; ++iter) {
       observed = local.load(cuda::memory_order_acquire);
-      if (observed >= (uint64_t)peer + 1)
+      if (observed >= tagBase + (uint64_t)peer + 1)
         break;
       PlatformTraits<DuPlatform>::Intrin::spinBackoff(iter);
     }

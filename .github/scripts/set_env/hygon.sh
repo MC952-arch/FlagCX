@@ -43,8 +43,8 @@ FLAGCX_CI_COMMON_MAKE_ARGS=(
 FLAGCX_CI_PROJECT_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
-# The IPC device-memory inbox shows peer stores in the post-kernel snapshot,
-# but not during live polling. Check the existing host-mapped barrier path.
+# Map intra barriers and one-sided signals through host memory. Intra signals
+# use local SHM peer mappings; inter signals use SHCA on the host signal MR.
 FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=1)
 FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=1)
 

@@ -275,17 +275,17 @@ int main(int argc, char *argv[]) {
       fflush(stderr);
 
 #ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-      traceIntraPointer(proc, "IPC barrier atomic write probe launch");
+      traceIntraPointer(proc, "intra barrier atomic write probe launch");
       FLAGCXCHECK(launchKernelIntraBarrierIpcWriteProbe(devComm, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      traceIntraPointer(proc, "IPC barrier atomic write probe complete");
+      traceIntraPointer(proc, "intra barrier atomic write probe complete");
       MPI_Barrier(MPI_COMM_WORLD);
 
-      traceIntraPointer(proc, "IPC barrier atomic read probe launch");
+      traceIntraPointer(proc, "intra barrier atomic read probe launch");
       FLAGCXCHECK(
           launchKernelIntraBarrierIpcReadProbe(devComm, devResults, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      traceIntraPointer(proc, "IPC barrier atomic read probe complete");
+      traceIntraPointer(proc, "intra barrier atomic read probe complete");
       int observed = 0;
       FLAGCXCHECK(devHandle->deviceMemcpy(&observed, devResults,
                                           sizeof(observed),
@@ -293,7 +293,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       int prev = (proc + totalProcs - 1) % totalProcs;
       fprintf(stderr,
-              "[rank %d] K5 IntraPointer: IPC barrier atomic probe "
+              "[rank %d] K5 IntraPointer: intra barrier atomic probe "
               "value=%d expected=%d\n",
               proc, observed, prev + 1);
       fflush(stderr);
@@ -302,18 +302,18 @@ int main(int argc, char *argv[]) {
       MPI_Allreduce(&failed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
       if (anyFailed)
         MPI_Abort(MPI_COMM_WORLD, 1);
-      traceIntraPointer(proc, "IPC barrier atomic probe passed");
+      traceIntraPointer(proc, "intra barrier atomic probe passed");
 
       if (totalProcs > 64) {
         fprintf(stderr, "K5 barrier probe supports at most 64 ranks\n");
         MPI_Abort(MPI_COMM_WORLD, 1);
       }
       std::vector<int> live(totalProcs), after(totalProcs);
-      traceIntraPointer(proc, "IPC barrier all-peer live probe launch");
+      traceIntraPointer(proc, "intra barrier all-peer live probe launch");
       FLAGCXCHECK(
           launchKernelIntraBarrierLiveProbe(devComm, devResults, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      traceIntraPointer(proc, "IPC barrier all-peer live probe complete");
+      traceIntraPointer(proc, "intra barrier all-peer live probe complete");
       FLAGCXCHECK(devHandle->deviceMemcpy(live.data(), devResults,
                                           totalProcs * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
@@ -328,24 +328,22 @@ int main(int argc, char *argv[]) {
                                           flagcxMemcpyDeviceToHost, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       failed = 0;
-      fprintf(stderr, "[rank %d] K5 barrier initial epoch=%d expected=0\n",
-              proc, after[proc]);
-      if (after[proc] != 0)
-        failed = 1;
+      fprintf(stderr, "[rank %d] K5 barrier epoch=%d\n", proc, after[proc]);
       for (int p = 0; p < totalProcs; ++p) {
         if (p == proc)
           continue;
+        int expected = after[proc] * (totalProcs + 1) + p + 1;
         fprintf(stderr,
                 "[rank %d] K5 barrier peer %d: live=%d after=%d expected=%d\n",
-                proc, p, live[p], after[p], p + 1);
-        if (live[p] != p + 1 || after[p] != p + 1)
+                proc, p, live[p], after[p], expected);
+        if (live[p] != expected || after[p] != expected)
           failed = 1;
       }
       fflush(stderr);
       MPI_Allreduce(&failed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
       if (anyFailed)
         MPI_Abort(MPI_COMM_WORLD, 1);
-      traceIntraPointer(proc, "IPC barrier all-peer live probe passed");
+      traceIntraPointer(proc, "intra barrier all-peer live probe passed");
 #endif
     }
 

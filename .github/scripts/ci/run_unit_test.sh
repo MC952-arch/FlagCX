@@ -244,9 +244,8 @@ run_device_api_unified_ir() {
     : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
     build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
 
-  # Fault injection: disable only one-sided data/signal IPC.  Barriers retain
-  # their IPC transport so these runs specifically validate IPC-to-Net
-  # fallback for S18-S25.
+  # Force one-sided data/signal operations through Net. Barriers retain their
+  # configured transport; these runs validate the Net fallback for S18-S25.
   FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
     "${intra_fallback_env[@]}" \
