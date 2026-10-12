@@ -16,8 +16,6 @@ env:
 jobs:
   load-hardware-container-configs:
     name: Load explicit container configurations
-    # Temporarily run only the PPU unit-test workflow on PR #648.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 648 }}
     runs-on: ubuntu-latest
     outputs:
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
@@ -43,7 +41,6 @@ jobs:
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
 
   perf-test:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 648 }}
     runs-on: [self-hosted, cx-build]
     container:
       image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
@@ -221,7 +218,6 @@ jobs:
 
   perf-test-cuda:
     name: perf-test (cuda)
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 648 }}
     runs-on: [nv-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
@@ -306,7 +302,6 @@ jobs:
 
   perf-test-metax:
     name: perf-test (metax)
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 648 }}
     runs-on: [mx-8g-cicd-flagcx]
     container:
       image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev

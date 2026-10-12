@@ -40,8 +40,7 @@ jobs:
       - name: Build platform matrix
         id: config
         env:
-          # PR #648 is temporarily limited to PPU while diagnosing its PXN hang.
-          FLAGCX_CI_PLATFORM: ${{ github.event.pull_request.number == 648 && 'ppu' || github.event.inputs.platform || 'all' }}
+          FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
         run: ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
 
   unit_tests:
