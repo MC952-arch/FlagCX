@@ -1618,6 +1618,76 @@ TEST_F(NetAdaptorLoopback, GpuIget) {
   EXPECT_EQ(actual, expected);
 }
 
+TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
+  REQUIRE_GPU_ONE_SIDED();
+  SKIP_IF_CALLBACK_NULL(net_, iputBatch);
+  SKIP_IF_CALLBACK_NULL(net_, testBatch);
+  SKIP_IF_CALLBACK_NULL(net_, igetBatch);
+
+  std::vector<uint8_t> source(kBufferSize);
+  std::vector<uint8_t> expectedRemote(kBufferSize, 0x31);
+  std::vector<uint8_t> expectedDestination(kBufferSize, 0x72);
+  std::vector<uint8_t> actual(kBufferSize);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>((i * 13 + 11) & 0xff);
+
+  GpuTestWindow sourceGpu(net_, sendComm_);
+  GpuTestWindow remoteGpu(net_, recvComm_);
+  GpuTestWindow destinationGpu(net_, sendComm_);
+  ASSERT_EQ(sourceGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.init(kBufferSize, kRemoteRank), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+  ASSERT_EQ(sourceGpu.copyFromHost(source), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.copyFromHost(expectedRemote), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.copyFromHost(expectedDestination), flagcxSuccess);
+
+  constexpr int count = 3;
+  const uint64_t sourceOffsets[count] = {128, 1152, 2176};
+  const uint64_t remoteOffsets[count] = {256, 1280, 2304};
+  const uint64_t destinationOffsets[count] = {384, 1408, 2432};
+  const size_t sizes[count] = {512, 512, 512};
+  void *requests[count] = {};
+  int posted = -1;
+  ASSERT_EQ(net_->iputBatch(sendComm_, count, sourceOffsets, remoteOffsets,
+                            sizes, kLocalRank, kRemoteRank, sourceGpu.opaque(),
+                            remoteGpu.opaque(), requests, &posted),
+            flagcxSuccess);
+  ASSERT_EQ(posted, count);
+  for (void *request : requests)
+    ASSERT_NE(request, nullptr);
+
+  int doneFlags[count] = {};
+  int doneCount = 0;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (doneCount != count && std::chrono::steady_clock::now() < deadline) {
+    ASSERT_EQ(net_->testBatch(requests, count, doneFlags, &doneCount),
+              flagcxSuccess);
+    if (doneCount != count)
+      std::this_thread::yield();
+  }
+  ASSERT_EQ(doneCount, count);
+  for (int i = 0; i < count; ++i) {
+    EXPECT_NE(doneFlags[i], 0);
+    std::copy_n(source.begin() + sourceOffsets[i], sizes[i],
+                expectedRemote.begin() + remoteOffsets[i]);
+  }
+  ASSERT_EQ(remoteGpu.copyToHost(actual), flagcxSuccess);
+  EXPECT_EQ(actual, expectedRemote);
+
+  void *readRequest = nullptr;
+  ASSERT_EQ(net_->igetBatch(sendComm_, count, remoteOffsets, destinationOffsets,
+                            sizes, kRemoteRank, kLocalRank, remoteGpu.opaque(),
+                            destinationGpu.opaque(), &readRequest),
+            flagcxSuccess);
+  ASSERT_NE(readRequest, nullptr);
+  ASSERT_EQ(waitRequest(net_, readRequest), flagcxSuccess);
+  for (int i = 0; i < count; ++i)
+    std::copy_n(expectedRemote.begin() + remoteOffsets[i], sizes[i],
+                expectedDestination.begin() + destinationOffsets[i]);
+  ASSERT_EQ(destinationGpu.copyToHost(actual), flagcxSuccess);
+  EXPECT_EQ(actual, expectedDestination);
+}
+
 TEST_F(NetAdaptorLoopback, IputIgetAndPerRankBounds) {
   SKIP_IF_CALLBACK_NULL(net_, getMrInfo);
   SKIP_IF_CALLBACK_NULL(net_, iput);
