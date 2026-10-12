@@ -182,6 +182,59 @@ struct TestWindow {
   void **opaque() { return reinterpret_cast<void **>(&info); }
 };
 
+// Keep the registration alive until after every request has completed. The
+// buffer is released after the MR, including when an ASSERT aborts a test.
+struct GpuTestWindow {
+  GpuTestWindow(struct flagcxNetAdaptor *net, void *comm)
+      : net(net), comm(comm) {}
+  GpuTestWindow(const GpuTestWindow &) = delete;
+  GpuTestWindow &operator=(const GpuTestWindow &) = delete;
+
+  ~GpuTestWindow() {
+    if (mr != nullptr)
+      EXPECT_EQ(net->deregMr(comm, mr), flagcxSuccess);
+    if (buffer != nullptr)
+      EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
+                flagcxSuccess);
+  }
+
+  flagcxResult_t init(size_t bytes, int rank) {
+    size = bytes;
+    FLAGCXCHECK(
+        deviceAdaptor->deviceMalloc(&buffer, size, flagcxMemDevice, nullptr));
+    if (buffer == nullptr)
+      return flagcxSystemError;
+    FLAGCXCHECK(net->regMr(comm, buffer, size, FLAGCX_PTR_CUDA,
+                           FLAGCX_NET_MR_FLAG_NONE, &mr));
+    if (mr == nullptr)
+      return flagcxSystemError;
+    return window.init(net, buffer, size, rank, mr);
+  }
+
+  flagcxResult_t copyFromHost(std::vector<uint8_t> &host) {
+    if (host.size() != size)
+      return flagcxInvalidArgument;
+    return deviceAdaptor->deviceMemcpy(
+        buffer, host.data(), size, flagcxMemcpyHostToDevice, nullptr, nullptr);
+  }
+
+  flagcxResult_t copyToHost(std::vector<uint8_t> &host) {
+    if (host.size() != size)
+      return flagcxInvalidArgument;
+    return deviceAdaptor->deviceMemcpy(
+        host.data(), buffer, size, flagcxMemcpyDeviceToHost, nullptr, nullptr);
+  }
+
+  void **opaque() { return window.opaque(); }
+
+  struct flagcxNetAdaptor *net;
+  void *comm;
+  void *buffer = nullptr;
+  void *mr = nullptr;
+  size_t size = 0;
+  TestWindow window;
+};
+
 std::vector<ibv_mr *> deregisterCalls;
 ibv_mr *deregisterFailure = nullptr;
 int deregisterFailuresRemaining = 0;
@@ -412,6 +465,25 @@ protected:
   do {                                                                         \
     EXPECT_EQ(net_->deregMr((comm), (handle)), flagcxSuccess);                 \
     (handle) = nullptr;                                                        \
+  } while (0)
+
+#define REQUIRE_GPU_ONE_SIDED()                                                \
+  do {                                                                         \
+    SKIP_IF_CALLBACK_NULL(net_, getProperties);                                \
+    SKIP_IF_CALLBACK_NULL(net_, regMr);                                        \
+    SKIP_IF_CALLBACK_NULL(net_, deregMr);                                      \
+    SKIP_IF_CALLBACK_NULL(net_, getMrInfo);                                    \
+    SKIP_IF_CALLBACK_NULL(net_, test);                                         \
+    flagcxNetProperties_t gpuProperties = {};                                  \
+    ASSERT_EQ(net_->getProperties(netDev_, &gpuProperties), flagcxSuccess);    \
+    if ((gpuProperties.ptrSupport & FLAGCX_PTR_CUDA) == 0)                     \
+      GTEST_SKIP() << "Selected net adaptor does not advertise GPU MR";        \
+    if (deviceAdaptor == nullptr || deviceAdaptor->setDevice == nullptr ||     \
+        deviceAdaptor->deviceMalloc == nullptr ||                              \
+        deviceAdaptor->deviceFree == nullptr ||                                \
+        deviceAdaptor->deviceMemcpy == nullptr)                                \
+      GTEST_SKIP() << "Selected device adaptor lacks GPU allocation/copy";     \
+    ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);               \
   } while (0)
 
 flagcxResult_t legacyFlush(void *, int, void **, int *, void **, void **) {
