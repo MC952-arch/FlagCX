@@ -216,6 +216,50 @@ void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 // S8: Intra Barrier Sync (Scalar)
 // ---------------------------------------------------------------------------
 
+// Write the S8 input in a separate kernel so the host can synchronize all
+// ranks before launching the peer reader.
+__global__ void kernelDuIntraBarrierWriterS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, float *buffer, int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  for (int i = tid; i < count; i += nthreads)
+    buffer[i] = (float)(myRank + 1);
+}
+
+void launchKernelDuIntraBarrierWriterS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, float *buffer, int count,
+    flagcxStream_t stream) {
+  kernelDuIntraBarrierWriterS<<<4, 256, 0, stream->base>>>(devCommPtr, buffer,
+                                                           count);
+}
+
+// Same scalar wrapper as S8, with input prepared before launch. This isolates
+// barrier arrival and peer-pointer access from publication of GPU stores.
+__global__ void kernelDuIntraBarrierPrewrittenS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output, int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  flagcxIntraBarrierSyncS(devCommPtr, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                          false, flagcxDeviceMemoryOrderAcqRel);
+  int peer = (myRank + 1) % flagcxDevCommGetIntraSize(devCommPtr);
+  for (int i = tid; i < count; i += nthreads) {
+    float *peerPtr = (float *)flagcxGetIntraPointerS(
+        devMemPtr, i * sizeof(float), peer);
+    output[i] = *peerPtr;
+  }
+}
+
+void launchKernelDuIntraBarrierPrewrittenS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output, int count,
+    flagcxStream_t stream) {
+  kernelDuIntraBarrierPrewrittenS<<<4, 256, 0, stream->base>>>(
+      devCommPtr, devMemPtr, output, count);
+}
+
 __global__ void kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                         float *buffer, float *output,
@@ -246,6 +290,36 @@ void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         flagcxStream_t stream) {
   kernelIntraBarrierSyncS<<<4, 256, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, output, N);
+}
+
+// Diagnostic variant of S8: each writer completes a system fence before the
+// block barrier publishes its epoch. Keep S8 unchanged for comparison.
+__global__ void kernelDuIntraBarrierFenceS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  for (int i = tid; i < count; i += nthreads)
+    buffer[i] = (float)(myRank + 1);
+  DeviceAPI::Intrin::threadfenceSystem();
+  flagcxIntraBarrierSyncS(devCommPtr, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                          false, flagcxDeviceMemoryOrderAcqRel);
+  int peer = (myRank + 1) % flagcxDevCommGetIntraSize(devCommPtr);
+  for (int i = tid; i < count; i += nthreads) {
+    float *peerPtr = (float *)flagcxGetIntraPointerS(
+        devMemPtr, i * sizeof(float), peer);
+    output[i] = *peerPtr;
+  }
+}
+
+void launchKernelDuIntraBarrierFenceS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    int count, flagcxStream_t stream) {
+  kernelDuIntraBarrierFenceS<<<4, 256, 0, stream->base>>>(
+      devCommPtr, devMemPtr, buffer, output, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +359,41 @@ void launchKernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCom
                                         flagcxStream_t stream) {
   kernelIntraBarrierArriveWaitS<<<4, 256, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, output, N);
+}
+
+// Exercise the scalar arrive/wait pair with GPU-produced peer data. The final
+// full barrier keeps each rank's buffer live until every peer has read it.
+__global__ void kernelDuIntraBarrierSplitS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    int count) {
+  int myRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
+  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  for (int i = tid; i < count; i += nthreads)
+    buffer[i] = (float)(myRank + 700);
+
+  flagcxIntraBarrierArriveS(devCommPtr, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                            false, flagcxDeviceMemoryOrderRelease);
+  flagcxIntraBarrierWaitS(devCommPtr, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                          false, flagcxDeviceMemoryOrderAcquire);
+
+  int peer = (myRank + 1) % flagcxDevCommGetIntraSize(devCommPtr);
+  for (int i = tid; i < count; i += nthreads) {
+    float *peerPtr = (float *)flagcxGetIntraPointerS(
+        devMemPtr, i * sizeof(float), peer);
+    output[i] = *peerPtr;
+  }
+  flagcxIntraBarrierSyncS(devCommPtr, FLAGCX_COOP_BLOCK, FLAGCX_BLOCK_IDX_X,
+                          false, flagcxDeviceMemoryOrderAcqRel);
+}
+
+void launchKernelDuIntraBarrierSplitS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    int count, flagcxStream_t stream) {
+  kernelDuIntraBarrierSplitS<<<4, 256, 0, stream->base>>>(
+      devCommPtr, devMemPtr, buffer, output, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -1924,6 +2033,145 @@ void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
 //   SignalInc or SignalAdd(peer=next) → WaitSignal → assert ReadSignal
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
+// Run the first INTRA/THREAD/INC combination one operation per launch. A
+// synchronization failure then identifies the operation that faulted instead
+// of reporting only the full S20 kernel name. The host drives every rank
+// through the same stages and checks the receive value before entering S20.
+__global__ void kernelDuSignalStageS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                     int *result, int stage) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int contextId = FLAGCX_BLOCK_IDX_X % comm->getContextCount();
+  int peer = (flagcxDevCommGetIntraRank(devCommPtr) + 1) %
+             flagcxDevCommGetIntraSize(devCommPtr);
+  if (stage == 0) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)0);
+  } else if (stage == 1 || stage == 5) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      result[FLAGCX_BLOCK_IDX_X] = (int)flagcxDevReadSignal(
+          devCommPtr, (flagcxDevSignal_t)0, kCompletionBits, contextId,
+          flagcxDeviceMemoryOrderAcquire);
+  } else if (stage == 2) {
+    flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, FLAGCX_BLOCK_IDX_X,
+                         contextId, FLAGCX_COOP_BLOCK,
+                         flagcxDeviceMemoryOrderAcqRel,
+                         flagcxDeviceScopeSystem);
+  } else if (stage == 3) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      flagcxDevSignalInc(devCommPtr, FLAGCX_TEAM_INTRA, peer,
+                         (flagcxDevSignal_t)0, contextId, FLAGCX_COOP_THREAD,
+                         flagcxDeviceScopeSystem);
+  } else if (stage == 4) {
+    flagcxDevFlush(devCommPtr, contextId, FLAGCX_COOP_BLOCK,
+                   flagcxDeviceMemoryOrderRelaxed);
+  } else if (stage == 6) {
+    if (FLAGCX_THREAD_IDX_X == 0)
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)0, 1,
+                          kCompletionBits, contextId, FLAGCX_COOP_THREAD,
+                          flagcxDeviceMemoryOrderRelaxed);
+  }
+}
+
+void launchKernelDuSignalStageS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                int *result, int stage, flagcxStream_t stream) {
+  kernelDuSignalStageS<<<4, 128, 0, stream->base>>>(devCommPtr, result, stage);
+}
+
+// Execute one of the twelve S20 combinations in a single kernel. Unlike the
+// staged probe above, this preserves the original reset/barrier/signal/wait
+// ordering and does not insert a flush. A separate MPI run selects each case.
+template <int Combo>
+__global__ void kernelDuS20ComboS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  int *result) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int worldRank = flagcxDevCommGetRank(devCommPtr);
+  int nRanks = flagcxDevCommGetSize(devCommPtr);
+  int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+  int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
+  int block = FLAGCX_BLOCK_IDX_X;
+  flagcxDevContext_t contextId = block % comm->getContextCount();
+  flagcxDevTeamKind_t team =
+      Combo % 2 == 0 ? FLAGCX_TEAM_INTRA : FLAGCX_TEAM_WORLD;
+  int peer = Combo % 2 == 0 ? (intraRank + 1) % intraSize
+                            : (worldRank + 1) % nRanks;
+  flagcxDevCoopKind_t coop = Combo < 4 ? FLAGCX_COOP_THREAD
+                               : Combo < 8 ? FLAGCX_COOP_WARP
+                                           : FLAGCX_COOP_BLOCK;
+  bool isInc = (Combo / 2) % 2 == 0;
+  uint64_t expected = isInc ? 1 : 5;
+  flagcxDevMemoryOrder_t waitOrder =
+      Combo % 2 == 0 && Combo >= 4
+          ? flagcxDeviceMemoryOrderSeqCst
+          : Combo % 2 == 1 && (Combo < 4 || Combo >= 8)
+                ? flagcxDeviceMemoryOrderAcquire
+                : flagcxDeviceMemoryOrderRelaxed;
+  bool ok = true;
+
+  if (FLAGCX_THREAD_IDX_X == 0)
+    flagcxDevResetSignal(devCommPtr, contextId, (flagcxDevSignal_t)Combo);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    uint64_t value = flagcxDevReadSignal(
+        devCommPtr, (flagcxDevSignal_t)Combo, kCompletionBits, contextId,
+        flagcxDeviceMemoryOrderAcquire);
+    if (value != 0) {
+      result[block + 1] |= 1;
+      ok = false;
+    }
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  flagcxDevBarrierSync(devCommPtr, FLAGCX_TEAM_INTRA, block, contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  if (flagcxUnifiedIrTestCoopActive(coop)) {
+    if (isInc)
+      flagcxDevSignalInc(devCommPtr, team, peer, (flagcxDevSignal_t)Combo,
+                         contextId, coop, flagcxDeviceScopeSystem);
+    else
+      flagcxDevSignalAdd(devCommPtr, team, peer, (flagcxDevSignal_t)Combo,
+                         expected, contextId, coop, flagcxDeviceScopeSystem);
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (flagcxUnifiedIrTestCoopActive(coop))
+    flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)Combo, expected,
+                        kCompletionBits, contextId, coop, waitOrder);
+  if (FLAGCX_THREAD_IDX_X == 0) {
+    uint64_t value = flagcxDevReadSignal(
+        devCommPtr, (flagcxDevSignal_t)Combo, kCompletionBits, contextId,
+        flagcxDeviceMemoryOrderAcquire);
+    if (value != expected) {
+      result[block + 1] |= 2;
+      ok = false;
+    }
+  }
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  if (FLAGCX_THREAD_IDX_X == 0)
+    atomicAnd(result, ok ? 1 : 0);
+}
+
+void launchKernelDuS20ComboS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                             int *result, int combo, flagcxStream_t stream) {
+#define LAUNCH_S20_COMBO(caseId)                                                \
+  case caseId:                                                                 \
+    kernelDuS20ComboS<caseId><<<4, 128, 0, stream->base>>>(devCommPtr, result); \
+    break
+  switch (combo) {
+    LAUNCH_S20_COMBO(0);
+    LAUNCH_S20_COMBO(1);
+    LAUNCH_S20_COMBO(2);
+    LAUNCH_S20_COMBO(3);
+    LAUNCH_S20_COMBO(4);
+    LAUNCH_S20_COMBO(5);
+    LAUNCH_S20_COMBO(6);
+    LAUNCH_S20_COMBO(7);
+    LAUNCH_S20_COMBO(8);
+    LAUNCH_S20_COMBO(9);
+    LAUNCH_S20_COMBO(10);
+    LAUNCH_S20_COMBO(11);
+  }
+#undef LAUNCH_S20_COMBO
+}
+
 __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                       int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;

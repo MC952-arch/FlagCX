@@ -233,9 +233,65 @@ run_device_api_unified_ir() {
 
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
+  local -a s20_failures=()
+  if [[ "${FLAGCX_CI_UNIFIED_IR_S20_COMBOS:-0}" == 1 ]]; then
+    local route combo status
+    for route in fallback default; do
+      local -a diagnostic_env=("${common_env[@]}" -x FLAGCX_DEBUG=WARN)
+      if [[ "$route" == fallback ]]; then
+        diagnostic_env+=(-x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1)
+      fi
+      for ((combo = 0; combo < 12; ++combo)); do
+        status=0
+        FLAGCX_CI_MPI_TIMEOUT=90s \
+          FLAGCX_CI_MPI_LABEL="unified IR S20 $route combo $combo" \
+          "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+          "${diagnostic_env[@]}" -x "FLAGCX_TEST_S20_COMBO=$combo" \
+          build/bin/test_device_ir_unified_intra -b 1K -e 1K -f 2 -R 1 || \
+          status=$?
+        printf 'S20 route=%s combo=%d status=%d\n' "$route" "$combo" "$status"
+        if ((status != 0)); then
+          s20_failures+=("$route:$combo:$status")
+        fi
+      done
+      status=0
+      FLAGCX_CI_MPI_TIMEOUT=120s \
+        FLAGCX_CI_MPI_LABEL="unified IR S20 $route sequence" \
+        "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+        "${diagnostic_env[@]}" -x FLAGCX_TEST_S20_SEQUENCE=1 \
+        build/bin/test_device_ir_unified_intra -b 1K -e 1K -f 2 -R 1 || \
+        status=$?
+      printf 'S20 route=%s sequence status=%d\n' "$route" "$status"
+      if ((status != 0)); then
+        s20_failures+=("$route:sequence:$status")
+      fi
+    done
+    if ((${#s20_failures[@]} != 0)); then
+      printf 'S20 failed combinations: %s\n' "${s20_failures[*]}" >&2
+    fi
+  fi
+
+  local intra_fallback_status=0
+  local intra_status=0
+  if [[ "${FLAGCX_CI_UNIFIED_IR_COMPARE_INTRA_PATHS:-0}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+      "${intra_fallback_env[@]}" \
+      build/bin/test_device_ir_unified_intra "${fallback_flags[@]}" || \
+      intra_fallback_status=$?
+  fi
+
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
-    build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+    build/bin/test_device_ir_unified_intra "${intra_flags[@]}" || \
+    intra_status=$?
+
+  if ((intra_fallback_status != 0 || intra_status != 0 ||
+        ${#s20_failures[@]} != 0)); then
+    echo "Unified IR intra results: fallback=$intra_fallback_status "\
+         "default=$intra_status S20_failed=${s20_failures[*]:-none}" >&2
+    return 1
+  fi
 
   FLAGCX_CI_MPI_LABEL="unified IR inter" \
     "$MPI_RUNNER" --allow-run-as-root \
@@ -246,10 +302,12 @@ run_device_api_unified_ir() {
 
   # Force one-sided data/signal operations through Net. Barriers retain their
   # configured transport; these runs validate the Net fallback for S18-S25.
-  FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
-    "${intra_fallback_env[@]}" \
-    build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  if [[ "${FLAGCX_CI_UNIFIED_IR_COMPARE_INTRA_PATHS:-0}" != 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+      "${intra_fallback_env[@]}" \
+      build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  fi
 
   FLAGCX_CI_MPI_LABEL="unified IR inter forced fallback" \
     "$MPI_RUNNER" --allow-run-as-root \

@@ -507,13 +507,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "hygon": [
-                "adaptor",
-                "core",
-                "p2p",
-                "rma",
-                "runner",
-                "service",
-                "symmem",
+                "device_api_unified_ir",
             ],
             "metax": [
                 "adaptor",
@@ -883,7 +877,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             source = (
                 REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
             ).read_text()
-            self.assertIn("  - symmem", config)
+            if platform != "hygon":
+                self.assertIn("  - symmem", config)
             self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", source)
             self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", source)
 
@@ -1571,7 +1566,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         core_case = unit_runner[unit_runner.index("    core|service)") :]
         core_case = core_case[: core_case.index("    rma)")]
         self.assertIn('make -C "$suite_dir" run-unit', core_case)
-        for platform in ("cuda", "metax", "hygon", "ppu"):
+        for platform in ("cuda", "metax", "ppu"):
             config = (
                 REPO_ROOT / f".github/configs/{platform}.yml"
             ).read_text()

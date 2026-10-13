@@ -46,7 +46,15 @@ FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 # Map intra barriers and one-sided signals through host memory. Intra signals
 # use local SHM peer mappings; inter signals use SHCA on the host signal MR.
 FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=1)
-FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=1)
+FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(
+  -x FLAGCX_SIGNAL_HOST_ENABLE=1
+  -x FLAGCX_TEST_S20_PROBE=1
+  -x FLAGCX_TEST_S20_LIFECYCLE_TRACE=1
+)
+# Run both intra signal paths even when one fails so the next CI log can
+# distinguish the direct host-SHM path from the Net fallback.
+FLAGCX_CI_UNIFIED_IR_COMPARE_INTRA_PATHS=1
+FLAGCX_CI_UNIFIED_IR_S20_COMBOS=1
 
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
