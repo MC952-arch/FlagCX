@@ -17,6 +17,7 @@
 
 #include "adaptor.h"
 #include "bootstrap.h"
+#include "flagcx.h"
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
 #include "p2p_control.h"
@@ -377,6 +378,24 @@ TEST_F(P2pEngineRpcTransportTest, AllZeroBatchWriteIsNoop) {
   const uint64_t dst[] = {UINT64_MAX, 0};
   const uint64_t sizes[] = {0, 0};
   EXPECT_EQ(flagcxP2pRpcBatchWriteSync(clientConn, 2, src, dst, sizes), 0);
+}
+
+TEST_F(P2pEngineRpcTransportTest, EngineTestHandlesNoopAndUnknownId) {
+  ASSERT_TRUE(connectViaBsPort());
+  int done = 0;
+  EXPECT_EQ(flagcxP2pEngineTest(clientConn, 0, &done), flagcxSuccess);
+  EXPECT_EQ(done, 1);
+
+  done = 0;
+#ifdef USE_SHARED_P2P_ENGINE
+  EXPECT_EQ(flagcxP2pEngineTest(clientConn, UINT64_MAX, &done),
+            flagcxInvalidArgument);
+#else
+  EXPECT_EQ(flagcxP2pEngineTest(clientConn, UINT64_MAX, &done),
+            flagcxNotSupported);
+#endif
+  EXPECT_EQ(done, 1);
+  EXPECT_TRUE(flagcxP2pEngineXferStatus(clientConn, UINT64_MAX));
 }
 
 TEST(P2pEngineDescriptorTest, UpdateOnlyAcceptsOriginalSubrange) {

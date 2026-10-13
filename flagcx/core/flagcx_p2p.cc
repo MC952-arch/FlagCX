@@ -3926,6 +3926,19 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
   return done;
 }
 
+int flagcxP2pEngineTest(FlagcxP2pConn *conn, uint64_t transferId, int *done) {
+  if (done == NULL)
+    return flagcxInvalidArgument;
+  *done = 1;
+  if (conn == NULL)
+    return flagcxInvalidArgument;
+  if (transferId == 0)
+    return flagcxSuccess;
+  if (flagcxP2pIsAccl(conn))
+    return flagcxAcclEngineTest(conn, transferId, done);
+  return flagcxNotSupported;
+}
+
 int flagcxP2pEngineGetMetadata(FlagcxP2pEngine *engine, char **metadataStr) {
   if (engine == NULL || metadataStr == NULL)
     return -1;

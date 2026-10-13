@@ -3,8 +3,8 @@
  *
  * FlagCX P2P engine — ACCL (accl::barex) transport (internal header).
  *
- * The public flagcx_p2p.h API stays unchanged; flagcx_p2p.cc routes to
- * this transport when the engine is created with FLAGCX_P2P_TRANSPORT=accl.
+ * flagcx_p2p.cc routes to this transport when the engine is created with
+ * FLAGCX_P2P_TRANSPORT=accl. The result-aware Test API is a stub here.
  * Every internal engine/conn struct starts with a uint32_t kind tag so the
  * shared entry points can tell the transports apart.
  *
@@ -16,6 +16,7 @@
 #ifndef FLAGCX_P2P_ACCL_H_
 #define FLAGCX_P2P_ACCL_H_
 
+#include "flagcx.h"
 #include "flagcx_p2p.h"
 
 enum FlagcxP2pTransportKind : uint32_t {
@@ -81,6 +82,7 @@ int flagcxAcclEngineWriteVectorSync(
     const std::vector<void *> &srcVec, const std::vector<size_t> &sizeVec,
     const std::vector<FlagcxP2pRdmaDesc> &descs);
 bool flagcxAcclEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId);
+int flagcxAcclEngineTest(FlagcxP2pConn *conn, uint64_t transferId, int *done);
 
 int flagcxAcclEngineGetMetadata(FlagcxP2pEngine *engine, char **metadataStr);
 int flagcxAcclEngineGetRpcPort(FlagcxP2pEngine *engine);
@@ -157,6 +159,11 @@ static inline int flagcxAcclEngineWriteVectorSync(
 }
 static inline bool flagcxAcclEngineXferStatus(FlagcxP2pConn *, uint64_t) {
   return true;
+}
+static inline int flagcxAcclEngineTest(FlagcxP2pConn *, uint64_t, int *done) {
+  if (done != nullptr)
+    *done = 1;
+  return flagcxNotSupported;
 }
 static inline int flagcxAcclEngineGetMetadata(FlagcxP2pEngine *, char **) {
   return -1;

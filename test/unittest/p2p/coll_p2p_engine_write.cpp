@@ -43,11 +43,27 @@ void require(bool condition, int rank, const char *message) {
 void waitForWrite(FlagcxP2pConn *conn, uint64_t transferId, int rank) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
+#ifdef USE_SHARED_P2P_ENGINE
+  for (;;) {
+    int done = 0;
+    const int rc = flagcxP2pEngineTest(conn, transferId, &done);
+    if (rc != 0) {
+      std::fprintf(stderr, "[rank %d] P2P WRITE transfer error=%d\n", rank, rc);
+      fail(rank, "WRITE transfer failed");
+    }
+    if (done)
+      return;
+    if (std::chrono::steady_clock::now() >= deadline)
+      fail(rank, "WRITE completion timed out");
+    std::this_thread::yield();
+  }
+#else
   while (!flagcxP2pEngineXferStatus(conn, transferId)) {
     if (std::chrono::steady_clock::now() >= deadline)
       fail(rank, "WRITE completion timed out");
     std::this_thread::yield();
   }
+#endif
 }
 
 } // namespace

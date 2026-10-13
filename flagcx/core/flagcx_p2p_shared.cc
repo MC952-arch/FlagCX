@@ -3322,7 +3322,8 @@ int flagcxP2pEngineStartListener(FlagcxP2pConn *conn) {
 }
 
 static bool readEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
-                               flagcxResult_t *transferResult);
+                               flagcxResult_t *transferResult,
+                               bool strictTransferId);
 
 static void
 waitForP2pRecord(const std::shared_ptr<FlagcxP2pXferRecord> &record) {
@@ -4098,14 +4099,22 @@ int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr, void *data,
 }
 
 static bool readEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
-                               flagcxResult_t *transferResult) {
+                               flagcxResult_t *transferResult,
+                               bool strictTransferId) {
   if (transferResult == NULL)
     return true;
   *transferResult = flagcxSuccess;
+  if (transferId == 0)
+    return true;
   std::lock_guard<std::mutex> lock(gXferMutex);
   auto it = gXferMap.find(transferId);
-  if (it == gXferMap.end())
+  if (it == gXferMap.end()) {
+    // The old status and synchronous wait paths treat a missing ID as done.
+    // Only the new result-aware API reports it as invalid.
+    if (strictTransferId)
+      *transferResult = flagcxInvalidArgument;
     return true;
+  }
   const std::shared_ptr<FlagcxP2pXferRecord> &record = it->second;
   if (record->xfer.conn != conn) {
     *transferResult = flagcxInvalidArgument;
@@ -4133,7 +4142,7 @@ static flagcxResult_t waitEngineTransfer(FlagcxP2pConn *conn,
   if (record)
     waitForP2pRecord(record);
   flagcxResult_t result = flagcxSuccess;
-  (void)readEngineTransfer(conn, transferId, &result);
+  (void)readEngineTransfer(conn, transferId, &result, false);
   return result;
 }
 
@@ -4142,11 +4151,23 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
     return true;
 
   flagcxResult_t result = flagcxSuccess;
-  const bool done = readEngineTransfer(conn, transferId, &result);
+  const bool done = readEngineTransfer(conn, transferId, &result, false);
   if (done && result != flagcxSuccess)
     WARN("P2P transfer %llu completed with result=%d",
          (unsigned long long)transferId, (int)result);
   return done;
+}
+
+int flagcxP2pEngineTest(FlagcxP2pConn *conn, uint64_t transferId, int *done) {
+  if (done == NULL)
+    return flagcxInvalidArgument;
+  *done = 1;
+  if (conn == NULL)
+    return flagcxInvalidArgument;
+
+  flagcxResult_t result = flagcxSuccess;
+  *done = readEngineTransfer(conn, transferId, &result, true) ? 1 : 0;
+  return result;
 }
 
 int flagcxP2pEngineGetMetadata(FlagcxP2pEngine *engine, char **metadataStr) {

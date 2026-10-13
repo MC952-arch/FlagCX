@@ -2555,6 +2555,12 @@ bool flagcxAcclEngineXferStatus(FlagcxP2pConn *c, uint64_t transferId) {
   return acclXferPoll(conn->engine, conn, transferId) != 0;
 }
 
+int flagcxAcclEngineTest(FlagcxP2pConn *, uint64_t, int *done) {
+  if (done != nullptr)
+    *done = 1;
+  return flagcxNotSupported;
+}
+
 int flagcxAcclEngineWriteVectorSync(
     FlagcxP2pConn *c, const std::vector<FlagcxP2pMr> &mrIds,
     const std::vector<void *> &srcVec, const std::vector<size_t> &sizeVec,

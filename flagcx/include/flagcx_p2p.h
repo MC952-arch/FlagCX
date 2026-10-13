@@ -499,6 +499,27 @@ int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr, void *data,
  */
 bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId);
 
+/**
+ * Check completion and result of an asynchronous transfer.
+ * A zero transfer ID denotes a transfer that completed during submission.
+ * In the shared P2P Engine, a completed nonzero transfer is consumed by this
+ * call; polling it again returns flagcxInvalidArgument. A pending transfer
+ * remains available.
+ *
+ * The shared P2P Engine reports transfer results. The legacy IBRC and ACCL
+ * engines return flagcxNotSupported for nonzero transfer IDs. Their existing
+ * flagcxP2pEngineXferStatus API remains available for completion polling.
+ *
+ * @param conn          Connection handle.
+ * @param transferId    Transfer ID returned by a read/write/send call.
+ * @param done          [out] 0 while pending, 1 on completion or error.
+ * @return              flagcxSuccess while pending or on success; the transfer
+ *                      error on failure; flagcxInvalidArgument for invalid
+ *                      arguments or IDs in the shared Engine;
+ *                      flagcxNotSupported on legacy engines.
+ */
+int flagcxP2pEngineTest(FlagcxP2pConn *conn, uint64_t transferId, int *done);
+
 /* ================================================================== */
 /*  Metadata exchange                                                 */
 /* ================================================================== */

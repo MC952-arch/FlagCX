@@ -13,7 +13,11 @@
 #include <type_traits>
 #include <vector>
 
+#include "flagcx.h"
 #include "flagcx_p2p.h"
+#ifndef USE_SHARED_P2P_ENGINE
+#include "flagcx_p2p_accl.h"
+#endif
 #include "p2p_scheduler.h"
 
 namespace {
@@ -24,6 +28,7 @@ using EngineReadSignature = int (*)(FlagcxP2pConn *, FlagcxP2pMr, const void *,
 using EngineWriteSignature = int (*)(FlagcxP2pConn *, FlagcxP2pMr, const void *,
                                      size_t, FlagcxP2pRdmaDesc, uint64_t *);
 using EngineStatusSignature = bool (*)(FlagcxP2pConn *, uint64_t);
+using EngineTestSignature = int (*)(FlagcxP2pConn *, uint64_t, int *);
 
 static_assert(std::is_same<decltype(&flagcxP2pEngineCreate),
                            EngineCreateSignature>::value,
@@ -37,6 +42,9 @@ static_assert(
 static_assert(std::is_same<decltype(&flagcxP2pEngineXferStatus),
                            EngineStatusSignature>::value,
               "flagcxP2pEngineXferStatus public signature changed");
+static_assert(
+    std::is_same<decltype(&flagcxP2pEngineTest), EngineTestSignature>::value,
+    "flagcxP2pEngineTest public signature changed");
 
 static_assert(sizeof(FlagcxP2pRdmaDesc) == 64,
               "FlagcxP2pRdmaDesc wire size changed");
@@ -56,6 +64,27 @@ static_assert(offsetof(FlagcxP2pRdmaDesc, padding) == 32,
               "FlagcxP2pRdmaDesc.padding offset changed");
 
 } // namespace
+
+TEST(P2pPublicContractTest, EngineTestRejectsNullArguments) {
+  int done = 0;
+  EXPECT_EQ(flagcxP2pEngineTest(nullptr, 1, &done), flagcxInvalidArgument);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(flagcxP2pEngineTest(nullptr, 1, nullptr), flagcxInvalidArgument);
+}
+
+#ifndef USE_SHARED_P2P_ENGINE
+TEST(P2pPublicContractTest, LegacyEngineTestStubsReportUnsupported) {
+  for (uint32_t kind : {FLAGCX_P2P_KIND_IBRC, FLAGCX_P2P_KIND_ACCL}) {
+    auto *conn = reinterpret_cast<FlagcxP2pConn *>(&kind);
+    int done = 0;
+    EXPECT_EQ(flagcxP2pEngineTest(conn, 1, &done), flagcxNotSupported);
+    EXPECT_EQ(done, 1);
+    done = 0;
+    EXPECT_EQ(flagcxP2pEngineTest(conn, 0, &done), flagcxSuccess);
+    EXPECT_EQ(done, 1);
+  }
+}
+#endif
 
 TEST(P2pPublicContractTest, RdmaDescriptorSerializationPreservesEveryByte) {
   FlagcxP2pRdmaDesc input{};
