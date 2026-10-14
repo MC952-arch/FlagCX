@@ -758,6 +758,8 @@ run_suite() {
           local pxn_visible_devices_var=CUDA_VISIBLE_DEVICES
           if [[ "$platform_name" == "metax" ]]; then
             pxn_visible_devices_var=MACA_VISIBLE_DEVICES
+          elif [[ "$platform_name" == "hygon" ]]; then
+            pxn_visible_devices_var=HIP_VISIBLE_DEVICES
           fi
           pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")
           pxn_platform_env+=(

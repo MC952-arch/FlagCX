@@ -6,8 +6,7 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
-export CUDA_PATH="${CUDA_PATH:-/opt/dtk/cuda/cuda-12}"
-export CUDA_HOME="${CUDA_HOME:-$CUDA_PATH}"
+export HIP_PATH="${HIP_PATH:-/opt/dtk}"
 
 if [[ -f /opt/dtk/env.sh ]]; then
   # shellcheck source=/dev/null
@@ -36,18 +35,17 @@ export USE_SHCA=1
 FLAGCX_CI_COMMON_MAKE_ARGS=(
   USE_DU=1
   USE_SHCA=1
-  DEVICE_HOME="$CUDA_PATH"
-  CCL_HOME="$CUDA_PATH"
+  DEVICE_HOME="$HIP_PATH"
+  CCL_HOME="$HIP_PATH"
 )
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
-# Map intra barriers and one-sided signals through host memory. Intra signals
-# use local SHM peer mappings; inter signals use SHCA on the host signal MR.
-FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=1)
+# Exercise device-memory IPC barriers and signals.
+FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=0)
 FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(
-  -x FLAGCX_SIGNAL_HOST_ENABLE=1
+  -x FLAGCX_SIGNAL_HOST_ENABLE=0
   -x FLAGCX_TEST_S20_PROBE=1
   -x FLAGCX_TEST_S20_LIFECYCLE_TRACE=1
 )
@@ -74,13 +72,13 @@ FLAGCX_CI_PXN_VISIBLE_DEVICES=2,0,6,7
 FLAGCX_CI_PXN_HCAS=shca_0,shca_3
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
-  -x CUDA_VISIBLE_DEVICES=0,1
+  -x HIP_VISIBLE_DEVICES=0,1
   -x FLAGCX_HOSTID=node0
   -x NCCL_HOSTID=node0
   -x FLAGCX_IB_HCA=shca_0
 )
 FLAGCX_CI_NODE2_MPI_ARGS=(
-  -x CUDA_VISIBLE_DEVICES=6,7
+  -x HIP_VISIBLE_DEVICES=6,7
   -x FLAGCX_HOSTID=node1
   -x NCCL_HOSTID=node1
   -x FLAGCX_IB_HCA=shca_3
@@ -91,15 +89,15 @@ flagcx_ci_configure_suite() {
 
   case "$suite" in
     p2p|rma)
-      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"
+      export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       ;;
     runner|symmem)
-      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
+      export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       ;;
     device_api|device_api_unified_ir)
-      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
+      export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       if [[ "$suite" == "device_api" ]]; then
         FLAGCX_CI_DEVICE_API_TRACE_K5=1
@@ -117,9 +115,9 @@ flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing Hygon DCU environment for CI workload: $suite"
   command -v mpirun
-  command -v nvcc
+  command -v hipcc
   mpirun --version
-  nvcc --version
+  hipcc --version
   hy-smi --showproductname || true
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||

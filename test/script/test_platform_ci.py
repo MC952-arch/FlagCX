@@ -40,7 +40,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
         ):
-            for kernel in ("device_api.cu", "device_ir.cu"):
+            suffix = "hip" if platform == "du" else "cu"
+            for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
                 source = (REPO_ROOT / "test/kernel" / platform / kernel).read_text()
                 self.assertIn(f'#include "{adaptor}"', source)
                 self.assertNotIn('../nvidia/', source)
@@ -56,8 +57,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [
                 "make", "-n", "-C", str(suite_dir), "mpi",
                 "USE_DU=1", "USE_SHCA=1",
-                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
-                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+                "DEVICE_HOME=/opt/dtk",
+                "CCL_HOME=/opt/dtk",
             ],
             check=True,
             capture_output=True,
@@ -70,10 +71,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             self.assertIn(target, result.stdout)
         self.assertIn("-DUSE_DU_ADAPTOR", result.stdout)
-        for kernel in ("device_api.cu", "device_ir.cu"):
+        for kernel in ("device_api.hip", "device_ir.hip"):
             compile_line = next(
                 line for line in result.stdout.splitlines()
-                if "/bin/nvcc " in line and kernel in line
+                if "/bin/hipcc " in line and kernel in line
             )
             self.assertNotIn("-Xcompiler -fPIC", compile_line)
         for target in (
@@ -83,7 +84,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             link_line = next(
                 line for line in result.stdout.splitlines()
-                if line.startswith("g++ ") and f"/bin/{target} " in line
+                if line.startswith("/opt/dtk/bin/hipcc ") and f"/bin/{target} " in line
             )
             self.assertIn("-no-pie", link_line)
 
@@ -96,7 +97,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                     'build_handled=$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED; '
                     'flagcx_ci_run_suite_override "$2" ""; '
                     'printf "%s %s %s %s %s %s %s" "$FLAGCX_CI_NODE_NP" '
-                    '"$FLAGCX_CI_INTRA_NP" "$CUDA_VISIBLE_DEVICES" '
+                    '"$FLAGCX_CI_INTRA_NP" "$HIP_VISIBLE_DEVICES" '
                     '"$FLAGCX_IB_HCA" '
                     '"${FLAGCX_CI_PROJECT_MAKE_ARGS[*]}" '
                     '"$build_handled" "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED"',
@@ -280,8 +281,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "compile-ibuc",
                 "USE_DU=1",
                 "USE_SHCA=1",
-                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
-                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+                "DEVICE_HOME=/opt/dtk",
+                "CCL_HOME=/opt/dtk",
             ],
             check=True,
             capture_output=True,
@@ -336,7 +337,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         configure = configure[: configure.index("flagcx_ci_prepare() {")]
         self.assertIn("p2p|rma)", configure)
         self.assertIn(
-            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"',
+            'export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_TWO_GPU_DEVICES"',
             configure,
         )
         self.assertIn(
@@ -345,7 +346,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('runner|symmem)', configure)
         self.assertIn(
-            'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
+            'export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
             configure,
         )
         self.assertNotIn("FLAGCX_CI_RUNNER_NP=8", configure)
@@ -488,9 +489,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
         self.assertIn(
-            "FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}",
+            "github.event.pull_request.number == 643 && 'hygon'",
             unit_workflow,
         )
+        self.assertIn("github.event.inputs.platform || 'all'", unit_workflow)
         self.assertNotIn("pull_request.number == 648", unit_workflow)
 
         expected_suites = {
@@ -507,7 +509,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "hygon": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
                 "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
             ],
             "metax": [
                 "adaptor",
@@ -970,7 +981,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         adaptor_sources = (
             "cuda_adaptor.cc",
             "maca_adaptor.cc",
-            "ducuda_adaptor.cc",
+            "duhip_adaptor.cc",
             "ppu_cuda_adaptor.cc",
         )
         for filename in adaptor_sources:
@@ -986,27 +997,25 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("MemGetHandleForAddressRange", source, filename)
             self.assertNotIn("GetAllocationVmmMrCaps", source, filename)
 
-        # The DCU CUDA compatibility layer aborts instead of returning an
+        # The DCU HIP runtime aborts instead of returning an
         # unsupported status for NVIDIA-only attributes 110 and 124.  Its
         # strict DMA-BUF/VA CI invocations probe the real operations instead.
-        ducuda = (
-            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        duhip = (
+            REPO_ROOT / "flagcx/adaptor/device/duhip_adaptor.cc"
         ).read_text()
         self.assertNotIn(
             "CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED",
-            ducuda,
+            duhip,
         )
-        self.assertNotIn("CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED", ducuda)
-        gdr_alloc = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
-            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        self.assertNotIn("CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED", duhip)
+        gdr_alloc = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorGdrMemAlloc") :
+            duhip.index("flagcxResult_t duhipAdaptorGdrMemFree")
         ]
         self.assertNotIn("mrCaps", gdr_alloc)
-        dma_support = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorDmaSupport") :
-            ducuda.index(
-                "flagcxResult_t ducudaAdaptorMemGetHandleForAddressRange"
-            )
+        dma_support = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorDmaSupport") :
+            duhip.index("duhipAdaptorMemGetHandleForAddressRange")
         ]
         self.assertIn("*dmaBufferSupport = true", dma_support)
 
@@ -1057,88 +1066,88 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("routeSucceeded[1]", mpi_route_tests)
 
     def test_hygon_flat_vmm_cleanup_tracks_and_unmaps_individual_slots(self):
-        ducuda = (
-            REPO_ROOT / "flagcx/adaptor/device/ducuda_adaptor.cc"
+        duhip = (
+            REPO_ROOT / "flagcx/adaptor/device/duhip_adaptor.cc"
         ).read_text()
         self.assertIn(
-            "CUmemGenericAllocationHandle handle;",
-            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+            "hipMemGenericAllocationHandle_t handle;",
+            duhip[duhip.index("struct DuhipVmmAllocation") :],
         )
         self.assertIn(
             "bool handleOwned;",
-            ducuda[ducuda.index("struct DucudaVmmAllocation") :],
+            duhip[duhip.index("struct DuhipVmmAllocation") :],
         )
-        self.assertIn("struct DucudaSymPhysHandle", ducuda)
-        self.assertIn("bool releaseOwned;", ducuda)
+        self.assertIn("struct DuhipSymPhysHandle", duhip)
+        self.assertIn("bool releaseOwned;", duhip)
 
-        gdr_alloc = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemAlloc") :
-            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree")
+        gdr_alloc = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorGdrMemAlloc") :
+            duhip.index("flagcxResult_t duhipAdaptorGdrMemFree")
         ]
         self.assertNotIn(
-            "if (cuMemRelease(handle) != CUDA_SUCCESS)", gdr_alloc
+            "if (hipMemRelease(handle) != hipSuccess)", gdr_alloc
         )
         self.assertIn(
-            "DucudaVmmAllocation{handle,allocSize,true,true,true}",
+            "DuhipVmmAllocation{handle,allocSize,true,true,true}",
             "".join(gdr_alloc.split()),
         )
 
-        gdr_free = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorGdrMemFree") :
-            ducuda.index("flagcxResult_t ducudaAdaptorStreamCreate")
+        gdr_free = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorGdrMemFree") :
+            duhip.index("flagcxResult_t duhipAdaptorStreamCreate")
         ]
         self.assertLess(
-            gdr_free.index("cuMemUnmap"),
-            gdr_free.index("cuMemRelease(allocation.handle)"),
+            gdr_free.index("hipMemUnmap"),
+            gdr_free.index("hipMemRelease(allocation.handle)"),
         )
         self.assertLess(
-            gdr_free.index("cuMemAddressFree"),
-            gdr_free.index("cuMemRelease(allocation.handle)"),
+            gdr_free.index("hipMemAddressFree"),
+            gdr_free.index("hipMemRelease(allocation.handle)"),
         )
 
-        phys_alloc = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc") :
-            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree")
+        phys_alloc = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorSymPhysAlloc") :
+            duhip.index("flagcxResult_t duhipAdaptorSymPhysFree")
         ]
         self.assertLess(
-            phys_alloc.index("cuMemGetAddressRange"),
-            phys_alloc.index("cuMemRetainAllocationHandle"),
+            phys_alloc.index("hipMemGetAddressRange"),
+            phys_alloc.index("hipMemRetainAllocationHandle"),
         )
-        self.assertIn("gDucudaVmmAllocations.find", phys_alloc)
+        self.assertIn("gDuhipVmmAllocations.find", phys_alloc)
         self.assertIn("handle->handle = allocation.handle", phys_alloc)
         self.assertIn("handle->releaseOwned = false", phys_alloc)
         self.assertIn("handle->releaseOwned = true", phys_alloc)
 
-        phys_free = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysFree") :
-            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMappingUnmap")
+        phys_free = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorSymPhysFree") :
+            duhip.index("flagcxResult_t duhipAdaptorSymFlatMappingUnmap")
         ]
-        self.assertIn("ducudaSymPhysHandleDestroy", phys_free)
-        destroy = ducuda[
-            ducuda.index("ducudaSymPhysHandleDestroy") :
-            ducuda.index("flagcxResult_t ducudaAdaptorSymPhysAlloc")
+        self.assertIn("duhipSymPhysHandleDestroy", phys_free)
+        destroy = duhip[
+            duhip.index("duhipSymPhysHandleDestroy") :
+            duhip.index("flagcxResult_t duhipAdaptorSymPhysAlloc")
         ]
         self.assertLess(
             destroy.index("if (physHandle->releaseOwned)"),
-            destroy.index("cuMemRelease(physHandle->handle)"),
+            destroy.index("hipMemRelease(physHandle->handle)"),
         )
 
-        self.assertIn("struct DucudaFlatMapping", ducuda)
-        self.assertIn("gDucudaFlatMappings", ducuda)
-        self.assertIn("mappedSlots", ducuda)
-        self.assertIn("importedHandleOwned", ducuda)
+        self.assertIn("struct DuhipFlatMapping", duhip)
+        self.assertIn("gDuhipFlatMappings", duhip)
+        self.assertIn("mappedSlots", duhip)
+        self.assertIn("importedHandleOwned", duhip)
 
-        flat_map = ducuda[
-            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatMap(") :
-            ducuda.index("flagcxResult_t ducudaAdaptorSymFlatUnmap(")
+        flat_map = duhip[
+            duhip.index("flagcxResult_t duhipAdaptorSymFlatMap(") :
+            duhip.index("flagcxResult_t duhipAdaptorSymFlatUnmap(")
         ]
         self.assertLess(
-            flat_map.index("gDucudaFlatMappings.emplace"),
-            flat_map.index("cuMemImportFromShareableHandle"),
+            flat_map.index("gDuhipFlatMappings.emplace"),
+            flat_map.index("hipMemImportFromShareableHandle"),
         )
         self.assertLess(
             flat_map.index("*flatBase = (void *)base"),
-            flat_map.index("cuMemImportFromShareableHandle"),
+            flat_map.index("hipMemImportFromShareableHandle"),
         )
         for stage in (
             "stage=address-reserve",
@@ -1148,37 +1157,37 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             self.assertIn(stage, flat_map)
         self.assertIn("mapping.importedHandleOwned[i] = 1", flat_map)
-        self.assertNotIn("cuMemRelease(peerHandle)", flat_map)
+        self.assertNotIn("hipMemRelease(peerHandle)", flat_map)
 
-        legacy_unmap = ducuda.index(
-            "flagcxResult_t ducudaAdaptorSymFlatUnmap("
+        legacy_unmap = duhip.index(
+            "flagcxResult_t duhipAdaptorSymFlatUnmap("
         )
-        mapping_unmap_start = ducuda.index(
-            "flagcxResult_t ducudaAdaptorSymFlatMappingUnmap", legacy_unmap
+        mapping_unmap_start = duhip.index(
+            "flagcxResult_t duhipAdaptorSymFlatMappingUnmap", legacy_unmap
         )
-        va_free_start = ducuda.index(
-            "flagcxResult_t ducudaAdaptorSymFlatVaFree", mapping_unmap_start
+        va_free_start = duhip.index(
+            "flagcxResult_t duhipAdaptorSymFlatVaFree", mapping_unmap_start
         )
-        mapping_unmap = ducuda[mapping_unmap_start:va_free_start]
+        mapping_unmap = duhip[mapping_unmap_start:va_free_start]
         self.assertIn("for (int i = 0; i < nPeers; i++)", mapping_unmap)
-        self.assertIn("cuMemUnmap(slot, allocSize)", mapping_unmap)
+        self.assertIn("hipMemUnmap(slot, allocSize)", mapping_unmap)
         self.assertIn("mapping.mappedSlots[i] = 0", mapping_unmap)
-        self.assertNotIn("cuMemUnmap((CUdeviceptr)flatBase,", mapping_unmap)
+        self.assertNotIn("hipMemUnmap((hipDeviceptr_t)flatBase,", mapping_unmap)
         self.assertIn("stage=release-import", mapping_unmap)
         self.assertLess(
-            mapping_unmap.index("cuMemUnmap(slot, allocSize)"),
-            mapping_unmap.index("cuMemRelease(mapping.importedHandles[i])"),
+            mapping_unmap.index("hipMemUnmap(slot, allocSize)"),
+            mapping_unmap.index("hipMemRelease(mapping.importedHandles[i])"),
         )
 
-        va_free = ducuda[
-            va_free_start : ducuda.index(
-                "flagcxResult_t ducudaAdaptorSymMulticastSupported"
+        va_free = duhip[
+            va_free_start : duhip.index(
+                "flagcxResult_t duhipAdaptorSymMulticastSupported"
             )
         ]
         self.assertIn("mapping.mappedSlots[i]", va_free)
         self.assertIn("mapping.importedHandleOwned[i]", va_free)
-        self.assertIn("cuMemAddressFree", va_free)
-        self.assertIn("gDucudaFlatMappings.erase(it)", va_free)
+        self.assertIn("hipMemAddressFree", va_free)
+        self.assertIn("gDuhipFlatMappings.erase(it)", va_free)
 
     def test_multicast_retained_handle_extension_is_latest_only(self):
         header = (
@@ -1194,7 +1203,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         for filename, symbol in (
             ("cuda_adaptor.cc", "cudaAdaptorSymMulticastImport"),
             ("maca_adaptor.cc", "macaAdaptorSymMulticastImport"),
-            ("ducuda_adaptor.cc", "ducudaAdaptorSymMulticastImport"),
+            ("duhip_adaptor.cc", "duhipAdaptorSymMulticastImport"),
             ("ppu_cuda_adaptor.cc", "ppucudaAdaptorSymMulticastImport"),
         ):
             source = (
@@ -1440,6 +1449,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('local pxn_visible_devices_var=CUDA_VISIBLE_DEVICES', pxn_case)
         self.assertIn('if [[ "$platform_name" == "metax" ]]; then', pxn_case)
         self.assertIn('pxn_visible_devices_var=MACA_VISIBLE_DEVICES', pxn_case)
+        self.assertIn('elif [[ "$platform_name" == "hygon" ]]; then', pxn_case)
+        self.assertIn('pxn_visible_devices_var=HIP_VISIBLE_DEVICES', pxn_case)
         self.assertIn('pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
         self.assertIn('-x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
         self.assertIn('"$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)

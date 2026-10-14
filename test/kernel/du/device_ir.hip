@@ -1,13 +1,13 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Device IR kernel implementations — CUDA kernels exercising FlagCX
+ * Device IR kernel implementations — HIP kernels exercising FlagCX
  * Device API IR functions via device pointers.
  *
  * Intra-node (S1–S10): aligned with device_api_intra K1–K10.
  * Inter-node transport: separate section.
  *
- * Compiled by nvcc into device_ir.o, linked by g++ into test_device_ir.
+ * Compiled by hipcc into device_ir.o, linked by g++ into test_device_ir.
  ************************************************************************/
 
 #include "flagcx.h"
@@ -15,7 +15,7 @@
 #include "du_adaptor.h"
 #include "flagcx_device_internal.h"
 
-// IR wrapper declarations + implementations (needed for nvcc inline compilation)
+// IR wrapper declarations + implementations (needed for hipcc inline compilation)
 #include "flagcx_device_wrapper.h"
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
@@ -70,7 +70,7 @@ __global__ void kernelCoopGroupsS_block(int *results) {
 
 // Sub-kernel: tile_span coop check.
 __global__ void kernelCoopGroupsS_tileSpan(int *results) {
-  int tileIdx = FLAGCX_THREAD_IDX_X / 32;
+  int tileIdx = FLAGCX_THREAD_IDX_X / FLAGCX_SIMT_WIDTH;
   uint32_t t0 = (uint32_t)tileIdx;
   uint32_t nTiles = 1;
   uint32_t id = 0;
@@ -83,7 +83,8 @@ __global__ void kernelCoopGroupsS_tileSpan(int *results) {
   __shared__ int pass;
   if (FLAGCX_THREAD_IDX_X == 0) pass = 1;
   __syncthreads();
-  if (rank != (int)(FLAGCX_THREAD_IDX_X % 32) || size != 32)
+  if (rank != (int)(FLAGCX_THREAD_IDX_X % FLAGCX_SIMT_WIDTH) ||
+      size != FLAGCX_SIMT_WIDTH)
     atomicExch(&pass, 0);
   __syncthreads();
   if (FLAGCX_THREAD_IDX_X == 0) results[1] = pass;
@@ -1941,8 +1942,8 @@ flagcxResult_t launchKernelDevIntraBarrierLiveProbeS(
   if (!devCommPtr || !result || !stream) return flagcxInternalError;
   flagcxDuIntraBarrierProbeByPointer<<<1, 256, 0, stream->base>>>(
       devCommPtr, result);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+  hipError_t err = hipGetLastError();
+  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelDevIntraBarrierSnapshotS(
@@ -1951,8 +1952,8 @@ flagcxResult_t launchKernelDevIntraBarrierSnapshotS(
   if (!devCommPtr || !result || !stream) return flagcxInternalError;
   flagcxDuIntraBarrierSnapshotByPointer<<<1, 256, 0, stream->base>>>(
       devCommPtr, result);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+  hipError_t err = hipGetLastError();
+  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 __global__ void kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {

@@ -137,6 +137,10 @@ endif
 DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
 CCL_INCLUDE    := -I$(CCL_INCLUDE)
 DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
+ifeq ($(USE_DU),1)
+  CXX := $(DEVICE_COMPILER)
+  CXXFLAGS += -fgpu-rdc
+endif
 ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
 # Host-only test translation units must not select SHMEM CommTraits.  In
 # particular, a normal g++ compilation cannot consume the XPU implementation;
