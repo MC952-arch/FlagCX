@@ -728,6 +728,10 @@ flagcxResult_t flagcxIbEngineAbortListen(void *listenComm);
 // Stop every data QP before an Engine reports a communicator-wide failure as
 // terminal. The send communicator remains owned by its normal close path.
 flagcxResult_t flagcxIbEngineQuiesceSend(void *sendComm);
+// Stop every loopback flush QP before an Engine reports a failed GPU READ as
+// terminal. A failed destroy leaves the QP owned by the receive communicator
+// so the Engine can retry without releasing the target MR.
+flagcxResult_t flagcxIbEngineQuiesceRecvFlush(void *recvComm);
 // Discard an incomplete asynchronous accept/connect while preserving the
 // listener (for accept) or the copied wire handle (for connect) for reuse.
 flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm);

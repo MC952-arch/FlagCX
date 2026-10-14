@@ -2578,6 +2578,30 @@ flagcxResult_t flagcxIbEngineQuiesceSend(void *sendComm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxIbEngineQuiesceRecvFlush(void *recvComm) {
+  auto *comm = static_cast<struct flagcxIbRecvComm *>(recvComm);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+
+  // test() stops polling as soon as the communicator records a failed CQE.
+  // Destroy the loopback QPs before the Engine releases any GPU MR that an
+  // accepted flush READ may still target. Keep failed destroys for retry.
+  flagcxIbCommonRecordCommError(&comm->base, flagcxRemoteError);
+  comm->base.ready = 0;
+  flagcxResult_t result = flagcxSuccess;
+  for (int i = 0; i < comm->base.ndevs; ++i) {
+    struct ibv_qp *qp = comm->devs[i].gpuFlush.qp.qp;
+    if (qp == NULL)
+      continue;
+    const flagcxResult_t current = flagcxWrapIbvDestroyQp(qp);
+    if (current == flagcxSuccess)
+      comm->devs[i].gpuFlush.qp.qp = NULL;
+    else if (result == flagcxSuccess)
+      result = current;
+  }
+  return result;
+}
+
 flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm) {
   if (listenComm == NULL)
     return flagcxInvalidArgument;

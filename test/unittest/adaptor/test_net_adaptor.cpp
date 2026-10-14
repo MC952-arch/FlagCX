@@ -1467,6 +1467,56 @@ TEST_F(NetAdaptorLoopback, IbFlushResourcesAreCreatedOnFirstUseAndDestroyed) {
   recvComm_ = nullptr;
 }
 
+ibv_qp *failedFlushQp = nullptr;
+int flushDestroyFailuresRemaining = 0;
+int flushDestroyCalls = 0;
+
+int fakeDestroyFlushQp(ibv_qp *qp) {
+  ++flushDestroyCalls;
+  if (qp == failedFlushQp && flushDestroyFailuresRemaining > 0) {
+    --flushDestroyFailuresRemaining;
+    return EIO;
+  }
+  return 0;
+}
+
+class ScopedFlushDestroySymbol {
+public:
+  ScopedFlushDestroySymbol() : original_(ibvSymbols.ibv_internal_destroy_qp) {
+    ibvSymbols.ibv_internal_destroy_qp = fakeDestroyFlushQp;
+  }
+  ~ScopedFlushDestroySymbol() {
+    ibvSymbols.ibv_internal_destroy_qp = original_;
+    failedFlushQp = nullptr;
+  }
+
+private:
+  decltype(ibvSymbols.ibv_internal_destroy_qp) original_;
+};
+TEST(IbEngineFlushQuiesceTest, RetainsFailedQpForRetry) {
+  ScopedFlushDestroySymbol symbols;
+  auto comm = std::make_unique<flagcxIbRecvComm>();
+  ibv_qp firstQp = {};
+  ibv_qp secondQp = {};
+  comm->base.ready = 1;
+  comm->base.ndevs = 2;
+  comm->devs[0].gpuFlush.qp.qp = &firstQp;
+  comm->devs[1].gpuFlush.qp.qp = &secondQp;
+  failedFlushQp = &secondQp;
+  flushDestroyFailuresRemaining = 1;
+  flushDestroyCalls = 0;
+
+  EXPECT_EQ(flagcxIbEngineQuiesceRecvFlush(comm.get()), flagcxSystemError);
+  EXPECT_EQ(comm->base.ready, 0);
+  EXPECT_EQ(flagcxIbCommonGetCommError(&comm->base), flagcxRemoteError);
+  EXPECT_EQ(comm->devs[0].gpuFlush.qp.qp, nullptr);
+  EXPECT_EQ(comm->devs[1].gpuFlush.qp.qp, &secondQp);
+
+  EXPECT_EQ(flagcxIbEngineQuiesceRecvFlush(comm.get()), flagcxSuccess);
+  EXPECT_EQ(comm->devs[1].gpuFlush.qp.qp, nullptr);
+  EXPECT_EQ(flushDestroyCalls, 3);
+}
+
 TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {
   if (net_->name == nullptr || strcmp(net_->name, "IBUC") != 0)
     GTEST_SKIP() << "Runs only in the build-selected IBUC suite";

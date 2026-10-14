@@ -404,6 +404,7 @@ enum FlagcxP2pNetPhase {
   FLAGCX_P2P_DATA_PENDING = 0,
   FLAGCX_P2P_FLUSH_POST_PENDING = 1,
   FLAGCX_P2P_FLUSH_PENDING = 2,
+  FLAGCX_P2P_FLUSH_QUIESCE_PENDING = 3,
 };
 
 struct FlagcxP2pFlushTarget {
@@ -417,6 +418,7 @@ struct FlagcxP2pXfer {
   std::vector<FlagcxP2pFlushTarget> flushTargets;
   size_t nextFlush = 0;
   void *flushRequest = NULL;
+  flagcxResult_t flushError = flagcxSuccess;
   std::vector<void *> requests;
   FlagcxP2pConn *conn;
   int total;
@@ -2222,7 +2224,7 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
         xfer.netPhase = FLAGCX_P2P_FLUSH_PENDING;
         *madeProgress = true;
       }
-    } else {
+    } else if (xfer.netPhase == FLAGCX_P2P_FLUSH_PENDING) {
       int done = 0;
       {
         std::lock_guard<std::mutex> progressLock(xfer.conn->progressMutex);
@@ -2230,13 +2232,28 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
             xfer.conn->engine->adaptor->test(xfer.flushRequest, &done, NULL);
       }
       if (terminalResult != flagcxSuccess) {
-        terminal = true;
+        xfer.flushError = terminalResult;
+        xfer.netPhase = FLAGCX_P2P_FLUSH_QUIESCE_PENDING;
+        *madeProgress = true;
       } else if (done) {
         xfer.flushRequest = NULL;
         if (++xfer.nextFlush == xfer.flushTargets.size())
           terminal = true;
         else
           xfer.netPhase = FLAGCX_P2P_FLUSH_POST_PENDING;
+        *madeProgress = true;
+      }
+    } else {
+      // A failed CQE may leave other NICs' loopback READs outstanding. Do not
+      // release their GPU MR until all receive-side flush QPs have stopped.
+      flagcxResult_t quiesceResult = flagcxNotSupported;
+      if (!xfer.conn->engine->isBarex) {
+        std::lock_guard<std::mutex> progressLock(xfer.conn->progressMutex);
+        quiesceResult = flagcxIbEngineQuiesceRecvFlush(xfer.conn->recvComm);
+      }
+      if (quiesceResult == flagcxSuccess) {
+        terminalResult = xfer.flushError;
+        terminal = true;
         *madeProgress = true;
       }
     }
