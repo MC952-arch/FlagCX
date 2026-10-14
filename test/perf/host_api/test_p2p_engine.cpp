@@ -64,11 +64,30 @@ static bool pollTransferDone(FlagcxP2pConn *conn, uint64_t transferId,
   auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline) {
+#ifdef USE_SHARED_P2P_ENGINE
+    int done = 0;
+    const int result = flagcxP2pEngineTest(conn, transferId, &done);
+    if (result != flagcxSuccess) {
+      fprintf(stderr, "P2P Engine transfer failed: %d\n", result);
+      return false;
+    }
+    if (done)
+      return true;
+#else
     if (flagcxP2pEngineXferStatus(conn, transferId))
       return true;
+#endif
     std::this_thread::yield();
   }
+#ifdef USE_SHARED_P2P_ENGINE
+  int done = 0;
+  const int result = flagcxP2pEngineTest(conn, transferId, &done);
+  if (result != flagcxSuccess)
+    fprintf(stderr, "P2P Engine transfer failed: %d\n", result);
+  return result == flagcxSuccess && done;
+#else
   return flagcxP2pEngineXferStatus(conn, transferId);
+#endif
 }
 
 static void printHeader(int rank, const char *opName) {

@@ -13,12 +13,10 @@
 extern "C" {
 #endif
 
-// Direct P2P READs need an explicit post-CQE visibility stage before a GPU
-// destination can be reported complete. This policy helper is exposed
-// internally so the fail-closed behavior can be unit-tested without IB
-// hardware. completionHasFlush must stay false until the engine actually owns
-// and progresses such a stage; merely advertising a provider capability is
-// not sufficient.
+// A GPU READ destination that requires visibility flush must not be reported
+// complete until the engine has progressed the provider's flush request. This
+// helper checks that the provider advertises the capability and that the
+// completion path can issue a flush; the worker still waits for its CQE.
 static inline flagcxResult_t
 flagcxP2pValidateReadVisibility(uint32_t requirements, uint32_t capabilities,
                                 int destinationPtrType, size_t size,

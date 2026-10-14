@@ -160,16 +160,32 @@ jobs:
             -np 4 ${COMMON_ENV} ${NODE1_FLAG} $DEVICE_API_BIN/perf_internode_onesided -b 1M -e 64M -f 2 -R 1 \
             : -np 4 ${COMMON_ENV} ${NODE2_FLAG} $DEVICE_API_BIN/perf_internode_onesided -b 1M -e 64M -f 2 -R 1
 
-      - name: "P2P Engine perf (GPU WRITE; READ visibility unsupported)"
+      - name: "P2P Engine perf (legacy GPU WRITE)"
         run: |
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
-          # CUDA/A100 requires a post-READ visibility flush, but IB_P2P has no
-          # such completion stage yet. Keep measuring the supported GPU WRITE
-          # path; restore READ only after IB_P2P implements and advertises a
-          # real FLAGCX_NET_GDR_FLUSH_READ capability.
           FLAGCX_P2P_PERF_OP=write \
             mpirun -np 2 --allow-run-as-root $PERF_BIN/perf_p2p_engine -b 4K -e 64M -f 2 -n 10
+
+      - name: "Build shared P2P Engine perf"
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 \
+            USE_SHARED_P2P_ENGINE=1 BUILDDIR=$PWD/build-p2p-shared
+          make -C test/perf/host_api USE_NVIDIA=1 COMPILE_KERNEL=1 \
+            FORCE_DEFAULT_PATH=1 USE_SHARED_P2P_ENGINE=1 \
+            BUILDDIR=$PWD/test/perf/host_api/build-p2p-shared \
+            FLAGCX_LIB=$PWD/build-p2p-shared/lib \
+            $PWD/test/perf/host_api/build-p2p-shared/bin/perf_p2p_engine
+
+      - name: "P2P shared Engine perf (GPU READ)"
+        run: |
+          export PATH=$MPI_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build-p2p-shared/lib:$LD_LIBRARY_PATH
+          FLAGCX_P2P_PERF_OP=read \
+            mpirun -np 2 --allow-run-as-root \
+              /__w/FlagCX/FlagCX/test/perf/host_api/build-p2p-shared/bin/perf_p2p_engine \
+              -b 4K -e 64M -f 2 -n 10
 
   perf-test-hygon:
     name: perf-test (hygon)

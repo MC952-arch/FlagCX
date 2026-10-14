@@ -33,13 +33,19 @@ extern struct flagcxNetAdaptor flagcxNetIb;
 
 namespace {
 
-bool directGpuReadVisibilityUnavailable() {
+bool gpuReadVisibilityUnavailable() {
+#ifdef USE_ACCL_BAREX
+  const char *transport = std::getenv("FLAGCX_P2P_TRANSPORT");
+  if (transport != nullptr && (strcasecmp(transport, "accl") == 0 ||
+                               strcasecmp(transport, "barex") == 0))
+    return true;
+#endif
   const uint32_t requirements = flagcxResolveGdrFlushRequirements(
       deviceAdaptor == nullptr ? FLAGCX_GDR_FLUSH_NONE
                                : deviceAdaptor->gdrFlushRequirements);
-  // Neither compile-time Engine currently owns and progresses a post-READ
-  // flush stage. A provider advertising iflush is insufficient by itself.
-  return (requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0;
+  return (requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0 &&
+         ((flagcxNetIb.gdrFlushCaps & FLAGCX_NET_GDR_FLUSH_READ) == 0 ||
+          flagcxNetIb.iflush == nullptr);
 }
 
 struct ParsedEngineMetadata {
@@ -239,12 +245,21 @@ bool pollTransferDone(FlagcxP2pConn *conn, uint64_t transferId,
 
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
-    if (flagcxP2pEngineXferStatus(conn, transferId)) {
-      return true;
+    int done = 0;
+    const int result = flagcxP2pEngineTest(conn, transferId, &done);
+    if (result != flagcxSuccess) {
+      ADD_FAILURE() << "P2P Engine transfer failed: " << result;
+      return false;
     }
+    if (done)
+      return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  return flagcxP2pEngineXferStatus(conn, transferId);
+  int done = 0;
+  const int result = flagcxP2pEngineTest(conn, transferId, &done);
+  if (result != flagcxSuccess)
+    ADD_FAILURE() << "P2P Engine transfer failed: " << result;
+  return result == flagcxSuccess && done;
 }
 
 class FlagcxP2pEngineReadTest : public ::testing::Test {
@@ -450,8 +465,9 @@ private:
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
-  if (directGpuReadVisibilityUnavailable())
-    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
+  if (gpuReadVisibilityUnavailable())
+    GTEST_SKIP()
+        << "GPU READ visibility flush is unavailable on this transport";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   const size_t testSizes[] = {1024, 2048, 2052, 2304, 4096, 8192};
@@ -558,8 +574,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
-  if (directGpuReadVisibilityUnavailable())
-    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
+  if (gpuReadVisibilityUnavailable())
+    GTEST_SKIP()
+        << "GPU READ visibility flush is unavailable on this transport";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kChunkBytes = 2048;
@@ -630,6 +647,24 @@ TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
   ASSERT_TRUE(
       pollTransferDone(serverConn, secondTransfer, std::chrono::seconds(10)));
 
+  copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
+                   localDestination.get(), kTotalBytes);
+  EXPECT_EQ(memcmp(hostActual.get(), hostExpected.get(), kTotalBytes), 0);
+
+  // The vector uses two GPU destinations in one registration. Completion
+  // must include their shared post-READ visibility flush.
+  memset(hostActual.get(), 0, kTotalBytes);
+  copyHostToDevice(kServerGpuIdx, serverStream, localDestination.get(),
+                   hostActual.get(), kTotalBytes);
+  uint64_t vectorTransfer = 0;
+  ASSERT_EQ(flagcxP2pEngineReadVector(
+                serverConn, {localMr, localMr},
+                {localDestination.get(), secondDestination},
+                {kChunkBytes, kChunkBytes}, {firstDesc, secondDesc}, 2,
+                &vectorTransfer, {}),
+            0);
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, vectorTransfer, std::chrono::seconds(10)));
   copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
                    localDestination.get(), kTotalBytes);
   EXPECT_EQ(memcmp(hostActual.get(), hostExpected.get(), kTotalBytes), 0);
@@ -1063,8 +1098,9 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsWriteBeforeSubmission) {
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
-  if (directGpuReadVisibilityUnavailable())
-    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
+  if (gpuReadVisibilityUnavailable())
+    GTEST_SKIP()
+        << "GPU READ visibility flush is unavailable on this transport";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kSourceElems = 256;
@@ -1174,8 +1210,9 @@ TEST_F(FlagcxP2pEngineReadTest, SharedBarexRefreshesPostHandshakeSegmentTable) {
   if (transport == nullptr || (strcasecmp(transport, "accl") != 0 &&
                                strcasecmp(transport, "barex") != 0))
     GTEST_SKIP() << "Requires FLAGCX_P2P_TRANSPORT=barex";
-  if (directGpuReadVisibilityUnavailable())
-    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
+  if (gpuReadVisibilityUnavailable())
+    GTEST_SKIP()
+        << "GPU READ visibility flush is unavailable on this transport";
 
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
   constexpr size_t kHalfTransfer = 4096;
