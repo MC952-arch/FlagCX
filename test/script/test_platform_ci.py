@@ -393,19 +393,34 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
         self.assertNotIn("FLAGCX_USE_HETERO_COMM", metax_torch)
 
-    def test_default_p2p_perf_runs_only_supported_gpu_write(self):
+    def test_p2p_perf_keeps_legacy_write_and_runs_shared_read(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         default_perf = perf_workflow[perf_workflow.index("  perf-test:") :]
         default_perf = default_perf[: default_perf.index("  perf-test-hygon:")]
 
-        step_name = (
-            'P2P Engine perf (GPU WRITE; READ visibility unsupported)'
-        )
-        self.assertIn(step_name, default_perf)
-        p2p_step = default_perf[default_perf.index(step_name) :]
-        self.assertIn("FLAGCX_P2P_PERF_OP=write", p2p_step)
-        self.assertIn("$PERF_BIN/perf_p2p_engine", p2p_step)
-        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", p2p_step)
+        legacy_name = "P2P Engine perf (legacy GPU WRITE)"
+        shared_build_name = "Build shared P2P Engine perf"
+        shared_read_name = "P2P shared Engine perf (GPU READ)"
+        self.assertIn(legacy_name, default_perf)
+        self.assertIn(shared_build_name, default_perf)
+        self.assertIn(shared_read_name, default_perf)
+        legacy_step = default_perf[
+            default_perf.index(legacy_name) : default_perf.index(shared_build_name)
+        ]
+        shared_build_step = default_perf[
+            default_perf.index(shared_build_name) : default_perf.index(shared_read_name)
+        ]
+        shared_read_step = default_perf[default_perf.index(shared_read_name) :]
+
+        self.assertIn("FLAGCX_P2P_PERF_OP=write", legacy_step)
+        self.assertIn("$PERF_BIN/perf_p2p_engine", legacy_step)
+        self.assertNotIn("FLAGCX_P2P_PERF_OP=read", legacy_step)
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", shared_build_step)
+        self.assertIn("FLAGCX_LIB=$PWD/build-p2p-shared/lib", shared_build_step)
+        self.assertIn("FLAGCX_P2P_PERF_OP=read", shared_read_step)
+        self.assertIn("/build-p2p-shared/bin/perf_p2p_engine", shared_read_step)
+        self.assertIn("/build-p2p-shared/lib:$LD_LIBRARY_PATH", shared_read_step)
+        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", default_perf)
 
     def test_rma_visibility_conformance_covers_supported_routes_and_policies(self):
         unit_runner = (
