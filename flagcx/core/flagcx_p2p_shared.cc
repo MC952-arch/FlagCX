@@ -349,7 +349,8 @@ struct FlagcxP2pConn {
   // the same full-duplex control socket.
   std::mutex notifMutex;
   // The main IB adaptor owns a non-atomic request table and CQ progress state.
-  // All post/test operations using this connection's sendComm share this lock.
+  // All post/test operations using this connection's net communicators share
+  // this lock.
   std::mutex progressMutex;
   // All transfers on this connection are progressed by one P2P worker.
   std::shared_ptr<FlagcxP2pWorkerGroup> workerGroup;
@@ -399,8 +400,23 @@ enum FlagcxP2pXferKind {
   FLAGCX_P2P_XFER_IPC = 1,
 };
 
+enum FlagcxP2pNetPhase {
+  FLAGCX_P2P_DATA_PENDING = 0,
+  FLAGCX_P2P_FLUSH_POST_PENDING = 1,
+  FLAGCX_P2P_FLUSH_PENDING = 2,
+};
+
+struct FlagcxP2pFlushTarget {
+  void *data;
+  void *mhandle;
+};
+
 struct FlagcxP2pXfer {
   FlagcxP2pXferKind kind;
+  FlagcxP2pNetPhase netPhase = FLAGCX_P2P_DATA_PENDING;
+  std::vector<FlagcxP2pFlushTarget> flushTargets;
+  size_t nextFlush = 0;
+  void *flushRequest = NULL;
   std::vector<void *> requests;
   FlagcxP2pConn *conn;
   int total;
@@ -1082,6 +1098,12 @@ startNetTransfer(FlagcxP2pConn *conn, const std::vector<void *> &dataVec,
   xfer.transferStorage.resize(specs.size());
   xfer.laneMasks.assign(specs.size(), 0);
   std::vector<flagcxP2pTransferOp> ops(specs.size());
+  std::unordered_map<void *, size_t> flushTargetByMr;
+  const uint32_t flushRequirements = flagcxResolveGdrFlushRequirements(
+      deviceAdaptor == NULL ? FLAGCX_GDR_FLUSH_NONE
+                            : deviceAdaptor->gdrFlushRequirements);
+  const bool needGpuReadFlush =
+      !write && (flushRequirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0;
 
   for (size_t i = 0; i < specs.size(); ++i) {
     const FlagcxP2pSliceSpec &spec = specs[i];
@@ -1108,6 +1130,16 @@ startNetTransfer(FlagcxP2pConn *conn, const std::vector<void *> &dataVec,
       ops[i].dstOffset = localAddress + spec.offset - localSegment.base;
       ops[i].srcMr = &storage.src.handle;
       ops[i].dstMr = &storage.dst.handle;
+      if (needGpuReadFlush && local.ptrType == FLAGCX_PTR_CUDA) {
+        void *flushData = reinterpret_cast<void *>(localAddress + spec.offset);
+        void *flushMr = localSegment.adaptorMr;
+        const auto inserted =
+            flushTargetByMr.emplace(flushMr, xfer.flushTargets.size());
+        if (inserted.second)
+          xfer.flushTargets.push_back({flushData, flushMr});
+        else
+          xfer.flushTargets[inserted.first->second].data = flushData;
+      }
     }
     ops[i].size = spec.size;
     // Engine slicing proves these ranges independent. Stable per-slice keys
@@ -2150,19 +2182,63 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
       terminal = true;
     }
   } else if (xfer.transfer) {
-    const uint32_t submitted = xfer.transfer->submitted;
-    const uint32_t completed = xfer.transfer->completed;
-    struct flagcxP2pTransferStatus status = {};
-    const flagcxResult_t progress =
-        flagcxP2pTransferProgress(xfer.transfer.get(), &status);
-    *madeProgress =
-        status.submitted != submitted || status.completed != completed;
-    if (status.done) {
-      terminalResult =
-          status.result != flagcxSuccess ? status.result : progress;
-      if (flagcxP2pTransferReset(xfer.transfer.get()) != flagcxSuccess)
-        WARN("P2P shared transfer reset failed on worker");
-      terminal = true;
+    if (xfer.netPhase == FLAGCX_P2P_DATA_PENDING) {
+      const uint32_t submitted = xfer.transfer->submitted;
+      const uint32_t completed = xfer.transfer->completed;
+      struct flagcxP2pTransferStatus status = {};
+      const flagcxResult_t progress =
+          flagcxP2pTransferProgress(xfer.transfer.get(), &status);
+      *madeProgress =
+          status.submitted != submitted || status.completed != completed;
+      if (status.done) {
+        terminalResult =
+            status.result != flagcxSuccess ? status.result : progress;
+        if (flagcxP2pTransferReset(xfer.transfer.get()) != flagcxSuccess)
+          WARN("P2P shared transfer reset failed on worker");
+        if (terminalResult == flagcxSuccess && !xfer.flushTargets.empty()) {
+          xfer.netPhase = FLAGCX_P2P_FLUSH_POST_PENDING;
+          *madeProgress = true;
+        } else {
+          terminal = true;
+        }
+      }
+    } else if (xfer.netPhase == FLAGCX_P2P_FLUSH_POST_PENDING) {
+      const FlagcxP2pFlushTarget &target = xfer.flushTargets[xfer.nextFlush];
+      void *data = target.data;
+      void *mhandle = target.mhandle;
+      int size = 1;
+      void *request = NULL;
+      {
+        std::lock_guard<std::mutex> progressLock(xfer.conn->progressMutex);
+        terminalResult = xfer.conn->engine->adaptor->iflush(
+            xfer.conn->recvComm, 1, &data, &size, &mhandle, &request);
+      }
+      if (terminalResult != flagcxSuccess || request == NULL) {
+        if (terminalResult == flagcxSuccess)
+          terminalResult = flagcxInternalError;
+        terminal = true;
+      } else {
+        xfer.flushRequest = request;
+        xfer.netPhase = FLAGCX_P2P_FLUSH_PENDING;
+        *madeProgress = true;
+      }
+    } else {
+      int done = 0;
+      {
+        std::lock_guard<std::mutex> progressLock(xfer.conn->progressMutex);
+        terminalResult =
+            xfer.conn->engine->adaptor->test(xfer.flushRequest, &done, NULL);
+      }
+      if (terminalResult != flagcxSuccess) {
+        terminal = true;
+      } else if (done) {
+        xfer.flushRequest = NULL;
+        if (++xfer.nextFlush == xfer.flushTargets.size())
+          terminal = true;
+        else
+          xfer.netPhase = FLAGCX_P2P_FLUSH_POST_PENDING;
+        *madeProgress = true;
+      }
     }
   } else {
     // Preserve the older request representation while its callers are retired.
@@ -2190,6 +2266,7 @@ static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
     xfer.netBackend.reset();
     std::vector<FlagcxP2pTransferStorage>().swap(xfer.transferStorage);
     std::vector<uint64_t>().swap(xfer.laneMasks);
+    std::vector<FlagcxP2pFlushTarget>().swap(xfer.flushTargets);
     std::vector<void *>().swap(xfer.requests);
     std::vector<void *>().swap(xfer.openedIpcPtrs);
     if (terminalResult != flagcxSuccess)
@@ -3896,10 +3973,10 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                             : deviceAdaptor->gdrFlushRequirements);
   const flagcxResult_t visibilityResult = flagcxP2pValidateReadVisibility(
       requirements, conn->engine->adaptor->gdrFlushCaps, localEntry.ptrType,
-      size, 0);
+      size, conn->recvComm != NULL && conn->engine->adaptor->iflush != NULL);
   if (visibilityResult != flagcxSuccess) {
     WARN("P2P read rejected: GPU destination requires a post-READ visibility "
-         "flush, but the shared Engine completion path has none");
+         "flush, but the shared Engine has no usable flush provider");
     return -1;
   }
 
@@ -3978,11 +4055,12 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   for (int i = 0; i < numIovs; i++) {
     const flagcxResult_t visibilityResult = flagcxP2pValidateReadVisibility(
         requirements, conn->engine->adaptor->gdrFlushCaps,
-        localEntries[i].ptrType, sizeVec[i], 0);
+        localEntries[i].ptrType, sizeVec[i],
+        conn->recvComm != NULL && conn->engine->adaptor->iflush != NULL);
     if (visibilityResult != flagcxSuccess) {
       WARN("P2P ReadVector rejected: GPU destination iov=%d requires a "
-           "post-READ visibility flush, but the shared Engine completion "
-           "path has none",
+           "post-READ visibility flush, but the shared Engine has no "
+           "usable flush provider",
            i);
       return -1;
     }
