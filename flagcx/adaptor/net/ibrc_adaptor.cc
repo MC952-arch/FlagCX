@@ -2980,13 +2980,23 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
   if (n < 0 || (n > 0 && (data == NULL || sizes == NULL || mhandles == NULL)))
     return flagcxInvalidArgument;
   int last = -1;
-  for (int i = 0; i < n; i++)
-    if (sizes[i])
+  for (int i = 0; i < n; i++) {
+    if (sizes[i] < 0)
+      return flagcxInvalidArgument;
+    if (sizes[i] > 0)
       last = i;
+  }
   if (last == -1)
     return flagcxSuccess;
   if (comm->flushEnabled == 0)
     return flagcxNotSupported;
+  struct flagcxIbMrHandle *mhandle = (struct flagcxIbMrHandle *)mhandles[last];
+  if (data[last] == NULL || mhandle == NULL)
+    return flagcxInvalidArgument;
+  for (int i = 0; i < comm->base.ndevs; i++) {
+    if (mhandle->mrs[i] == NULL)
+      return flagcxInvalidArgument;
+  }
   FLAGCXCHECK(flagcxIbRunLazyInit(&comm->flushInit,
                                   flagcxIbCreateFlushResources,
                                   flagcxIbDestroyFlushResources, comm));
@@ -2996,7 +3006,6 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
   req->type = FLAGCX_NET_IB_REQ_FLUSH;
   req->sock = &comm->base.sock;
-  struct flagcxIbMrHandle *mhandle = (struct flagcxIbMrHandle *)mhandles[last];
 
   // We don't know which devIndex the recv was on, so we flush on all devices
   for (int i = 0; i < comm->base.ndevs; i++) {
@@ -3013,9 +3022,20 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
 
     TIME_START(4);
     struct ibv_send_wr *bad_wr;
-    FLAGCXCHECK(
-        flagcxWrapIbvPostSend(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr));
+    flagcxResult_t postResult =
+        flagcxWrapIbvPostSend(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr);
     TIME_STOP(4);
+    if (postResult != flagcxSuccess) {
+      if (i == 0) {
+        FLAGCXCHECK(flagcxIbFreeRequest(req));
+        return postResult;
+      }
+      // Earlier devices already own signaled WRs. Return their request so
+      // the caller can drain those CQEs before releasing the GPU MR.
+      req->result = postResult;
+      *request = req;
+      return flagcxSuccess;
+    }
 
     flagcxIbAddEvent(req, i, &comm->devs[i].base);
   }
