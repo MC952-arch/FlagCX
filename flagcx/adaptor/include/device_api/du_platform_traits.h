@@ -35,19 +35,26 @@ struct PlatformTraits<DuPlatform> {
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t activemask() {
-      return static_cast<flagcxLaneMask_t>(__activemask());
+      return static_cast<flagcxLaneMask_t>(__ballot(1));
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void
     validateMask(flagcxLaneMask_t mask) {
       if ((mask & ~fullMask()) != 0)
-        __trap();
+        __builtin_trap();
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void
     syncwarp(flagcxLaneMask_t mask = fullMask()) {
       validateMask(mask);
-      __syncwarp(static_cast<uint64_t>(mask));
+      if ((mask & (flagcxLaneMask_t{1} << lane())) == 0)
+        __builtin_trap();
+      // DCU wavefront lanes execute in lockstep, including sub-wave tiles.
+      // Order shared-memory writes and reads across the participating lanes;
+      // a block barrier would deadlock when only part of a block calls sync.
+      __builtin_amdgcn_fence(__ATOMIC_RELEASE, "wavefront");
+      __builtin_amdgcn_wave_barrier();
+      __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "wavefront");
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR int popc(flagcxLaneMask_t x) {
@@ -59,7 +66,7 @@ struct PlatformTraits<DuPlatform> {
                                                                 int nThreads) {
       (void)id;
       if (nThreads == simtWidth) {
-        __syncwarp();
+        syncwarp();
       } else if (nThreads == static_cast<int>(blockDim.x)) {
         __syncthreads();
       } else {

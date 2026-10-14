@@ -510,9 +510,9 @@ duhipAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                         size_t size, unsigned long long flags) {
   if (handleOut == NULL || buffer == NULL || size == 0)
     return flagcxInvalidArgument;
-  hipError_t result =
-      hipMemGetHandleForAddressRange(handleOut, (hipDeviceptr_t)buffer, size,
-                                     hipMemRangeHandleTypeDmaBufFd, flags);
+  hipError_t result = hipMemGetHandleForAddressRange(
+      handleOut, (hipDeviceptr_t)buffer, size,
+      HIP_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
   if (result == hipErrorNotSupported)
     return flagcxNotSupported;
   return result == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;

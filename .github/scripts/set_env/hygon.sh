@@ -118,6 +118,12 @@ flagcx_ci_prepare() {
   command -v hipcc
   mpirun --version
   hipcc --version
+  case "$suite" in
+    service|device_api|device_api_unified_ir)
+      python3 "$FLAGCX_CI_ENV_DIR/../ci/show_hygon_dtk_info.py" \
+        /opt/dtk/env.sh /opt/dtk/hip/include/hip
+      ;;
+  esac
   hy-smi --showproductname || true
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||

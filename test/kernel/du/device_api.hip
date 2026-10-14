@@ -1401,8 +1401,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     flagcxCoopTile<8> tile;
     int rank = tile.threadRank();
     int size = tile.size();
+    warpValues[FLAGCX_THREAD_IDX_X] = rank + 101;
+    tile.sync();
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      results[3] = (size == 8 && rank == 0) ? 1 : 0;
+      results[3] =
+          (size == 8 && rank == 0 && warpValues[7] == 108) ? 1 : 0;
     }
     tile.sync();
   }
