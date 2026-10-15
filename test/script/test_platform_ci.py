@@ -143,7 +143,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             self._run_platform_matrix(
-                "pull_request", "flagcx/adaptor/device/ducuda_adaptor.cc"
+                "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
             ["hygon"],
         )
@@ -181,7 +181,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "hardware_name: hygon\n"
                 "display_name: Hygon\n"
                 "paths_watch:\n"
-                "  - flagcx/adaptor/device/ducuda_adaptor.cc\n"
+                "  - flagcx/adaptor/device/duhip_adaptor.cc\n"
             )
             self.assertEqual(
                 self._run_platform_matrix(
@@ -192,7 +192,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertEqual(
                 self._run_platform_matrix(
                     "pull_request",
-                    "flagcx/adaptor/device/ducuda_adaptor.cc",
+                    "flagcx/adaptor/device/duhip_adaptor.cc",
                     configs_dir,
                 ),
                 ["cuda"],
@@ -209,6 +209,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("branches: [dev]", unit_trigger)
         self.assertNotIn("pull_request:", unit_trigger)
         self.assertNotIn("branches: [main]", unit_trigger)
+
+        pipeline = ci_workflow[ci_workflow.index("\n  platform-pipeline:") :]
+        self.assertIn("needs: generate-matrix", pipeline)
+        self.assertIn("!cancelled()", pipeline)
+        self.assertIn("needs.generate-matrix.result == 'success'", pipeline)
+        self.assertIn("needs.generate-matrix.outputs.platforms != '[]'", pipeline)
 
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
@@ -488,10 +494,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
-        self.assertIn(
-            "github.event.pull_request.number == 643 && 'hygon'",
-            unit_workflow,
-        )
+        ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn('platforms=["hygon"]', ci_workflow)
+        self.assertIn("needs.lint.result == 'skipped'", ci_workflow)
         self.assertIn("github.event.inputs.platform || 'all'", unit_workflow)
         self.assertNotIn("pull_request.number == 648", unit_workflow)
 
@@ -773,7 +778,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "test/script/symmem_test.sh"
         ).read_text()
 
-        self.assertIn('adaptor|p2p|rma|runner|symmem)', unit_runner)
+        self.assertIn(
+            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            unit_runner,
+        )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
