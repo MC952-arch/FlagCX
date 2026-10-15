@@ -251,7 +251,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7", hygon_env
         )
-        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3", hygon_env)
+        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,3,6", hygon_env)
+        self.assertIn("FLAGCX_CI_PXN_HCAS=shca_0,shca_1", hygon_env)
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", hygon_env)
         self.assertIn("export NP=4", hygon_env)
 
@@ -1355,10 +1356,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         pxn_case = runner_case[
             runner_case.index('if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]') :
         ]
-        self.assertIn("pxn_launcher+=(-u FLAGCX_IB_HCA)", pxn_case)
-        self.assertNotIn(
-            '-x FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"', pxn_case
-        )
+        self.assertIn('pxn_launcher+=(FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS")', pxn_case)
+        self.assertIn('-x FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS"', pxn_case)
         self.assertIn('pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
         self.assertIn('-x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
         self.assertIn('"$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)

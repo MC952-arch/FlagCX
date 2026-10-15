@@ -687,9 +687,11 @@ run_suite() {
         local -a pxn_platform_env=()
         local -a pxn_launcher=(env)
         if [[ "$platform_name" == "hygon" ]]; then
-          # The ordinary runner pins the known connected SHCA pair. PXN must
-          # select its NICs from the topology of its own four visible DCUs.
-          pxn_launcher+=(-u FLAGCX_IB_HCA)
+          # Give PXN its own SHCA pair instead of the ordinary runner pair.
+          pxn_launcher+=(FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS")
+          pxn_platform_env+=(
+            -x FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS"
+          )
         fi
         if [[ -n "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}" ]]; then
           pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")

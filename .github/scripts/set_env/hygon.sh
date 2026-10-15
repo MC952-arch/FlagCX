@@ -61,9 +61,10 @@ export NP=4
 FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3
 FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7
 FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7
-# Exercise PXN with a separate four-DCU selection instead of the verified
-# shca_0 <-> shca_3 path used by the ordinary runner tests.
-FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3
+# Exercise PXN with a separate four-DCU and SHCA selection from the ordinary
+# runner tests.
+FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,3,6
+FLAGCX_CI_PXN_HCAS=shca_0,shca_1
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x CUDA_VISIBLE_DEVICES=0,1
