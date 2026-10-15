@@ -1358,8 +1358,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ]
         self.assertIn('pxn_launcher+=(FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS")', pxn_case)
         self.assertIn('-x FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS"', pxn_case)
-        self.assertIn('pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
-        self.assertIn('-x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
+        self.assertIn('local pxn_visible_devices_var=CUDA_VISIBLE_DEVICES', pxn_case)
+        self.assertIn('if [[ "$platform_name" == "metax" ]]; then', pxn_case)
+        self.assertIn('pxn_visible_devices_var=MACA_VISIBLE_DEVICES', pxn_case)
+        self.assertIn('pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
+        self.assertIn('-x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
         self.assertIn('"$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', pxn_case)
         self.assertNotIn('FLAGCX_CI_ENABLE_PXN_INTERSERVER', runner_case)

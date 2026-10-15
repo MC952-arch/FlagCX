@@ -61,10 +61,10 @@ export NP=4
 FLAGCX_CI_HYGON_CONNECTED_HCAS=shca_0,shca_3
 FLAGCX_CI_HYGON_TWO_GPU_DEVICES=0,7
 FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7
-# Exercise PXN with a separate four-DCU and SHCA selection from the ordinary
-# runner tests.
-FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,3,6
-FLAGCX_CI_PXN_HCAS=shca_0,shca_1
+# Put the NIC-distant GPUs at ranks 0 and 2, with their local relay GPUs at
+# ranks 1 and 3. Both PXN sends then use the verified shca_0/shca_3 fabric.
+FLAGCX_CI_PXN_VISIBLE_DEVICES=2,0,6,7
+FLAGCX_CI_PXN_HCAS=shca_0,shca_3
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x CUDA_VISIBLE_DEVICES=0,1

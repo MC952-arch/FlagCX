@@ -31,7 +31,10 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 export NP=4
-FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
+FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7
+# Keep GPU 0 off its directly adjacent bnxt_roce0 during PXN so GPU 2 can
+# relay through bnxt_roce1 on both three- and four-HCA runners.
+FLAGCX_CI_PXN_HCAS=bnxt_roce1,bnxt_roce2,bnxt_roce3
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x FLAGCX_HOSTID=node0

@@ -686,17 +686,21 @@ run_suite() {
       if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
         local -a pxn_platform_env=()
         local -a pxn_launcher=(env)
-        if [[ "$platform_name" == "hygon" ]]; then
-          # Give PXN its own SHCA pair instead of the ordinary runner pair.
+        if [[ -n "${FLAGCX_CI_PXN_HCAS:-}" ]]; then
+          # Use the platform's PXN HCA selection for the launcher and ranks.
           pxn_launcher+=(FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS")
           pxn_platform_env+=(
             -x FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS"
           )
         fi
         if [[ -n "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}" ]]; then
-          pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")
+          local pxn_visible_devices_var=CUDA_VISIBLE_DEVICES
+          if [[ "$platform_name" == "metax" ]]; then
+            pxn_visible_devices_var=MACA_VISIBLE_DEVICES
+          fi
+          pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")
           pxn_platform_env+=(
-            -x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"
+            -x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"
           )
         fi
         FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank" \
