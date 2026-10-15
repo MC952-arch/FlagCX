@@ -1,5 +1,12 @@
 include ../../make.inc
 
+# Only the Device API tests link HIP device objects. Keep the shared test
+# compiler as g++ so host-only suites do not compile device headers with HIPCC.
+ifeq ($(USE_DU), 1)
+CXX := $(DEVICE_COMPILER)
+CXXFLAGS += -fgpu-rdc
+endif
+
 # MPI launcher configuration. Open MPI remains the default used by CI.
 # Use `MPI_FLAVOR=mpich` for MPICH/Hydra (`--genv`, no root-only option).
 MPI_FLAVOR ?= openmpi
@@ -150,35 +157,43 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 	@echo "Linking   $@"
 	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
 
-$(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
-	@mkdir -p $(BINDIR)
-	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+# HIPCC treats object files as HIP source when a .cpp input is present in the
+# same link invocation. Compile each test entry point first so links receive
+# object files only. This also keeps the host sources out of device linking.
+$(OBJDIR)/test_device_%.o: test_device_%.cpp
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
 
-$(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_unified_intra: test_device_ir_unified_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_inter: $(OBJDIR)/test_device_ir_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_unified_inter: test_device_ir_unified_inter.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_intra: $(OBJDIR)/test_device_ir_unified_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_api_intra: test_device_api_intra.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_inter: $(OBJDIR)/test_device_ir_unified_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_api_inter: test_device_api_inter.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_api_intra: $(OBJDIR)/test_device_api_intra.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
+$(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)

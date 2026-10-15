@@ -82,11 +82,99 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "test_device_ir_intra", "test_device_ir_inter",
             "test_device_ir_unified_intra", "test_device_ir_unified_inter",
         ):
+            compile_line = next(
+                line for line in result.stdout.splitlines()
+                if line.startswith("/opt/dtk/bin/hipcc ")
+                and f"/obj/{target}.o " in line
+            )
+            self.assertIn(" -c ", compile_line)
+            self.assertIn(f"{target}.cpp", compile_line)
             link_line = next(
                 line for line in result.stdout.splitlines()
                 if line.startswith("/opt/dtk/bin/hipcc ") and f"/bin/{target} " in line
             )
             self.assertIn("-no-pie", link_line)
+            self.assertIn(f"/obj/{target}.o", link_line)
+            self.assertNotIn(".cpp", link_line)
+
+        rma_result = subprocess.run(
+            [
+                "make", "-n", "-C", str(REPO_ROOT / "test/unittest/rma"),
+                "USE_DU=1", "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for source in (
+            "test_rma_post_result.cpp",
+            "test_signal_registration_ownership.cpp",
+        ):
+            compile_line = next(
+                line for line in rma_result.stdout.splitlines()
+                if source in line and " -c " in line
+            )
+            self.assertTrue(compile_line.startswith("g++ "))
+            self.assertNotIn("-fgpu-rdc", compile_line)
+        unit_link_line = next(
+            line for line in rma_result.stdout.splitlines()
+            if "/bin/rma_unit_tests " in line
+        )
+        self.assertTrue(unit_link_line.startswith("g++ "))
+
+        kernel_result = subprocess.run(
+            [
+                "make", "-n", "-C", str(REPO_ROOT / "test/unittest/kernel"),
+                "all", "USE_DU=1", "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        kernel_unit_link = next(
+            line for line in kernel_result.stdout.splitlines()
+            if "/bin/kernel_unit_tests " in line
+        )
+        self.assertTrue(kernel_unit_link.startswith("g++ "))
+        kernel_mpi_link = next(
+            line for line in kernel_result.stdout.splitlines()
+            if "/bin/kernel_mpi_tests " in line
+        )
+        self.assertTrue(kernel_mpi_link.startswith("/opt/dtk/bin/hipcc "))
+        self.assertIn("-fgpu-rdc", kernel_mpi_link)
+        self.assertIn("-no-pie", kernel_mpi_link)
+        self.assertIn("/du/build/obj/device_api.o", kernel_mpi_link)
+        self.assertNotIn(".cpp", kernel_mpi_link)
+
+        perf_result = subprocess.run(
+            [
+                "make", "-n", "-C", str(REPO_ROOT / "test/perf/device_api"),
+                "all", "USE_DU=1", "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for source in sorted((REPO_ROOT / "test/perf/device_api").glob("test_*.cpp")):
+            target = source.stem.removeprefix("test_")
+            compile_line = next(
+                line for line in perf_result.stdout.splitlines()
+                if f"/obj/perf_{target}.o " in line and " -c " in line
+            )
+            self.assertTrue(compile_line.startswith("g++ "))
+            link_line = next(
+                line for line in perf_result.stdout.splitlines()
+                if f"/bin/perf_{target} " in line
+            )
+            self.assertTrue(link_line.startswith("/opt/dtk/bin/hipcc "))
+            self.assertIn("-fgpu-rdc", link_line)
+            self.assertIn("-no-pie", link_line)
+            self.assertIn(f"/obj/perf_{target}.o", link_line)
+            self.assertIn("/du/build/obj/device_api.o", link_line)
+            self.assertNotIn(".cpp", link_line)
 
         for suite in ("device_api", "device_api_unified_ir"):
             configured = subprocess.run(
