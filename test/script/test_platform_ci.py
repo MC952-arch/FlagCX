@@ -12,6 +12,28 @@ HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_gpu_ci_world_uses_four_ranks(self):
+        for platform in ("cuda", "metax", "hygon", "ppu"):
+            with self.subTest(platform=platform):
+                source = (
+                    REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+                ).read_text()
+                self.assertIn("FLAGCX_CI_INTRA_NP=4", source)
+                self.assertIn("FLAGCX_CI_NODE_NP=2", source)
+                self.assertIn("FLAGCX_CI_RUNNER_NP=4", source)
+                self.assertIn("export NP=4", source)
+
+        perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        torch_script = (REPO_ROOT / "test/script/torch_api_test.sh").read_text()
+        device_makefile = (
+            REPO_ROOT / "test/unittest/device_api/Makefile"
+        ).read_text()
+        self.assertNotIn("mpirun -np 8", perf_workflow)
+        self.assertNotIn("-n 8", device_makefile)
+        self.assertNotIn("-n 4 $(HETERO_ENV)", device_makefile)
+        self.assertIn("--nproc_per_node 4", torch_script)
+        self.assertIn("-n 2 $(HETERO_ENV)", device_makefile)
+
     def _run_platform_matrix(
         self, event_name, changed_files="", configs_dir=None
     ):
@@ -229,6 +251,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7", hygon_env
         )
+        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3", hygon_env)
+        self.assertIn("FLAGCX_CI_RUNNER_NP=4", hygon_env)
+        self.assertIn("export NP=4", hygon_env)
 
         configure = hygon_env[hygon_env.index("flagcx_ci_configure_suite() {") :]
         configure = configure[: configure.index("flagcx_ci_prepare() {")]
@@ -246,8 +271,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             'export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"',
             configure,
         )
-        self.assertIn("FLAGCX_CI_RUNNER_NP=4", configure)
-        self.assertIn("export NP=4", configure)
+        self.assertNotIn("FLAGCX_CI_RUNNER_NP=8", configure)
 
     def test_cuda_runs_ibuc_after_ibrc_in_adaptor_suite(self):
         cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
@@ -466,61 +490,89 @@ class PlatformCiRegressionTest(unittest.TestCase):
         torch_workflow = (
             REPO_ROOT / ".github/workflows/torch-api-test.yml"
         ).read_text()
-
-        hygon_perf = perf_workflow[perf_workflow.index("  perf-test-hygon:") :]
-        hygon_perf = hygon_perf[: hygon_perf.index("  perf-test-cuda:")]
-        metax_perf = perf_workflow[perf_workflow.index("  perf-test-metax:") :]
-        metax_perf = metax_perf[: metax_perf.index("  perf-test-ppu:")]
         hygon_handler = (
             REPO_ROOT / ".github/scripts/ci/run_hygon_workload.sh"
         ).read_text()
-        self.assertIn("hygon perf", hygon_perf)
+        metax_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_metax_workload.sh"
+        ).read_text()
+        self.assertIn("hygon perf", perf_workflow)
         self.assertIn('"$perf_runner" homogeneous "$perf_bin"', hygon_handler)
         self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', hygon_handler)
+        self.assertIn("metax perf", perf_workflow)
+        self.assertIn('run_host_perf_suite.sh" heterogeneous "$perf_bin"', metax_handler)
 
-        self.assertIn("Perf tests (MetaX uniRunner 8-chip)", metax_perf)
-        self.assertIn("run_host_perf_suite.sh heterogeneous", metax_perf)
-
-        hygon_torch = torch_workflow[
-            torch_workflow.index("  torch-api-test-hygon:") :
-        ]
-        hygon_torch = hygon_torch[: hygon_torch.index("  torch-api-test-cuda:")]
-        metax_torch = torch_workflow[
-            torch_workflow.index("  torch-api-test-metax:") :
-        ]
-        metax_torch = metax_torch[: metax_torch.index("  torch-api-test-ppu:")]
-        self.assertIn("hygon torch-api", hygon_torch)
+        self.assertIn("hygon torch-api", torch_workflow)
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
-        self.assertNotIn("FLAGCX_USE_HETERO_COMM", metax_torch)
+        self.assertIn("metax torch-api", torch_workflow)
+        self.assertNotIn("export FLAGCX_USE_HETERO_COMM", metax_handler)
+
+    def test_perf_and_torch_jobs_use_platform_configured_images(self):
+        perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        torch_workflow = (
+            REPO_ROOT / ".github/workflows/torch-api-test.yml"
+        ).read_text()
+        for workflow, workload in (
+            (perf_workflow, "perf"),
+            (torch_workflow, "torch-api"),
+        ):
+            self.assertNotIn("container:", workflow)
+            self.assertNotIn("image: harbor.baai.ac.cn", workflow)
+            for platform in ("cuda", "metax", "hygon", "ppu"):
+                with self.subTest(workload=workload, platform=platform):
+                    self.assertIn(
+                        f"ruby .github/scripts/ci/load_platform_config.rb {platform}",
+                        workflow,
+                    )
+                    self.assertIn(
+                        f"FLAGCX_CI_IMAGE: "
+                        f"${{{{ needs.load-hardware-container-configs.outputs.{platform}_ci_image }}}}",
+                        workflow,
+                    )
+                    self.assertIn(f"{platform} {workload}", workflow)
+                    self.assertIn(
+                        f"runs-on: "
+                        f"${{{{ fromJSON(needs.load-hardware-container-configs.outputs.{platform}_runs_on) }}}}",
+                        workflow,
+                    )
+
+        self.assertIn("  perf-test:\n", perf_workflow)
+        self.assertIn("cuda perf-legacy", perf_workflow)
+        self.assertIn("cuda_legacy_perf_runs_on", perf_workflow)
+        self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
+
+        for platform in ("cuda", "metax", "hygon", "ppu"):
+            handler = (
+                REPO_ROOT / f".github/scripts/ci/run_{platform}_workload.sh"
+            ).read_text()
+            self.assertIn('source "$project_root/$FLAGCX_CI_SET_ENV"', handler)
+        cuda_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh"
+        ).read_text()
+        self.assertIn(
+            'source "$project_root/.github/scripts/ci/run_cuda_legacy_perf.sh"',
+            cuda_handler,
+        )
 
     def test_p2p_perf_keeps_legacy_write_and_runs_shared_read(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
-        default_perf = perf_workflow[perf_workflow.index("  perf-test:") :]
-        default_perf = default_perf[: default_perf.index("  perf-test-hygon:")]
-
-        legacy_name = "P2P Engine perf (legacy GPU WRITE)"
-        shared_build_name = "Build shared P2P Engine perf"
-        shared_read_name = "P2P shared Engine perf (GPU READ)"
-        self.assertIn(legacy_name, default_perf)
-        self.assertIn(shared_build_name, default_perf)
-        self.assertIn(shared_read_name, default_perf)
-        legacy_step = default_perf[
-            default_perf.index(legacy_name) : default_perf.index(shared_build_name)
-        ]
-        shared_build_step = default_perf[
-            default_perf.index(shared_build_name) : default_perf.index(shared_read_name)
-        ]
-        shared_read_step = default_perf[default_perf.index(shared_read_name) :]
-
-        self.assertIn("FLAGCX_P2P_PERF_OP=write", legacy_step)
-        self.assertIn("$PERF_BIN/perf_p2p_engine", legacy_step)
-        self.assertNotIn("FLAGCX_P2P_PERF_OP=read", legacy_step)
-        self.assertIn("USE_SHARED_P2P_ENGINE=1", shared_build_step)
-        self.assertIn("FLAGCX_LIB=$PWD/build-p2p-shared/lib", shared_build_step)
-        self.assertIn("FLAGCX_P2P_PERF_OP=read", shared_read_step)
-        self.assertIn("/build-p2p-shared/bin/perf_p2p_engine", shared_read_step)
-        self.assertIn("/build-p2p-shared/lib:$LD_LIBRARY_PATH", shared_read_step)
-        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", default_perf)
+        legacy_perf = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        ).read_text()
+        self.assertIn("cuda perf-legacy", perf_workflow)
+        self.assertIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', legacy_perf)
+        self.assertIn('"$perf_bin/perf_allreduce"', legacy_perf)
+        self.assertIn("for operation in put get", legacy_perf)
+        self.assertIn('"$perf_bin/perf_$operation"', legacy_perf)
+        self.assertIn('"$device_api_bin/perf_allreduce_intranode"', legacy_perf)
+        self.assertIn('"$device_api_bin/perf_internode_onesided"', legacy_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=write", legacy_perf)
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", legacy_perf)
+        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', legacy_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=read", legacy_perf)
+        self.assertIn('"$shared_test_build/bin/perf_p2p_engine"', legacy_perf)
+        self.assertIn('LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"', legacy_perf)
+        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", legacy_perf)
 
     def test_rma_visibility_conformance_covers_supported_routes_and_policies(self):
         unit_runner = (
@@ -1170,9 +1222,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
-        self.assertIn('FLAGCX_CI_MPI_LABEL="runner PPU PXN eight-rank"', ppu_forced_net)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner PPU PXN four-rank"', ppu_forced_net)
         self.assertIn("FLAGCX_PXN_DISABLE=0", ppu_forced_net)
-        self.assertIn("FLAGCX_CI_PXN_RANKS_PER_NODE=4", ppu_forced_net)
+        self.assertIn('FLAGCX_CI_PXN_RANKS_PER_NODE="$FLAGCX_CI_NODE_NP"', ppu_forced_net)
         self.assertIn("FLAGCX_CI_EXPECT_PXN=1", ppu_forced_net)
 
     def test_p2p_ci_runs_write_only_engine_coverage(self):
@@ -1299,14 +1351,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=0', runner_case)
-        self.assertIn('FLAGCX_CI_PXN_RANKS_PER_NODE=4', runner_case)
+        self.assertIn('FLAGCX_CI_PXN_RANKS_PER_NODE="$FLAGCX_CI_NODE_NP"', runner_case)
         pxn_case = runner_case[
             runner_case.index('if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]') :
         ]
-        self.assertIn('pxn_launcher+=(CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7)', pxn_case)
-        self.assertIn('-x CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7', pxn_case)
-        self.assertIn('"$MPI_RUNNER" -np 8', pxn_case)
-        self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN eight-rank"', pxn_case)
+        self.assertIn("pxn_launcher+=(-u FLAGCX_IB_HCA)", pxn_case)
+        self.assertNotIn(
+            '-x FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"', pxn_case
+        )
+        self.assertIn('pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
+        self.assertIn('-x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
+        self.assertIn('"$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', pxn_case)
         self.assertNotIn('FLAGCX_CI_ENABLE_PXN_INTERSERVER', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET', runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)

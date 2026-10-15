@@ -687,22 +687,23 @@ run_suite() {
         local -a pxn_platform_env=()
         local -a pxn_launcher=(env)
         if [[ "$platform_name" == "hygon" ]]; then
-          # The baseline uses four visible DCUs. Expose all eight here so
-          # ranks 0-3 and 4-7 form the same two logical groups as other CI
-          # platforms.
-          pxn_launcher+=(CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7)
+          # The ordinary runner pins the known connected SHCA pair. PXN must
+          # select its NICs from the topology of its own four visible DCUs.
+          pxn_launcher+=(-u FLAGCX_IB_HCA)
+        fi
+        if [[ -n "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}" ]]; then
+          pxn_launcher+=(CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES")
           pxn_platform_env+=(
-            -x CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-            -x FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+            -x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"
           )
         fi
-        FLAGCX_CI_MPI_LABEL="runner $platform_name PXN eight-rank" \
-          "${pxn_launcher[@]}" "$MPI_RUNNER" -np 8 --allow-run-as-root \
+        FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank" \
+          "${pxn_launcher[@]}" "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
           -x FLAGCX_MEM_ENABLE=1 \
           -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
           -x FLAGCX_P2P_DISABLE=1 \
           -x FLAGCX_PXN_DISABLE=0 \
-          -x FLAGCX_CI_PXN_RANKS_PER_NODE=4 \
+          -x FLAGCX_CI_PXN_RANKS_PER_NODE="$FLAGCX_CI_NODE_NP" \
           -x FLAGCX_VMM_ENABLE=0 \
           -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
           -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \

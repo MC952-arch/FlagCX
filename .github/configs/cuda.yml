@@ -25,6 +25,11 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
 runner_labels:
   - nv-8g-cicd-flagcx
 
+# Keep the original extended perf job on its dedicated runner.
+legacy_perf_runner_labels:
+  - self-hosted
+  - cx-build
+
 docker_volumes: []
 
 docker_options:
@@ -32,8 +37,10 @@ docker_options:
   - --gpus=all
   - --privileged
   - --ipc=host
+  - --shm-size=500g
   - --ulimit=memlock=-1
   - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
 
 set_env: .github/scripts/set_env/cuda.sh
 

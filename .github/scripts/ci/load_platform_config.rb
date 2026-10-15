@@ -40,6 +40,12 @@ abort "#{config_path}: hardware_name must be #{platform}" unless hardware_name =
 runner_labels = config.fetch("runner_labels")
 abort "#{config_path}: runner_labels must be a non-empty array" unless runner_labels.is_a?(Array) && !runner_labels.empty?
 
+legacy_perf_runner_labels = config["legacy_perf_runner_labels"]
+if legacy_perf_runner_labels &&
+   (!legacy_perf_runner_labels.is_a?(Array) || legacy_perf_runner_labels.empty?)
+  abort "#{config_path}: legacy_perf_runner_labels must be a non-empty array"
+end
+
 docker_volumes = config.fetch("docker_volumes")
 abort "#{config_path}: docker_volumes must be an array" unless docker_volumes.is_a?(Array)
 
@@ -71,6 +77,9 @@ outputs = {
   "set_env" => set_env,
   "unit_test_suites" => JSON.generate(suites)
 }
+if legacy_perf_runner_labels
+  outputs["legacy_perf_runs_on"] = JSON.generate(legacy_perf_runner_labels)
+end
 
 if ENV["GITHUB_OUTPUT"] && !ENV["GITHUB_OUTPUT"].empty?
   File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
