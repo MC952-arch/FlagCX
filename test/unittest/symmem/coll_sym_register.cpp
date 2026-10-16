@@ -1332,6 +1332,48 @@ TEST_F(SymMemTest, RankLocalSignalMrFailurePreservesErrorAndRetries) {
   EXPECT_EQ(flagcxMemFree(signalBuffer), flagcxSuccess);
 }
 
+TEST_F(SymMemTest, AsymmetricPendingCleanupWithoutLocalTokenConverges) {
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  if (hetero->nRanks < 2)
+    GTEST_SKIP() << "Requires at least two ranks";
+  ASSERT_EQ(hetero->pendingSymCleanup, nullptr);
+
+  // Only one rank owns a failed-registration token. All other ranks must
+  // still pass through every cleanup convergence stage with a null token.
+  flagcxWindow_t token = nullptr;
+  flagcxSymWindow_t pending = nullptr;
+  if (hetero->rank == 0) {
+    token = static_cast<flagcxWindow_t>(calloc(1, sizeof(*token)));
+    pending = static_cast<flagcxSymWindow_t>(calloc(1, sizeof(*pending)));
+  }
+  const bool allocated =
+      hetero->rank != 0 || (token != nullptr && pending != nullptr);
+  if (!allRanksSucceeded(allocated ? flagcxSuccess : flagcxSystemError)) {
+    free(pending);
+    free(token);
+    FAIL() << "Could not allocate the pending cleanup token";
+  }
+  flagcxResult_t retain = flagcxSuccess;
+  if (hetero->rank == 0) {
+    token->defaultBase = pending;
+    pending->owner = token;
+    pending->mrIndex = -1;
+    pending->ipcSlot = -1;
+    retain = flagcxSymRetainPendingCleanup(hetero, token);
+  }
+  if (!allRanksSucceeded(retain)) {
+    free(pending);
+    free(token);
+    FAIL() << "Could not retain the pending cleanup token";
+  }
+
+  EXPECT_EQ(flagcxSymRetryPendingCleanup(hetero, flagcxSymCleanupCollective),
+            flagcxSuccess);
+  EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+}
+
 TEST_F(SymMemTest, FlatMapRollbackFailureRetainsOwnershipForRetry) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
       envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))

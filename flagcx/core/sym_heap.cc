@@ -928,7 +928,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
   flagcxResult_t local = flagcxSuccess;
   flagcxResult_t common = flagcxSuccess;
 
-  if (d->mcLsaBound) {
+  if (d != nullptr && d->mcLsaBound) {
     flagcxSymLsaArena *arena = comm->symLsaArena;
     local = arena != nullptr && arena->mcHandle != nullptr &&
                     deviceAdaptor->symLsaMulticastUnbind != nullptr
