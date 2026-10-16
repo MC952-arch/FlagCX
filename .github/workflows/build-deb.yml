@@ -19,7 +19,6 @@ on:
 
 jobs:
   build-packages:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 643 }}
     runs-on: h20
 
     strategy:

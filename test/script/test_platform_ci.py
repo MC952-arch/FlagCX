@@ -300,8 +300,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         pipeline = ci_workflow[ci_workflow.index("\n  platform-pipeline:") :]
         self.assertIn("needs: generate-matrix", pipeline)
-        self.assertIn("!cancelled()", pipeline)
-        self.assertIn("needs.generate-matrix.result == 'success'", pipeline)
         self.assertIn("needs.generate-matrix.outputs.platforms != '[]'", pipeline)
 
     def test_hygon_builds_ibrc_with_shca_abi(self):
@@ -583,10 +581,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
         ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertIn('platforms=["hygon"]', ci_workflow)
-        self.assertIn("needs.lint.result == 'skipped'", ci_workflow)
+        self.assertNotIn("pull_request.number == 643", ci_workflow)
+        self.assertIn(".github/scripts/ci/generate_matrix.py", ci_workflow)
         self.assertIn("github.event.inputs.platform || 'all'", unit_workflow)
-        self.assertNotIn("pull_request.number == 648", unit_workflow)
+        self.assertNotIn("pull_request.number == 643", unit_workflow)
 
         expected_suites = {
             "cuda": [

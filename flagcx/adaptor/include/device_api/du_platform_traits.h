@@ -22,7 +22,7 @@ struct PlatformTraits<DuPlatform> {
   // Intrin — HIP wavefront intrinsics
   // ==============================================================
   struct Intrin {
-    static constexpr int simtWidth = 64;
+    static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
     static FLAGCX_HOST_DEVICE_INLINE constexpr flagcxLaneMask_t fullMask() {
       return 0xffffffffffffffffull;
     }

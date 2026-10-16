@@ -52,7 +52,6 @@ jobs:
   # the complete tree so a successful job always ran the hooks it reports.
   lint:
     name: Lint
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 643 }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -103,7 +102,6 @@ jobs:
   generate-matrix:
     name: Generate platform matrix
     needs: lint
-    if: ${{ always() && (needs.lint.result == 'success' || (github.event_name == 'pull_request' && github.event.pull_request.number == 643 && needs.lint.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -119,24 +117,17 @@ jobs:
         run: pip install --quiet pyyaml==6.0.2
       - name: Compute platform matrix
         id: matrix
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$PR_NUMBER" == 643 ]]; then
-            echo 'platforms=["hygon"]' >> "$GITHUB_OUTPUT"
-          else
-            python .github/scripts/ci/generate_matrix.py \
-              --event-name "$GITHUB_EVENT_NAME" \
-              --base-ref  "${{ github.base_ref || 'main' }}" \
-              --configs-dir .github/configs \
-              >> "$GITHUB_OUTPUT"
-          fi
+          python .github/scripts/ci/generate_matrix.py \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --base-ref  "${{ github.base_ref || 'main' }}" \
+            --configs-dir .github/configs \
+            >> "$GITHUB_OUTPUT"
 
   platform-pipeline:
     name: Platform pipeline (${{ matrix.platform }})
     needs: generate-matrix
-    # A skipped lint job is still in the dependency chain for PR #643.
-    if: ${{ !cancelled() && needs.generate-matrix.result == 'success' && needs.generate-matrix.outputs.platforms != '[]' }}
+    if: needs.generate-matrix.outputs.platforms != '[]'
     strategy:
       fail-fast: false
       matrix:
