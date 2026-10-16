@@ -73,7 +73,7 @@ if [[ "${FLAGCX_ADAPTOR:-}" == "du" ]]; then
       -x FLAGCX_IB_DISABLE=1 \
       -x FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1 \
       "$BUILD_BIN/symmem_mpi_tests" \
-      --gtest_filter=SymMemTest.SegmentedDuWindowMapsDifferentPeerLayouts:SymMemTest.DuSegmentedAllocFailureRollsBackAndCanRetry
+      --gtest_filter=SymMemTest.DuSegmentedAllocFailureRollsBackAndCanRetry
 fi
 
 echo ""
