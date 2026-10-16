@@ -251,8 +251,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "FLAGCX_CI_HYGON_FOUR_GPU_DEVICES=0,1,6,7", hygon_env
         )
-        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,3,6", hygon_env)
-        self.assertIn("FLAGCX_CI_PXN_HCAS=shca_0,shca_1", hygon_env)
+        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=2,0,6,7", hygon_env)
+        self.assertIn("FLAGCX_CI_PXN_HCAS=shca_0,shca_3", hygon_env)
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", hygon_env)
         self.assertIn("export NP=4", hygon_env)
 
