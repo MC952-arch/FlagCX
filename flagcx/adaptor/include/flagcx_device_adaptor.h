@@ -428,6 +428,20 @@ struct flagcxDeviceAdaptor_latest {
       const struct flagcxSymRankLayout *layouts,
       const struct flagcxSymSegmentMeta *segments, int totalSegments,
       size_t rankStride, size_t slotAlignment, void **mappingBase);
+
+  // Optional communicator-level multicast for latest LSA adaptors. The
+  // returned mapping ownership bits are valid even when map returns an error;
+  // the caller must unmap, free VA, then release the imported handle.
+  flagcxResult_t (*symLsaMulticastGranularity)(size_t objectSize,
+                                               int nLocalDevices,
+                                               size_t *granularity);
+  flagcxResult_t (*symLsaMulticastMap)(void *mcHandle, size_t size,
+                                       size_t alignment, void **base,
+                                       bool *mappingOwned, bool *vaOwned);
+  flagcxResult_t (*symLsaMulticastBind)(void *mcHandle, size_t offset,
+                                        const void *source, size_t size);
+  flagcxResult_t (*symLsaMulticastUnbind)(void *mcHandle, size_t offset,
+                                          size_t size);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

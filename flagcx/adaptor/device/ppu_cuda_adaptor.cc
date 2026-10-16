@@ -1179,7 +1179,8 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymFlatVaFreeSegments, ppucudaAdaptorSymPhysSegmentCount,
       ppucudaAdaptorSymFlatMapSegmentsBegin, ppucudaAdaptorSymFlatMapSegmentOne,
       ppucudaAdaptorSymLsaGetCapacity, ppucudaAdaptorSymLsaVaReserve,
-      ppucudaAdaptorSymLsaVaFree, ppucudaAdaptorSymLsaMapBeginAt,
+      ppucudaAdaptorSymLsaVaFree, ppucudaAdaptorSymLsaMapBeginAt, NULL, NULL,
+      NULL, NULL,
 };
 
 #endif // USE_PPU_ADAPTOR

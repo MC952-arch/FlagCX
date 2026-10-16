@@ -63,6 +63,8 @@ struct flagcxSymWindow {
   size_t lsaWindowOffset;
   size_t lsaWindowSpan;
   bool lsaOffsetOwned;
+  bool mcLsaBound;       // multicast binding into the communicator LSA object
+  size_t mcLsaBindSize;  // provider granularity-aligned binding length
   bool lsaCleanupFailed; // failed mapping teardown may diverge rank allocators
   flagcxSymRankLayout *rankLayouts;
   flagcxSymSegmentMeta *segments;

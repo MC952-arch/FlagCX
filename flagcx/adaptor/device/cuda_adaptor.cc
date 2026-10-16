@@ -1328,6 +1328,80 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorSymLsaMulticastGranularity(size_t objectSize,
+                                                     int nLocalDevices,
+                                                     size_t *granularity) {
+  if (objectSize == 0 || nLocalDevices <= 0 || granularity == NULL)
+    return flagcxInvalidArgument;
+  CUmulticastObjectProp prop = {};
+  prop.numDevices = (unsigned int)nLocalDevices;
+  prop.size = objectSize;
+  prop.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  CUresult result = cuMulticastGetGranularity(
+      granularity, &prop, CU_MULTICAST_GRANULARITY_RECOMMENDED);
+  return result == CUDA_SUCCESS && *granularity != 0
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t cudaAdaptorSymLsaMulticastMap(void *mcHandle, size_t size,
+                                             size_t alignment, void **base,
+                                             bool *mappingOwned,
+                                             bool *vaOwned) {
+  if (mcHandle == NULL || size == 0 || base == NULL || mappingOwned == NULL ||
+      vaOwned == NULL)
+    return flagcxInvalidArgument;
+  *base = NULL;
+  *mappingOwned = false;
+  *vaOwned = false;
+  CUdeviceptr address = 0;
+  CUresult result = cuMemAddressReserve(&address, size, alignment, 0, 0);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = reinterpret_cast<void *>(address);
+  *vaOwned = true;
+  result = cuMemMap(address, size, 0,
+                    *static_cast<CUmemGenericAllocationHandle *>(mcHandle), 0);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *mappingOwned = true;
+  int device = -1;
+  if (cudaGetDevice(&device) != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  CUmemAccessDesc access = {};
+  access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  access.location.id = device;
+  access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  return cuMemSetAccess(address, size, &access, 1) == CUDA_SUCCESS
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t cudaAdaptorSymLsaMulticastBind(void *mcHandle, size_t offset,
+                                              const void *source, size_t size) {
+  if (mcHandle == NULL || source == NULL || size == 0)
+    return flagcxInvalidArgument;
+  return cuMulticastBindAddr(
+             *static_cast<CUmemGenericAllocationHandle *>(mcHandle), offset,
+             reinterpret_cast<CUdeviceptr>(source), size, 0) == CUDA_SUCCESS
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t cudaAdaptorSymLsaMulticastUnbind(void *mcHandle, size_t offset,
+                                                size_t size) {
+  if (mcHandle == NULL || size == 0)
+    return flagcxInvalidArgument;
+  int device = -1;
+  if (cudaGetDevice(&device) != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  return cuMulticastUnbind(
+             *static_cast<CUmemGenericAllocationHandle *>(mcHandle), device,
+             offset, size) == CUDA_SUCCESS
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
 flagcxResult_t cudaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
   if (mcBase == NULL)
     return flagcxSuccess;
@@ -1546,10 +1620,12 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymPhysSegmentCount, cudaAdaptorSymFlatMapSegmentsBegin,
       cudaAdaptorSymFlatMapSegmentOne, cudaAdaptorSymLsaGetCapacity,
       cudaAdaptorSymLsaVaReserve, cudaAdaptorSymLsaVaFree,
-      cudaAdaptorSymLsaMapBeginAt,
+      cudaAdaptorSymLsaMapBeginAt, cudaAdaptorSymLsaMulticastGranularity,
+      cudaAdaptorSymLsaMulticastMap, cudaAdaptorSymLsaMulticastBind,
+      cudaAdaptorSymLsaMulticastUnbind,
 #else
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL,
+      NULL, NULL, NULL, NULL, NULL,
 #endif
 };
 

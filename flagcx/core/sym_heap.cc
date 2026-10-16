@@ -31,6 +31,13 @@ struct flagcxSymLsaArena {
   size_t totalSize = 0;
   size_t alignment = 0;
   bool invalid = false;
+  void *mcBase = nullptr;
+  void *mcHandle = nullptr;
+  size_t mcGranularity = 0;
+  bool mcMappingOwned = false;
+  bool mcVaOwned = false;
+  bool mcReady = false;
+  bool mcUnavailable = false;
   std::map<size_t, size_t> freeRanges; // offset -> length within one rank slot
 };
 
@@ -238,6 +245,36 @@ static flagcxResult_t flagcxSymLsaReleaseOffset(flagcxSymLsaArena *arena,
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxSymLsaReleaseMulticast(flagcxSymLsaArena *arena) {
+  if (arena == nullptr)
+    return flagcxInvalidArgument;
+  if (arena->mcMappingOwned) {
+    if (deviceAdaptor == nullptr ||
+        deviceAdaptor->symMulticastMappingUnmap == nullptr)
+      return flagcxInternalError;
+    FLAGCXCHECK(deviceAdaptor->symMulticastMappingUnmap(arena->mcBase,
+                                                        arena->rankStride));
+    arena->mcMappingOwned = false;
+  }
+  if (arena->mcVaOwned) {
+    if (deviceAdaptor == nullptr ||
+        deviceAdaptor->symMulticastVaFree == nullptr)
+      return flagcxInternalError;
+    FLAGCXCHECK(
+        deviceAdaptor->symMulticastVaFree(arena->mcBase, arena->rankStride));
+    arena->mcVaOwned = false;
+    arena->mcBase = nullptr;
+  }
+  if (arena->mcHandle != nullptr) {
+    if (deviceAdaptor == nullptr || deviceAdaptor->symMulticastFree == nullptr)
+      return flagcxInternalError;
+    FLAGCXCHECK(deviceAdaptor->symMulticastFree(arena->mcHandle));
+    arena->mcHandle = nullptr;
+  }
+  arena->mcReady = false;
+  return flagcxSuccess;
+}
+
 static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
                                               size_t windowSpan,
                                               size_t windowAlignment) {
@@ -249,12 +286,12 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
   flagcxSymLsaArena *arena = comm->symLsaArena;
   flagcxResult_t common = flagcxSuccess;
   if (arena != nullptr && arena->invalid) {
-    flagcxResult_t local =
-        arena->base != nullptr
-            ? deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize)
-            : flagcxSuccess;
-    if (local == flagcxSuccess)
-      arena->base = nullptr;
+    flagcxResult_t local = flagcxSymLsaReleaseMulticast(arena);
+    if (local == flagcxSuccess && arena->base != nullptr) {
+      local = deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize);
+      if (local == flagcxSuccess)
+        arena->base = nullptr;
+    }
     FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5980, &common));
     if (common != flagcxSuccess)
       return common;
@@ -367,6 +404,205 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
   return commonRollback == flagcxSuccess ? common : commonRollback;
 }
 
+static flagcxResult_t flagcxSymLsaEnsureMulticast(flagcxHeteroComm_t comm) {
+  flagcxSymLsaArena *arena = comm->symLsaArena;
+  if (arena == nullptr || arena->invalid)
+    return flagcxInvalidUsage;
+  if (arena->mcReady)
+    return flagcxSuccess;
+  if (arena->mcUnavailable)
+    return flagcxNotSupported;
+
+  const bool callbacks = deviceAdaptor->symMulticastSupported != nullptr &&
+                         deviceAdaptor->symMulticastCreate != nullptr &&
+                         deviceAdaptor->symMulticastImport != nullptr &&
+                         deviceAdaptor->symMulticastFree != nullptr &&
+                         deviceAdaptor->symMulticastMappingUnmap != nullptr &&
+                         deviceAdaptor->symMulticastVaFree != nullptr &&
+                         deviceAdaptor->symLsaMulticastGranularity != nullptr &&
+                         deviceAdaptor->symLsaMulticastMap != nullptr &&
+                         deviceAdaptor->symLsaMulticastBind != nullptr &&
+                         deviceAdaptor->symLsaMulticastUnbind != nullptr;
+  int supported = 0;
+  flagcxResult_t local = callbacks
+                             ? deviceAdaptor->symMulticastSupported(&supported)
+                             : flagcxNotSupported;
+  if (local == flagcxSuccess && !supported)
+    local = flagcxNotSupported;
+  flagcxResult_t common = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5990, &common));
+  if (common != flagcxSuccess) {
+    arena->mcUnavailable = true;
+    return flagcxNotSupported;
+  }
+
+  size_t granularity = 0;
+  local = deviceAdaptor->symLsaMulticastGranularity(
+      arena->rankStride, comm->localRanks, &granularity);
+  if (local == flagcxSuccess &&
+      (granularity == 0 || arena->alignment % granularity != 0 ||
+       arena->rankStride % granularity != 0))
+    local = flagcxNotSupported;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5991, &common));
+  if (common != flagcxSuccess) {
+    arena->mcUnavailable = true;
+    return flagcxNotSupported;
+  }
+  const int root = comm->localRankToRank[0];
+  size_t agreedGranularity = granularity;
+  if (comm->localRank == 0) {
+    for (int peer = 1; peer < comm->localRanks; peer++) {
+      size_t remote = 0;
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[peer],
+                                0x599d, &remote, sizeof(remote)));
+      if (remote != granularity)
+        agreedGranularity = 0;
+    }
+    for (int peer = 1; peer < comm->localRanks; peer++)
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                0x599e, &agreedGranularity,
+                                sizeof(agreedGranularity)));
+  } else {
+    FLAGCXCHECK(bootstrapSend(comm->bootstrap, root, 0x599d, &granularity,
+                              sizeof(granularity)));
+    FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, 0x599e, &agreedGranularity,
+                              sizeof(agreedGranularity)));
+  }
+  if (agreedGranularity == 0) {
+    arena->mcUnavailable = true;
+    return flagcxNotSupported;
+  }
+  arena->mcGranularity = granularity;
+
+  // A failed optional setup can continue through the ordinary LSA mapping
+  // only after every local rank has released its partial multicast state.
+  auto rollback = [&]() -> flagcxResult_t {
+    flagcxResult_t release = flagcxSymLsaReleaseMulticast(arena);
+    flagcxResult_t agreed = flagcxSuccess;
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, release, 0x5992, &agreed));
+    if (agreed != flagcxSuccess) {
+      arena->invalid = true;
+      return agreed;
+    }
+    arena->mcUnavailable = true;
+    arena->mcGranularity = 0;
+    return flagcxNotSupported;
+  };
+
+  int fd = -1;
+  int created = 0;
+  if (comm->localRank == 0) {
+    int *devices = static_cast<int *>(
+        calloc(static_cast<size_t>(comm->localRanks), sizeof(int)));
+    if (devices != nullptr) {
+      for (int peer = 0; peer < comm->localRanks; peer++)
+        devices[peer] = comm->peerInfo[comm->localRankToRank[peer]].cudaDev;
+      local = deviceAdaptor->symMulticastCreate(
+          arena->rankStride, comm->localRanks, devices, &arena->mcHandle, &fd);
+      free(devices);
+      created = local == flagcxSuccess && arena->mcHandle != nullptr && fd >= 0;
+    }
+  }
+  for (int peer = 1; peer < comm->localRanks; peer++) {
+    if (comm->localRank == 0)
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                0x5993, &created, sizeof(created)));
+    else if (comm->localRank == peer)
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[0],
+                                0x5993, &created, sizeof(created)));
+  }
+  if (!created) {
+    if (fd >= 0)
+      close(fd);
+    return rollback();
+  }
+
+  flagcxIpcSocket socket = {};
+  const uint64_t hash = comm->commHash ^ 0x6c73616d756c7469ULL;
+  local = comm->localRanks > 1
+              ? flagcxIpcSocketInit(&socket, comm->rank, hash, /*block=*/1)
+              : flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5994, &common));
+  if (common != flagcxSuccess) {
+    if (local == flagcxSuccess && comm->localRanks > 1)
+      flagcxIpcSocketClose(&socket);
+    if (fd >= 0)
+      close(fd);
+    return rollback();
+  }
+  if (comm->localRanks > 1) {
+    FLAGCXCHECK(bootstrapCollIntraNodeBarrier(
+        comm->bootstrap, comm->localRankToRank, comm->localRank,
+        comm->localRanks, 0x5995));
+    int sent = 1;
+    if (comm->localRank == 0) {
+      for (int peer = 1; peer < comm->localRanks; peer++) {
+        int tag = 0;
+        if (flagcxIpcSocketSendMsg(&socket, &tag, sizeof(tag), fd,
+                                   comm->localRankToRank[peer],
+                                   hash) != flagcxSuccess)
+          sent = 0;
+      }
+      for (int peer = 1; peer < comm->localRanks; peer++)
+        FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                  0x599c, &sent, sizeof(sent)));
+    } else {
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[0],
+                                0x599c, &sent, sizeof(sent)));
+      if (sent) {
+        int tag = -1;
+        local = flagcxIpcSocketRecvMsg(&socket, &tag, sizeof(tag), &fd);
+        if (local == flagcxSuccess && (tag != 0 || fd < 0))
+          local = flagcxInternalError;
+      } else {
+        local = flagcxInternalError;
+      }
+    }
+    if (!sent)
+      local = flagcxInternalError;
+    flagcxIpcSocketClose(&socket);
+  }
+  if (local == flagcxSuccess && comm->localRank != 0)
+    local = deviceAdaptor->symMulticastImport(fd, &arena->mcHandle);
+  if (fd >= 0)
+    close(fd);
+  if (local == flagcxSuccess && arena->mcHandle == nullptr)
+    local = flagcxInternalError;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5996, &common));
+  if (common != flagcxSuccess)
+    return rollback();
+
+  local = deviceAdaptor->symLsaMulticastMap(
+      arena->mcHandle, arena->rankStride, arena->alignment, &arena->mcBase,
+      &arena->mcMappingOwned, &arena->mcVaOwned);
+  if (local == flagcxSuccess &&
+      (arena->mcBase == nullptr || !arena->mcMappingOwned || !arena->mcVaOwned))
+    local = flagcxInternalError;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5997, &common));
+  if (common != flagcxSuccess)
+    return rollback();
+  arena->mcReady = true;
+  return flagcxSuccess;
+}
+
+static bool flagcxSymLsaCanBindMulticast(const flagcxSymLsaArena *arena,
+                                         const flagcxSymWindow_t window,
+                                         int localRanks) {
+  if (arena == nullptr || !arena->mcReady || arena->mcGranularity == 0 ||
+      window == nullptr || window->rankLayouts == nullptr || localRanks <= 0)
+    return false;
+  const flagcxSymRankLayout &first = window->rankLayouts[0];
+  if (first.mappedSize == 0 || first.mappedSize % arena->mcGranularity != 0)
+    return false;
+  for (int peer = 1; peer < localRanks; peer++) {
+    const flagcxSymRankLayout &layout = window->rankLayouts[peer];
+    if (layout.mappedSize != first.mappedSize ||
+        layout.userOffset != first.userOffset)
+      return false;
+  }
+  return true;
+}
+
 static flagcxResult_t flagcxSymLsaAllocateWindow(flagcxHeteroComm_t comm,
                                                  flagcxSymWindow_t window) {
   if (comm == nullptr || window == nullptr || comm->symLsaArena == nullptr ||
@@ -374,9 +610,15 @@ static flagcxResult_t flagcxSymLsaAllocateWindow(flagcxHeteroComm_t comm,
     return flagcxInvalidArgument;
   flagcxSymLsaArena *arena = comm->symLsaArena;
   const size_t span = window->slotStride;
+  const bool mcCandidate =
+      flagcxSymLsaCanBindMulticast(arena, window, comm->localRanks);
+  const size_t alignment =
+      mcCandidate && arena->mcGranularity > window->slotAlignment
+          ? arena->mcGranularity
+          : window->slotAlignment;
   size_t offset = 0;
   flagcxResult_t local =
-      flagcxSymLsaFindOffset(arena, span, window->slotAlignment, &offset);
+      flagcxSymLsaFindOffset(arena, span, alignment, &offset);
   flagcxResult_t common = flagcxSuccess;
   FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5987, &common));
   if (common != flagcxSuccess)
@@ -426,6 +668,7 @@ flagcxResult_t flagcxSymLsaDestroy(flagcxHeteroComm_t comm) {
       (arena->freeRanges.size() != 1 || arena->freeRanges.begin()->first != 0 ||
        arena->freeRanges.begin()->second != arena->rankStride))
     return flagcxInvalidUsage;
+  FLAGCXCHECK(flagcxSymLsaReleaseMulticast(arena));
   if (arena->base != nullptr) {
     if (deviceAdaptor == nullptr || deviceAdaptor->symLsaVaFree == nullptr)
       return flagcxInternalError;
@@ -677,13 +920,33 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
   const bool hasVmmOwnership =
       d != nullptr &&
       (d->flatMappingOwned || d->flatVaOwned || d->multicastMappingOwned ||
-       d->multicastVaOwned || d->mcHandle != nullptr ||
+       d->multicastVaOwned || d->mcHandle != nullptr || d->mcLsaBound ||
        d->physHandle != nullptr || d->lsaOffsetOwned);
   if (hasVmmOwnership && deviceAdaptor == nullptr)
     return flagcxInternalError;
 
   flagcxResult_t local = flagcxSuccess;
   flagcxResult_t common = flagcxSuccess;
+
+  if (d->mcLsaBound) {
+    flagcxSymLsaArena *arena = comm->symLsaArena;
+    local = arena != nullptr && arena->mcHandle != nullptr &&
+                    deviceAdaptor->symLsaMulticastUnbind != nullptr
+                ? deviceAdaptor->symLsaMulticastUnbind(
+                      arena->mcHandle, d->lsaWindowOffset, d->mcLsaBindSize)
+                : flagcxInternalError;
+    if (local == flagcxSuccess) {
+      d->mcLsaBound = false;
+      d->mcLsaBindSize = 0;
+      d->mcBase = nullptr;
+    }
+  }
+  FLAGCXCHECK(
+      flagcxSymCleanupStepConverge(comm, local, /*tag=*/0x599b, mode, &common));
+  if (common != flagcxSuccess)
+    return common;
+
+  local = flagcxSuccess;
 
   if (hasVmmOwnership && d->multicastMappingOwned) {
     local =
@@ -1262,6 +1525,53 @@ static flagcxResult_t flagcxSymMapSegmentsStreaming(flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxSymLsaBindMulticast(flagcxHeteroComm_t comm,
+                                                flagcxSymWindow_t d) {
+  flagcxSymLsaArena *arena = comm->symLsaArena;
+  if (arena == nullptr || !arena->mcReady)
+    return flagcxSuccess;
+  const flagcxSymRankLayout &self = d->rankLayouts[comm->localRank];
+  const bool eligible =
+      flagcxSymLsaCanBindMulticast(arena, d, comm->localRanks) &&
+      d->lsaWindowOffset % arena->mcGranularity == 0;
+  flagcxResult_t common = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(
+      comm, eligible ? flagcxSuccess : flagcxNotSupported, 0x5998, &common));
+  if (common != flagcxSuccess)
+    return flagcxSuccess;
+
+  // The LSA alias is aligned to the arena's multicast granularity, even when
+  // the caller's original allocation VA was reserved at a smaller VMM page.
+  const uintptr_t source =
+      reinterpret_cast<uintptr_t>(d->flatBase) +
+      static_cast<size_t>(comm->localRank) * arena->rankStride;
+  flagcxResult_t local = deviceAdaptor->symLsaMulticastBind(
+      arena->mcHandle, d->lsaWindowOffset,
+      reinterpret_cast<const void *>(source), self.mappedSize);
+  if (local == flagcxSuccess) {
+    d->mcLsaBound = true;
+    d->mcLsaBindSize = self.mappedSize;
+  }
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5999, &common));
+  if (common != flagcxSuccess) {
+    local = flagcxSuccess;
+    if (d->mcLsaBound) {
+      local = deviceAdaptor->symLsaMulticastUnbind(
+          arena->mcHandle, d->lsaWindowOffset, d->mcLsaBindSize);
+      if (local == flagcxSuccess) {
+        d->mcLsaBound = false;
+        d->mcLsaBindSize = 0;
+      }
+    }
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x599a, &common));
+    return common == flagcxSuccess ? flagcxSuccess : common;
+  }
+  d->mcBase =
+      reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(arena->mcBase) +
+                               d->lsaWindowOffset + self.userOffset);
+  return flagcxSuccess;
+}
+
 static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
                                                 flagcxSymWindow_t d, void *buff,
                                                 size_t size, bool *used,
@@ -1339,32 +1649,6 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
     if (common != flagcxSuccess)
       return common;
 
-    bool useLegacyMappingCallbacks = true;
-    const size_t legacySize = d->rankLayouts[0].mappedSize;
-    for (int peer = 0; peer < comm->localRanks; peer++) {
-      const flagcxSymRankLayout &layout = d->rankLayouts[peer];
-      if (layout.segmentCount != 1 || layout.userOffset != 0 ||
-          layout.mappedSize != legacySize || layout.userSize != d->heapSize)
-        useLegacyMappingCallbacks = false;
-    }
-
-    // Until multicast is mapped into its own communicator arena, preserve the
-    // existing single-allocation path on teams that can use multicast.
-    bool preserveLegacyMulticast = false;
-    if (useLegacyMappingCallbacks) {
-      int supported = 0;
-      flagcxResult_t mcStatus =
-          deviceAdaptor->symMulticastSupported != nullptr
-              ? deviceAdaptor->symMulticastSupported(&supported)
-              : flagcxNotSupported;
-      FLAGCXCHECK(flagcxSymLocalConverge(
-          comm,
-          mcStatus == flagcxSuccess && supported != 0 ? flagcxSuccess
-                                                      : flagcxNotSupported,
-          0x598e, &common));
-      preserveLegacyMulticast = common == flagcxSuccess;
-    }
-
     const bool lsaAvailable = deviceAdaptor->symLsaGetCapacity != nullptr &&
                               deviceAdaptor->symLsaVaReserve != nullptr &&
                               deviceAdaptor->symLsaVaFree != nullptr &&
@@ -1372,44 +1656,22 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
     FLAGCXCHECK(flagcxSymLocalConverge(
         comm, lsaAvailable ? flagcxSuccess : flagcxNotSupported, 0x598c,
         &common));
-    if (common != flagcxSuccess && !preserveLegacyMulticast)
+    if (common != flagcxSuccess)
       return common;
-    if (common == flagcxSuccess && !preserveLegacyMulticast) {
-      local = flagcxSymLsaEnsureArena(comm, d->slotStride, d->slotAlignment);
-      FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x598d, &common));
-      if (common != flagcxSuccess)
-        return common;
-      local = flagcxSymLsaAllocateWindow(comm, d);
-      if (local != flagcxSuccess)
-        return local;
-      return flagcxSymMapSegmentsStreaming(comm, d, &mapFailure);
-    }
-
-    if (useLegacyMappingCallbacks) {
-      // Preserve the established single-allocation callback and its failure
-      // injection seam. No FD or flat VA belongs to this probe yet.
-      local = deviceAdaptor->symPhysFreeSegments(d->physHandle);
-      if (local == flagcxSuccess) {
-        d->physHandle = nullptr;
-        d->resourcePath = flagcxSymResourceNone;
-      }
-      FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5973, &common));
-      if (common != flagcxSuccess)
-        return common;
-      free(d->rankLayouts);
-      free(d->segments);
-      d->rankLayouts = nullptr;
-      d->segments = nullptr;
-      d->totalSegments = 0;
-      d->slotStride = 0;
-      d->slotAlignment = 0;
-      *used = false;
-      return flagcxSuccess;
-    }
-
-    // A described latest allocation must not silently acquire a per-window
-    // VA mapping when the communicator LSA path was selected.
-    return flagcxInternalError;
+    local = flagcxSymLsaEnsureArena(comm, d->slotStride, d->slotAlignment);
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x598d, &common));
+    if (common != flagcxSuccess)
+      return common;
+    local = flagcxSymLsaEnsureMulticast(comm);
+    if (local != flagcxSuccess && local != flagcxNotSupported)
+      return local;
+    local = flagcxSymLsaAllocateWindow(comm, d);
+    if (local != flagcxSuccess)
+      return local;
+    local = flagcxSymMapSegmentsStreaming(comm, d, &mapFailure);
+    if (local != flagcxSuccess)
+      return local;
+    return flagcxSymLsaBindMulticast(comm, d);
   };
 
   flagcxResult_t prepared = prepare();

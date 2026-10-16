@@ -8,15 +8,22 @@ FlagCX uses the existing single-allocation path when the setting is absent or
 the rounded allocation fits in one segment. CUDA requires a toolkit with
 `CUDART_VERSION >= 12010` for this path.
 
-The common symmetric heap exchanges segment sizes and offsets, then transfers
-one shareable FD per segment in a fixed rank and segment order. It closes each
+The common symmetric heap describes only the physical segments touched by the
+registered user range. It normalizes their offsets to the first touched
+segment, then exchanges segment sizes and offsets and transfers one shareable
+FD per segment in a fixed rank and segment order. It closes each
 exported or received FD before advancing to the next segment, so the number
 of live FDs per process does not grow with the number of segments. Each adaptor
 retains and exports its own physical handles, maps each peer segment, and owns
 imported handles until every alias has been unmapped. Collective registration
-publishes a window only after every rank succeeds. Network registration of a
-tracked multi-segment VMM allocation exports the complete mapped range as one
-DMA-BUF FD and registers it with `regMrDmaBuf`. If that route is unavailable,
+publishes a window only after every rank succeeds. Latest VMM adaptors map
+every successful window into a communicator-level LSA reservation. A failed
+reservation, offset allocation, or mapping fails registration collectively;
+it cannot publish a window at an unrelated per-window VA. Released windows
+return their offsets to the communicator allocator for reuse. Network
+registration of a tracked multi-segment VMM allocation exports the registered
+VA range as one DMA-BUF FD and registers it with `regMrDmaBuf`. If that route
+is unavailable,
 registration fails collectively without publishing a partial window. Plain VA
 `regMr` remains available for single-segment allocations only when both the
 device and NET adaptor declare a validated VMM VA route. Set
@@ -39,6 +46,25 @@ ordinary-allocation IPC fallback only when its provider can export a legacy
 IPC handle from the allocation base. This also supports windows beginning at
 an offset inside an ordinary allocation. The adaptors do not retain unknown
 VMM handles to decide between these paths.
+
+CUDA and MetaX can also create one communicator-level multicast object and VA
+reservation. An eligible window binds its local VMM mapping at the same LSA
+offset and unbinds it before releasing the flat mapping or offset. Multicast
+requires uniform mapped size and user offset across local ranks and compatible
+provider granularity. If multicast setup or binding is unavailable and cleanup
+succeeds, the window uses the unicast LSA mapping. DU and PPU do not provide
+communicator LSA multicast callbacks. MetaX uses the multicast address-binding
+symbols only when the installed SDK exports them.
+
+The local VMM MPI suite runs the LSA reuse, subrange, mapping rollback, and
+multicast tests on all four adaptors. Multicast tests skip on hardware without
+that capability. On CUDA or MetaX hardware expected to support multicast,
+set `FLAGCX_CI_REQUIRE_MULTICAST=1` when running `test/script/symmem_test.sh`
+to require successful binding and exercise offset reuse, bind failure fallback,
+and unbind retry.
+Build each adaptor with `HOST_CXX_STANDARD=-std=c++11` in its hardware CI
+environment to check the library's C++11 contract. The test harness keeps its
+existing C++17 compiler setting.
 
 The opt-in MPI test `FLAGCX_CI_REQUIRE_LOW_FD_MULTI_SEGMENT=1` uses a
 64-segment allocation and a temporarily reduced `RLIMIT_NOFILE` on Linux.

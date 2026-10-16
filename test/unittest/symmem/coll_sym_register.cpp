@@ -1720,10 +1720,10 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   MPI_Allreduce(&multicastSupported, &allMulticastSupported, 1, MPI_INT,
                 MPI_MIN, MPI_COMM_WORLD);
   if (allMulticastQueriesOk != 0 && allMulticastSupported != 0 &&
-      liveWindow->defaultBase->hasFlatMapping) {
-    ASSERT_NE(deviceAdaptor->symMulticastImport, nullptr);
-    EXPECT_NE(liveWindow->defaultBase->mcBase, nullptr);
-    EXPECT_NE(liveWindow->defaultBase->mcHandle, nullptr);
+      liveWindow->defaultBase->mcBase != nullptr &&
+      liveWindow->defaultBase->resourcePath == flagcxSymResourceLsa) {
+    EXPECT_TRUE(liveWindow->defaultBase->mcLsaBound);
+    EXPECT_EQ(liveWindow->defaultBase->mcHandle, nullptr);
   }
 
   // Deliberately omit flagcxCommWindowDeregister. Communicator destruction is
