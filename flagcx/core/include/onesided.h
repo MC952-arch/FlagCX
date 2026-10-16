@@ -51,15 +51,14 @@ bool flagcxOneSideRegistryRangeIsVmm(const void *buff, size_t size);
 flagcxResult_t flagcxOneSideRegisterMr(flagcxHeteroComm_t comm, void *regComm,
                                        void *buff, size_t size, int ptrType,
                                        bool isVmm, int mrFlags, void **mrHandle,
-                                       flagcxVmmMrRoute_t *selectedRoute);
+                                       flagcxVmmMrRoute_t *selectedRoute,
+                                       bool segmentedVmm = false);
 
 // Internal implementation used by sym_heap and flagcxCommRegister
-flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
-                                             void *buff, size_t size,
-                                             bool isVmm,
-                                             bool acquireWindowRef = false,
-                                             int *mrIndex = nullptr,
-                                             bool *rollbackPending = nullptr);
+flagcxResult_t flagcxOneSideRegisterInternal(
+    flagcxHeteroComm_t comm, void *buff, size_t size, bool isVmm,
+    bool acquireWindowRef = false, int *mrIndex = nullptr,
+    bool *rollbackPending = nullptr, bool segmentedVmm = false);
 
 // Retry MR objects retained after a failed registration rollback. Symmetric
 // windows use this before dropping their allocation lease.

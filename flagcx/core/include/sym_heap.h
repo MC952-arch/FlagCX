@@ -44,10 +44,11 @@ struct flagcxSymWindow {
   // An unpublished MR transaction is retained in comm->pendingOneSideCleanup.
   // Keep this window and its allocation lease alive until that MR is released.
   bool hasPendingNetworkCleanup;
-  size_t heapSize;   // user-requested size (for bounds info)
-  size_t allocSize;  // actual physical allocation size per peer
-                     // (granularity-aligned)
-  size_t slotStride; // common VA slot width for segmented flat mappings
+  size_t heapSize;      // user-requested size (for bounds info)
+  size_t allocSize;     // actual physical allocation size per peer
+                        // (granularity-aligned)
+  size_t slotStride;    // common VA slot width for segmented flat mappings
+  size_t slotAlignment; // common VA base alignment for segmented flat mappings
   flagcxSymRankLayout *rankLayouts;
   flagcxSymSegmentMeta *segments;
   int totalSegments;
@@ -71,8 +72,9 @@ struct flagcxSymWindow {
   // mapping succeeded. Network MR routing must use isVmmAllocation; local
   // peer-pointer resolution uses hasFlatMapping/flatBase.
   bool isVmmAllocation;
-  bool hasFlatMapping; // true while a VMM flat mapping is active
-  bool published;      // linked into comm->symWindows only after full commit
+  bool usesSegmentedVmm; // physHandle is an adaptor-private segment bundle
+  bool hasFlatMapping;   // true while a VMM flat mapping is active
+  bool published;        // linked into comm->symWindows only after full commit
   flagcxSymWindowState state;
   struct flagcxSymWindow *next; // intrusive link in comm->symWindows
   struct flagcxSymWindow
@@ -116,6 +118,8 @@ flagcxResult_t flagcxSymWindowDeregister(
 // has converged successfully on all ranks.
 flagcxResult_t flagcxSymWindowPublish(flagcxHeteroComm_t comm,
                                       flagcxWindow_t win);
+// Non-failing local commit after a communicator-wide route/readiness preflight.
+void flagcxSymWindowCommit(flagcxHeteroComm_t comm, flagcxWindow_t win);
 flagcxResult_t flagcxSymRetryPendingCleanup(
     flagcxHeteroComm_t comm,
     flagcxSymCleanupMode mode = flagcxSymCleanupCollective);
@@ -161,5 +165,12 @@ flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
                                                 flagcxSymWindow_t window,
                                                 int peer, size_t offset,
                                                 size_t size, void **ptr);
+
+// Resolve the registered user range for a peer before a window-based RMA
+// operation. Segmented local peers use their exchanged layouts; remote peers
+// use the collective network MR metadata.
+flagcxResult_t flagcxSymWindowPeerUserSize(flagcxHeteroComm_t comm,
+                                           flagcxSymWindow_t window, int peer,
+                                           size_t *userSize);
 
 #endif // FLAGCX_SYM_HEAP_H_

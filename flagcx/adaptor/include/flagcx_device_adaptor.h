@@ -400,6 +400,20 @@ struct flagcxDeviceAdaptor_latest {
   // the private record intact so the same callback can be retried.
   flagcxResult_t (*symFlatMappingUnmapSegments)(void *flatBase);
   flagcxResult_t (*symFlatVaFreeSegments)(void *flatBase);
+  // Read-only, handle-free provenance query for public one-sided MR routing.
+  // Providers return NotSupported for allocations they do not track.
+  flagcxResult_t (*symPhysSegmentCount)(const void *ptr, size_t size,
+                                        int *segmentCount);
+  // Streaming latest-only mapping path. Begin owns flatBase before any segment
+  // import, and mapOne consumes one FD (or -1 for the local segment). The
+  // caller closes each FD immediately after mapOne returns.
+  flagcxResult_t (*symFlatMapSegmentsBegin)(
+      int nPeers, int selfIndex, void *selfBundle,
+      const struct flagcxSymRankLayout *layouts,
+      const struct flagcxSymSegmentMeta *segments, int totalSegments,
+      size_t slotStride, size_t slotAlignment, void **flatBase);
+  flagcxResult_t (*symFlatMapSegmentOne)(void *flatBase, int segmentIndex,
+                                         int shareableFd);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

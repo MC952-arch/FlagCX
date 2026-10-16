@@ -54,10 +54,14 @@ public:
       hadOldValue_ = true;
       oldValue_ = old;
     }
+    set(value);
+  }
+
+  void set(const char *value) {
     if (value != nullptr)
-      setenv(name, value, 1);
+      setenv(name_, value, 1);
     else
-      unsetenv(name);
+      unsetenv(name_);
   }
 
   ~ScopedEnvVar() {
@@ -85,6 +89,21 @@ flagcxResult_t failVaFreeOnce(void *, size_t, int) {
 
 flagcxResult_t countFlatVaFree(void *, size_t, int) {
   vaFreeCalls++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t failSegmentUnmapOnce(void *) {
+  unmapCalls++;
+  return unmapCalls == 1 ? flagcxRemoteError : flagcxSuccess;
+}
+
+flagcxResult_t failSegmentVaFreeOnce(void *) {
+  vaFreeCalls++;
+  return vaFreeCalls == 1 ? flagcxRemoteError : flagcxSuccess;
+}
+
+flagcxResult_t countSegmentBundleFree(void *) {
+  physFreeCalls++;
   return flagcxSuccess;
 }
 
@@ -983,6 +1002,58 @@ TEST(SymWindowMrRoute, ExportNotSupportedFallsBackToValidatedVa) {
   deviceAdaptor = savedDevice;
 }
 
+TEST(SymWindowMrRoute, SegmentedVmmUsesVaAndHonorsStrictDmaBufMode) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
+  struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
+  struct flagcxHeteroComm comm = {};
+  char buffer[64] = {};
+  void *mrHandle = nullptr;
+  flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
+
+  testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  testDevice.dmaSupport = mockDmaSupport;
+  testDevice.getAddressRange = mockAddressRange;
+  testDevice.getHandleForAddressRange = mockDmaBufExportSuccess;
+  testNet.getProperties = mockNetProperties;
+  testNet.regMr = mockVaRegMr;
+  testNet.regMrDmaBuf = mockDmaBufRegMr;
+  comm.netAdaptor = &testNet;
+  comm.netDev = 0;
+  vaRegCalls = 0;
+  dmaBufRegCalls = 0;
+  dmaSupportCalls = 0;
+  deviceAdaptor = &testDevice;
+
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, sizeof(buffer), FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route, /*segmentedVmm=*/true),
+            flagcxSuccess);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(vaRegCalls, 1);
+  EXPECT_EQ(dmaBufRegCalls, 0);
+  EXPECT_EQ(dmaSupportCalls, 0);
+
+  routeMode.set("dmabuf");
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, sizeof(buffer), FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route, /*segmentedVmm=*/true),
+            flagcxNotSupported);
+  EXPECT_EQ(mrHandle, nullptr);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
+  EXPECT_EQ(vaRegCalls, 1);
+  EXPECT_EQ(dmaBufRegCalls, 0);
+  deviceAdaptor = savedDevice;
+}
+
 TEST(SymWindowMrRoute, LegacyV1ExportSuccessUsesDmaBuf) {
   ASSERT_NE(deviceAdaptor, nullptr);
   ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "invalid");
@@ -1350,6 +1421,57 @@ TEST(SymWindowOwnership, TeardownFailureRetainsWindowForRetry) {
   free(comm);
 }
 
+TEST(SymWindowOwnership, SegmentedCleanupRetainsEachStageForRetry) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  struct flagcxDeviceAdaptor testAdaptor = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedAdaptor = deviceAdaptor;
+  testAdaptor.symFlatMappingUnmapSegments = failSegmentUnmapOnce;
+  testAdaptor.symFlatVaFreeSegments = failSegmentVaFreeOnce;
+  testAdaptor.symPhysFreeSegments = countSegmentBundleFree;
+  unmapCalls = vaFreeCalls = physFreeCalls = 0;
+
+  auto *comm = static_cast<flagcxHeteroComm *>(
+      calloc(1, sizeof(struct flagcxHeteroComm)));
+  auto *win =
+      static_cast<flagcxWindow *>(calloc(1, sizeof(struct flagcxWindow)));
+  auto *sym =
+      static_cast<flagcxSymWindow *>(calloc(1, sizeof(struct flagcxSymWindow)));
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(win, nullptr);
+  ASSERT_NE(sym, nullptr);
+  deviceAdaptor = &testAdaptor;
+  win->defaultBase = sym;
+  sym->owner = win;
+  sym->usesSegmentedVmm = true;
+  sym->hasFlatMapping = true;
+  sym->flatBase = reinterpret_cast<void *>(0x1000);
+  sym->flatMappingOwned = true;
+  sym->flatVaOwned = true;
+  sym->physHandle = reinterpret_cast<void *>(0x2000);
+  sym->localRanks = 2;
+  sym->published = true;
+  comm->symWindows = sym;
+
+  EXPECT_EQ(flagcxSymWindowDeregister(comm, win, flagcxSymCleanupLocal),
+            flagcxRemoteError);
+  EXPECT_EQ(unmapCalls, 1);
+  EXPECT_EQ(vaFreeCalls, 0);
+  EXPECT_EQ(physFreeCalls, 0);
+  EXPECT_EQ(flagcxSymWindowDeregister(comm, win, flagcxSymCleanupLocal),
+            flagcxRemoteError);
+  EXPECT_EQ(unmapCalls, 2);
+  EXPECT_EQ(vaFreeCalls, 1);
+  EXPECT_EQ(physFreeCalls, 0);
+  EXPECT_EQ(flagcxSymWindowDeregister(comm, win, flagcxSymCleanupLocal),
+            flagcxSuccess);
+  EXPECT_EQ(unmapCalls, 2);
+  EXPECT_EQ(vaFreeCalls, 2);
+  EXPECT_EQ(physFreeCalls, 1);
+  EXPECT_EQ(comm->symWindows, nullptr);
+  deviceAdaptor = savedAdaptor;
+  free(comm);
+}
+
 TEST(SymWindowOwnership, FlatUnmapIsNotRepeatedWhenVaFreeRetryIsRequired) {
   ASSERT_NE(deviceAdaptor, nullptr);
   struct flagcxDeviceAdaptor testAdaptor = *deviceAdaptor;
@@ -1654,7 +1776,8 @@ TEST(SymWindowLayout, RejectsOverflowAndBadSegmentIndex) {
   flagcxSymRankLayout layout = {4096, 0, 4096, 0, 1};
   size_t stride = 0;
   EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 8192, &stride),
-            flagcxInvalidArgument);
+            flagcxSuccess);
+  EXPECT_EQ(stride, 8192u);
   EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 4096, &stride),
             flagcxSuccess);
   layout.firstSegment = 1;
@@ -1690,4 +1813,75 @@ TEST(SymWindowLookup, ResolveSelfPeerValidatesRangeBeforePointerArithmetic) {
   EXPECT_EQ(flagcxSymWindowResolveIpcPeerPtr(&comm, &sym, 0, 60, 5, &peer),
             flagcxInvalidArgument);
   EXPECT_EQ(peer, nullptr);
+}
+
+TEST(SymWindowLookup, SegmentedPeerUsesPeerOffsetAndBounds) {
+  int rankToNode[] = {0, 0};
+  int rankToLocalRank[] = {0, 1};
+  struct flagcxHeteroComm comm = {};
+  comm.rank = 0;
+  comm.nRanks = 2;
+  comm.node = 0;
+  comm.rankToNode = rankToNode;
+  comm.rankToLocalRank = rankToLocalRank;
+
+  flagcxSymRankLayout layouts[] = {{8192, 0, 4096, 0, 1},
+                                   {12288, 1024, 10000, 1, 2}};
+  struct flagcxSymWindow sym = {};
+  sym.localBase = reinterpret_cast<void *>(0x100000);
+  sym.heapSize = 4096;
+  sym.localRanks = 2;
+  sym.flatBase = reinterpret_cast<void *>(0x200000);
+  sym.hasFlatMapping = true;
+  sym.usesSegmentedVmm = true;
+  sym.slotStride = 12288;
+  sym.rankLayouts = layouts;
+
+  void *peer = nullptr;
+  EXPECT_EQ(flagcxSymWindowResolveIpcPeerPtr(&comm, &sym, 1, 9000, 1000, &peer),
+            flagcxSuccess);
+  EXPECT_EQ(peer, reinterpret_cast<void *>(0x200000 + 12288 + 1024 + 9000));
+  EXPECT_EQ(flagcxSymWindowResolveIpcPeerPtr(&comm, &sym, 1, 9000, 1001, &peer),
+            flagcxInvalidArgument);
+  EXPECT_EQ(peer, nullptr);
+}
+
+TEST(SymWindowLookup, PeerUserSizeUsesLocalLayoutAndRemoteMr) {
+  char local[64] = {};
+  int rankToNode[] = {0, 0};
+  int rankToLocalRank[] = {0, 1};
+  struct flagcxHeteroComm comm = {};
+  comm.rank = 0;
+  comm.nRanks = 2;
+  comm.node = 0;
+  comm.rankToNode = rankToNode;
+  comm.rankToLocalRank = rankToLocalRank;
+  flagcxSymRankLayout layouts[] = {{4096, 0, 64, 0, 1},
+                                   {8192, 128, 7000, 1, 2}};
+  struct flagcxSymWindow window = {};
+  window.localBase = local;
+  window.heapSize = sizeof(local);
+  window.localRanks = 2;
+  window.usesSegmentedVmm = true;
+  window.rankLayouts = layouts;
+
+  size_t peerSize = 0;
+  EXPECT_EQ(flagcxSymWindowPeerUserSize(&comm, &window, 1, &peerSize),
+            flagcxSuccess);
+  EXPECT_EQ(peerSize, 7000u);
+
+  rankToNode[1] = 1;
+  uintptr_t baseVas[] = {(uintptr_t)local, 0};
+  size_t regionSizes[] = {sizeof(local), 9000};
+  struct flagcxOneSideHandleInfo handle = {};
+  handle.baseVas = baseVas;
+  handle.regionSizes = regionSizes;
+  struct flagcxOneSideHandleInfo *handles[] = {&handle};
+  comm.oneSideHandles = handles;
+  comm.oneSideHandleCount = 1;
+  window.hasNetworkMrRef = true;
+  window.mrIndex = 0;
+  EXPECT_EQ(flagcxSymWindowPeerUserSize(&comm, &window, 1, &peerSize),
+            flagcxSuccess);
+  EXPECT_EQ(peerSize, 9000u);
 }

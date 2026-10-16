@@ -741,25 +741,10 @@ ppucudaAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
   *segmentBundle = NULL;
   *segments = NULL;
   *segmentCount = 0;
+  *slotAlignment = 0;
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
   if (size > std::numeric_limits<uintptr_t>::max() - address)
     return flagcxInvalidArgument;
-
-  int device = 0;
-  CUdevice cuDevice;
-  if (cudaGetDevice(&device) != cudaSuccess ||
-      cuDeviceGet(&cuDevice, device) != CUDA_SUCCESS)
-    return flagcxUnhandledDeviceError;
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = cuDevice;
-  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-  if (cuMemGetAllocationGranularity(slotAlignment, &prop,
-                                    CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
-          CUDA_SUCCESS ||
-      *slotAlignment == 0)
-    return flagcxUnhandledDeviceError;
 
   PpuSegmentMap::Bundle *bundle = new (std::nothrow) PpuSegmentMap::Bundle();
   if (bundle == NULL)
@@ -800,28 +785,44 @@ ppucudaAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
     }
   }
   if (!found) {
-    CUmemGenericAllocationHandle probe = 0;
-    CUresult driver = cuMemRetainAllocationHandle(&probe, ptr);
-    if (driver == CUDA_ERROR_INVALID_VALUE ||
-        driver == CUDA_ERROR_NOT_SUPPORTED) {
-      delete bundle;
-      *segmentBundle = NULL;
-      return flagcxNotSupported;
+    // Only a successful legacy IPC export proves that an untracked pointer
+    // may use that path. External VMM offsets are unknown, so no retain or
+    // remapping is safe for any other untracked pointer.
+    CUdeviceptr allocationBase = 0;
+    size_t allocationSize = 0;
+    if (cuMemGetAddressRange(&allocationBase, &allocationSize,
+                             (CUdeviceptr)ptr) == CUDA_SUCCESS &&
+        address >= allocationBase &&
+        address - allocationBase <= allocationSize &&
+        size <= allocationSize - (address - allocationBase)) {
+      cudaIpcMemHandle_t ipcHandle;
+      if (cudaIpcGetMemHandle(&ipcHandle, (void *)allocationBase) ==
+          cudaSuccess) {
+        delete bundle;
+        *segmentBundle = NULL;
+      } else {
+        cudaGetLastError();
+      }
     }
-    if (driver != CUDA_SUCCESS)
-      return flagcxUnhandledDeviceError;
-    try {
-      bundle->handleOwned.push_back(1);
-      bundle->handles.push_back(probe);
-    } catch (const std::bad_alloc &) {
-      if (bundle->handles.empty())
-        cuMemRelease(probe);
-      return flagcxSystemError;
-    }
-    // Physical offsets are unknown for external mappings, including a
-    // single mapped range. Keep the bundle to block legacy fallback.
+    // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
   }
+  // Ordinary allocations have already returned without requiring VMM support.
+  int device = 0;
+  CUdevice cuDevice;
+  if (cudaGetDevice(&device) != cudaSuccess ||
+      cuDeviceGet(&cuDevice, device) != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = cuDevice;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  if (cuMemGetAllocationGranularity(slotAlignment, &prop,
+                                    CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+          CUDA_SUCCESS ||
+      *slotAlignment == 0)
+    return flagcxUnhandledDeviceError;
   if (bundle->segments.empty() ||
       bundle->segments.size() >
           static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -844,6 +845,17 @@ flagcxResult_t ppucudaAdaptorSymFlatMapSegments(
     int totalSegments, size_t stride, size_t alignment, void **flatBase) {
   return PpuSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
                             totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t ppucudaAdaptorSymFlatMapSegmentsBegin(
+    int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
+    const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
+    size_t alignment, void **flatBase) {
+  return PpuSegmentMap::begin(nPeers, self, bundle, layouts, segments,
+                              totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t ppucudaAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
+                                                  int fd) {
+  return PpuSegmentMap::mapOne(flatBase, index, fd);
 }
 flagcxResult_t ppucudaAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
   return PpuSegmentMap::unmap(flatBase);
@@ -1110,7 +1122,8 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymPhysExportSegment, ppucudaAdaptorSymPhysFreeSegments,
       ppucudaAdaptorSymFlatMapSegments,
       ppucudaAdaptorSymFlatMappingUnmapSegments,
-      ppucudaAdaptorSymFlatVaFreeSegments,
+      ppucudaAdaptorSymFlatVaFreeSegments, ppucudaAdaptorSymPhysSegmentCount,
+      ppucudaAdaptorSymFlatMapSegmentsBegin, ppucudaAdaptorSymFlatMapSegmentOne,
 };
 
 #endif // USE_PPU_ADAPTOR

@@ -44,5 +44,37 @@ FLAGCX_CI_MPI_LABEL="symmem VMM local" \
     "$BUILD_BIN/symmem_mpi_tests" \
     --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
 
+case "${FLAGCX_ADAPTOR:-}" in
+  nvidia|du|metax|ppu)
+    echo ""
+    echo "=== Running provider multi-segment VMM MPI test (np=$LOCAL_NP) ==="
+    FLAGCX_CI_MPI_LABEL="symmem provider multi-segment" \
+      "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
+        -x FLAGCX_USE_HETERO_COMM=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=1 \
+        -x FLAGCX_IB_DISABLE=1 \
+        -x FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1 \
+        "$BUILD_BIN/symmem_mpi_tests" \
+        --gtest_filter=SymMemTest.SegmentedVmmWindowMapsDifferentPeerLayouts:SymMemTest.UntrackedVmmMappingIsRejected
+    ;;
+esac
+
+if [[ "${FLAGCX_ADAPTOR:-}" == "du" ]]; then
+  echo ""
+  echo "=== Running DU multi-segment VMM MPI tests (np=$LOCAL_NP) ==="
+  FLAGCX_CI_MPI_LABEL="symmem DU multi-segment" \
+    "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
+      -x FLAGCX_USE_HETERO_COMM=1 \
+      -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+      -x FLAGCX_MEM_ENABLE=1 \
+      -x FLAGCX_VMM_ENABLE=1 \
+      -x FLAGCX_IB_DISABLE=1 \
+      -x FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1 \
+      "$BUILD_BIN/symmem_mpi_tests" \
+      --gtest_filter=SymMemTest.SegmentedDuWindowMapsDifferentPeerLayouts:SymMemTest.DuSegmentedAllocFailureRollsBackAndCanRetry
+fi
+
 echo ""
 echo "All symmem tests passed."

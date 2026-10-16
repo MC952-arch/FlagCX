@@ -1,15 +1,26 @@
+#include "../../../flagcx/adaptor/device/segmented_vmm_allocation.h"
 #include "../../../flagcx/adaptor/device/segmented_vmm_map.h"
 #include <gtest/gtest.h>
 
 namespace {
 struct FakeVmmOps {
   typedef int Handle;
+  typedef int Prop;
   static int maps;
   static int unmaps;
   static int releases;
   static int frees;
   static bool failMap;
   static bool failUnmap;
+
+  static flagcxResult_t deviceOrdinal(int *device) {
+    *device = 0;
+    return flagcxSuccess;
+  }
+  static flagcxResult_t createHandle(size_t, const Prop &, Handle *handle) {
+    *handle = 100 + maps;
+    return flagcxSuccess;
+  }
 
   static flagcxResult_t exportHandle(Handle, int *fd) {
     *fd = 9;
@@ -60,16 +71,16 @@ TEST(SegmentedVmmMap, PartialMapKeepsImportedHandleUntilUnmapSucceeds) {
   const flagcxSymRankLayout layouts[2] = {{4096, 0, 4096, 0, 1},
                                           {4096, 0, 4096, 1, 1}};
   const flagcxSymSegmentMeta segments[2] = {{0, 4096}, {0, 4096}};
-  const int fds[2] = {8, 9};
   FakeVmmOps::maps = FakeVmmOps::unmaps = FakeVmmOps::releases =
       FakeVmmOps::frees = 0;
   FakeVmmOps::failMap = true;
   FakeVmmOps::failUnmap = true;
   void *base = NULL;
-  EXPECT_EQ(
-      flagcxUnhandledDeviceError,
-      Mapper::map(fds, 2, 0, &bundle, layouts, segments, 2, 4096, 4096, &base));
+  ASSERT_EQ(flagcxSuccess, Mapper::begin(2, 0, &bundle, layouts, segments, 2,
+                                         4096, 4096, &base));
   ASSERT_NE(static_cast<void *>(NULL), base);
+  EXPECT_EQ(flagcxSuccess, Mapper::mapOne(base, 0, -1));
+  EXPECT_EQ(flagcxUnhandledDeviceError, Mapper::mapOne(base, 1, 9));
   EXPECT_EQ(flagcxInvalidUsage, Mapper::freeVa(base));
   EXPECT_EQ(flagcxUnhandledDeviceError, Mapper::unmap(base));
   EXPECT_EQ(0, FakeVmmOps::releases);
@@ -78,5 +89,21 @@ TEST(SegmentedVmmMap, PartialMapKeepsImportedHandleUntilUnmapSucceeds) {
   EXPECT_EQ(flagcxSuccess, Mapper::freeVa(base));
   EXPECT_EQ(1, FakeVmmOps::frees);
   FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+}
+
+TEST(SegmentedVmmAllocation, PartialMapReleasesEveryOwnedHandle) {
+  typedef flagcxSegmentedVmmAllocation<FakeVmmOps> Allocation;
+  FakeVmmOps::maps = FakeVmmOps::unmaps = FakeVmmOps::releases =
+      FakeVmmOps::frees = 0;
+  FakeVmmOps::failMap = true;
+  FakeVmmOps::failUnmap = false;
+  void *ptr = reinterpret_cast<void *>(1);
+  EXPECT_EQ(flagcxUnhandledDeviceError,
+            Allocation::allocate(&ptr, 8192, 4096, 4096, 0));
+  EXPECT_EQ(static_cast<void *>(NULL), ptr);
+  EXPECT_EQ(1, FakeVmmOps::unmaps);
+  EXPECT_EQ(2, FakeVmmOps::releases);
+  EXPECT_EQ(1, FakeVmmOps::frees);
+  FakeVmmOps::failMap = false;
 }
 } // namespace

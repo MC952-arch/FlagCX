@@ -51,13 +51,13 @@ public:
     return flagcxSuccess;
   }
 
-  static flagcxResult_t map(const int *fds, int nPeers, int self, void *opaque,
-                            const flagcxSymRankLayout *layouts,
-                            const flagcxSymSegmentMeta *segments,
-                            int totalSegments, size_t stride, size_t alignment,
-                            void **flatBase) {
+  static flagcxResult_t begin(int nPeers, int self, void *opaque,
+                              const flagcxSymRankLayout *layouts,
+                              const flagcxSymSegmentMeta *segments,
+                              int totalSegments, size_t stride,
+                              size_t alignment, void **flatBase) {
     Bundle *bundle = static_cast<Bundle *>(opaque);
-    if (fds == NULL || bundle == NULL || layouts == NULL || segments == NULL ||
+    if (bundle == NULL || layouts == NULL || segments == NULL ||
         flatBase == NULL || nPeers <= 0 || self < 0 || self >= nPeers ||
         totalSegments <= 0 || stride == 0 || alignment == 0 ||
         (alignment & (alignment - 1)) != 0 || stride % alignment != 0 ||
@@ -71,6 +71,8 @@ public:
     Flat initial;
     initial.totalSize = stride * static_cast<size_t>(nPeers);
     initial.vaOwned = true;
+    initial.self = self;
+    initial.bundle = bundle;
     try {
       initial.segments.resize(totalSegments);
     } catch (const std::bad_alloc &) {
@@ -88,11 +90,13 @@ public:
         const int index = layout.firstSegment + i;
         const flagcxSymSegmentMeta &segment = segments[index];
         if (segment.size == 0 || segment.offset > stride ||
-            segment.size > stride - segment.offset || fds[index] < 0)
+            segment.size > stride - segment.offset)
           return flagcxInvalidArgument;
         Segment &entry = initial.segments[index];
         entry.offset = static_cast<size_t>(rank) * stride + segment.offset;
         entry.size = segment.size;
+        entry.ownerRank = rank;
+        entry.ownerLocalIndex = i;
       }
     }
 
@@ -114,28 +118,67 @@ public:
       Ops::freeAddress(base, stride * static_cast<size_t>(nPeers));
       return flagcxSystemError;
     }
-    Flat &mapping = mappings().at(reinterpret_cast<void *>(base));
     // Publish the VA before any fallible import/map call. The common rollback
     // path then has a token for every partial provider operation.
     *flatBase = reinterpret_cast<void *>(base);
+    return flagcxSuccess;
+  }
+
+  static flagcxResult_t mapOne(void *flatBase, int index, int fd) {
+    if (flatBase == NULL || index < 0)
+      return flagcxInvalidArgument;
+    std::lock_guard<std::mutex> lock(mutex());
+    typename std::unordered_map<void *, Flat>::iterator it =
+        mappings().find(flatBase);
+    if (it == mappings().end() ||
+        static_cast<size_t>(index) >= it->second.segments.size())
+      return flagcxInvalidArgument;
+    Flat &mapping = it->second;
+    Segment &entry = mapping.segments[index];
+    if (entry.mapped || entry.importedOwned)
+      return flagcxInvalidUsage;
+    flagcxResult_t result = flagcxSuccess;
+    if (entry.ownerRank == mapping.self) {
+      if (fd != -1)
+        return flagcxInvalidArgument;
+      entry.handle = mapping.bundle->handles[entry.ownerLocalIndex];
+    } else {
+      if (fd < 0)
+        return flagcxInvalidArgument;
+      result = Ops::importHandle(fd, &entry.handle);
+      if (result != flagcxSuccess)
+        return result;
+      entry.importedOwned = true;
+    }
+    result =
+        Ops::mapSegment(reinterpret_cast<uintptr_t>(flatBase) + entry.offset,
+                        entry.size, entry.handle);
+    if (result != flagcxSuccess)
+      return result;
+    entry.mapped = true;
+    result = Ops::setAccess(
+        reinterpret_cast<uintptr_t>(flatBase) + entry.offset, entry.size);
+    if (result != flagcxSuccess)
+      return result;
+    return flagcxSuccess;
+  }
+
+  static flagcxResult_t map(const int *fds, int nPeers, int self, void *opaque,
+                            const flagcxSymRankLayout *layouts,
+                            const flagcxSymSegmentMeta *segments,
+                            int totalSegments, size_t stride, size_t alignment,
+                            void **flatBase) {
+    if (fds == NULL)
+      return flagcxInvalidArgument;
+    flagcxResult_t result = begin(nPeers, self, opaque, layouts, segments,
+                                  totalSegments, stride, alignment, flatBase);
+    if (result != flagcxSuccess)
+      return result;
     for (int rank = 0; rank < nPeers; rank++) {
       const flagcxSymRankLayout &layout = layouts[rank];
       for (int i = 0; i < layout.segmentCount; i++) {
         const int index = layout.firstSegment + i;
-        Segment &entry = mapping.segments[index];
-        if (rank == self) {
-          entry.handle = bundle->handles[i];
-        } else {
-          result = Ops::importHandle(fds[index], &entry.handle);
-          if (result != flagcxSuccess)
-            return result;
-          entry.importedOwned = true;
-        }
-        result = Ops::mapSegment(base + entry.offset, entry.size, entry.handle);
-        if (result != flagcxSuccess)
-          return result;
-        entry.mapped = true;
-        result = Ops::setAccess(base + entry.offset, entry.size);
+        result = mapOne(*flatBase, index, rank == self ? -1 : fds[index]);
         if (result != flagcxSuccess)
           return result;
       }
@@ -203,6 +246,8 @@ private:
   struct Segment {
     size_t offset = 0;
     size_t size = 0;
+    int ownerRank = -1;
+    int ownerLocalIndex = -1;
     Handle handle = Handle();
     bool mapped = false;
     bool importedOwned = false;
@@ -210,6 +255,8 @@ private:
   struct Flat {
     size_t totalSize = 0;
     bool vaOwned = false;
+    int self = -1;
+    Bundle *bundle = NULL;
     std::vector<Segment> segments;
   };
   static std::mutex &mutex() {

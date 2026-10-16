@@ -826,25 +826,10 @@ flagcxResult_t cudaAdaptorSymPhysDescribe(void *ptr, size_t size,
   *segmentBundle = NULL;
   *segments = NULL;
   *segmentCount = 0;
+  *slotAlignment = 0;
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
   if (size > std::numeric_limits<uintptr_t>::max() - address)
     return flagcxInvalidArgument;
-
-  int cudaDev = 0;
-  CUdevice device = 0;
-  if (cudaGetDevice(&cudaDev) != cudaSuccess ||
-      cuDeviceGet(&device, cudaDev) != CUDA_SUCCESS)
-    return flagcxUnhandledDeviceError;
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = device;
-  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-  if (cuMemGetAllocationGranularity(slotAlignment, &prop,
-                                    CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
-          CUDA_SUCCESS ||
-      *slotAlignment == 0)
-    return flagcxUnhandledDeviceError;
 
   CudaSegmentMap::Bundle *bundle = new (std::nothrow) CudaSegmentMap::Bundle();
   if (bundle == NULL)
@@ -881,28 +866,44 @@ flagcxResult_t cudaAdaptorSymPhysDescribe(void *ptr, size_t size,
     }
   }
   if (!found) {
-    // The address-range query cannot reveal an external mapping's physical
-    // offset, even when the user range lies in one mapped segment. Keep a
-    // non-NULL bundle so common code rejects unsafe legacy fallback.
-    CUmemGenericAllocationHandle probe = 0;
-    CUresult driver = cuMemRetainAllocationHandle(&probe, ptr);
-    if (driver == CUDA_ERROR_INVALID_VALUE ||
-        driver == CUDA_ERROR_NOT_SUPPORTED) {
-      delete bundle;
-      *segmentBundle = NULL;
-      return flagcxNotSupported;
+    // An external VMM mapping has unknown physical offsets and cannot be
+    // described safely. Only a successful legacy IPC export proves that an
+    // untracked allocation may use the ordinary IPC path.
+    CUdeviceptr allocationBase = 0;
+    size_t allocationSize = 0;
+    if (cuMemGetAddressRange(&allocationBase, &allocationSize,
+                             (CUdeviceptr)ptr) == CUDA_SUCCESS &&
+        address >= allocationBase &&
+        address - allocationBase <= allocationSize &&
+        size <= allocationSize - (address - allocationBase)) {
+      cudaIpcMemHandle_t ipcHandle;
+      if (cudaIpcGetMemHandle(&ipcHandle, (void *)allocationBase) ==
+          cudaSuccess) {
+        delete bundle;
+        *segmentBundle = NULL;
+      } else {
+        cudaGetLastError();
+      }
     }
-    if (driver != CUDA_SUCCESS)
-      return flagcxUnhandledDeviceError;
-    try {
-      bundle->handleOwned.push_back(1);
-      bundle->handles.push_back(probe);
-    } catch (const std::bad_alloc &) {
-      cuMemRelease(probe);
-      return flagcxSystemError;
-    }
+    // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
   }
+  // Ordinary allocations have already returned without requiring VMM support.
+  int cudaDev = 0;
+  CUdevice device = 0;
+  if (cudaGetDevice(&cudaDev) != cudaSuccess ||
+      cuDeviceGet(&device, cudaDev) != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = device;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  if (cuMemGetAllocationGranularity(slotAlignment, &prop,
+                                    CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+          CUDA_SUCCESS ||
+      *slotAlignment == 0)
+    return flagcxUnhandledDeviceError;
   if (bundle->segments.empty() ||
       bundle->segments.size() >
           static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -925,6 +926,17 @@ flagcxResult_t cudaAdaptorSymFlatMapSegments(
     int totalSegments, size_t stride, size_t alignment, void **flatBase) {
   return CudaSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
                              totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cudaAdaptorSymFlatMapSegmentsBegin(
+    int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
+    const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
+    size_t alignment, void **flatBase) {
+  return CudaSegmentMap::begin(nPeers, self, bundle, layouts, segments,
+                               totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cudaAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
+                                               int fd) {
+  return CudaSegmentMap::mapOne(flatBase, index, fd);
 }
 flagcxResult_t cudaAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
   return CudaSegmentMap::unmap(flatBase);
@@ -1459,8 +1471,10 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymPhysDescribe, cudaAdaptorSymPhysExportSegment,
       cudaAdaptorSymPhysFreeSegments, cudaAdaptorSymFlatMapSegments,
       cudaAdaptorSymFlatMappingUnmapSegments, cudaAdaptorSymFlatVaFreeSegments,
+      cudaAdaptorSymPhysSegmentCount, cudaAdaptorSymFlatMapSegmentsBegin,
+      cudaAdaptorSymFlatMapSegmentOne,
 #else
-      NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 #endif
 };
 

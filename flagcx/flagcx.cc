@@ -1207,7 +1207,8 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
                                        void *regComm, void *buff, size_t size,
                                        int ptrType, bool isVmm, int mrFlags,
                                        void **mrHandle,
-                                       flagcxVmmMrRoute_t *selectedRoute) {
+                                       flagcxVmmMrRoute_t *selectedRoute,
+                                       bool segmentedVmm) {
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL || regComm == NULL ||
       buff == NULL || size == 0 || mrHandle == NULL || selectedRoute == NULL)
     return flagcxInvalidArgument;
@@ -1234,7 +1235,7 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
     // historical behavior exactly: try DMA-BUF when both callbacks exist, but
     // treat any export failure as a request to use ordinary VA registration.
     // A failure after a successful export remains a real transport error.
-    if (deviceAdaptor->getHandleForAddressRange != NULL &&
+    if (!segmentedVmm && deviceAdaptor->getHandleForAddressRange != NULL &&
         net->regMrDmaBuf != NULL) {
       int dmaBufFd = -1;
       flagcxResult_t exportResult = deviceAdaptor->getHandleForAddressRange(
@@ -1275,6 +1276,11 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       flagcxOneSideParseVmmMrMode(flagcxGetEnv("FLAGCX_VMM_MR_MODE"), &mode);
   if (modeResult != flagcxSuccess)
     return modeResult;
+  if (segmentedVmm) {
+    if (mode == flagcxVmmMrModeDmaBuf)
+      return flagcxNotSupported;
+    mode = flagcxVmmMrModeVa;
+  }
 
   flagcxNetProperties_t properties = {};
   if (net->getProperties == NULL)
@@ -1418,7 +1424,8 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                              void *buff, size_t size,
                                              bool isVmm, bool acquireWindowRef,
                                              int *mrIndex,
-                                             bool *rollbackPending) {
+                                             bool *rollbackPending,
+                                             bool segmentedVmm) {
   if (mrIndex != NULL)
     *mrIndex = -1;
   if (rollbackPending != NULL)
@@ -1587,7 +1594,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
   res = flagcxOneSideRegisterMr(heteroComm, regComm, buff, size,
                                 FLAGCX_PTR_CUDA, isVmm, FLAGCX_NET_MR_FLAG_NONE,
-                                &mrHandle, &selectedRoute);
+                                &mrHandle, &selectedRoute, segmentedVmm);
   info->registrationRoute = (uint8_t)selectedRoute;
   // Visibility is a property of the device/NIC path, not of how this MR was
   // registered. In particular, an ordinary cudaMalloc-style allocation needs
@@ -2580,14 +2587,24 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
           commonWindowRes, "collective registration failure");
     }
 
-    // Only ordinary device allocations may use legacy IPC. A VMM allocation
-    // with no flat mapping is NET-only; exporting it through the legacy IPC
-    // path is unsupported and can split the local collective.
-    if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
-        flagcxSymWindowCanUseLegacyIpc((*win)->defaultBase)) {
+    // buildIpcPeerPointers contains communicator-wide collectives. Select it
+    // globally before any rank enters those collectives: different nodes can
+    // have ordinary and VMM allocations for the same symmetric window.
+    const bool localIpcEligible =
+        flagcxSymWindowCanUseLegacyIpc((*win)->defaultBase);
+    flagcxResult_t commonIpcEligibility = flagcxSuccess;
+    flagcxResult_t gatherRes = flagcxSymConvergeStatus(
+        comm->heteroComm, localIpcEligible ? flagcxSuccess : flagcxNotSupported,
+        &commonIpcEligibility);
+    if (gatherRes != flagcxSuccess) {
+      return flagcxRollbackWindowRegistration(
+          comm, win, allocator, flagcxSymCleanupLocal, gatherRes,
+          "IPC eligibility convergence failure");
+    }
+    if (commonIpcEligibility == flagcxSuccess) {
       int ipcSlot = buildIpcPeerPointers(comm, buff, size);
       flagcxResult_t commonIpcStatus = flagcxSuccess;
-      flagcxResult_t gatherRes = flagcxSymConvergeStatus(
+      gatherRes = flagcxSymConvergeStatus(
           comm->heteroComm, ipcSlot >= 0 ? flagcxSuccess : flagcxNotSupported,
           &commonIpcStatus);
       bool allIpcReady =
@@ -2603,54 +2620,12 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
               comm, win, allocator, flagcxSymCleanupLocal, gatherRes,
               "IPC collective failure");
         }
-
-        // No local window is published without a real data path. Remote
-        // communicators already acquired an MR in sym_heap; local-only
-        // communicators acquire one lazily here so the normal IPC path does not
-        // pay full-mesh/MR setup cost.
-        flagcxResult_t fallbackCapability =
-            flagcxParamIbDisable() ? flagcxNotSupported : flagcxSuccess;
-        flagcxResult_t commonFallbackCapability = flagcxSuccess;
-        flagcxResult_t fallbackConvergeResult = flagcxSymConvergeStatus(
-            comm->heteroComm, fallbackCapability, &commonFallbackCapability);
-        if (fallbackConvergeResult != flagcxSuccess) {
-          return flagcxRollbackWindowRegistration(
-              comm, win, allocator, flagcxSymCleanupLocal,
-              fallbackConvergeResult, "NET fallback capability convergence");
-        }
-        flagcxResult_t fallbackResult = commonFallbackCapability;
-        if (fallbackResult == flagcxSuccess &&
-            !(*win)->defaultBase->hasNetworkMrRef) {
-          fallbackResult = flagcxSymWindowEnsureNetworkMr(comm->heteroComm,
-                                                          (*win)->defaultBase);
-        }
-        flagcxResult_t commonFallbackResult = flagcxSuccess;
-        fallbackConvergeResult = flagcxSymConvergeStatus(
-            comm->heteroComm, fallbackResult, &commonFallbackResult);
-        if (fallbackConvergeResult != flagcxSuccess) {
-          return flagcxRollbackWindowRegistration(
-              comm, win, allocator, flagcxSymCleanupLocal,
-              fallbackConvergeResult, "NET fallback result convergence");
-        }
-        if (commonFallbackResult != flagcxSuccess) {
-          INFO(FLAGCX_REG,
-               "flagcxCommWindowRegister: IPC mapping unavailable for %p and "
-               "no NET MR fallback exists (res=%d)",
-               buff, (int)commonFallbackResult);
-          return flagcxRollbackWindowRegistration(
-              comm, win, allocator, flagcxSymCleanupCollective,
-              commonFallbackResult, "NET MR fallback failure");
-        }
-        INFO(FLAGCX_REG,
-             "flagcxCommWindowRegister: IPC mapping unavailable for %p; using "
-             "registered NET MR fallback at index %d",
-             buff, (*win)->defaultBase->mrIndex);
       }
     }
 
-    // Route readiness is a publish invariant, not an implication of an enabled
-    // environment variable. Converge the actual window state before any rank
-    // makes it visible through comm->symWindows.
+    // A skipped or failed IPC attempt needs NET only when the already mapped
+    // VMM/NET routes cannot serve every peer. This also preserves local-only
+    // flat VMM windows when IB is disabled.
     flagcxResult_t routeResult = flagcxSymWindowValidateDataRoutes(
         comm->heteroComm, (*win)->defaultBase);
     flagcxResult_t commonRouteResult = flagcxSuccess;
@@ -2661,6 +2636,46 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
           comm, win, allocator, flagcxSymCleanupLocal, routeConvergeResult,
           "route validation convergence");
     }
+    if (commonRouteResult == flagcxNotSupported) {
+      flagcxResult_t fallbackCapability =
+          flagcxParamIbDisable() ? flagcxNotSupported : flagcxSuccess;
+      flagcxResult_t commonFallbackCapability = flagcxSuccess;
+      flagcxResult_t fallbackConvergeResult = flagcxSymConvergeStatus(
+          comm->heteroComm, fallbackCapability, &commonFallbackCapability);
+      if (fallbackConvergeResult != flagcxSuccess) {
+        return flagcxRollbackWindowRegistration(
+            comm, win, allocator, flagcxSymCleanupLocal, fallbackConvergeResult,
+            "NET fallback capability convergence");
+      }
+      flagcxResult_t fallbackResult = commonFallbackCapability;
+      if (fallbackResult == flagcxSuccess &&
+          !(*win)->defaultBase->hasNetworkMrRef) {
+        fallbackResult = flagcxSymWindowEnsureNetworkMr(comm->heteroComm,
+                                                        (*win)->defaultBase);
+      }
+      flagcxResult_t commonFallbackResult = flagcxSuccess;
+      fallbackConvergeResult = flagcxSymConvergeStatus(
+          comm->heteroComm, fallbackResult, &commonFallbackResult);
+      if (fallbackConvergeResult != flagcxSuccess) {
+        return flagcxRollbackWindowRegistration(
+            comm, win, allocator, flagcxSymCleanupLocal, fallbackConvergeResult,
+            "NET fallback result convergence");
+      }
+      if (commonFallbackResult != flagcxSuccess) {
+        return flagcxRollbackWindowRegistration(
+            comm, win, allocator, flagcxSymCleanupCollective,
+            commonFallbackResult, "NET MR fallback failure");
+      }
+      routeResult = flagcxSymWindowValidateDataRoutes(comm->heteroComm,
+                                                      (*win)->defaultBase);
+      routeConvergeResult = flagcxSymConvergeStatus(
+          comm->heteroComm, routeResult, &commonRouteResult);
+      if (routeConvergeResult != flagcxSuccess) {
+        return flagcxRollbackWindowRegistration(
+            comm, win, allocator, flagcxSymCleanupLocal, routeConvergeResult,
+            "route validation convergence");
+      }
+    }
     if (commonRouteResult != flagcxSuccess) {
       return flagcxRollbackWindowRegistration(
           comm, win, allocator, flagcxSymCleanupCollective, commonRouteResult,
@@ -2669,12 +2684,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
 
     // Nothing becomes visible through comm->symWindows until VMM/IPC and the
     // required network MR have all converged successfully.
-    flagcxResult_t publishRes = flagcxSymWindowPublish(comm->heteroComm, *win);
-    if (publishRes != flagcxSuccess) {
-      return flagcxRollbackWindowRegistration(comm, win, allocator,
-                                              flagcxSymCleanupCollective,
-                                              publishRes, "publish failure");
-    }
+    flagcxSymWindowCommit(comm->heteroComm, *win);
     return res;
   }
   *win = nullptr;
@@ -2910,10 +2920,8 @@ static flagcxResult_t flagcxDevCommStatePublishWindow(flagcxComm_t comm,
   if (commonResult != flagcxSuccess)
     return commonResult;
 
-  localResult = flagcxSymWindowPublish(comm->heteroComm, window);
-  convergeResult =
-      flagcxSymConvergeStatus(comm->heteroComm, localResult, &commonResult);
-  return convergeResult == flagcxSuccess ? commonResult : convergeResult;
+  flagcxSymWindowCommit(comm->heteroComm, window);
+  return flagcxSuccess;
 }
 
 static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
@@ -4324,8 +4332,10 @@ flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
   }
   if (!sourceOwnedByComm)
     return flagcxInvalidArgument;
-  if (peerWinOffset > srcWindow->heapSize ||
-      size > srcWindow->heapSize - peerWinOffset)
+  size_t peerUserSize = 0;
+  FLAGCXCHECK(
+      flagcxSymWindowPeerUserSize(hetero, srcWindow, peer, &peerUserSize));
+  if (peerWinOffset > peerUserSize || size > peerUserSize - peerWinOffset)
     return flagcxInvalidArgument;
   size_t dstOffset = 0;
   flagcxSymWindow_t dstWindow =
@@ -4386,8 +4396,10 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
   size_t byteSize = count * elementSize;
   if (byteSize > 0 && localbuff == NULL)
     return flagcxInvalidArgument;
-  if (peerWinOffset > peerWin->defaultBase->heapSize ||
-      byteSize > peerWin->defaultBase->heapSize - peerWinOffset)
+  size_t peerUserSize = 0;
+  FLAGCXCHECK(flagcxSymWindowPeerUserSize(hetero, peerWin->defaultBase, peer,
+                                          &peerUserSize));
+  if (peerWinOffset > peerUserSize || byteSize > peerUserSize - peerWinOffset)
     return flagcxInvalidArgument;
 
   // Resolve the source through the transport-neutral symmetric-window

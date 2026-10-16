@@ -870,6 +870,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1', symmem_runner)
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
@@ -987,6 +989,36 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", source)
             self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", source)
 
+    def test_du_symmem_mpi_build_enables_segmented_tests(self):
+        result = subprocess.run(
+            [
+                "make",
+                "-B",
+                "-n",
+                "-C",
+                str(REPO_ROOT / "test/unittest/symmem"),
+                "USE_DU=1",
+                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
+                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        compile_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("g++ coll_sym_register.cpp")
+        )
+        link_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if " -o " in line and "symmem_mpi_tests" in line
+        )
+        self.assertIn("-DUSE_DU_ADAPTOR", compile_command)
+        self.assertIn("-I/opt/dtk/cuda/cuda-12/include", compile_command)
+        self.assertIn("-lcudart -lcuda", link_command)
+
     def test_cuda_vmm_allocation_does_not_require_imex_fabric(self):
         source = (
             REPO_ROOT / "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -1031,11 +1063,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "static flagcxResult_t flagcxDevCommStateInit", publish_start
         )
         staged_publish = common[publish_start:publish_end]
-        self.assertGreaterEqual(
-            staged_publish.count("flagcxSymConvergeStatus"), 2
-        )
+        self.assertEqual(staged_publish.count("flagcxSymConvergeStatus"), 1)
         self.assertIn("flagcxSymWindowValidateDataRoutes", staged_publish)
-        self.assertIn("flagcxSymWindowPublish", staged_publish)
+        self.assertIn("flagcxSymWindowCommit", staged_publish)
+        self.assertLess(
+            staged_publish.index("flagcxSymConvergeStatus"),
+            staged_publish.index("flagcxSymWindowCommit"),
+        )
 
         # Keep the source check independent of clang-format's return-type
         # wrapping for this long function name.
