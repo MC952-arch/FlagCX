@@ -198,7 +198,6 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   int localRank = comm->heteroComm->localRank;
   int localRanks = d->localRanks;
-  size_t allocSize = d->allocSize;
 
   // Each rank fills its own region with (localRank + 1) as a float pattern
   float fillValue = (float)(localRank + 1);
@@ -212,7 +211,12 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   // Read from the next peer's region in the flat VA
   int peerLocalRank = (localRank + 1) % localRanks;
-  void *peerRegion = (char *)d->flatBase + (size_t)peerLocalRank * allocSize;
+  void *peerRegion = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(
+                comm->heteroComm, d,
+                comm->heteroComm->localRankToRank[peerLocalRank], 0, size,
+                &peerRegion),
+            flagcxSuccess);
 
   // Stage through local device memory: peer VMM -> devBuff2 -> host
   std::vector<float> readBack(count, 0.0f);
@@ -275,7 +279,6 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 
   int localRank = comm->heteroComm->localRank;
   int localRanks = d->localRanks;
-  size_t allocSize = d->allocSize;
 
   // Zero out own region first
   flagcxResult_t setupResult =
@@ -289,8 +292,12 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   // Use devBuff2 as staging: host -> local device -> peer VMM region.
   // Direct host-to-peer-VMM may not work with cudaMemcpyHostToDevice.
   int targetLocalRank = (localRank + 1) % localRanks;
-  void *targetRegion =
-      (char *)d->flatBase + (size_t)targetLocalRank * allocSize;
+  void *targetRegion = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(
+                comm->heteroComm, d,
+                comm->heteroComm->localRankToRank[targetLocalRank], 0, size,
+                &targetRegion),
+            flagcxSuccess);
 
   float writeValue = (float)(localRank + 100);
   std::vector<float> pattern(count, writeValue);

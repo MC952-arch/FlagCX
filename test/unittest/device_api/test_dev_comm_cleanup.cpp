@@ -8,6 +8,9 @@
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
+
+// The host test instantiates the default trait on every vendor build.
+#include "device_api/default_platform_traits.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net_adaptor.h"
@@ -41,6 +44,32 @@ static_assert(offsetof(flagcxDevCommRequirements, interCounterCount) == 36,
               "flagcxDevCommRequirements legacy ABI offset changed");
 static_assert(offsetof(flagcxDevCommRequirements, intraScratchBytes) == 40,
               "new requirements fields must follow the frozen ABI prefix");
+
+TEST(DeviceApiLsaHostTest, WindowUsesCommunicatorStrideAndPeerUserOffset) {
+  typedef CommTraits<DefaultBackend<DefaultPlatform>> Traits;
+  flagcxSymRankLayout layouts[2] = {{8192, 0, 1024, 0, 1},
+                                    {8192, 4096, 1024, 1, 1}};
+  flagcxSymWindow state = {};
+  state.hasFlatMapping = true;
+  state.flatBase = reinterpret_cast<void *>(static_cast<uintptr_t>(0x100000));
+  state.slotStride = 65536;
+  state.rankLayouts = layouts;
+  flagcxWindow hostWindow = {};
+  hostWindow.isSymmetricDefault = 1;
+  hostWindow.defaultBase = &state;
+
+  Traits::Window deviceWindow = {};
+  deviceWindow.populateFromHost(&hostWindow, nullptr, 0, 2, 7, 0x200000, -1,
+                                nullptr);
+  Traits::SymPeerLayout peerLayouts[2] = {{0, 1024}, {4096, 1024}};
+  deviceWindow.symPeerLayouts = peerLayouts;
+  Traits::Team team = {2, 0, 1};
+  EXPECT_EQ(deviceWindow.getPeerPointer(128, team, 1),
+            reinterpret_cast<void *>(
+                static_cast<uintptr_t>(0x100000 + 65536 + 4096 + 128)));
+  EXPECT_EQ(deviceWindow.getPeerPointer(1024, team, 1), nullptr);
+  EXPECT_EQ(deviceWindow.getMrIndex(), 7);
+}
 
 namespace {
 

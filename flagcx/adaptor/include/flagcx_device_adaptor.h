@@ -414,6 +414,20 @@ struct flagcxDeviceAdaptor_latest {
       size_t slotStride, size_t slotAlignment, void **flatBase);
   flagcxResult_t (*symFlatMapSegmentOne)(void *flatBase, int segmentIndex,
                                          int shareableFd);
+
+  // Latest-only communicator LSA interface. The arena owns one VA reservation
+  // until communicator teardown; each window maps into its assigned offset.
+  // symFlatVaFreeSegments releases only the mapping record for beginAt maps.
+  flagcxResult_t (*symLsaGetCapacity)(size_t *totalDeviceBytes,
+                                      size_t *vaAlignment);
+  flagcxResult_t (*symLsaVaReserve)(size_t size, size_t alignment,
+                                    void **arenaBase);
+  flagcxResult_t (*symLsaVaFree)(void *arenaBase, size_t size);
+  flagcxResult_t (*symLsaMapBeginAt)(
+      void *windowBase, int nPeers, int selfIndex, void *selfBundle,
+      const struct flagcxSymRankLayout *layouts,
+      const struct flagcxSymSegmentMeta *segments, int totalSegments,
+      size_t rankStride, size_t slotAlignment, void **mappingBase);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

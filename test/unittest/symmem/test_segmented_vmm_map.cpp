@@ -91,6 +91,27 @@ TEST(SegmentedVmmMap, PartialMapKeepsImportedHandleUntilUnmapSucceeds) {
   FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
 }
 
+TEST(SegmentedVmmMap, MappingInsideSharedArenaDoesNotFreeArenaVa) {
+  typedef flagcxSegmentedVmmMap<FakeVmmOps> Mapper;
+  Mapper::Bundle bundle;
+  bundle.handles.push_back(7);
+  bundle.handleOwned.push_back(0);
+  const flagcxSymRankLayout layout = {4096, 0, 4096, 0, 1};
+  const flagcxSymSegmentMeta segment = {0, 4096};
+  FakeVmmOps::maps = FakeVmmOps::unmaps = FakeVmmOps::releases =
+      FakeVmmOps::frees = 0;
+  FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+  void *base = NULL;
+  void *reserved = reinterpret_cast<void *>(static_cast<uintptr_t>(0x200000));
+  ASSERT_EQ(flagcxSuccess, Mapper::beginAt(reserved, 1, 0, &bundle, &layout,
+                                           &segment, 1, 4096, 4096, &base));
+  ASSERT_EQ(reserved, base);
+  EXPECT_EQ(flagcxSuccess, Mapper::mapOne(base, 0, -1));
+  EXPECT_EQ(flagcxSuccess, Mapper::unmap(base));
+  EXPECT_EQ(flagcxSuccess, Mapper::freeVa(base));
+  EXPECT_EQ(0, FakeVmmOps::frees);
+}
+
 TEST(SegmentedVmmAllocation, PartialMapReleasesEveryOwnedHandle) {
   typedef flagcxSegmentedVmmAllocation<FakeVmmOps> Allocation;
   FakeVmmOps::maps = FakeVmmOps::unmaps = FakeVmmOps::releases =

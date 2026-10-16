@@ -874,6 +874,44 @@ flagcxResult_t macaAdaptorSymFlatVaFreeSegments(void *flatBase) {
   return MacaSegmentMap::freeVa(flatBase);
 }
 
+flagcxResult_t macaAdaptorSymLsaGetCapacity(size_t *totalBytes,
+                                            size_t *alignment) {
+  if (totalBytes == NULL || alignment == NULL)
+    return flagcxInvalidArgument;
+  int device = 0;
+  mcDeviceProp_t properties = {};
+  if (mcGetDevice(&device) != mcSuccess ||
+      mcGetDeviceProperties(&properties, device) != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  *totalBytes = properties.totalGlobalMem;
+  *alignment = 512ULL * 1024 * 1024;
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymLsaVaReserve(size_t size, size_t alignment,
+                                          void **base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uintptr_t address = 0;
+  flagcxResult_t result =
+      MacaSegmentOps::reserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  return result;
+}
+
+flagcxResult_t macaAdaptorSymLsaVaFree(void *base, size_t size) {
+  return MacaSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+}
+
+flagcxResult_t macaAdaptorSymLsaMapBeginAt(
+    void *windowBase, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
+  return MacaSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
+                                 segments, totalSegments, stride, alignment,
+                                 mappingBase);
+}
+
 flagcxResult_t macaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
                                      int selfIndex, void *selfPhysHandle,
                                      size_t allocSize, void **flatBase) {
@@ -1341,7 +1379,9 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymPhysFreeSegments, macaAdaptorSymFlatMapSegments,
       macaAdaptorSymFlatMappingUnmapSegments, macaAdaptorSymFlatVaFreeSegments,
       macaAdaptorSymPhysSegmentCount, macaAdaptorSymFlatMapSegmentsBegin,
-      macaAdaptorSymFlatMapSegmentOne,
+      macaAdaptorSymFlatMapSegmentOne, macaAdaptorSymLsaGetCapacity,
+      macaAdaptorSymLsaVaReserve, macaAdaptorSymLsaVaFree,
+      macaAdaptorSymLsaMapBeginAt,
 };
 
 #endif // USE_METAX_ADAPTOR

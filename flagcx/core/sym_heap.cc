@@ -21,7 +21,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <new>
 #include <unistd.h>
+
+struct flagcxSymLsaArena {
+  void *base = nullptr;
+  size_t rankStride = 0;
+  size_t totalSize = 0;
+  size_t alignment = 0;
+  bool invalid = false;
+  std::map<size_t, size_t> freeRanges; // offset -> length within one rank slot
+};
 
 namespace {
 
@@ -139,6 +150,295 @@ flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
   return flagcxSymGlobalConverge(comm, localStatus, commonStatus);
 }
 
+static flagcxResult_t flagcxSymLsaFindOffset(const flagcxSymLsaArena *arena,
+                                             size_t span, size_t alignment,
+                                             size_t *offset) {
+  if (arena == nullptr || offset == nullptr || span == 0 || alignment == 0 ||
+      span > arena->rankStride)
+    return flagcxInvalidArgument;
+  for (std::map<size_t, size_t>::const_iterator it = arena->freeRanges.begin();
+       it != arena->freeRanges.end(); ++it) {
+    const size_t start = it->first;
+    const size_t length = it->second;
+    if (start > arena->rankStride || length > arena->rankStride - start ||
+        start > std::numeric_limits<size_t>::max() - (alignment - 1))
+      return flagcxInternalError;
+    const size_t aligned = ((start + alignment - 1) / alignment) * alignment;
+    if (aligned >= start && aligned - start <= length &&
+        span <= length - (aligned - start)) {
+      *offset = aligned;
+      return flagcxSuccess;
+    }
+  }
+  return flagcxNotSupported;
+}
+
+static flagcxResult_t flagcxSymLsaMarkOffset(flagcxSymLsaArena *arena,
+                                             size_t offset, size_t span) {
+  if (arena == nullptr || span == 0 || offset > arena->rankStride ||
+      span > arena->rankStride - offset)
+    return flagcxInvalidArgument;
+  try {
+    std::map<size_t, size_t> next(arena->freeRanges);
+    std::map<size_t, size_t>::iterator it = next.upper_bound(offset);
+    if (it == next.begin())
+      return flagcxInvalidUsage;
+    --it;
+    const size_t start = it->first;
+    const size_t end = start + it->second;
+    if (offset < start || offset > end || span > end - offset)
+      return flagcxInvalidUsage;
+    next.erase(it);
+    if (start < offset)
+      next.emplace(start, offset - start);
+    if (offset + span < end)
+      next.emplace(offset + span, end - offset - span);
+    arena->freeRanges.swap(next);
+  } catch (const std::bad_alloc &) {
+    return flagcxSystemError;
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxSymLsaReleaseOffset(flagcxSymLsaArena *arena,
+                                                size_t offset, size_t span) {
+  if (arena == nullptr || span == 0 || offset > arena->rankStride ||
+      span > arena->rankStride - offset)
+    return flagcxInvalidArgument;
+  try {
+    std::map<size_t, size_t> next(arena->freeRanges);
+    size_t start = offset;
+    size_t end = offset + span;
+    std::map<size_t, size_t>::iterator after = next.lower_bound(offset);
+    if (after != next.begin()) {
+      std::map<size_t, size_t>::iterator before = after;
+      --before;
+      const size_t beforeEnd = before->first + before->second;
+      if (beforeEnd > start)
+        return flagcxInvalidUsage;
+      if (beforeEnd == start) {
+        start = before->first;
+        next.erase(before);
+      }
+    }
+    after = next.lower_bound(offset);
+    if (after != next.end()) {
+      if (after->first < end)
+        return flagcxInvalidUsage;
+      if (after->first == end) {
+        end += after->second;
+        next.erase(after);
+      }
+    }
+    next.emplace(start, end - start);
+    arena->freeRanges.swap(next);
+  } catch (const std::bad_alloc &) {
+    return flagcxSystemError;
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
+                                              size_t windowSpan,
+                                              size_t windowAlignment) {
+  if (comm == nullptr || deviceAdaptor == nullptr ||
+      deviceAdaptor->symLsaGetCapacity == nullptr ||
+      deviceAdaptor->symLsaVaReserve == nullptr ||
+      deviceAdaptor->symLsaVaFree == nullptr)
+    return flagcxNotSupported;
+  flagcxSymLsaArena *arena = comm->symLsaArena;
+  flagcxResult_t common = flagcxSuccess;
+  if (arena != nullptr && arena->invalid) {
+    flagcxResult_t local =
+        arena->base != nullptr
+            ? deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize)
+            : flagcxSuccess;
+    if (local == flagcxSuccess)
+      arena->base = nullptr;
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5980, &common));
+    if (common != flagcxSuccess)
+      return common;
+    delete arena;
+    comm->symLsaArena = nullptr;
+    arena = nullptr;
+  }
+  if (arena != nullptr)
+    return windowAlignment <= arena->alignment &&
+                   arena->alignment % windowAlignment == 0 &&
+                   windowSpan <= arena->rankStride
+               ? flagcxSuccess
+               : flagcxNotSupported;
+
+  struct Capacity {
+    size_t totalBytes;
+    size_t alignment;
+  } capacity = {0, 0};
+  flagcxResult_t local = deviceAdaptor->symLsaGetCapacity(&capacity.totalBytes,
+                                                          &capacity.alignment);
+  if (local == flagcxSuccess &&
+      (capacity.totalBytes == 0 || capacity.alignment == 0 ||
+       (capacity.alignment & (capacity.alignment - 1)) != 0))
+    local = flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5981, &common));
+  if (common != flagcxSuccess)
+    return common;
+
+  const int root = comm->localRankToRank[0];
+  if (comm->localRank == 0) {
+    for (int peer = 1; peer < comm->localRanks; peer++) {
+      Capacity remote = {0, 0};
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[peer],
+                                0x5982, &remote, sizeof(remote)));
+      if (capacity.totalBytes < remote.totalBytes)
+        capacity.totalBytes = remote.totalBytes;
+      if (capacity.alignment < remote.alignment)
+        capacity.alignment = remote.alignment;
+    }
+    for (int peer = 1; peer < comm->localRanks; peer++)
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                0x5983, &capacity, sizeof(capacity)));
+  } else {
+    FLAGCXCHECK(bootstrapSend(comm->bootstrap, root, 0x5982, &capacity,
+                              sizeof(capacity)));
+    FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, 0x5983, &capacity,
+                              sizeof(capacity)));
+  }
+
+  const size_t fourGiB = static_cast<size_t>(1) << 32;
+  const size_t alignment = capacity.alignment > windowAlignment
+                               ? capacity.alignment
+                               : windowAlignment;
+  const size_t strideAlignment = alignment > fourGiB ? alignment : fourGiB;
+  const size_t required =
+      capacity.totalBytes > windowSpan ? capacity.totalBytes : windowSpan;
+  local = required > std::numeric_limits<size_t>::max() - (strideAlignment - 1)
+              ? flagcxInvalidArgument
+              : flagcxSuccess;
+  const size_t rankStride =
+      local == flagcxSuccess
+          ? ((required + strideAlignment - 1) / strideAlignment) *
+                strideAlignment
+          : 0;
+  if (local == flagcxSuccess &&
+      (rankStride > std::numeric_limits<size_t>::max() /
+                        static_cast<size_t>(comm->localRanks)))
+    local = flagcxNotSupported;
+  if (local == flagcxSuccess) {
+    arena = new (std::nothrow) flagcxSymLsaArena();
+    if (arena == nullptr)
+      local = flagcxSystemError;
+    else {
+      arena->rankStride = rankStride;
+      arena->totalSize = rankStride * static_cast<size_t>(comm->localRanks);
+      arena->alignment = alignment;
+      try {
+        arena->freeRanges.emplace(0, rankStride);
+      } catch (const std::bad_alloc &) {
+        local = flagcxSystemError;
+      }
+    }
+  }
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5984, &common));
+  if (common != flagcxSuccess) {
+    delete arena;
+    return common;
+  }
+  comm->symLsaArena = arena;
+  local = deviceAdaptor->symLsaVaReserve(arena->totalSize, arena->alignment,
+                                         &arena->base);
+  if (local == flagcxSuccess && arena->base == nullptr)
+    local = flagcxInternalError;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5985, &common));
+  if (common == flagcxSuccess)
+    return flagcxSuccess;
+  arena->invalid = true;
+  flagcxResult_t rollback =
+      arena->base != nullptr
+          ? deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize)
+          : flagcxSuccess;
+  if (rollback == flagcxSuccess)
+    arena->base = nullptr;
+  flagcxResult_t commonRollback = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, rollback, 0x5986, &commonRollback));
+  if (commonRollback == flagcxSuccess) {
+    delete arena;
+    comm->symLsaArena = nullptr;
+  }
+  return commonRollback == flagcxSuccess ? common : commonRollback;
+}
+
+static flagcxResult_t flagcxSymLsaAllocateWindow(flagcxHeteroComm_t comm,
+                                                 flagcxSymWindow_t window) {
+  if (comm == nullptr || window == nullptr || comm->symLsaArena == nullptr ||
+      comm->symLsaArena->invalid)
+    return flagcxInvalidArgument;
+  flagcxSymLsaArena *arena = comm->symLsaArena;
+  const size_t span = window->slotStride;
+  size_t offset = 0;
+  flagcxResult_t local =
+      flagcxSymLsaFindOffset(arena, span, window->slotAlignment, &offset);
+  flagcxResult_t common = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5987, &common));
+  if (common != flagcxSuccess)
+    return common;
+
+  const int root = comm->localRankToRank[0];
+  size_t agreedOffset = offset;
+  if (comm->localRank == 0) {
+    for (int peer = 1; peer < comm->localRanks; peer++) {
+      size_t remote = 0;
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[peer],
+                                0x5988, &remote, sizeof(remote)));
+      if (remote != offset)
+        agreedOffset = std::numeric_limits<size_t>::max();
+    }
+    for (int peer = 1; peer < comm->localRanks; peer++)
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                0x5989, &agreedOffset, sizeof(agreedOffset)));
+  } else {
+    FLAGCXCHECK(
+        bootstrapSend(comm->bootstrap, root, 0x5988, &offset, sizeof(offset)));
+    FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, 0x5989, &agreedOffset,
+                              sizeof(agreedOffset)));
+  }
+  if (agreedOffset == std::numeric_limits<size_t>::max())
+    return flagcxInvalidUsage;
+
+  local = flagcxSymLsaMarkOffset(arena, offset, span);
+  if (local == flagcxSuccess) {
+    window->lsaWindowOffset = offset;
+    window->lsaWindowSpan = span;
+    window->lsaOffsetOwned = true;
+    window->slotStride = arena->rankStride;
+    window->resourcePath = flagcxSymResourceLsa;
+  }
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x598a, &common));
+  return common;
+}
+
+flagcxResult_t flagcxSymLsaDestroy(flagcxHeteroComm_t comm) {
+  if (comm == nullptr)
+    return flagcxInvalidArgument;
+  flagcxSymLsaArena *arena = comm->symLsaArena;
+  if (arena == nullptr)
+    return flagcxSuccess;
+  if (!arena->invalid &&
+      (arena->freeRanges.size() != 1 || arena->freeRanges.begin()->first != 0 ||
+       arena->freeRanges.begin()->second != arena->rankStride))
+    return flagcxInvalidUsage;
+  if (arena->base != nullptr) {
+    if (deviceAdaptor == nullptr || deviceAdaptor->symLsaVaFree == nullptr)
+      return flagcxInternalError;
+    flagcxResult_t result =
+        deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  delete arena;
+  comm->symLsaArena = nullptr;
+  return flagcxSuccess;
+}
+
 flagcxResult_t
 flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
                          int nSegments, const flagcxSymSegmentMeta *segments,
@@ -189,6 +489,34 @@ flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
       stride > std::numeric_limits<size_t>::max() / static_cast<size_t>(nRanks))
     return flagcxInvalidArgument;
   *slotStride = stride;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxSymLsaPeerPtr(void *arenaBase, size_t rankStride,
+                                   size_t windowOffset, int localRanks,
+                                   int peerLocalRank,
+                                   const flagcxSymRankLayout *layout,
+                                   size_t offset, size_t size, void **ptr) {
+  if (ptr == nullptr)
+    return flagcxInvalidArgument;
+  *ptr = nullptr;
+  if (arenaBase == nullptr || layout == nullptr || rankStride == 0 ||
+      localRanks <= 0 || peerLocalRank < 0 || peerLocalRank >= localRanks ||
+      rankStride > std::numeric_limits<size_t>::max() /
+                       static_cast<size_t>(localRanks) ||
+      windowOffset > rankStride ||
+      layout->mappedSize > rankStride - windowOffset ||
+      layout->userOffset > layout->mappedSize ||
+      layout->userSize > layout->mappedSize - layout->userOffset ||
+      offset > layout->userSize || size > layout->userSize - offset)
+    return flagcxInvalidArgument;
+  const size_t displacement = static_cast<size_t>(peerLocalRank) * rankStride +
+                              windowOffset + layout->userOffset + offset;
+  if (displacement > std::numeric_limits<uintptr_t>::max() -
+                         reinterpret_cast<uintptr_t>(arenaBase))
+    return flagcxInvalidArgument;
+  *ptr = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(arenaBase) +
+                                  displacement);
   return flagcxSuccess;
 }
 
@@ -270,7 +598,8 @@ flagcxResult_t flagcxSymWindowEnsureNetworkMr(flagcxHeteroComm_t comm,
       }
     } else if (window->resourcePath == flagcxSymResourceLegacyV1) {
       mrRangeSegmentCount = 1;
-    } else if (window->resourcePath == flagcxSymResourceSegments) {
+    } else if (window->resourcePath == flagcxSymResourceSegments ||
+               window->resourcePath == flagcxSymResourceLsa) {
       rangeStatus = flagcxInternalError;
     }
   }
@@ -346,9 +675,10 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
                                                flagcxSymWindow_t d,
                                                flagcxSymCleanupMode mode) {
   const bool hasVmmOwnership =
-      d != nullptr && (d->flatMappingOwned || d->flatVaOwned ||
-                       d->multicastMappingOwned || d->multicastVaOwned ||
-                       d->mcHandle != nullptr || d->physHandle != nullptr);
+      d != nullptr &&
+      (d->flatMappingOwned || d->flatVaOwned || d->multicastMappingOwned ||
+       d->multicastVaOwned || d->mcHandle != nullptr ||
+       d->physHandle != nullptr || d->lsaOffsetOwned);
   if (hasVmmOwnership && deviceAdaptor == nullptr)
     return flagcxInternalError;
 
@@ -399,7 +729,8 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
 
   local = flagcxSuccess;
   if (hasVmmOwnership && d->flatMappingOwned) {
-    if (d->resourcePath == flagcxSymResourceSegments)
+    if (d->resourcePath == flagcxSymResourceSegments ||
+        d->resourcePath == flagcxSymResourceLsa)
       local = deviceAdaptor->symFlatMappingUnmapSegments != nullptr
                   ? deviceAdaptor->symFlatMappingUnmapSegments(d->flatBase)
                   : flagcxInternalError;
@@ -420,7 +751,8 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
 
   local = flagcxSuccess;
   if (hasVmmOwnership && d->flatVaOwned) {
-    if (d->resourcePath == flagcxSymResourceSegments)
+    if (d->resourcePath == flagcxSymResourceSegments ||
+        d->resourcePath == flagcxSymResourceLsa)
       local = deviceAdaptor->symFlatVaFreeSegments != nullptr
                   ? deviceAdaptor->symFlatVaFreeSegments(d->flatBase)
                   : flagcxInternalError;
@@ -440,8 +772,21 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
     return common;
 
   local = flagcxSuccess;
+  if (d != nullptr && d->lsaOffsetOwned) {
+    local = flagcxSymLsaReleaseOffset(comm->symLsaArena, d->lsaWindowOffset,
+                                      d->lsaWindowSpan);
+    if (local == flagcxSuccess)
+      d->lsaOffsetOwned = false;
+  }
+  FLAGCXCHECK(
+      flagcxSymCleanupStepConverge(comm, local, /*tag=*/0x598b, mode, &common));
+  if (common != flagcxSuccess)
+    return common;
+
+  local = flagcxSuccess;
   if (hasVmmOwnership && d->physHandle != nullptr) {
-    if (d->resourcePath == flagcxSymResourceSegments)
+    if (d->resourcePath == flagcxSymResourceSegments ||
+        d->resourcePath == flagcxSymResourceLsa)
       local = deviceAdaptor->symPhysFreeSegments != nullptr
                   ? deviceAdaptor->symPhysFreeSegments(d->physHandle)
                   : flagcxInternalError;
@@ -456,7 +801,8 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
       flagcxSymCleanupStepConverge(comm, local, /*tag=*/0x5946, mode, &common));
   if (common == flagcxSuccess && d != nullptr && !d->flatMappingOwned &&
       !d->flatVaOwned && !d->multicastMappingOwned && !d->multicastVaOwned &&
-      d->mcHandle == nullptr && d->physHandle == nullptr) {
+      d->mcHandle == nullptr && d->physHandle == nullptr &&
+      !d->lsaOffsetOwned) {
     d->hasFlatMapping = false;
     d->allocSize = 0;
   }
@@ -497,6 +843,8 @@ flagcxSymCleanupMappingsConverged(flagcxHeteroComm_t comm, flagcxSymWindow_t d,
 
   flagcxResult_t common = flagcxSuccess;
   FLAGCXCHECK(flagcxSymGlobalConverge(comm, local, &common));
+  if (d != nullptr && d->resourcePath == flagcxSymResourceLsa)
+    d->lsaCleanupFailed = common != flagcxSuccess;
   return common;
 }
 
@@ -749,10 +1097,28 @@ static flagcxResult_t flagcxSymMapSegmentsStreaming(flagcxHeteroComm_t comm,
                                                     bool *mapFailure) {
   *mapFailure = false;
   void *flatBase = nullptr;
-  flagcxResult_t local = deviceAdaptor->symFlatMapSegmentsBegin(
-      comm->localRanks, comm->localRank, d->physHandle, d->rankLayouts,
-      d->segments, d->totalSegments, d->slotStride, d->slotAlignment,
-      &flatBase);
+  flagcxResult_t local = flagcxSuccess;
+  if (d->resourcePath == flagcxSymResourceLsa) {
+    if (comm->symLsaArena == nullptr || comm->symLsaArena->base == nullptr ||
+        deviceAdaptor->symLsaMapBeginAt == nullptr ||
+        reinterpret_cast<uintptr_t>(comm->symLsaArena->base) >
+            std::numeric_limits<uintptr_t>::max() - d->lsaWindowOffset)
+      local = flagcxInternalError;
+    else {
+      void *windowBase = reinterpret_cast<void *>(
+          reinterpret_cast<uintptr_t>(comm->symLsaArena->base) +
+          d->lsaWindowOffset);
+      local = deviceAdaptor->symLsaMapBeginAt(
+          windowBase, comm->localRanks, comm->localRank, d->physHandle,
+          d->rankLayouts, d->segments, d->totalSegments, d->slotStride,
+          d->slotAlignment, &flatBase);
+    }
+  } else {
+    local = deviceAdaptor->symFlatMapSegmentsBegin(
+        comm->localRanks, comm->localRank, d->physHandle, d->rankLayouts,
+        d->segments, d->totalSegments, d->slotStride, d->slotAlignment,
+        &flatBase);
+  }
   d->flatBase = flatBase;
   d->flatMappingOwned = flatBase != nullptr;
   d->flatVaOwned = flatBase != nullptr;
@@ -768,7 +1134,8 @@ static flagcxResult_t flagcxSymMapSegmentsStreaming(flagcxHeteroComm_t comm,
             ? flagcxSuccess
             : flagcxNotSupported,
         0x5975, &fallbackStatus));
-    *mapFailure = fallbackStatus == flagcxSuccess;
+    *mapFailure = d->resourcePath != flagcxSymResourceLsa &&
+                  fallbackStatus == flagcxSuccess;
     return common;
   }
 
@@ -877,7 +1244,8 @@ static flagcxResult_t flagcxSymMapSegmentsStreaming(flagcxHeteroComm_t comm,
                   ? flagcxSuccess
                   : flagcxNotSupported,
               0x5976, &fallbackStatus));
-          *mapFailure = fallbackStatus == flagcxSuccess;
+          *mapFailure = d->resourcePath != flagcxSymResourceLsa &&
+                        fallbackStatus == flagcxSuccess;
           return common;
         }
       }
@@ -979,6 +1347,44 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
           layout.mappedSize != legacySize || layout.userSize != d->heapSize)
         useLegacyMappingCallbacks = false;
     }
+
+    // Until multicast is mapped into its own communicator arena, preserve the
+    // existing single-allocation path on teams that can use multicast.
+    bool preserveLegacyMulticast = false;
+    if (useLegacyMappingCallbacks) {
+      int supported = 0;
+      flagcxResult_t mcStatus =
+          deviceAdaptor->symMulticastSupported != nullptr
+              ? deviceAdaptor->symMulticastSupported(&supported)
+              : flagcxNotSupported;
+      FLAGCXCHECK(flagcxSymLocalConverge(
+          comm,
+          mcStatus == flagcxSuccess && supported != 0 ? flagcxSuccess
+                                                      : flagcxNotSupported,
+          0x598e, &common));
+      preserveLegacyMulticast = common == flagcxSuccess;
+    }
+
+    const bool lsaAvailable = deviceAdaptor->symLsaGetCapacity != nullptr &&
+                              deviceAdaptor->symLsaVaReserve != nullptr &&
+                              deviceAdaptor->symLsaVaFree != nullptr &&
+                              deviceAdaptor->symLsaMapBeginAt != nullptr;
+    FLAGCXCHECK(flagcxSymLocalConverge(
+        comm, lsaAvailable ? flagcxSuccess : flagcxNotSupported, 0x598c,
+        &common));
+    if (common != flagcxSuccess && !preserveLegacyMulticast)
+      return common;
+    if (common == flagcxSuccess && !preserveLegacyMulticast) {
+      local = flagcxSymLsaEnsureArena(comm, d->slotStride, d->slotAlignment);
+      FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x598d, &common));
+      if (common != flagcxSuccess)
+        return common;
+      local = flagcxSymLsaAllocateWindow(comm, d);
+      if (local != flagcxSuccess)
+        return local;
+      return flagcxSymMapSegmentsStreaming(comm, d, &mapFailure);
+    }
+
     if (useLegacyMappingCallbacks) {
       // Preserve the established single-allocation callback and its failure
       // injection seam. No FD or flat VA belongs to this probe yet.
@@ -1001,7 +1407,9 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
       return flagcxSuccess;
     }
 
-    return flagcxSymMapSegmentsStreaming(comm, d, &mapFailure);
+    // A described latest allocation must not silently acquire a per-window
+    // VA mapping when the communicator LSA path was selected.
+    return flagcxInternalError;
   };
 
   flagcxResult_t prepared = prepare();
@@ -1068,9 +1476,14 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   // another registration could give ranks different window/MR slot numbers,
   // so all ranks reject it until the application retries deregistration.
   int anyPendingCleanup = 0;
+  int localPendingCleanup = comm->pendingSymCleanup != nullptr ? 1 : 0;
+  for (flagcxSymWindow_t current = comm->symWindows;
+       current != nullptr && !localPendingCleanup; current = current->next)
+    if (current->lsaCleanupFailed)
+      localPendingCleanup = 1;
   FLAGCXCHECK(flagcxSymGlobalConvergeScalar(
-      comm, comm->pendingSymCleanup != nullptr ? 1 : 0, kSymPendingGatherTag,
-      kSymPendingBroadcastTag, flagcxSymLogicalOr, &anyPendingCleanup));
+      comm, localPendingCleanup, kSymPendingGatherTag, kSymPendingBroadcastTag,
+      flagcxSymLogicalOr, &anyPendingCleanup));
   if (anyPendingCleanup)
     return flagcxInvalidUsage;
 
@@ -1890,7 +2303,7 @@ fail:
     w = nullptr;
   } else if (!prepareRollbackConverged && d != nullptr &&
              (d->hasNetworkMrRef || d->hasPendingNetworkCleanup ||
-              d->flatMappingOwned || d->flatVaOwned ||
+              d->flatMappingOwned || d->flatVaOwned || d->lsaOffsetOwned ||
               d->multicastMappingOwned || d->multicastVaOwned ||
               d->physHandle != nullptr || d->mcHandle != nullptr)) {
     flagcxResult_t cleanup =
@@ -2081,6 +2494,14 @@ flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
 
   if (window->rankLayouts != nullptr && window->hasFlatMapping &&
       window->flatBase != nullptr) {
+    if (window->resourcePath == flagcxSymResourceLsa) {
+      if (comm->symLsaArena == nullptr || comm->symLsaArena->base == nullptr)
+        return flagcxInternalError;
+      return flagcxSymLsaPeerPtr(
+          comm->symLsaArena->base, comm->symLsaArena->rankStride,
+          window->lsaWindowOffset, window->localRanks, peerLocalRank,
+          &window->rankLayouts[peerLocalRank], offset, size, ptr);
+    }
     if (window->slotStride == 0)
       return flagcxInternalError;
     const flagcxSymRankLayout &layout = window->rankLayouts[peerLocalRank];

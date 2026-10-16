@@ -56,6 +56,30 @@ public:
                               const flagcxSymSegmentMeta *segments,
                               int totalSegments, size_t stride,
                               size_t alignment, void **flatBase) {
+    return beginImpl(NULL, true, nPeers, self, opaque, layouts, segments,
+                     totalSegments, stride, alignment, flatBase);
+  }
+
+  // The communicator owns the surrounding VA reservation. This mapping
+  // record owns only physical aliases and imported handles in that range.
+  static flagcxResult_t beginAt(void *reservedWindowBase, int nPeers, int self,
+                                void *opaque,
+                                const flagcxSymRankLayout *layouts,
+                                const flagcxSymSegmentMeta *segments,
+                                int totalSegments, size_t stride,
+                                size_t alignment, void **flatBase) {
+    if (reservedWindowBase == NULL)
+      return flagcxInvalidArgument;
+    return beginImpl(reservedWindowBase, false, nPeers, self, opaque, layouts,
+                     segments, totalSegments, stride, alignment, flatBase);
+  }
+
+  static flagcxResult_t beginImpl(void *requestedBase, bool reserveVa,
+                                  int nPeers, int self, void *opaque,
+                                  const flagcxSymRankLayout *layouts,
+                                  const flagcxSymSegmentMeta *segments,
+                                  int totalSegments, size_t stride,
+                                  size_t alignment, void **flatBase) {
     Bundle *bundle = static_cast<Bundle *>(opaque);
     if (bundle == NULL || layouts == NULL || segments == NULL ||
         flatBase == NULL || nPeers <= 0 || self < 0 || self >= nPeers ||
@@ -70,7 +94,7 @@ public:
     *flatBase = NULL;
     Flat initial;
     initial.totalSize = stride * static_cast<size_t>(nPeers);
-    initial.vaOwned = true;
+    initial.vaOwned = reserveVa;
     initial.self = self;
     initial.bundle = bundle;
     try {
@@ -100,11 +124,19 @@ public:
       }
     }
 
-    uintptr_t base = 0;
-    flagcxResult_t result =
-        Ops::reserveAddress(initial.totalSize, alignment, &base);
-    if (result != flagcxSuccess)
-      return result;
+    uintptr_t base = reinterpret_cast<uintptr_t>(requestedBase);
+    if (reserveVa) {
+      flagcxResult_t result =
+          Ops::reserveAddress(initial.totalSize, alignment, &base);
+      if (result != flagcxSuccess)
+        return result;
+    }
+    if (base == 0 || base % alignment != 0 ||
+        base > std::numeric_limits<uintptr_t>::max() - initial.totalSize) {
+      if (reserveVa)
+        Ops::freeAddress(base, initial.totalSize);
+      return flagcxInvalidArgument;
+    }
     std::lock_guard<std::mutex> lock(mutex());
     bool inserted = false;
     try {
@@ -115,7 +147,8 @@ public:
     } catch (const std::bad_alloc &) {
     }
     if (!inserted) {
-      Ops::freeAddress(base, stride * static_cast<size_t>(nPeers));
+      if (reserveVa)
+        Ops::freeAddress(base, initial.totalSize);
       return flagcxSystemError;
     }
     // Publish the VA before any fallible import/map call. The common rollback

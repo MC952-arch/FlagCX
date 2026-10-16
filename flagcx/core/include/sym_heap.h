@@ -37,6 +37,7 @@ enum flagcxSymResourcePath {
   flagcxSymResourceNone = 0,
   flagcxSymResourceLegacyV1 = 1,
   flagcxSymResourceSegments = 2,
+  flagcxSymResourceLsa = 3,
 };
 
 /* Symmetric window state for the default (non-vendor) path */
@@ -57,6 +58,12 @@ struct flagcxSymWindow {
                         // (granularity-aligned)
   size_t slotStride;    // common VA slot width for segmented flat mappings
   size_t slotAlignment; // common VA base alignment for segmented flat mappings
+  // A window owns an offset in each communicator LSA rank slot, rather than
+  // the VA reservation that contains all of those slots.
+  size_t lsaWindowOffset;
+  size_t lsaWindowSpan;
+  bool lsaOffsetOwned;
+  bool lsaCleanupFailed; // failed mapping teardown may diverge rank allocators
   flagcxSymRankLayout *rankLayouts;
   flagcxSymSegmentMeta *segments;
   int totalSegments;
@@ -143,6 +150,17 @@ flagcxResult_t
 flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
                          int nSegments, const flagcxSymSegmentMeta *segments,
                          size_t slotAlignment, size_t *slotStride);
+
+// Resolve a user range inside one window of a communicator-wide LSA arena.
+// The host and Device API implementations must use the same layout formula.
+flagcxResult_t flagcxSymLsaPeerPtr(void *arenaBase, size_t rankStride,
+                                   size_t windowOffset, int localRanks,
+                                   int peerLocalRank,
+                                   const flagcxSymRankLayout *layout,
+                                   size_t offset, size_t size, void **ptr);
+
+// Called after all windows and pending cleanup tokens have been drained.
+flagcxResult_t flagcxSymLsaDestroy(flagcxHeteroComm_t comm);
 
 // Count the physical mappings touched by the user-visible range within a
 // validated rank layout. Mapping the whole allocation may involve more.

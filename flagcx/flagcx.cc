@@ -2829,6 +2829,18 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   if (sym != NULL)
     sym->state = flagcxSymWindowCleanupRequired;
 
+  // The proxy may still hold a descriptor referring to the window's MR or
+  // local mapping. Retire accepted work before an LSA offset can be reused.
+  if (sym != NULL && sym->published &&
+      sym->resourcePath == flagcxSymResourceLsa) {
+    flagcxResult_t drain = flagcxHeteroFlushAllRma(hetero);
+    flagcxResult_t commonDrain = drain;
+    if (cleanupMode == flagcxSymCleanupCollective)
+      FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
+    if (commonDrain != flagcxSuccess)
+      return commonDrain;
+  }
+
   // A registration rollback may have retained an unpublished MR object rather
   // than a published mrIndex. Retry that exact object before releasing VMM
   // mappings or the allocation lease. All ranks carry the flag when the
@@ -3882,6 +3894,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
         return cleanupResult;
     }
     cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;
   }

@@ -982,6 +982,41 @@ flagcxResult_t cudaAdaptorSymFlatVaFreeSegments(void *flatBase) {
   return CudaSegmentMap::freeVa(flatBase);
 }
 
+flagcxResult_t cudaAdaptorSymLsaGetCapacity(size_t *totalBytes,
+                                            size_t *alignment) {
+  if (totalBytes == NULL || alignment == NULL)
+    return flagcxInvalidArgument;
+  size_t freeBytes = 0;
+  if (cudaMemGetInfo(&freeBytes, totalBytes) != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  *alignment = 512ULL * 1024 * 1024;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymLsaVaReserve(size_t size, size_t alignment,
+                                          void **base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uintptr_t address = 0;
+  flagcxResult_t result =
+      CudaSegmentOps::reserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  return result;
+}
+
+flagcxResult_t cudaAdaptorSymLsaVaFree(void *base, size_t size) {
+  return CudaSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+}
+
+flagcxResult_t cudaAdaptorSymLsaMapBeginAt(
+    void *windowBase, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
+  return CudaSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
+                                 segments, totalSegments, stride, alignment,
+                                 mappingBase);
+}
+
 flagcxResult_t cudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
                                      int selfIndex, void *selfPhysHandle,
                                      size_t allocSize, void **flatBase) {
@@ -1509,9 +1544,12 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymPhysFreeSegments, cudaAdaptorSymFlatMapSegments,
       cudaAdaptorSymFlatMappingUnmapSegments, cudaAdaptorSymFlatVaFreeSegments,
       cudaAdaptorSymPhysSegmentCount, cudaAdaptorSymFlatMapSegmentsBegin,
-      cudaAdaptorSymFlatMapSegmentOne,
+      cudaAdaptorSymFlatMapSegmentOne, cudaAdaptorSymLsaGetCapacity,
+      cudaAdaptorSymLsaVaReserve, cudaAdaptorSymLsaVaFree,
+      cudaAdaptorSymLsaMapBeginAt,
 #else
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL,
 #endif
 };
 
