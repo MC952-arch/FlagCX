@@ -621,7 +621,7 @@ macaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
       mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags);
   // MetaX reports mcErrorInvalidDevicePointer when a valid VMM allocation
   // cannot be exported as DMA-BUF.  Treat that allocation-specific rejection
-  // as an unavailable route so auto mode can probe VA registration.  Invalid
+  // as an unavailable route so the common MR policy can probe VA. Invalid
   // caller arguments have already been rejected above, and the VMM MR path
   // validates the native address range before reaching this callback.
   if (result == mcErrorNotSupported || result == mcErrorInvalidDevicePointer)
@@ -829,6 +829,25 @@ flagcxResult_t macaAdaptorSymPhysExportSegment(void *bundle, int index,
 }
 flagcxResult_t macaAdaptorSymPhysFreeSegments(void *bundle) {
   return MacaSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t macaAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                              int *count) {
+  flagcxResult_t result = MacaSegmentAllocation::segmentCount(ptr, size, count);
+  if (result != flagcxNotSupported)
+    return result;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+  for (std::unordered_map<void *, MacaVmmAllocation>::const_iterator it =
+           gMacaVmmAllocations.begin();
+       it != gMacaVmmAllocations.end(); ++it) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+    if (address < base || address - base > it->second.size ||
+        size > it->second.size - (address - base))
+      continue;
+    *count = 1;
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymFlatMapSegments(
     const int *fds, int nPeers, int self, void *bundle,

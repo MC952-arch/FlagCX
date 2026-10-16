@@ -31,6 +31,14 @@ enum flagcxSymWindowState {
   flagcxSymWindowCleanupRequired = 2,
 };
 
+// Selects the callbacks that own physical and flat-mapping resources. This
+// does not describe how many physical segments a user MR spans.
+enum flagcxSymResourcePath {
+  flagcxSymResourceNone = 0,
+  flagcxSymResourceLegacyV1 = 1,
+  flagcxSymResourceSegments = 2,
+};
+
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
   flagcxWindow_t owner; // owning public handle (for communicator cleanup)
@@ -72,9 +80,9 @@ struct flagcxSymWindow {
   // mapping succeeded. Network MR routing must use isVmmAllocation; local
   // peer-pointer resolution uses hasFlatMapping/flatBase.
   bool isVmmAllocation;
-  bool usesSegmentedVmm; // physHandle is an adaptor-private segment bundle
-  bool hasFlatMapping;   // true while a VMM flat mapping is active
-  bool published;        // linked into comm->symWindows only after full commit
+  flagcxSymResourcePath resourcePath;
+  bool hasFlatMapping; // true while a VMM flat mapping is active
+  bool published;      // linked into comm->symWindows only after full commit
   flagcxSymWindowState state;
   struct flagcxSymWindow *next; // intrusive link in comm->symWindows
   struct flagcxSymWindow
@@ -135,6 +143,13 @@ flagcxResult_t
 flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
                          int nSegments, const flagcxSymSegmentMeta *segments,
                          size_t slotAlignment, size_t *slotStride);
+
+// Count the physical mappings touched by the user-visible range within a
+// validated rank layout. Mapping the whole allocation may involve more.
+flagcxResult_t
+flagcxSymCountUserRangeSegments(const flagcxSymRankLayout *layout,
+                                const flagcxSymSegmentMeta *rankSegments,
+                                int *count);
 
 // Acquire and attach a network MR reference to an unpublished symmetric
 // window. The operation is collective and idempotent across retries.

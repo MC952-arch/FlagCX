@@ -1280,7 +1280,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     flagcxSymWindow_t d = (win != nullptr && win->isSymmetricDefault)
                               ? win->defaultBase
                               : nullptr;
-    if (d != nullptr && d->usesSegmentedVmm &&
+    if (d != nullptr && d->rankLayouts != nullptr &&
         kWin->mode == DeviceAPI::SYMMETRIC) {
       const int nPeers = comm->localRanks;
       if (d->rankLayouts == nullptr || nPeers <= 0 || d->slotStride == 0 ||

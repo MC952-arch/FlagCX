@@ -470,7 +470,9 @@ flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
       cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value, waitFlags);
   if (err == CUDA_SUCCESS)
     return flagcxSuccess;
-  if (err == CUDA_ERROR_NOT_SUPPORTED)
+  // A valid, page-aligned ordinary allocation may still be ineligible for
+  // DMA-BUF export. Let the common MR policy try its validated VA route.
+  if (err == CUDA_ERROR_NOT_SUPPORTED || err == CUDA_ERROR_INVALID_VALUE)
     return flagcxNotSupported;
   return flagcxUnhandledDeviceError;
 }
@@ -707,11 +709,29 @@ cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                        size_t size, unsigned long long flags) {
   if (handleOut == NULL || buffer == NULL || size == 0)
     return flagcxInvalidArgument;
+  const long hostPageSize = sysconf(_SC_PAGESIZE);
+  if (hostPageSize <= 0)
+    return flagcxSystemError;
+  const size_t pageSize = static_cast<size_t>(hostPageSize);
+  if (reinterpret_cast<uintptr_t>(buffer) % pageSize != 0 ||
+      size % pageSize != 0)
+    return flagcxInvalidArgument;
+
   CUdeviceptr dptr = (CUdeviceptr)buffer;
   CUresult err = cuMemGetHandleForAddressRange(
       handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
-  if (err == CUDA_ERROR_NOT_SUPPORTED)
+  // A page-aligned range may still be ineligible for DMA-BUF export. The MR
+  // caller can then use VA only when that allocation has a safe VA route.
+  if (err == CUDA_ERROR_NOT_SUPPORTED ||
+      (err == CUDA_ERROR_INVALID_VALUE && flags == 0)) {
+    INFO(FLAGCX_REG,
+         "CUDA DMA-BUF export unavailable: ptr=%p size=%zu result=%d", buffer,
+         size, static_cast<int>(err));
     return flagcxNotSupported;
+  }
+  if (err != CUDA_SUCCESS)
+    WARN("CUDA DMA-BUF export failed: ptr=%p size=%zu result=%d", buffer, size,
+         static_cast<int>(err));
   return err == CUDA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
@@ -919,6 +939,25 @@ flagcxResult_t cudaAdaptorSymPhysExportSegment(void *bundle, int index,
 }
 flagcxResult_t cudaAdaptorSymPhysFreeSegments(void *bundle) {
   return CudaSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t cudaAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                              int *count) {
+  flagcxResult_t result = CudaSegmentAllocation::segmentCount(ptr, size, count);
+  if (result != flagcxNotSupported)
+    return result;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(gVmmHandleMapMtx);
+  for (std::unordered_map<void *, CudaVmmAllocation>::const_iterator it =
+           gVmmHandleMap.begin();
+       it != gVmmHandleMap.end(); ++it) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+    if (address < base || address - base > it->second.size ||
+        size > it->second.size - (address - base))
+      continue;
+    *count = 1;
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
 }
 flagcxResult_t cudaAdaptorSymFlatMapSegments(
     const int *fds, int nPeers, int self, void *bundle,

@@ -783,7 +783,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary"', rma_case)
         self.assertIn("for route in va dmabuf", rma_case)
-        self.assertIn("FLAGCX_VMM_MR_MODE", rma_case)
+        self.assertIn("FLAGCX_DMABUF_ENABLE", rma_case)
         self.assertIn(
             'FLAGCX_CI_MPI_LABEL="rma Hygon VMM route $route"',
             rma_case,
@@ -889,7 +889,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
             unit_runner,
         )
-        self.assertIn('FLAGCX_VMM_MR_MODE=auto', unit_runner)
+        self.assertIn('FLAGCX_DMABUF_ENABLE=1', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
         self.assertIn(
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
@@ -1127,7 +1127,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         # The DCU HIP runtime aborts instead of returning an
         # unsupported status for NVIDIA-only attributes 110 and 124.  Its
-        # strict DMA-BUF/VA CI invocations probe the real operations instead.
+        # DMA-BUF on/off CI invocations probe the real operations instead.
         duhip = (
             REPO_ROOT / "flagcx/adaptor/device/duhip_adaptor.cc"
         ).read_text()
@@ -1166,18 +1166,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         unsupported_route = common.index("return FLAGCX_VMM_MR_ROUTE_NONE")
         self.assertLess(dma_route, va_route)
         self.assertLess(va_route, unsupported_route)
-        self.assertIn('flagcxGetEnv("FLAGCX_VMM_MR_MODE")', common)
-        self.assertIn("mode == flagcxVmmMrModeAuto", common)
+        self.assertIn('flagcxGetEnv("FLAGCX_DMABUF_ENABLE")', common)
+        self.assertIn("dmaBufEnabled", common)
         self.assertNotIn("getAllocationVmmMrCaps", common)
 
         route_tests = (
             REPO_ROOT / "test/unittest/symmem/test_sym_window_struct.cpp"
         ).read_text()
         for test_name in (
-            "StrictVaSkipsDmaBufProbeAndRegistration",
-            "StrictDmaBufNeverFallsBackToVa",
-            "StrictDmaBufUsesDmaBufRoute",
-            "InvalidStrictModeFailsBeforeRegistration",
+            "DisabledDmaBufSkipsProbeAndRegistration",
+            "DmaBufUnsupportedWithoutVaDoesNotFallback",
+            "EnabledDmaBufUsesDmaBufRoute",
             "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
             "DeviceCapabilitiesCanRejectUnsafeVaRoute",
             "ProviderCapabilitiesSuppressUnvalidatedVmmRoutes",

@@ -14,9 +14,23 @@ exported or received FD before advancing to the next segment, so the number
 of live FDs per process does not grow with the number of segments. Each adaptor
 retains and exports its own physical handles, maps each peer segment, and owns
 imported handles until every alias has been unmapped. Collective registration
-publishes a window only after every rank succeeds. Public
-one-sided network registration uses VA MR for a tracked multi-segment VMM
-allocation; an explicit DMA-BUF-only mode returns `flagcxNotSupported`.
+publishes a window only after every rank succeeds. Network registration of a
+tracked multi-segment VMM allocation exports the complete mapped range as one
+DMA-BUF FD and registers it with `regMrDmaBuf`. If that route is unavailable,
+registration fails collectively without publishing a partial window. Plain VA
+`regMr` remains available for single-segment allocations only when both the
+device and NET adaptor declare a validated VMM VA route. Set
+`FLAGCX_DMABUF_ENABLE=1` to permit DMA-BUF MR registration. With the default
+value `0`, a multi-segment allocation that needs a network MR returns
+`flagcxNotSupported`; local symmetric mapping remains available.
+
+`FLAGCX_VMM_ENABLE` controls how the native adaptor allocates memory.
+`FLAGCX_DMABUF_ENABLE` controls whether NET registration attempts DMA-BUF.
+With the latter enabled, an ordinary device allocation such as `cudaMalloc`
+also attempts DMA-BUF when the device and NET expose the required operations.
+An allocation-specific export rejection falls back to ordinary VA `regMr`.
+Single-segment VMM may use the same fallback only when both adaptors declare
+VMM VA MR support. Other export or registration errors remain failures.
 
 An externally created VMM mapping whose physical offset is unknown returns
 `flagcxNotSupported` during symmetric-window registration. FlagCX does not

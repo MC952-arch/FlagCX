@@ -105,5 +105,13 @@ TEST(SegmentedVmmAllocation, PartialMapReleasesEveryOwnedHandle) {
   EXPECT_EQ(2, FakeVmmOps::releases);
   EXPECT_EQ(1, FakeVmmOps::frees);
   FakeVmmOps::failMap = false;
+
+  ASSERT_EQ(flagcxSuccess, Allocation::allocate(&ptr, 8192, 4096, 4096, 0));
+  int count = 0;
+  EXPECT_EQ(flagcxSuccess, Allocation::segmentCount(ptr, 8192, &count));
+  EXPECT_EQ(2, count);
+  bool found = false;
+  EXPECT_EQ(flagcxSuccess, Allocation::freeAllocation(ptr, &found));
+  EXPECT_TRUE(found);
 }
 } // namespace

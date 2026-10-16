@@ -190,7 +190,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       if (d && d->hasFlatMapping && d->flatBase) {
         mode = SYMMETRIC;
         flatBasePtr = d->flatBase;
-        allocSize = d->usesSegmentedVmm ? d->slotStride : d->allocSize;
+        allocSize = d->rankLayouts != nullptr ? d->slotStride : d->allocSize;
         symPeerLayouts = nullptr;
         mcBasePtr = d->mcBase;
         ipcBasePtrs = nullptr;

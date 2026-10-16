@@ -400,8 +400,8 @@ struct flagcxDeviceAdaptor_latest {
   // the private record intact so the same callback can be retried.
   flagcxResult_t (*symFlatMappingUnmapSegments)(void *flatBase);
   flagcxResult_t (*symFlatVaFreeSegments)(void *flatBase);
-  // Read-only, handle-free provenance query for public one-sided MR routing.
-  // Providers return NotSupported for allocations they do not track.
+  // Read-only, handle-free count of physical mappings intersecting [ptr,
+  // ptr+size). Providers return NotSupported for allocations they do not track.
   flagcxResult_t (*symPhysSegmentCount)(const void *ptr, size_t size,
                                         int *segmentCount);
   // Streaming latest-only mapping path. Begin owns flatBase before any segment

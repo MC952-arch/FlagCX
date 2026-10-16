@@ -933,14 +933,12 @@ TEST_F(SymMemTest, MrRollbackFailureRetainsWindowLeaseUntilRetry) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
-TEST_F(SymMemTest, StrictDmaBufUnsupportedDoesNotPublishWindow) {
+TEST_F(SymMemTest, DmaBufUnavailableWithoutVaDoesNotPublishWindow) {
   if (!envEnabled("FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED"))
     GTEST_SKIP() << "Runs only on a provider without DMA-BUF MR registration";
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
-  const char *mode = std::getenv("FLAGCX_VMM_MR_MODE");
-  ASSERT_NE(mode, nullptr);
-  ASSERT_STREQ(mode, "dmabuf");
+  ASSERT_TRUE(envEnabled("FLAGCX_DMABUF_ENABLE"));
 
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
@@ -948,6 +946,8 @@ TEST_F(SymMemTest, StrictDmaBufUnsupportedDoesNotPublishWindow) {
   ASSERT_NE(testComm->heteroComm, nullptr);
   ASSERT_NE(testComm->heteroComm->netAdaptor, nullptr);
   EXPECT_EQ(testComm->heteroComm->netAdaptor->regMrDmaBuf, nullptr);
+  ASSERT_EQ(testComm->heteroComm->netAdaptor->vmmMrCaps & FLAGCX_VMM_MR_CAP_VA,
+            0u);
 
   void *buffer = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&buffer, size)));
@@ -978,10 +978,8 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
 
-  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
-  const char *modes[] = {"dmabuf", "va"};
-  const flagcxVmmMrRoute_t expectedRoutes[] = {FLAGCX_VMM_MR_ROUTE_DMABUF,
-                                               FLAGCX_VMM_MR_ROUTE_VA};
+  ScopedEnvVar routeMode("FLAGCX_DMABUF_ENABLE", "1");
+  const char *modes[] = {"1", "0"};
   bool routeSucceeded[2] = {false, false};
 
   for (int routeIndex = 0; routeIndex < 2; routeIndex++) {
@@ -1022,8 +1020,12 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
       ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
       auto *handle = testComm->heteroComm->oneSideHandles[mrIndex];
       ASSERT_NE(handle, nullptr);
-      EXPECT_EQ(handle->registrationRoute,
-                static_cast<uint8_t>(expectedRoutes[routeIndex]));
+      if (routeIndex == 1)
+        EXPECT_EQ(handle->registrationRoute,
+                  static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_VA));
+      else
+        EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF ||
+                    handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA);
       ASSERT_TRUE(
           allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
     } else {
@@ -1190,9 +1192,9 @@ TEST_F(SymMemTest, SignalRegistrationUsesAllocationProvenance) {
       vmmMrRouteMatches(testComm->heteroComm->signalHandle->registrationRoute));
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalDeregister(testComm)));
 
-  // This allocation intentionally bypasses flagcxMemAlloc. VMM being enabled
-  // globally must not make an ordinary external device allocation take the
-  // DMA-BUF path.
+  // This allocation bypasses flagcxMemAlloc. VMM being enabled globally must
+  // not classify this ordinary device allocation as VMM. DMA-BUF eligibility
+  // is controlled separately by FLAGCX_DMABUF_ENABLE and the export result.
   void *externalBuffer = nullptr;
   flagcxResult_t result =
       devHandle->deviceMalloc(&externalBuffer, size, flagcxMemDevice, nullptr);
@@ -1206,8 +1208,10 @@ TEST_F(SymMemTest, SignalRegistrationUsesAllocationProvenance) {
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalRegister(
       testComm, externalBuffer, size, FLAGCX_PTR_CUDA)));
   ASSERT_NE(testComm->heteroComm->signalHandle, nullptr);
-  EXPECT_EQ(testComm->heteroComm->signalHandle->registrationRoute,
-            static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_NONE));
+  EXPECT_TRUE(testComm->heteroComm->signalHandle->registrationRoute ==
+                  FLAGCX_VMM_MR_ROUTE_VA ||
+              testComm->heteroComm->signalHandle->registrationRoute ==
+                  FLAGCX_VMM_MR_ROUTE_DMABUF);
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalDeregister(testComm)));
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
@@ -1511,7 +1515,8 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   ASSERT_NE(window->defaultBase, nullptr);
   EXPECT_EQ(window->defaultBase->ipcSlot, -1);
   EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
-  EXPECT_EQ(window->defaultBase->usesSegmentedVmm, vmmNode);
+  EXPECT_EQ(window->defaultBase->resourcePath == flagcxSymResourceSegments,
+            vmmNode);
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
 
   auto *net = hetero->netAdaptor;
@@ -1730,7 +1735,7 @@ TEST_F(SymMemTest, SegmentedVmmRegistrationUsesBoundedFds) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
-  EXPECT_TRUE(window->defaultBase->usesSegmentedVmm);
+  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
   EXPECT_EQ(window->defaultBase->rankLayouts[comm->heteroComm->localRank]
                 .segmentCount,
             64);
@@ -1750,6 +1755,7 @@ TEST_F(SymMemTest, SegmentedVmmWindowMapsDifferentPeerLayouts) {
   ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
   ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
   ASSERT_NE(deviceAdaptor->symFlatMapSegments, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysSegmentCount, nullptr);
 
   void *probe = nullptr;
   ASSERT_TRUE(
@@ -1792,7 +1798,7 @@ TEST_F(SymMemTest, SegmentedVmmWindowMapsDifferentPeerLayouts) {
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
-  EXPECT_TRUE(window->defaultBase->usesSegmentedVmm);
+  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
   ASSERT_NE(window->defaultBase->rankLayouts, nullptr);
   EXPECT_EQ(window->defaultBase->rankLayouts[localRank].segmentCount,
             localRank % 2 == 0 ? 2 : 3);
@@ -1838,8 +1844,8 @@ TEST_F(SymMemTest, SegmentedVmmWindowMapsDifferentPeerLayouts) {
 }
 
 TEST_F(SymMemTest, SegmentedMapFailureUsesNetworkMrFallback) {
-  if (!envEnabled("FLAGCX_CI_REQUIRE_SEGMENTED_NET_FALLBACK"))
-    GTEST_SKIP() << "Requires VMM and a working NET MR route";
+  if (!envEnabled("FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK"))
+    GTEST_SKIP() << "Requires multi-segment VMM and NET";
   ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
   ASSERT_FALSE(envEnabled("FLAGCX_IB_DISABLE"));
   ASSERT_NE(comm, nullptr);
@@ -1883,6 +1889,32 @@ TEST_F(SymMemTest, SegmentedMapFailureUsesNetworkMrFallback) {
   ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(allocationBundle),
             flagcxSuccess);
 
+  // Register this exact allocation first. General DMA-BUF capability does
+  // not guarantee that its entire mapped range is exportable by this driver.
+  flagcxWindow_t baselineWindow = nullptr;
+  flagcxResult_t baseline =
+      flagcxCommWindowRegister(comm, allocation, allocationSize,
+                               &baselineWindow, FLAGCX_WIN_COLL_SYMMETRIC);
+  int baselineMinimum = 0;
+  int baselineMaximum = 0;
+  allRankResultRange(baseline, &baselineMinimum, &baselineMaximum);
+  ASSERT_EQ(baselineMinimum, baselineMaximum);
+  const bool hasNetworkRoute = baseline == flagcxSuccess;
+  if (hasNetworkRoute) {
+    ASSERT_NE(baselineWindow, nullptr);
+    ASSERT_NE(baselineWindow->defaultBase, nullptr);
+    ASSERT_TRUE(baselineWindow->defaultBase->hasNetworkMrRef);
+    const int mrIndex = baselineWindow->defaultBase->mrIndex;
+    ASSERT_GE(mrIndex, 0);
+    EXPECT_EQ(comm->heteroComm->oneSideHandles[mrIndex]->registrationRoute,
+              FLAGCX_VMM_MR_ROUTE_DMABUF);
+    ASSERT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(comm, baselineWindow)));
+  } else {
+    EXPECT_EQ(baselineWindow, nullptr);
+    EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  }
+
   savedProviderMapOne = deviceAdaptor->symFlatMapSegmentOne;
   if (comm->heteroComm->localRank == 1)
     deviceAdaptor->symFlatMapSegmentOne = failAfterProviderMapOne;
@@ -1891,15 +1923,25 @@ TEST_F(SymMemTest, SegmentedMapFailureUsesNetworkMrFallback) {
       comm, allocation, allocationSize, &window, FLAGCX_WIN_COLL_SYMMETRIC);
   deviceAdaptor->symFlatMapSegmentOne = savedProviderMapOne;
 
-  ASSERT_TRUE(allRanksSucceeded(result));
-  ASSERT_NE(window, nullptr);
-  ASSERT_NE(window->defaultBase, nullptr);
-  EXPECT_TRUE(window->defaultBase->usesSegmentedVmm);
-  EXPECT_FALSE(window->defaultBase->hasFlatMapping);
-  EXPECT_EQ(window->defaultBase->flatBase, nullptr);
-  EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
-  EXPECT_EQ(window->defaultBase->ipcSlot, -1);
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
+  if (hasNetworkRoute) {
+    ASSERT_EQ(result, flagcxSuccess);
+    ASSERT_NE(window, nullptr);
+    ASSERT_NE(window->defaultBase, nullptr);
+    EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
+    EXPECT_FALSE(window->defaultBase->hasFlatMapping);
+    EXPECT_EQ(window->defaultBase->flatBase, nullptr);
+    EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
+    EXPECT_EQ(window->defaultBase->ipcSlot, -1);
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  } else {
+    EXPECT_NE(result, flagcxSuccess);
+    EXPECT_EQ(window, nullptr);
+    EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  }
   EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
 }
 
@@ -1948,7 +1990,7 @@ TEST_F(SymMemTest, OrdinaryAllocationUsesIpcWithVmmEnabled) {
     ASSERT_TRUE(allRanksSucceeded(result));
     ASSERT_NE(window, nullptr);
     ASSERT_NE(window->defaultBase, nullptr);
-    EXPECT_FALSE(window->defaultBase->usesSegmentedVmm);
+    EXPECT_NE(window->defaultBase->resourcePath, flagcxSymResourceSegments);
     EXPECT_FALSE(window->defaultBase->hasFlatMapping);
     EXPECT_GE(window->defaultBase->ipcSlot, 0);
     ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));

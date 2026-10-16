@@ -177,6 +177,41 @@ public:
     return flagcxSuccess;
   }
 
+  static flagcxResult_t segmentCount(const void *ptr, size_t size, int *count) {
+    if (ptr == NULL || size == 0 || count == NULL)
+      return flagcxInvalidArgument;
+    *count = 0;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    std::lock_guard<std::mutex> lock(mutex());
+    for (typename std::unordered_map<void *, Allocation>::const_iterator it =
+             allocations().begin();
+         it != allocations().end(); ++it) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+      const Allocation &allocation = it->second;
+      if (address < base || address - base > allocation.size ||
+          size > allocation.size - (address - base))
+        continue;
+      if (allocation.pendingCleanup ||
+          allocation.segments.size() >
+              static_cast<size_t>(std::numeric_limits<int>::max()))
+        return flagcxInvalidUsage;
+      const size_t begin = address - base;
+      const size_t end = begin + size;
+      for (size_t i = 0; i < allocation.segments.size(); ++i) {
+        const Segment &segment = allocation.segments[i];
+        if (segment.offset > allocation.size ||
+            segment.size > allocation.size - segment.offset)
+          return flagcxInvalidUsage;
+        if (segment.offset < end && segment.offset + segment.size > begin)
+          ++*count;
+      }
+      if (*count == 0)
+        return flagcxInvalidUsage;
+      return flagcxSuccess;
+    }
+    return flagcxNotSupported;
+  }
+
 private:
   struct Segment {
     size_t offset = 0;

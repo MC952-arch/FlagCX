@@ -602,7 +602,7 @@ flagcxResult_t ppucudaAdaptorMemGetHandleForAddressRange(
   CUresult result =
       cuMemGetHandleForAddressRange(handleOut, (CUdeviceptr)buffer, size,
                                     CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
-  if (result == CUDA_ERROR_NOT_SUPPORTED)
+  if (result == CUDA_ERROR_NOT_SUPPORTED || result == CUDA_ERROR_INVALID_VALUE)
     return flagcxNotSupported;
   return result == CUDA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -838,6 +838,25 @@ flagcxResult_t ppucudaAdaptorSymPhysExportSegment(void *bundle, int index,
 }
 flagcxResult_t ppucudaAdaptorSymPhysFreeSegments(void *bundle) {
   return PpuSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t ppucudaAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                                 int *count) {
+  flagcxResult_t result = PpuSegmentAllocation::segmentCount(ptr, size, count);
+  if (result != flagcxNotSupported)
+    return result;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(gPpuVmmAllocationMtx);
+  for (std::unordered_map<void *, PpuVmmAllocation>::const_iterator it =
+           gPpuVmmAllocations.begin();
+       it != gPpuVmmAllocations.end(); ++it) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+    if (address < base || address - base > it->second.size ||
+        size > it->second.size - (address - base))
+      continue;
+    *count = 1;
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
 }
 flagcxResult_t ppucudaAdaptorSymFlatMapSegments(
     const int *fds, int nPeers, int self, void *bundle,

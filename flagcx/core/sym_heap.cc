@@ -192,6 +192,39 @@ flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
   return flagcxSuccess;
 }
 
+flagcxResult_t
+flagcxSymCountUserRangeSegments(const flagcxSymRankLayout *layout,
+                                const flagcxSymSegmentMeta *rankSegments,
+                                int *count) {
+  if (layout == nullptr || rankSegments == nullptr || count == nullptr ||
+      layout->segmentCount <= 0 || layout->userSize == 0 ||
+      layout->userOffset > layout->mappedSize ||
+      layout->userSize > layout->mappedSize - layout->userOffset)
+    return flagcxInvalidArgument;
+  *count = 0;
+  const size_t userEnd = layout->userOffset + layout->userSize;
+  size_t coveredTo = layout->userOffset;
+  size_t previousEnd = 0;
+  for (int i = 0; i < layout->segmentCount; ++i) {
+    const flagcxSymSegmentMeta &segment = rankSegments[i];
+    if (segment.size == 0 || segment.offset > layout->mappedSize ||
+        segment.size > layout->mappedSize - segment.offset ||
+        (i > 0 && segment.offset < previousEnd))
+      return flagcxInvalidArgument;
+    const size_t end = segment.offset + segment.size;
+    if (segment.offset < userEnd && end > layout->userOffset) {
+      if (segment.offset > coveredTo)
+        return flagcxInvalidArgument;
+      if (end > coveredTo)
+        coveredTo = end;
+      ++*count;
+    }
+    previousEnd = end;
+  }
+  return coveredTo >= userEnd && *count > 0 ? flagcxSuccess
+                                            : flagcxInvalidArgument;
+}
+
 static bool flagcxSymWindowHasValidNetworkMr(flagcxHeteroComm_t comm,
                                              flagcxSymWindow_t window) {
   if (comm == nullptr || window == nullptr || !window->hasNetworkMrRef ||
@@ -216,12 +249,42 @@ flagcxResult_t flagcxSymWindowEnsureNetworkMr(flagcxHeteroComm_t comm,
     return flagcxSymWindowHasValidNetworkMr(comm, window) ? flagcxSuccess
                                                           : flagcxInternalError;
 
+  int mrRangeSegmentCount = 0;
+  flagcxResult_t rangeStatus = flagcxSuccess;
+  if (window->isVmmAllocation) {
+    if (window->rankLayouts != nullptr && window->segments != nullptr) {
+      if (comm->localRank < 0 || comm->localRank >= window->localRanks) {
+        rangeStatus = flagcxInternalError;
+      } else {
+        const flagcxSymRankLayout &layout =
+            window->rankLayouts[comm->localRank];
+        if (layout.firstSegment < 0 || layout.segmentCount <= 0 ||
+            layout.firstSegment > window->totalSegments ||
+            layout.segmentCount > window->totalSegments - layout.firstSegment) {
+          rangeStatus = flagcxInternalError;
+        } else {
+          rangeStatus = flagcxSymCountUserRangeSegments(
+              &layout, window->segments + layout.firstSegment,
+              &mrRangeSegmentCount);
+        }
+      }
+    } else if (window->resourcePath == flagcxSymResourceLegacyV1) {
+      mrRangeSegmentCount = 1;
+    } else if (window->resourcePath == flagcxSymResourceSegments) {
+      rangeStatus = flagcxInternalError;
+    }
+  }
+  flagcxResult_t commonRangeStatus = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymGlobalConverge(comm, rangeStatus, &commonRangeStatus));
+  if (commonRangeStatus != flagcxSuccess)
+    return commonRangeStatus;
+
   int mrIndex = -1;
   bool rollbackPending = false;
   flagcxResult_t result = flagcxOneSideRegisterInternal(
       comm, window->localBase, window->heapSize, window->isVmmAllocation,
       /*acquireWindowRef=*/true, &mrIndex, &rollbackPending,
-      window->usesSegmentedVmm);
+      mrRangeSegmentCount);
   if (result != flagcxSuccess) {
     window->hasPendingNetworkCleanup = rollbackPending;
     return result;
@@ -336,7 +399,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
 
   local = flagcxSuccess;
   if (hasVmmOwnership && d->flatMappingOwned) {
-    if (d->usesSegmentedVmm)
+    if (d->resourcePath == flagcxSymResourceSegments)
       local = deviceAdaptor->symFlatMappingUnmapSegments != nullptr
                   ? deviceAdaptor->symFlatMappingUnmapSegments(d->flatBase)
                   : flagcxInternalError;
@@ -357,7 +420,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
 
   local = flagcxSuccess;
   if (hasVmmOwnership && d->flatVaOwned) {
-    if (d->usesSegmentedVmm)
+    if (d->resourcePath == flagcxSymResourceSegments)
       local = deviceAdaptor->symFlatVaFreeSegments != nullptr
                   ? deviceAdaptor->symFlatVaFreeSegments(d->flatBase)
                   : flagcxInternalError;
@@ -378,7 +441,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
 
   local = flagcxSuccess;
   if (hasVmmOwnership && d->physHandle != nullptr) {
-    if (d->usesSegmentedVmm)
+    if (d->resourcePath == flagcxSymResourceSegments)
       local = deviceAdaptor->symPhysFreeSegments != nullptr
                   ? deviceAdaptor->symPhysFreeSegments(d->physHandle)
                   : flagcxInternalError;
@@ -831,11 +894,11 @@ static flagcxResult_t flagcxSymMapSegmentsStreaming(flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
-                                               flagcxSymWindow_t d, void *buff,
-                                               size_t size, bool *used,
-                                               bool *ordinaryIpcEligible,
-                                               bool *cleanupFailed) {
+static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
+                                                flagcxSymWindow_t d, void *buff,
+                                                size_t size, bool *used,
+                                                bool *ordinaryIpcEligible,
+                                                bool *cleanupFailed) {
   *used = false;
   *ordinaryIpcEligible = false;
   *cleanupFailed = false;
@@ -853,7 +916,7 @@ static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
   FLAGCXCHECK(flagcxSymLocalConverge(
       comm, available ? flagcxSuccess : flagcxNotSupported, 0x5974,
       &commonAvailability));
-  const bool trySegmented = commonAvailability == flagcxSuccess;
+  const bool trySegmentLayout = commonAvailability == flagcxSuccess;
   bool mapFailure = false;
   void *bundle = nullptr;
   const flagcxSymSegmentMeta *localSegments = nullptr;
@@ -861,13 +924,13 @@ static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
   size_t userOffset = 0;
   size_t alignment = 0;
   flagcxResult_t local =
-      trySegmented
+      trySegmentLayout
           ? deviceAdaptor->symPhysDescribe(buff, size, &bundle, &localSegments,
                                            &localCount, &userOffset, &alignment)
           : flagcxNotSupported;
   if (bundle != nullptr) {
     d->physHandle = bundle;
-    d->usesSegmentedVmm = true;
+    d->resourcePath = flagcxSymResourceSegments;
   }
   if (local == flagcxSuccess &&
       (bundle == nullptr || localSegments == nullptr || localCount <= 0 ||
@@ -908,21 +971,21 @@ static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
     if (common != flagcxSuccess)
       return common;
 
-    bool legacyGeometry = true;
+    bool useLegacyMappingCallbacks = true;
     const size_t legacySize = d->rankLayouts[0].mappedSize;
     for (int peer = 0; peer < comm->localRanks; peer++) {
       const flagcxSymRankLayout &layout = d->rankLayouts[peer];
       if (layout.segmentCount != 1 || layout.userOffset != 0 ||
           layout.mappedSize != legacySize || layout.userSize != d->heapSize)
-        legacyGeometry = false;
+        useLegacyMappingCallbacks = false;
     }
-    if (legacyGeometry) {
+    if (useLegacyMappingCallbacks) {
       // Preserve the established single-allocation callback and its failure
       // injection seam. No FD or flat VA belongs to this probe yet.
       local = deviceAdaptor->symPhysFreeSegments(d->physHandle);
       if (local == flagcxSuccess) {
         d->physHandle = nullptr;
-        d->usesSegmentedVmm = false;
+        d->resourcePath = flagcxSymResourceNone;
       }
       FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5973, &common));
       if (common != flagcxSuccess)
@@ -954,7 +1017,7 @@ static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
     // A latest adaptor identified ordinary IPC memory. Do not probe it again
     // through the v1 VMM callback, which expects a physical VMM allocation.
     *ordinaryIpcEligible =
-        trySegmented && local == flagcxNotSupported && bundle == nullptr;
+        trySegmentLayout && local == flagcxNotSupported && bundle == nullptr;
     return flagcxSuccess;
   }
   if (global == flagcxSuccess)
@@ -986,7 +1049,7 @@ static flagcxResult_t flagcxSymTrySegmentedVmm(flagcxHeteroComm_t comm,
   *cleanupFailed = globalRollback != flagcxSuccess;
   if (*cleanupFailed)
     return globalRollback;
-  // Keep the VMM provenance and peer layouts for VA-based NET MR and bounds
+  // Keep the VMM provenance and peer layouts for NET MR selection and bounds
   // checks, but never publish an incomplete flat mapping.
   return fallbackStatus == flagcxSuccess && netStatus == flagcxSuccess
              ? flagcxSuccess
@@ -1053,7 +1116,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   bool mcIpcSockOpen = false;
   bool retainCleanupForRetry = false;
   bool prepareRollbackConverged = false;
-  bool segmentedVmmUsed = false;
+  bool segmentCallbacksUsed = false;
   bool ordinaryIpcEligible = false;
   bool segmentedCleanupFailed = false;
   flagcxResult_t localPrepareStatus = flagcxSuccess;
@@ -1130,8 +1193,9 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   d->localRanks = localRanks;
   d->heapSize = size;
 
-  res = flagcxSymTrySegmentedVmm(comm, d, buff, size, &segmentedVmmUsed,
-                                 &ordinaryIpcEligible, &segmentedCleanupFailed);
+  res =
+      flagcxSymTrySegmentLayout(comm, d, buff, size, &segmentCallbacksUsed,
+                                &ordinaryIpcEligible, &segmentedCleanupFailed);
   if (res != flagcxSuccess) {
     prepareRollbackConverged = true;
     retainCleanupForRetry = segmentedCleanupFailed;
@@ -1139,7 +1203,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   }
 
   // ---- Try VMM path ----
-  if (!segmentedVmmUsed && !ordinaryIpcEligible) {
+  if (!segmentCallbacksUsed && !ordinaryIpcEligible) {
     bool vmmOk = false;
     const bool localVmmAvailable =
         deviceAdaptor->symPhysAlloc != nullptr &&
@@ -1184,6 +1248,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
                 ? deviceAdaptor->getAddressRange(buff, &rangeBase, &rangeSize)
                 : flagcxNotSupported;
 
+        d->resourcePath = flagcxSymResourceLegacyV1;
         flagcxResult_t allocRes = deviceAdaptor->symPhysAlloc(
             buff, size, &physHandle, &shareableFd, &handleSize, &allocSize);
         bool unsupportedLegacyGeometry = false;
@@ -1971,8 +2036,8 @@ flagcxResult_t flagcxSymWindowPeerUserSize(flagcxHeteroComm_t comm,
   }
   const bool localPeer =
       comm->rankToNode != nullptr && comm->rankToNode[peer] == comm->node;
-  if (localPeer && window->usesSegmentedVmm) {
-    if (window->rankLayouts == nullptr || comm->rankToLocalRank == nullptr)
+  if (localPeer && window->rankLayouts != nullptr) {
+    if (comm->rankToLocalRank == nullptr)
       return flagcxInternalError;
     const int localRank = comm->rankToLocalRank[peer];
     if (localRank < 0 || localRank >= window->localRanks)
@@ -2014,9 +2079,9 @@ flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
     return flagcxSuccess;
   }
 
-  if (window->usesSegmentedVmm && window->hasFlatMapping &&
+  if (window->rankLayouts != nullptr && window->hasFlatMapping &&
       window->flatBase != nullptr) {
-    if (window->rankLayouts == nullptr || window->slotStride == 0)
+    if (window->slotStride == 0)
       return flagcxInternalError;
     const flagcxSymRankLayout &layout = window->rankLayouts[peerLocalRank];
     if (offset > layout.userSize || size > layout.userSize - offset ||

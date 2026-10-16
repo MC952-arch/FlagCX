@@ -26,6 +26,7 @@
 #include "transport.h"
 #include "utils.h"
 #include <cassert>
+#include <limits>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -986,39 +987,14 @@ flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxOneSideParseVmmMrMode(const char *value,
-                                           flagcxVmmMrMode_t *mode) {
-  if (mode == nullptr)
-    return flagcxInvalidArgument;
-  if (value == nullptr || value[0] == '\0' || strcasecmp(value, "auto") == 0) {
-    *mode = flagcxVmmMrModeAuto;
-    return flagcxSuccess;
-  }
-  if (strcasecmp(value, "dmabuf") == 0) {
-    *mode = flagcxVmmMrModeDmaBuf;
-    return flagcxSuccess;
-  }
-  if (strcasecmp(value, "va") == 0) {
-    *mode = flagcxVmmMrModeVa;
-    return flagcxSuccess;
-  }
-  WARN("Invalid FLAGCX_VMM_MR_MODE=%s; expected auto, dmabuf, or va", value);
-  return flagcxInvalidArgument;
-}
-
-flagcxVmmMrRoute_t flagcxOneSideSelectVmmMrRoute(uint32_t deviceCaps,
-                                                 int netPtrSupport,
-                                                 bool dmaBufExportSupported,
-                                                 bool hasDmaBufRegistration,
-                                                 bool hasVaRegistration,
-                                                 flagcxVmmMrMode_t mode) {
-  const bool allowDmaBuf = mode != flagcxVmmMrModeVa;
-  const bool allowVa = mode != flagcxVmmMrModeDmaBuf;
-  if (allowDmaBuf && (deviceCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
+flagcxVmmMrRoute_t flagcxOneSideSelectVmmMrRoute(
+    uint32_t deviceCaps, int netPtrSupport, bool dmaBufExportSupported,
+    bool hasDmaBufRegistration, bool hasVaRegistration, bool dmaBufEnabled) {
+  if (dmaBufEnabled && (deviceCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
       dmaBufExportSupported && (netPtrSupport & FLAGCX_PTR_DMABUF) &&
       hasDmaBufRegistration)
     return FLAGCX_VMM_MR_ROUTE_DMABUF;
-  if (allowVa && (deviceCaps & FLAGCX_VMM_MR_CAP_VA) &&
+  if ((deviceCaps & FLAGCX_VMM_MR_CAP_VA) &&
       (netPtrSupport & FLAGCX_PTR_CUDA) && hasVaRegistration)
     return FLAGCX_VMM_MR_ROUTE_VA;
   return FLAGCX_VMM_MR_ROUTE_NONE;
@@ -1126,12 +1102,69 @@ flagcxOneSideGetDmaBufExportRange(void *buff, size_t size, void **exportBase,
     return flagcxSystemError;
   uintptr_t pageSize = static_cast<uintptr_t>(pageSizeResult);
   uintptr_t registrationAddress = address - address % pageSize;
-  if (registrationAddress < baseAddress)
-    return flagcxInvalidUsage;
+  // The export API requires both the base and length to be page aligned.
+  // An ordinary cudaMalloc allocation is not guaranteed to meet that
+  // requirement, so leave it eligible for ordinary VA registration.
+  if (registrationAddress < baseAddress || baseAddress % pageSize != 0 ||
+      allocationSize % pageSize != 0)
+    return flagcxNotSupported;
 
   *exportBase = base;
   *exportSize = allocationSize;
   *dmaBufOffset = static_cast<uint64_t>(registrationAddress - baseAddress);
+  return flagcxSuccess;
+}
+
+// Walk only the physical mappings touched by this MR. The adaptor's
+// getAddressRange callback describes the mapping containing each address;
+// unlike symPhysDescribe this query does not retain provider handles.
+static flagcxResult_t flagcxOneSideGetVmmDmaBufExportRange(
+    void *buff, size_t size, int expectedSegments, void **exportBase,
+    size_t *exportSize, uint64_t *dmaBufOffset) {
+  if (buff == nullptr || size == 0 || expectedSegments <= 0 ||
+      exportBase == nullptr || exportSize == nullptr || dmaBufOffset == nullptr)
+    return flagcxInvalidArgument;
+  if (deviceAdaptor == nullptr || deviceAdaptor->getAddressRange == nullptr)
+    return flagcxNotSupported;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(buff);
+  if (size > std::numeric_limits<uintptr_t>::max() - address)
+    return flagcxInvalidArgument;
+  const uintptr_t userEnd = address + size;
+  uintptr_t cursor = address;
+  uintptr_t firstBase = 0;
+  int count = 0;
+  while (cursor < userEnd) {
+    void *mappingBase = nullptr;
+    size_t mappingSize = 0;
+    flagcxResult_t result = deviceAdaptor->getAddressRange(
+        reinterpret_cast<void *>(cursor), &mappingBase, &mappingSize);
+    if (result != flagcxSuccess)
+      return result;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(mappingBase);
+    if (mappingSize == 0 || base > cursor ||
+        mappingSize > std::numeric_limits<uintptr_t>::max() - base ||
+        base + mappingSize <= cursor)
+      return flagcxInvalidUsage;
+    if (count == 0)
+      firstBase = base;
+    cursor = base + mappingSize;
+    if (++count > expectedSegments)
+      return flagcxNotSupported;
+  }
+  if (count != expectedSegments)
+    return flagcxNotSupported;
+
+  const long pageSize = sysconf(_SC_PAGESIZE);
+  if (pageSize <= 0)
+    return flagcxSystemError;
+  const uintptr_t page = static_cast<uintptr_t>(pageSize);
+  const uintptr_t registrationBase = address - address % page;
+  if (firstBase % page != 0 || (cursor - firstBase) % page != 0 ||
+      registrationBase < firstBase)
+    return flagcxNotSupported;
+  *exportBase = reinterpret_cast<void *>(firstBase);
+  *exportSize = cursor - firstBase;
+  *dmaBufOffset = static_cast<uint64_t>(registrationBase - firstBase);
   return flagcxSuccess;
 }
 
@@ -1208,20 +1241,97 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
                                        int ptrType, bool isVmm, int mrFlags,
                                        void **mrHandle,
                                        flagcxVmmMrRoute_t *selectedRoute,
-                                       bool segmentedVmm) {
+                                       int mrRangeSegmentCount) {
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL || regComm == NULL ||
-      buff == NULL || size == 0 || mrHandle == NULL || selectedRoute == NULL)
+      buff == NULL || size == 0 || mrHandle == NULL || selectedRoute == NULL ||
+      mrRangeSegmentCount < 0)
     return flagcxInvalidArgument;
   *mrHandle = NULL;
   *selectedRoute = FLAGCX_VMM_MR_ROUTE_NONE;
 
   struct flagcxNetAdaptor *net = heteroComm->netAdaptor;
-  if (!isVmm) {
+  const char *dmaBufEnv = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
+  const bool dmaBufEnabled = dmaBufEnv != NULL && strcmp(dmaBufEnv, "1") == 0;
+  if (ptrType == FLAGCX_PTR_CUDA && deviceAdaptor != NULL &&
+      deviceAdaptor->symPhysSegmentCount != NULL) {
+    int segmentCount = 0;
+    flagcxResult_t countResult =
+        deviceAdaptor->symPhysSegmentCount(buff, size, &segmentCount);
+    if (countResult == flagcxSuccess) {
+      if (segmentCount <= 0)
+        return flagcxInternalError;
+      if (mrRangeSegmentCount > 0 && mrRangeSegmentCount != segmentCount)
+        return flagcxInvalidUsage;
+      isVmm = true;
+      mrRangeSegmentCount = segmentCount;
+    } else if (countResult != flagcxNotSupported) {
+      return countResult;
+    }
+  }
+  isVmm = isVmm || mrRangeSegmentCount > 0;
+
+  if (!isVmm || ptrType != FLAGCX_PTR_CUDA) {
+    // Ordinary device allocations may use DMA-BUF too. Eligibility is
+    // decided by exporting this allocation, not by assuming cudaMalloc uses
+    // a particular driver allocation API.
+    if (ptrType == FLAGCX_PTR_CUDA && dmaBufEnabled && deviceAdaptor != NULL &&
+        deviceAdaptor->dmaSupport != NULL &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
+        net->regMrDmaBuf != NULL && net->getProperties != NULL) {
+      flagcxNetProperties_t properties = {};
+      flagcxResult_t result =
+          net->getProperties(heteroComm->netDev, &properties);
+      if (result != flagcxSuccess && result != flagcxNotSupported)
+        return result;
+      bool supported = false;
+      if (result == flagcxSuccess &&
+          (properties.ptrSupport & FLAGCX_PTR_DMABUF) != 0) {
+        result = deviceAdaptor->dmaSupport(&supported);
+        if (result != flagcxSuccess && result != flagcxNotSupported)
+          return result;
+      }
+      if (supported) {
+        void *exportBase = nullptr;
+        size_t exportSize = 0;
+        uint64_t offset = 0;
+        int fd = -1;
+        result = flagcxOneSideGetDmaBufExportRange(buff, size, &exportBase,
+                                                   &exportSize, &offset);
+        if (result == flagcxSuccess)
+          result = deviceAdaptor->getHandleForAddressRange(&fd, exportBase,
+                                                           exportSize, 0);
+        if (result == flagcxSuccess && fd < 0)
+          result = flagcxNotSupported;
+        if (result == flagcxSuccess)
+          result = net->regMrDmaBuf(regComm, buff, size, ptrType, offset, fd,
+                                    mrFlags, mrHandle);
+        if (fd >= 0)
+          close(fd);
+        result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+        if (result == flagcxSuccess) {
+          *selectedRoute = FLAGCX_VMM_MR_ROUTE_DMABUF;
+          return flagcxSuccess;
+        }
+        if (result != flagcxNotSupported)
+          return result;
+        if (*mrHandle != NULL) {
+          if (net->deregMr == NULL)
+            return flagcxInternalError;
+          result = net->deregMr(regComm, *mrHandle);
+          if (result != flagcxSuccess)
+            return result;
+          *mrHandle = NULL;
+        }
+      }
+    }
     if (net->regMr == NULL)
       return flagcxNotSupported;
     flagcxResult_t result =
         net->regMr(regComm, buff, size, ptrType, mrFlags, mrHandle);
-    return flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+    result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
+    if (result == flagcxSuccess)
+      *selectedRoute = FLAGCX_VMM_MR_ROUTE_VA;
+    return result;
   }
 
   const bool legacyDeviceV1 =
@@ -1230,12 +1340,21 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   const bool legacyNetV1 =
       (net->internalFlags & FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1) != 0;
   const bool legacyV1 = legacyDeviceV1 || legacyNetV1;
+  if (mrRangeSegmentCount == 0) {
+    if (!legacyV1)
+      return flagcxNotSupported;
+    // A v1 registration has no segment query; its VMM allocation callback
+    // supports only one physical allocation.
+    mrRangeSegmentCount = 1;
+  }
+  const bool multiSegmentMr = mrRangeSegmentCount > 1;
+  if (legacyV1 && multiSegmentMr)
+    return flagcxNotSupported;
   if (legacyV1) {
-    // v1 had no explicit per-allocation or MR-route capability. Preserve its
-    // historical behavior exactly: try DMA-BUF when both callbacks exist, but
-    // treat any export failure as a request to use ordinary VA registration.
-    // A failure after a successful export remains a real transport error.
-    if (!segmentedVmm && deviceAdaptor->getHandleForAddressRange != NULL &&
+    // v1 has no route capability bits. Its single-allocation behavior remains
+    // callback driven, but the process-wide DMA-BUF switch still applies.
+    if (dmaBufEnabled && deviceAdaptor != NULL &&
+        deviceAdaptor->getHandleForAddressRange != NULL &&
         net->regMrDmaBuf != NULL) {
       int dmaBufFd = -1;
       flagcxResult_t exportResult = deviceAdaptor->getHandleForAddressRange(
@@ -1271,17 +1390,6 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
     return result;
   }
 
-  flagcxVmmMrMode_t mode = flagcxVmmMrModeAuto;
-  flagcxResult_t modeResult =
-      flagcxOneSideParseVmmMrMode(flagcxGetEnv("FLAGCX_VMM_MR_MODE"), &mode);
-  if (modeResult != flagcxSuccess)
-    return modeResult;
-  if (segmentedVmm) {
-    if (mode == flagcxVmmMrModeDmaBuf)
-      return flagcxNotSupported;
-    mode = flagcxVmmMrModeVa;
-  }
-
   flagcxNetProperties_t properties = {};
   if (net->getProperties == NULL)
     return flagcxNotSupported;
@@ -1300,7 +1408,7 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   const uint32_t effectiveCaps = deviceCaps & providerCaps;
 
   bool dmaBufExportSupported = false;
-  if (mode != flagcxVmmMrModeVa && (effectiveCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
+  if (dmaBufEnabled && (effectiveCaps & FLAGCX_VMM_MR_CAP_DMABUF) &&
       deviceAdaptor->dmaSupport != NULL) {
     flagcxResult_t supportResult =
         deviceAdaptor->dmaSupport(&dmaBufExportSupported);
@@ -1315,15 +1423,12 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       effectiveCaps, properties.ptrSupport, dmaBufExportSupported,
       deviceAdaptor->getHandleForAddressRange != NULL &&
           net->regMrDmaBuf != NULL,
-      net->regMr != NULL, mode);
+      !multiSegmentMr && net->regMr != NULL, dmaBufEnabled);
   INFO(FLAGCX_REG,
-       "VMM MR route selection: provider=%s mode=%s deviceCaps=0x%x "
+       "VMM MR route selection: provider=%s dmaBufEnabled=%d deviceCaps=0x%x "
        "providerCaps=0x%x effectiveCaps=0x%x ptrSupport=0x%x "
        "dmaBufExport=%d regMrDmaBuf=%d regMr=%d selected=%d",
-       net->name != NULL ? net->name : "unknown",
-       mode == flagcxVmmMrModeDmaBuf
-           ? "dmabuf"
-           : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
+       net->name != NULL ? net->name : "unknown", dmaBufEnabled ? 1 : 0,
        deviceCaps, providerCaps, effectiveCaps, properties.ptrSupport,
        dmaBufExportSupported ? 1 : 0,
        deviceAdaptor->getHandleForAddressRange != NULL &&
@@ -1340,8 +1445,9 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
     void *exportBase = nullptr;
     size_t exportSize = 0;
     uint64_t dmaBufOffset = 0;
-    result = flagcxOneSideGetDmaBufExportRange(buff, size, &exportBase,
-                                               &exportSize, &dmaBufOffset);
+    result = flagcxOneSideGetVmmDmaBufExportRange(
+        buff, size, mrRangeSegmentCount, &exportBase, &exportSize,
+        &dmaBufOffset);
     if (result == flagcxSuccess)
       result = deviceAdaptor->getHandleForAddressRange(
           (void *)&dmaBufFd, exportBase, exportSize, 0);
@@ -1366,9 +1472,9 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       close(dmaBufFd);
 
     // A component may advertise DMA-BUF generally but reject this allocation.
-    // Only an explicit NotSupported result selects the validated VA fallback;
-    // transport/device failures remain visible and are never masked.
-    if (result == flagcxNotSupported && mode == flagcxVmmMrModeAuto) {
+    // Only a registration range within one physical segment may use a
+    // validated VA fallback after an explicit NotSupported result.
+    if (!multiSegmentMr && result == flagcxNotSupported) {
       // A provider may return NotSupported after partially creating an MR.
       // Do not overwrite that ownership with the VA handle. Complete its
       // rollback first; if rollback fails, leave the handle visible to the
@@ -1383,7 +1489,7 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       }
       route = flagcxOneSideSelectVmmMrRoute(
           effectiveCaps & ~FLAGCX_VMM_MR_CAP_DMABUF, properties.ptrSupport,
-          false, false, net->regMr != NULL, mode);
+          false, false, net->regMr != NULL, false);
       if (route == FLAGCX_VMM_MR_ROUTE_VA) {
         *mrHandle = NULL;
         result =
@@ -1410,12 +1516,8 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
   result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
   if (result == flagcxSuccess) {
     *selectedRoute = route;
-    INFO(FLAGCX_REG, "VMM MR registered through %s (mode=%s): buff=%p size=%zu",
-         route == FLAGCX_VMM_MR_ROUTE_DMABUF ? "DMA-BUF" : "VA",
-         mode == flagcxVmmMrModeDmaBuf
-             ? "dmabuf"
-             : (mode == flagcxVmmMrModeVa ? "va" : "auto"),
-         buff, size);
+    INFO(FLAGCX_REG, "VMM MR registered through %s: buff=%p size=%zu",
+         route == FLAGCX_VMM_MR_ROUTE_DMABUF ? "DMA-BUF" : "VA", buff, size);
   }
   return result;
 }
@@ -1425,14 +1527,15 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                              bool isVmm, bool acquireWindowRef,
                                              int *mrIndex,
                                              bool *rollbackPending,
-                                             bool segmentedVmm) {
+                                             int mrRangeSegmentCount) {
   if (mrIndex != NULL)
     *mrIndex = -1;
   if (rollbackPending != NULL)
     *rollbackPending = false;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
-      heteroComm->netAdaptor->regMr == NULL ||
+      (heteroComm->netAdaptor->regMr == NULL &&
+       heteroComm->netAdaptor->regMrDmaBuf == NULL) ||
       heteroComm->netAdaptor->getMrInfo == NULL) {
     return flagcxNotSupported;
   }
@@ -1594,7 +1697,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
   res = flagcxOneSideRegisterMr(heteroComm, regComm, buff, size,
                                 FLAGCX_PTR_CUDA, isVmm, FLAGCX_NET_MR_FLAG_NONE,
-                                &mrHandle, &selectedRoute, segmentedVmm);
+                                &mrHandle, &selectedRoute, mrRangeSegmentCount);
   info->registrationRoute = (uint8_t)selectedRoute;
   // Visibility is a property of the device/NIC path, not of how this MR was
   // registered. In particular, an ordinary cudaMalloc-style allocation needs
@@ -1865,7 +1968,8 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
 
   if (heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iputSignal == NULL ||
-      heteroComm->netAdaptor->regMr == NULL ||
+      (heteroComm->netAdaptor->regMr == NULL &&
+       heteroComm->netAdaptor->regMrDmaBuf == NULL) ||
       heteroComm->netAdaptor->getMrInfo == NULL) {
     if (ipcSlot >= 0)
       return flagcxSuccess;
