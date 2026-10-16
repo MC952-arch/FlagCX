@@ -470,9 +470,7 @@ flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
       cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value, waitFlags);
   if (err == CUDA_SUCCESS)
     return flagcxSuccess;
-  // A valid, page-aligned ordinary allocation may still be ineligible for
-  // DMA-BUF export. Let the common MR policy try its validated VA route.
-  if (err == CUDA_ERROR_NOT_SUPPORTED || err == CUDA_ERROR_INVALID_VALUE)
+  if (err == CUDA_ERROR_NOT_SUPPORTED)
     return flagcxNotSupported;
   return flagcxUnhandledDeviceError;
 }
