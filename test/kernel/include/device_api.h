@@ -96,20 +96,6 @@ flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
                                         flagcxDevComm_t devComm, float *output,
                                         size_t count, flagcxStream_t stream);
 
-// Diagnostic: write/read one IPC barrier inbox slot without spinning.
-// The read kernel clears its local slot so later barrier tests start at zero.
-flagcxResult_t launchKernelIntraBarrierIpcWriteProbe(flagcxDevComm_t devComm,
-                                                     flagcxStream_t stream);
-flagcxResult_t launchKernelIntraBarrierIpcReadProbe(flagcxDevComm_t devComm,
-                                                    int *result,
-                                                    flagcxStream_t stream);
-flagcxResult_t launchKernelIntraBarrierLiveProbe(flagcxDevComm_t devComm,
-                                                 int *result,
-                                                 flagcxStream_t stream);
-flagcxResult_t launchKernelIntraBarrierSnapshot(flagcxDevComm_t devComm,
-                                                int *result,
-                                                flagcxStream_t stream);
-
 // K3: Peer Pointer (team) — read peer via flagcxGetPeerPointer(mem, off, team,
 // peer)
 flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,

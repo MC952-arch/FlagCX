@@ -51,34 +51,6 @@
 // Intra-Node Scalar IR kernel launchers (S1–S10)
 // =========================================================================
 
-// DU diagnostic: bounded all-peer IPC barrier notification probe.
-flagcxResult_t launchKernelDevIntraBarrierLiveProbeS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
-    flagcxStream_t stream);
-flagcxResult_t launchKernelDevIntraBarrierSnapshotS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result,
-    flagcxStream_t stream);
-// DU diagnostics for staged signal operations and individual S20 cases.
-void launchKernelDuSignalStageS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                int *result, int stage, flagcxStream_t stream);
-void launchKernelDuS20ComboS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                             int *result, int combo, flagcxStream_t stream);
-void launchKernelDuIntraBarrierPrewrittenS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output, int count,
-    flagcxStream_t stream);
-void launchKernelDuIntraBarrierWriterS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, float *buffer, int count,
-    flagcxStream_t stream);
-void launchKernelDuIntraBarrierFenceS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
-    int count, flagcxStream_t stream);
-void launchKernelDuIntraBarrierSplitS(
-    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
-    int count, flagcxStream_t stream);
-
 // S1: Comm Queries — rank, size, intraRank, intraSize
 void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               int *devResults, flagcxStream_t stream);

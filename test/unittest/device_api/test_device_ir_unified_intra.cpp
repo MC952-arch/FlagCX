@@ -34,7 +34,6 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
-#include <vector>
 
 constexpr int kUnifiedIrSignalComboCount = 12;
 constexpr int kUnifiedIrS23ComboCount = 18;
@@ -159,50 +158,6 @@ int main(int argc, char *argv[]) {
   // S21-S25 atomically clear this value if any device context fails.
   int passResult = 1;
 
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-  if (totalProcs > 256) {
-    RPRINTF("barrier probe supports at most 256 ranks\n");
-    MPI_Abort(MPI_COMM_WORLD, 1);
-  }
-  std::vector<int> live(totalProcs), after(totalProcs);
-  MPI_Barrier(MPI_COMM_WORLD);
-  RPRINTF("S16 intra barrier all-peer live probe launch\n");
-  FLAGCXCHECK(
-      launchKernelDevIntraBarrierLiveProbeS(devCommPtr, devResults, stream));
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-  RPRINTF("S16 intra barrier all-peer live probe complete\n");
-  FLAGCXCHECK(devHandle->deviceMemcpy(live.data(), devResults,
-                                      totalProcs * sizeof(int),
-                                      flagcxMemcpyDeviceToHost, stream));
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  FLAGCXCHECK(
-      launchKernelDevIntraBarrierSnapshotS(devCommPtr, devResults, stream));
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-  FLAGCXCHECK(devHandle->deviceMemcpy(after.data(), devResults,
-                                      totalProcs * sizeof(int),
-                                      flagcxMemcpyDeviceToHost, stream));
-  FLAGCXCHECK(devHandle->streamSynchronize(stream));
-  int probeFailed = 0;
-  RPRINTF("S16 barrier initial epoch=%d expected=0\n", after[proc]);
-  if (after[proc] != 0)
-    probeFailed = 1;
-  for (int p = 0; p < totalProcs; ++p) {
-    if (p == proc)
-      continue;
-    RPRINTF("S16 barrier peer %d: live=%d after=%d expected=%d\n", p, live[p],
-            after[p], p + 1);
-    if (live[p] != p + 1 || after[p] != p + 1)
-      probeFailed = 1;
-  }
-  int anyProbeFailed = 0;
-  MPI_Allreduce(&probeFailed, &anyProbeFailed, 1, MPI_INT, MPI_MAX,
-                MPI_COMM_WORLD);
-  if (anyProbeFailed)
-    MPI_Abort(MPI_COMM_WORLD, 1);
-#endif
-
   for (size_t size = minBytes; size <= maxBytes; size *= (size_t)stepFactor) {
     size_t count = size / sizeof(float);
     if (count == 0)
@@ -223,10 +178,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
                                           FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
                                           flagcxMemDevice, stream));
-      RPRINTF("S16 BarrierSync: kernel launch\n");
       launchKernelDevBarrierIntraWorldS(devCommPtr, devResults, stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      RPRINTF("S16 BarrierSync: kernel complete\n");
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
                                           4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
@@ -242,11 +195,9 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0,
                                           FLAGCX_DEVICE_CTA_COUNT * sizeof(int),
                                           flagcxMemDevice, stream));
-      RPRINTF("S16 BarrierArriveWait: kernel launch\n");
       launchKernelDevBarrierArriveWaitIntraWorldS(devCommPtr, devResults,
                                                   stream);
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
-      RPRINTF("S16 BarrierArriveWait: kernel complete\n");
       FLAGCXCHECK(devHandle->deviceMemcpy(hostResults, devResults,
                                           4 * sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));

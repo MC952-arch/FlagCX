@@ -300,56 +300,6 @@ int main(int argc, char *argv[]) {
     // -----------------------------------------------------------------------
     // S8: Intra Barrier Sync (Scalar)
     // -----------------------------------------------------------------------
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-    auto checkLocalWriter = [&](const char *label, float expected) {
-      size_t mismatch = count;
-      for (size_t i = 0; i < count; ++i) {
-        if (!(fabsf(hostBuf[i] - expected) <= 1e-3f)) {
-          mismatch = i;
-          break;
-        }
-      }
-      if (mismatch != count)
-        RPRINTF("%s local first mismatch i=%zu got=%g expected=%g\n", label,
-                mismatch, hostBuf[mismatch], expected);
-      RPRINTF("%s local GPU writer: %s\n", label,
-              mismatch == count ? "PASS" : "FAIL");
-      allPass &= mismatch == count;
-    };
-
-    // Control: the same scalar barrier with data prepared before launch.
-    // Compare this with S8, where the device publishes data in the kernel.
-    for (size_t i = 0; i < count; ++i)
-      hostBuf[i] = (float)(proc + 1);
-    FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, hostBuf, count * sizeof(float),
-                                        flagcxMemcpyHostToDevice, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    MPI_Barrier(MPI_COMM_WORLD);
-    FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    launchKernelDuIntraBarrierPrewrittenS(devCommPtr, devMemPtr, devOutput,
-                                          count, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
-                                        count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    size_t prewrittenMismatch = count;
-    for (size_t i = 0; i < count; ++i) {
-      if (!(fabsf(hostBuf[i] - (float)(peer + 1)) <= 1e-3f)) {
-        prewrittenMismatch = i;
-        break;
-      }
-    }
-    if (prewrittenMismatch != count)
-      RPRINTF("S8 prewritten first mismatch i=%zu got=%g expected=%g\n",
-              prewrittenMismatch, hostBuf[prewrittenMismatch],
-              (float)(peer + 1));
-    RPRINTF("S8 prewritten scalar barrier: %s\n",
-            prewrittenMismatch == count ? "PASS" : "FAIL");
-    allPass &= prewrittenMismatch == count;
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
     FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, count * sizeof(float),
                                         flagcxMemDevice, stream));
     FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
@@ -369,91 +319,13 @@ int main(int argc, char *argv[]) {
     for (size_t i = 0; i < count; i++) {
       if (!(fabsf(hostBuf[i] - expectedS8) <= 1e-3f)) {
         s8Pass = false;
-        RPRINTF("S8 first mismatch i=%zu got=%g expected=%g\n", i, hostBuf[i],
-                expectedS8);
         break;
       }
     }
     RPRINTF("S8  IntraBarrierSync(Scalar): %s\n", s8Pass ? "PASS" : "FAIL");
     allPass &= s8Pass;
 
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    checkLocalWriter("S8", (float)(proc + 1));
-#endif
-
     MPI_Barrier(MPI_COMM_WORLD);
-
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-    // Separate GPU production from the peer read with stream and MPI
-    // synchronization. This tests whether a completed GPU store can be read
-    // through the same peer pointer without relying on an in-kernel barrier.
-    FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    launchKernelDuIntraBarrierWriterS(devCommPtr, (float *)regBuff, count,
-                                      stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    checkLocalWriter("S8 separate", (float)(proc + 1));
-    MPI_Barrier(MPI_COMM_WORLD);
-    FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    launchKernelDuIntraBarrierPrewrittenS(devCommPtr, devMemPtr, devOutput,
-                                          count, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
-                                        count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    size_t separateMismatch = count;
-    for (size_t i = 0; i < count; ++i) {
-      if (!(fabsf(hostBuf[i] - expectedS8) <= 1e-3f)) {
-        separateMismatch = i;
-        break;
-      }
-    }
-    if (separateMismatch != count)
-      RPRINTF("S8 separate peer first mismatch i=%zu got=%g expected=%g\n",
-              separateMismatch, hostBuf[separateMismatch], expectedS8);
-    RPRINTF("S8 separate GPU write / peer read: %s\n",
-            separateMismatch == count ? "PASS" : "FAIL");
-    allPass &= separateMismatch == count;
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    launchKernelDuIntraBarrierFenceS(devCommPtr, devMemPtr, (float *)regBuff,
-                                     devOutput, count, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
-                                        count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    size_t fenceMismatch = count;
-    for (size_t i = 0; i < count; ++i) {
-      if (!(fabsf(hostBuf[i] - expectedS8) <= 1e-3f)) {
-        fenceMismatch = i;
-        break;
-      }
-    }
-    if (fenceMismatch != count)
-      RPRINTF("S8 fenced first mismatch i=%zu got=%g expected=%g\n",
-              fenceMismatch, hostBuf[fenceMismatch], expectedS8);
-    RPRINTF("S8 fenced scalar barrier: %s\n",
-            fenceMismatch == count ? "PASS" : "FAIL");
-    allPass &= fenceMismatch == count;
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    checkLocalWriter("S8 fenced", (float)(proc + 1));
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
 
     // -----------------------------------------------------------------------
     // S9: two full scalar barriers (Release + read + Acquire)
@@ -477,8 +349,6 @@ int main(int argc, char *argv[]) {
     for (size_t i = 0; i < count; i++) {
       if (!(fabsf(hostBuf[i] - expectedS9) <= 1e-3f)) {
         s9Pass = false;
-        RPRINTF("S9 first mismatch i=%zu got=%g expected=%g\n", i, hostBuf[i],
-                expectedS9);
         break;
       }
     }
@@ -486,48 +356,7 @@ int main(int argc, char *argv[]) {
             s9Pass ? "PASS" : "FAIL");
     allPass &= s9Pass;
 
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    checkLocalWriter("S9 two epochs", (float)(proc + 500));
-#endif
-
     MPI_Barrier(MPI_COMM_WORLD);
-
-#ifdef FLAGCX_TEST_DU_BARRIER_PROBE
-    // Unlike S9, this covers the actual scalar arrive/wait pair with a
-    // device write before arrival and a peer read after waiting.
-    FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
-                                        flagcxMemDevice, stream));
-    launchKernelDuIntraBarrierSplitS(devCommPtr, devMemPtr, (float *)regBuff,
-                                     devOutput, count, stream);
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,
-                                        count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    size_t splitMismatch = count;
-    for (size_t i = 0; i < count; ++i) {
-      if (!(fabsf(hostBuf[i] - (float)(peer + 700)) <= 1e-3f)) {
-        splitMismatch = i;
-        break;
-      }
-    }
-    if (splitMismatch != count)
-      RPRINTF("S9 split first mismatch i=%zu got=%g expected=%g\n",
-              splitMismatch, hostBuf[splitMismatch], (float)(peer + 700));
-    RPRINTF("S9 scalar arrive/wait: %s\n",
-            splitMismatch == count ? "PASS" : "FAIL");
-    allPass &= splitMismatch == count;
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),
-                                        flagcxMemcpyDeviceToHost, stream));
-    FLAGCXCHECK(devHandle->streamSynchronize(stream));
-    checkLocalWriter("S9 split", (float)(proc + 700));
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
 
     // -----------------------------------------------------------------------
     // S10: Intra AllReduce (Scalar) — composite

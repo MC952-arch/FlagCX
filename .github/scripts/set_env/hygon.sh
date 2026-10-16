@@ -42,17 +42,6 @@ FLAGCX_CI_COMMON_MAKE_ARGS=(
 FLAGCX_CI_PROJECT_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
-# Exercise device-memory IPC barriers and signals.
-FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x FLAGCX_SIGNAL_HOST_ENABLE=0)
-FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(
-  -x FLAGCX_SIGNAL_HOST_ENABLE=0
-  -x FLAGCX_TEST_S20_PROBE=1
-  -x FLAGCX_TEST_S20_LIFECYCLE_TRACE=1
-)
-# Run both intra signal paths even when one fails so the next CI log can
-# distinguish the direct host-SHM path from the Net fallback.
-FLAGCX_CI_UNIFIED_IR_COMPARE_INTRA_PATHS=1
-FLAGCX_CI_UNIFIED_IR_S20_COMBOS=1
 
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
@@ -99,9 +88,6 @@ flagcx_ci_configure_suite() {
     device_api|device_api_unified_ir)
       export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
-      if [[ "$suite" == "device_api" ]]; then
-        FLAGCX_CI_DEVICE_API_TRACE_K5=1
-      fi
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_INTRA_NP=4
@@ -118,12 +104,6 @@ flagcx_ci_prepare() {
   command -v hipcc
   mpirun --version
   hipcc --version
-  case "$suite" in
-    service|device_api|device_api_unified_ir)
-      python3 "$FLAGCX_CI_ENV_DIR/../ci/show_hygon_dtk_info.py" \
-        /opt/dtk/env.sh /opt/dtk/hip/include/hip
-      ;;
-  esac
   hy-smi --showproductname || true
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||

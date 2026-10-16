@@ -31,7 +31,6 @@
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <hip/hip_runtime.h>
-#include "intra_barrier_probe.cuh"
 
 // Datatype size helper for the DU kernel tests.
 FLAGCX_DEVICE_DECORATOR size_t
@@ -1084,71 +1083,6 @@ flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
   flagcxIntraTestIntraPointerKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          *(hipStream_t *)stream>>>(dm, dc, output, count);
-  hipError_t err = hipGetLastError();
-  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-// Exercise the exact IPC buffer and atomic operations used by the intra
-// barrier, without a device-side wait. Each rank writes a distinct inbox slot
-// on its next peer; the next kernel reads and clears the local slot.
-FLAGCX_GLOBAL_DECORATOR void
-flagcxIntraBarrierIpcWriteProbeKernel(flagcxDevComm devComm) {
-  const auto &dc = devComm._commBase;
-  int peer = (dc.intraRank + 1) % dc.intraSize;
-  int slot = dc.intraRank * dc.nBarriers + FLAGCX_DEVICE_CTA_COUNT - 1;
-  DeviceAPI::Atomic::store(&dc.barrierPeers[peer][slot],
-                           (uint64_t)dc.intraRank + 1,
-                           flagcxDeviceMemoryOrderRelease);
-}
-
-FLAGCX_GLOBAL_DECORATOR void
-flagcxIntraBarrierIpcReadProbeKernel(flagcxDevComm devComm, int *result) {
-  const auto &dc = devComm._commBase;
-  int prev = (dc.intraRank + dc.intraSize - 1) % dc.intraSize;
-  int slot = prev * dc.nBarriers + FLAGCX_DEVICE_CTA_COUNT - 1;
-  result[0] = (int)DeviceAPI::Atomic::load(
-      &dc.barrierPeers[dc.intraRank][slot], flagcxDeviceMemoryOrderAcquire);
-  DeviceAPI::Atomic::store(&dc.barrierPeers[dc.intraRank][slot], uint64_t{0},
-                           flagcxDeviceMemoryOrderRelaxed);
-}
-
-flagcxResult_t launchKernelIntraBarrierIpcWriteProbe(flagcxDevComm_t devComm,
-                                                     flagcxStream_t stream) {
-  if (!devComm || !stream) return flagcxInternalError;
-  flagcxDevComm dc(*devComm);
-  flagcxIntraBarrierIpcWriteProbeKernel<<<1, 1, 0,
-                                          *(hipStream_t *)stream>>>(dc);
-  hipError_t err = hipGetLastError();
-  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t launchKernelIntraBarrierIpcReadProbe(flagcxDevComm_t devComm,
-                                                    int *result,
-                                                    flagcxStream_t stream) {
-  if (!devComm || !result || !stream) return flagcxInternalError;
-  flagcxDevComm dc(*devComm);
-  flagcxIntraBarrierIpcReadProbeKernel<<<1, 1, 0,
-                                         *(hipStream_t *)stream>>>(dc, result);
-  hipError_t err = hipGetLastError();
-  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t launchKernelIntraBarrierLiveProbe(flagcxDevComm_t devComm,
-                                                int *result,
-                                                flagcxStream_t stream) {
-  if (!devComm || !result || !stream) return flagcxInternalError;
-  flagcxDevComm dc(*devComm);
-  flagcxDuIntraBarrierProbeByValue<<<1, 256, 0, stream->base>>>(dc, result);
-  hipError_t err = hipGetLastError();
-  return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t launchKernelIntraBarrierSnapshot(flagcxDevComm_t devComm,
-                                                int *result,
-                                                flagcxStream_t stream) {
-  if (!devComm || !result || !stream) return flagcxInternalError;
-  flagcxDevComm dc(*devComm);
-  flagcxDuIntraBarrierSnapshotByValue<<<1, 256, 0, stream->base>>>(dc, result);
   hipError_t err = hipGetLastError();
   return err == hipSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
