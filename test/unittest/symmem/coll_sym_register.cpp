@@ -1891,6 +1891,117 @@ TEST_F(SymMemTest, LsaReserveFailureDoesNotPublishWindow) {
   EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
 }
 
+TEST_F(SymMemTest, SegmentedVmmSubrangeMapsOnlyTouchedSegment) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
+    GTEST_SKIP() << "Requires the multi-segment VMM CI invocation";
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  ASSERT_GT(comm->heteroComm->localRanks, 1);
+
+  void *probe = nullptr;
+  ASSERT_TRUE(
+      allRanksSucceeded(deviceAdaptor->gdrMemAlloc(&probe, 1, nullptr)));
+  void *probeBundle = nullptr;
+  const flagcxSymSegmentMeta *probeSegments = nullptr;
+  int probeCount = 0;
+  size_t probeOffset = 0;
+  size_t granularity = 0;
+  ASSERT_TRUE(allRanksSucceeded(
+      deviceAdaptor->symPhysDescribe(probe, 1, &probeBundle, &probeSegments,
+                                     &probeCount, &probeOffset, &granularity)));
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
+  if (!allRanksSucceeded(granularity >= 4 && granularity <= 16 * 1024 * 1024
+                             ? flagcxSuccess
+                             : flagcxNotSupported))
+    GTEST_SKIP() << "VMM granularity is too large for the subrange test";
+
+  const std::string setting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", setting.c_str());
+  void *allocation = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, granularity * 5)));
+  segmentSize.set(nullptr);
+  const size_t userOffset = granularity * 2 + granularity / 4;
+  const size_t userSize = granularity / 2;
+  void *buffer = static_cast<char *>(allocation) + userOffset;
+  const int pattern = comm->heteroComm->rank % 251 + 1;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->deviceMemset(
+      buffer, pattern, userSize, flagcxMemDevice, nullptr)));
+
+  flagcxWindow_t window = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, buffer, userSize, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  flagcxSymWindow_t state = window->defaultBase;
+  const int localRank = comm->heteroComm->localRank;
+  EXPECT_EQ(state->resourcePath, flagcxSymResourceLsa);
+  ASSERT_NE(state->rankLayouts, nullptr);
+  EXPECT_EQ(state->rankLayouts[localRank].segmentCount, 1);
+  EXPECT_EQ(state->rankLayouts[localRank].mappedSize, granularity);
+  EXPECT_EQ(state->rankLayouts[localRank].userOffset, granularity / 4);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  const int peerLocalRank = (localRank + 1) % comm->heteroComm->localRanks;
+  const int peerRank = comm->heteroComm->localRankToRank[peerLocalRank];
+  void *peerPtr = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, state, peerRank,
+                                             0, 1, &peerPtr),
+            flagcxSuccess);
+  unsigned char value = 0;
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(
+                &value, peerPtr, 1, flagcxMemcpyDeviceToHost, nullptr, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(value, peerRank % 251 + 1);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+
+  // A range that straddles the next physical segment must retain both
+  // touched segments, with offsets relative to the first one.
+  const size_t crossingStart = granularity * 3 / 4;
+  const size_t crossingSize = granularity / 2 + 1;
+  buffer = static_cast<char *>(allocation) + granularity * 2 + crossingStart;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->deviceMemset(
+      buffer, pattern, crossingSize, flagcxMemDevice, nullptr)));
+  int touchedSegments = 0;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->symPhysSegmentCount(
+      buffer, crossingSize, &touchedSegments)));
+  EXPECT_EQ(touchedSegments, 2);
+
+  window = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, buffer, crossingSize, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  state = window->defaultBase;
+  EXPECT_EQ(state->resourcePath, flagcxSymResourceLsa);
+  ASSERT_NE(state->rankLayouts, nullptr);
+  const flagcxSymRankLayout &crossingLayout = state->rankLayouts[localRank];
+  EXPECT_EQ(crossingLayout.segmentCount, 2);
+  EXPECT_EQ(crossingLayout.mappedSize, granularity * 2);
+  EXPECT_EQ(crossingLayout.userOffset, crossingStart);
+  ASSERT_NE(state->segments, nullptr);
+  if (crossingLayout.firstSegment >= 0 && crossingLayout.segmentCount >= 2 &&
+      crossingLayout.firstSegment + 1 < state->totalSegments) {
+    EXPECT_EQ(state->segments[crossingLayout.firstSegment].offset, 0u);
+    EXPECT_EQ(state->segments[crossingLayout.firstSegment + 1].offset,
+              granularity);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  for (size_t offset : {size_t(0), crossingSize - 1}) {
+    ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, state,
+                                               peerRank, offset, 1, &peerPtr),
+              flagcxSuccess);
+    ASSERT_EQ(deviceAdaptor->deviceMemcpy(&value, peerPtr, 1,
+                                          flagcxMemcpyDeviceToHost, nullptr,
+                                          nullptr),
+              flagcxSuccess);
+    EXPECT_EQ(value, peerRank % 251 + 1);
+  }
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+}
+
 TEST_F(SymMemTest, SegmentedVmmWindowMapsDifferentPeerLayouts) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
     GTEST_SKIP() << "Requires the multi-segment VMM CI invocation";

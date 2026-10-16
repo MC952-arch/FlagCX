@@ -57,7 +57,7 @@ case "${FLAGCX_ADAPTOR:-}" in
         -x FLAGCX_IB_DISABLE=1 \
         -x FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1 \
         "$BUILD_BIN/symmem_mpi_tests" \
-        --gtest_filter=SymMemTest.SegmentedVmmWindowMapsDifferentPeerLayouts:SymMemTest.UntrackedVmmMappingIsRejected
+        --gtest_filter=SymMemTest.SegmentedVmmSubrangeMapsOnlyTouchedSegment:SymMemTest.SegmentedVmmWindowMapsDifferentPeerLayouts:SymMemTest.UntrackedVmmMappingIsRejected
     ;;
 esac
 
