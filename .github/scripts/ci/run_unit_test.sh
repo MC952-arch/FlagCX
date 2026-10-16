@@ -768,7 +768,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
 
       FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
         "$MPI_RUNNER" --allow-run-as-root \
@@ -829,6 +829,7 @@ run_suite() {
           -x FLAGCX_CI_REQUIRE_VMM=1 \
           -x FLAGCX_DMABUF_ENABLE=1 \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
+          -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter" \
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
@@ -836,6 +837,7 @@ run_suite() {
           -x FLAGCX_CI_REQUIRE_VMM=1 \
           -x FLAGCX_DMABUF_ENABLE=1 \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
+          -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
       else

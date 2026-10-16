@@ -2831,15 +2831,17 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
 
   // The proxy may still hold a descriptor referring to the window's MR or
   // local mapping. Retire accepted work before an LSA offset can be reused.
+  // A different node may have registered ordinary memory for this window;
+  // it must still enter the same communicator-wide status convergence.
+  flagcxResult_t drain = flagcxSuccess;
   if (sym != NULL && sym->published &&
-      sym->resourcePath == flagcxSymResourceLsa) {
-    flagcxResult_t drain = flagcxHeteroFlushAllRma(hetero);
-    flagcxResult_t commonDrain = drain;
-    if (cleanupMode == flagcxSymCleanupCollective)
-      FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
-    if (commonDrain != flagcxSuccess)
-      return commonDrain;
-  }
+      sym->resourcePath == flagcxSymResourceLsa)
+    drain = flagcxHeteroFlushAllRma(hetero);
+  flagcxResult_t commonDrain = drain;
+  if (cleanupMode == flagcxSymCleanupCollective)
+    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
+  if (commonDrain != flagcxSuccess)
+    return commonDrain;
 
   // A registration rollback may have retained an unpublished MR object rather
   // than a published mrIndex. Retry that exact object before releasing VMM
