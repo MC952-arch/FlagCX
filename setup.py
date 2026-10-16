@@ -90,9 +90,7 @@ libs += dev_libs
 # Which bindings/ir Makefile produces each adaptor's device bitcode, and under
 # what variable names. nvidia's comm-traits branch (Default vs CCL) is a library
 # property only knowable at build time, so its adaptor flag is a make variable
-# the caller must supply; iluvatar has only the Default branch, so its Makefile
-# states the flag itself and the caller supplies none. Any other adaptor has no
-# bindings/ir Makefile, so requesting bitcode for it is an error, not a skip.
+# the caller must supply. Iluvatar and DU have fixed platform flags.
 BITCODE_MAKEFILES = {
     "nvidia": {
         "make_dir": "bindings/ir/nvidia",
@@ -111,6 +109,13 @@ BITCODE_MAKEFILES = {
         # COREX_CLANG is derived from DEVICE_HOME by the Makefile; llvm-dis /
         # llvm-as / opt / llvm-nm must be on PATH (the host LLVM toolchain).
         "extra_env": ("DEVICE_HOME",),
+    },
+    "du": {
+        "make_dir": "bindings/ir/du",
+        "arch_var": "BITCODE_LIB_ARCH",
+        "adaptor_flag_var": None,
+        "cxx_std": None,
+        "extra_env": ("DEVICE_HOME", "CCL_HOME"),
     },
 }
 
@@ -144,7 +149,24 @@ if BuildExtension is not None:
                 )
 
             # -- Step 1: Build libflagcx.so via make --
+            bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
+            if bitcode_arch and adaptor not in BITCODE_MAKEFILES:
+                raise RuntimeError(
+                    "FLAGCX_BITCODE_ARCH is set but this build is for the "
+                    f"{adaptor} adaptor, which has no bindings/ir Makefile"
+                )
+            requested_kernel_mode = os.environ.get("COMPILE_KERNEL", "")
+            if bitcode_arch and requested_kernel_mode not in ("", "1"):
+                raise RuntimeError(
+                    "Device bitcode requires COMPILE_KERNEL=1 so libflagcx.so "
+                    "creates device net contexts"
+                )
+
+            # Keep bitcode wheels separate from ordinary builds, whose
+            # existing objects may have been compiled with COMPILE_KERNEL=0.
             build_dir = os.path.join(ROOT_DIR, "build")
+            if bitcode_arch:
+                build_dir = os.path.join(build_dir, "device-bitcode", adaptor, bitcode_arch)
             lib_dir = os.path.join(build_dir, "lib")
 
             make_args = [
@@ -157,12 +179,14 @@ if BuildExtension is not None:
             env_to_make = [
                 "DEVICE_HOME", "CCL_HOME", "HOST_CCL_HOME", "MPI_HOME", "UCX_HOME",
                 "USE_GLOO", "USE_BOOTSTRAP", "USE_MPI", "USE_UCX", "USE_IBUC",
-                "COMPILE_KERNEL",
             ]
             for var in env_to_make:
                 val = os.environ.get(var, "")
                 if val:
                     make_args.append(f"{var}={val}")
+            kernel_mode = "1" if bitcode_arch else requested_kernel_mode
+            if kernel_mode:
+                make_args.append(f"COMPILE_KERNEL={kernel_mode}")
 
             nproc = str(multiprocessing.cpu_count())
             make_cmd = ["make", "-C", ROOT_DIR, "-j", nproc] + make_args
@@ -181,21 +205,10 @@ if BuildExtension is not None:
             #
             # Opt-in because it needs a clang that targets the device, which an
             # ordinary build environment has neither reason nor way to carry.
-            # FLAGCX_BITCODE_ARCH names the architecture to compile at; with it
-            # unset nothing here runs. Which Makefile it drives is a property of
-            # the adaptor (BITCODE_MAKEFILES), not of the value: the arch for a
-            # CUDA backend is an sm_*, for iluvatar an ivcore*, so the two can
-            # never be confused.
-            bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
+            # FLAGCX_BITCODE_ARCH selects the target for the chosen adaptor.
             bitcode_bc = ""
             if bitcode_arch:
-                bitcode_cfg = BITCODE_MAKEFILES.get(adaptor)
-                if bitcode_cfg is None:
-                    raise RuntimeError(
-                        "FLAGCX_BITCODE_ARCH is set but this build is for the "
-                        f"{adaptor} adaptor, which has no bindings/ir Makefile, "
-                        "so there is no device bitcode to compile"
-                    )
+                bitcode_cfg = BITCODE_MAKEFILES[adaptor]
                 bitcode_cmd = [
                     "make",
                     "-C",
@@ -206,12 +219,6 @@ if BuildExtension is not None:
                 if bitcode_cfg["cxx_std"] is not None:
                     bitcode_cmd.append(f"BITCODE_CXX_STD={bitcode_cfg['cxx_std']}")
                 if bitcode_cfg["adaptor_flag_var"] is not None:
-                    # The comm-traits branch is a property of the library: the
-                    # nvidia makefile picks it from the NCCL headers it finds.
-                    # The bitcode's own Makefile never reads that file, so the
-                    # branch reaches it only as a value — and without one it
-                    # would compile against its default backend while the
-                    # library shipped beside it talks to another.
                     bitcode_adaptor_flags = os.environ.get(
                         "FLAGCX_BITCODE_ADAPTOR_FLAGS", ""
                     )
@@ -225,6 +232,14 @@ if BuildExtension is not None:
                     bitcode_cmd.append(
                         f"{bitcode_cfg['adaptor_flag_var']}={bitcode_adaptor_flags}"
                     )
+                elif adaptor == "du":
+                    du_flags = "-DUSE_DU_ADAPTOR -D__HIP_PLATFORM_AMD__"
+                    requested_flags = os.environ.get("FLAGCX_BITCODE_ADAPTOR_FLAGS", "")
+                    if requested_flags and requested_flags != du_flags:
+                        raise RuntimeError(
+                            "DU bitcode requires FLAGCX_BITCODE_ADAPTOR_FLAGS="
+                            f"'{du_flags}'"
+                        )
                 for var in bitcode_cfg["extra_env"]:
                     val = os.environ.get(var, "")
                     if val:
@@ -269,20 +284,37 @@ if BuildExtension is not None:
             # that ships or a file that imports, never both.
             #
             # All of it is data rather than an entry point, so nothing at import
-            # time notices any of it is missing. The headers are the six the
-            # root make's `all` target exports plus the wrapper the bitcode make
-            # writes beside them.
+            # time notices any of it is missing. Use the bitcode build's header
+            # manifest so stale files from another backend cannot enter a wheel.
             payload = [src_so]
             headers = []
             if bitcode_bc:
                 payload.append(bitcode_bc)
-                headers = sorted(
-                    glob.glob(os.path.join(build_dir, "include", "*.h"))
-                )
+                header_dir = os.path.join(build_dir, "include")
+                if adaptor == "iluvatar":
+                    # Keep the existing Iluvatar wheel header export until
+                    # its Makefile emits the shared header manifest.
+                    headers = sorted(glob.glob(os.path.join(header_dir, "*.h")))
+                else:
+                    manifest = os.path.join(header_dir, ".flagcx_device_headers")
+                    if not os.path.isfile(manifest):
+                        raise RuntimeError(
+                            f"device bitcode header manifest is missing: {manifest}"
+                        )
+                    with open(manifest, encoding="utf-8") as file:
+                        header_names = [line.strip() for line in file if line.strip()]
+                    if not header_names:
+                        raise RuntimeError(
+                            f"device bitcode header manifest is empty: {manifest}"
+                        )
+                    headers = [os.path.join(header_dir, name) for name in header_names]
                 if not headers:
+                    raise RuntimeError(f"device bitcode headers are missing from {header_dir}")
+                missing_headers = [path for path in headers if not os.path.isfile(path)]
+                if missing_headers:
                     raise RuntimeError(
-                        f"{build_dir}/include is empty: the headers a bitcode "
-                        "consumer compiles against did not get exported"
+                        "device bitcode headers are missing: "
+                        + ", ".join(missing_headers)
                     )
 
             for base in (self.build_lib, os.path.join(ROOT_DIR, "src")):
@@ -297,6 +329,17 @@ if BuildExtension is not None:
                 if headers:
                     dst_inc = os.path.join(base, "flagcx", "include")
                     os.makedirs(dst_inc, exist_ok=True)
+                    selected_names = {os.path.basename(path) for path in headers}
+                    # Both destinations are generated package payloads. Clear
+                    # headers left by an earlier build for another backend.
+                    for name in os.listdir(dst_inc):
+                        existing = os.path.join(dst_inc, name)
+                        if (
+                            name.endswith(".h")
+                            and name not in selected_names
+                            and os.path.isfile(existing)
+                        ):
+                            os.remove(existing)
                     for path in headers:
                         print(f"[flagcx] Copying {path} -> {dst_inc}")
                         shutil.copy2(path, dst_inc)
