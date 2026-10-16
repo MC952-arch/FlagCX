@@ -18,10 +18,11 @@
 #include <sys/resource.h>
 #endif
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
+#elif defined(USE_DU_ADAPTOR)
+#include <hip/hip_runtime.h>
 #elif defined(USE_METAX_ADAPTOR)
 #include <mcr/mc_runtime.h>
 #endif
@@ -2329,8 +2330,51 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
     access.flags = mcMemAccessFlagsProtReadWrite;
     return mcMemSetAccess(mapping.base, granularity, &access, 1) == mcSuccess;
   }();
-#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                \
-    defined(USE_PPU_ADAPTOR)
+#elif defined(USE_DU_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    hipMemGenericAllocationHandle_t handle = 0;
+    hipDeviceptr_t base = nullptr;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        hipMemUnmap(base, size);
+      if (base != nullptr)
+        hipMemAddressFree(base, size);
+      if (handle != 0)
+        hipMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int device = 0;
+    if (hipGetDevice(&device) != hipSuccess)
+      return false;
+    hipMemAllocationProp prop = {};
+    prop.type = hipMemAllocationTypePinned;
+    prop.location.type = hipMemLocationTypeDevice;
+    prop.location.id = device;
+    prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
+    if (hipMemGetAllocationGranularity(
+            &granularity, &prop, hipMemAllocationGranularityRecommended) !=
+            hipSuccess ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (hipMemCreate(&mapping.handle, granularity, &prop, 0) != hipSuccess ||
+        hipMemAddressReserve(&mapping.base, granularity, granularity, nullptr,
+                             0) != hipSuccess ||
+        hipMemMap(mapping.base, granularity, 0, mapping.handle, 0) !=
+            hipSuccess)
+      return false;
+    mapping.mapped = true;
+    hipMemAccessDesc access = {};
+    access.location.type = hipMemLocationTypeDevice;
+    access.location.id = device;
+    access.flags = hipMemAccessFlagsProtReadWrite;
+    return hipMemSetAccess(mapping.base, granularity, &access, 1) == hipSuccess;
+  }();
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
   size_t granularity = 0;
   struct ScopedMapping {
     CUmemGenericAllocationHandle handle = 0;
@@ -2432,19 +2476,17 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
   ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
 
-  int cudaDev = 0;
-  ASSERT_EQ(cudaGetDevice(&cudaDev), cudaSuccess);
-  CUdevice cuDevice = 0;
-  ASSERT_EQ(cuDeviceGet(&cuDevice, cudaDev), CUDA_SUCCESS);
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = cuDevice;
-  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  int hipDevice = 0;
+  ASSERT_EQ(hipGetDevice(&hipDevice), hipSuccess);
+  hipMemAllocationProp prop = {};
+  prop.type = hipMemAllocationTypePinned;
+  prop.location.type = hipMemLocationTypeDevice;
+  prop.location.id = hipDevice;
+  prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
   size_t granularity = 0;
-  ASSERT_EQ(cuMemGetAllocationGranularity(&granularity, &prop,
-                                          CU_MEM_ALLOC_GRANULARITY_RECOMMENDED),
-            CUDA_SUCCESS);
+  ASSERT_EQ(hipMemGetAllocationGranularity(
+                &granularity, &prop, hipMemAllocationGranularityRecommended),
+            hipSuccess);
   ASSERT_GT(granularity, 0u);
   ASSERT_LE(granularity, SIZE_MAX / 3);
   const size_t allocationSize = granularity * 3;
@@ -2477,7 +2519,7 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
             flagcxSuccess);
   ASSERT_NE(allocation, nullptr);
-  EXPECT_EQ(cudaMemset(allocation, 0x5a, allocationSize), cudaSuccess);
+  EXPECT_EQ(hipMemset(allocation, 0x5a, allocationSize), hipSuccess);
   EXPECT_EQ(deviceAdaptor->gdrMemFree(allocation, nullptr), flagcxSuccess);
 }
 #endif
