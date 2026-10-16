@@ -25,11 +25,6 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
 runner_labels:
   - nv-8g-cicd-flagcx
 
-# Keep the original extended perf job on its dedicated runner.
-legacy_perf_runner_labels:
-  - self-hosted
-  - cx-build
-
 docker_volumes: []
 
 docker_options:

@@ -17,7 +17,6 @@ jobs:
       cuda_docker_args: ${{ steps.cuda.outputs.docker_args }}
       cuda_set_env: ${{ steps.cuda.outputs.set_env }}
       cuda_runs_on: ${{ steps.cuda.outputs.runs_on }}
-      cuda_legacy_perf_runs_on: ${{ steps.cuda.outputs.legacy_perf_runs_on }}
       metax_ci_image: ${{ steps.metax.outputs.ci_image }}
       metax_docker_args: ${{ steps.metax.outputs.docker_args }}
       metax_set_env: ${{ steps.metax.outputs.set_env }}
@@ -57,8 +56,8 @@ jobs:
   perf-test:
     name: perf-test
     needs: load-hardware-container-configs
-    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_legacy_perf_runs_on) }}
-    timeout-minutes: 360
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}
+    timeout-minutes: 240
 
     steps:
       - name: Checkout Code

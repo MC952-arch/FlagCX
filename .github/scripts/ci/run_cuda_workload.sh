@@ -13,8 +13,8 @@ project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 source "$project_root/$FLAGCX_CI_SET_ENV"
 
 if [[ "$workload" == perf-legacy ]]; then
-  # The extended perf job keeps its own cx-build runner and test selection.
-  # It uses the same configured CUDA image as every other CUDA CI job.
+  # The extended perf job keeps its own test selection and shares the CUDA
+  # runner and image with the regular perf job.
   source "$project_root/.github/scripts/ci/run_cuda_legacy_perf.sh"
   exit 0
 fi

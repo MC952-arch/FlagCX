@@ -539,7 +539,15 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         self.assertIn("  perf-test:\n", perf_workflow)
         self.assertIn("cuda perf-legacy", perf_workflow)
-        self.assertIn("cuda_legacy_perf_runs_on", perf_workflow)
+        self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
+        legacy_perf_job = perf_workflow.split("  perf-test:\n", 1)[1].split(
+            "\n  perf-test-hygon:", 1
+        )[0]
+        self.assertIn(
+            "runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}",
+            legacy_perf_job,
+        )
+        self.assertIn("timeout-minutes: 240", legacy_perf_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):

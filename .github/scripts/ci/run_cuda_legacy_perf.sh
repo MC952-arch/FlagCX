@@ -16,7 +16,7 @@ make -C "$project_root/test/perf" --jobs="$(nproc)" \
 source "$project_root/test/script/_gpu_check.sh"
 wait_for_gpu
 
-# Preserve the original perf-test coverage on the cx-build runner.
+# Preserve the original extended perf-test coverage.
 export FLAGCX_CI_PERF_PLATFORM='CUDA extended'
 "$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin"
 
