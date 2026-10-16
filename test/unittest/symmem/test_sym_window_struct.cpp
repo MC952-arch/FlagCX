@@ -1627,6 +1627,45 @@ TEST(SymWindowLookup, PublishThenFindPreservesNonZeroOffsetAndBounds) {
   EXPECT_EQ(sym.next, nullptr);
 }
 
+TEST(SymWindowLayout, DifferentPhysicalLayoutsShareOneStride) {
+  flagcxSymSegmentMeta segments[] = {{0, 4096}, {4096, 8192}, {0, 8192}};
+  flagcxSymRankLayout layouts[] = {{12288, 1024, 10000, 0, 2},
+                                   {8192, 512, 7000, 2, 1}};
+  size_t stride = 0;
+  EXPECT_EQ(flagcxSymValidateLayouts(2, layouts, 3, segments, 4096, &stride),
+            flagcxSuccess);
+  EXPECT_EQ(stride, 12288u);
+}
+
+TEST(SymWindowLayout, RejectsUnmappedUserGap) {
+  flagcxSymSegmentMeta segments[] = {{0, 4096}, {8192, 4096}};
+  flagcxSymRankLayout layout = {12288, 2048, 8192, 0, 2};
+  size_t stride = 0;
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 2, segments, 4096, &stride),
+            flagcxInvalidArgument);
+  layout.userOffset = 8192;
+  layout.userSize = 4096;
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 2, segments, 4096, &stride),
+            flagcxSuccess);
+}
+
+TEST(SymWindowLayout, RejectsOverflowAndBadSegmentIndex) {
+  flagcxSymSegmentMeta segment = {0, 4096};
+  flagcxSymRankLayout layout = {4096, 0, 4096, 0, 1};
+  size_t stride = 0;
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 8192, &stride),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 4096, &stride),
+            flagcxSuccess);
+  layout.firstSegment = 1;
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 4096, &stride),
+            flagcxInvalidArgument);
+  layout.firstSegment = 0;
+  layout.userOffset = SIZE_MAX;
+  EXPECT_EQ(flagcxSymValidateLayouts(1, &layout, 1, &segment, 4096, &stride),
+            flagcxInvalidArgument);
+}
+
 TEST(SymWindowLookup, ResolveSelfPeerValidatesRangeBeforePointerArithmetic) {
   char allocation[64] = {};
   int rankToNode[] = {0};

@@ -20,6 +20,7 @@
 #include "utils.h"
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <unistd.h>
 
 namespace {
@@ -134,6 +135,59 @@ flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
                                        flagcxResult_t localStatus,
                                        flagcxResult_t *commonStatus) {
   return flagcxSymGlobalConverge(comm, localStatus, commonStatus);
+}
+
+flagcxResult_t
+flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
+                         int nSegments, const flagcxSymSegmentMeta *segments,
+                         size_t slotAlignment, size_t *slotStride) {
+  if (nRanks <= 0 || layouts == nullptr || nSegments <= 0 ||
+      segments == nullptr || slotAlignment == 0 || slotStride == nullptr)
+    return flagcxInvalidArgument;
+
+  size_t maxMappedSize = 0;
+  int expectedFirst = 0;
+  for (int rank = 0; rank < nRanks; rank++) {
+    const flagcxSymRankLayout &layout = layouts[rank];
+    if (layout.firstSegment != expectedFirst || layout.segmentCount <= 0 ||
+        layout.segmentCount > nSegments - expectedFirst ||
+        layout.userSize == 0 || layout.userOffset > layout.mappedSize ||
+        layout.userSize > layout.mappedSize - layout.userOffset)
+      return flagcxInvalidArgument;
+
+    size_t previousEnd = 0;
+    size_t coveredTo = layout.userOffset;
+    const size_t userEnd = layout.userOffset + layout.userSize;
+    for (int index = layout.firstSegment;
+         index < layout.firstSegment + layout.segmentCount; index++) {
+      const flagcxSymSegmentMeta &segment = segments[index];
+      if (segment.size == 0 || segment.offset % slotAlignment != 0 ||
+          segment.size % slotAlignment != 0 ||
+          segment.offset > layout.mappedSize ||
+          segment.size > layout.mappedSize - segment.offset ||
+          (index != layout.firstSegment && segment.offset < previousEnd))
+        return flagcxInvalidArgument;
+      const size_t end = segment.offset + segment.size;
+      if (segment.offset <= coveredTo && end > coveredTo)
+        coveredTo = end;
+      previousEnd = end;
+    }
+    if (previousEnd != layout.mappedSize || coveredTo < userEnd)
+      return flagcxInvalidArgument;
+    if (layout.mappedSize > maxMappedSize)
+      maxMappedSize = layout.mappedSize;
+    expectedFirst += layout.segmentCount;
+  }
+  if (expectedFirst != nSegments ||
+      maxMappedSize > std::numeric_limits<size_t>::max() - (slotAlignment - 1))
+    return flagcxInvalidArgument;
+  const size_t stride =
+      ((maxMappedSize + slotAlignment - 1) / slotAlignment) * slotAlignment;
+  if (stride == 0 ||
+      stride > std::numeric_limits<size_t>::max() / static_cast<size_t>(nRanks))
+    return flagcxInvalidArgument;
+  *slotStride = stride;
+  return flagcxSuccess;
 }
 
 static bool flagcxSymWindowHasValidNetworkMr(flagcxHeteroComm_t comm,

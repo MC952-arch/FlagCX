@@ -11,6 +11,7 @@
 
 #include "comm.h"
 #include "flagcx.h"
+#include "flagcx_device_adaptor.h"
 
 /* Concrete definition of the opaque flagcxWindow handle.
  * Internal only — external code must treat flagcxWindow_t as opaque. */
@@ -43,9 +44,13 @@ struct flagcxSymWindow {
   // An unpublished MR transaction is retained in comm->pendingOneSideCleanup.
   // Keep this window and its allocation lease alive until that MR is released.
   bool hasPendingNetworkCleanup;
-  size_t heapSize;  // user-requested size (for bounds info)
-  size_t allocSize; // actual physical allocation size per peer
-                    // (granularity-aligned)
+  size_t heapSize;   // user-requested size (for bounds info)
+  size_t allocSize;  // actual physical allocation size per peer
+                     // (granularity-aligned)
+  size_t slotStride; // common VA slot width for segmented flat mappings
+  flagcxSymRankLayout *rankLayouts;
+  flagcxSymSegmentMeta *segments;
+  int totalSegments;
   int localRanks;   // number of intra-node peers
   int ipcSlot;      // IPC table slot for non-VMM peer mappings (-1 if none)
   void *physHandle; // for cleanup (symPhysFree)
@@ -119,6 +124,13 @@ flagcxResult_t flagcxSymRetainPendingCleanup(flagcxHeteroComm_t comm,
 flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
                                        flagcxResult_t localStatus,
                                        flagcxResult_t *commonStatus);
+
+// Validate exchanged rank geometry and calculate the common aligned slot
+// width. The user range must be fully backed by mapped segments.
+flagcxResult_t
+flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
+                         int nSegments, const flagcxSymSegmentMeta *segments,
+                         size_t slotAlignment, size_t *slotStride);
 
 // Acquire and attach a network MR reference to an unpublished symmetric
 // window. The operation is collective and idempotent across retries.

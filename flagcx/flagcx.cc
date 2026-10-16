@@ -2516,7 +2516,18 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     return flagcxInvalidArgument;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(flagcxValidateMemoryRange(buff, size, allocator));
+  flagcxResult_t rangeStatus = flagcxValidateMemoryRange(buff, size, allocator);
+  if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
+    // A rank-local range error must be reported before any peer enters the
+    // symmetric-window collectives in flagcxSymWindowRegister.
+    flagcxResult_t commonRangeStatus = flagcxSuccess;
+    FLAGCXCHECK(flagcxSymConvergeStatus(comm->heteroComm, rangeStatus,
+                                        &commonRangeStatus));
+    if (commonRangeStatus != flagcxSuccess)
+      return commonRangeStatus;
+  } else {
+    FLAGCXCHECK(rangeStatus);
+  }
   // SHMEM path: buffer is already in the SHMEM symmetric heap, so no
   // additional communicator window registration is needed.
   if (allocator == flagcxMemSHMEM) {
