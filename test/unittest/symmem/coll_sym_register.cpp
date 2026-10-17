@@ -209,8 +209,10 @@ flagcxResult_t (*savedSymLsaMapBeginAt)(void *, int, int, void *,
                                         size_t, size_t, void **) = nullptr;
 flagcxResult_t (*savedSymSegmentUnmap)(void *) = nullptr;
 flagcxResult_t (*savedSymLsaVaReserve)(size_t, size_t, void **) = nullptr;
+int injectedSymLsaVaReserveCalls = 0;
 
 flagcxResult_t failSymLsaVaReserve(size_t, size_t, void **base) {
+  ++injectedSymLsaVaReserveCalls;
   if (base != nullptr)
     *base = nullptr;
   return flagcxUnhandledDeviceError;
@@ -1906,31 +1908,52 @@ TEST_F(SymMemTest, LsaReserveFailureDoesNotPublishWindow) {
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->heteroComm, nullptr);
   ASSERT_GT(comm->heteroComm->localRanks, 1);
+  flagcxComm_t testComm = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+  ASSERT_NE(testComm, nullptr);
+  ASSERT_NE(testComm->heteroComm, nullptr);
+  ASSERT_EQ(testComm->heteroComm->symLsaArena, nullptr);
   savedSymLsaVaReserve = deviceAdaptor->symLsaVaReserve;
   ASSERT_NE(savedSymLsaVaReserve, nullptr);
 
   void *allocation = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, size)));
-  if (comm->heteroComm->localRank == 1)
+  injectedSymLsaVaReserveCalls = 0;
+  if (testComm->heteroComm->localRank == 1)
     deviceAdaptor->symLsaVaReserve = failSymLsaVaReserve;
   flagcxWindow_t window = nullptr;
   flagcxResult_t result = flagcxCommWindowRegister(
-      comm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+      testComm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
   deviceAdaptor->symLsaVaReserve = savedSymLsaVaReserve;
+  EXPECT_TRUE(
+      allRanksSucceeded(injectedSymLsaVaReserveCalls ==
+                                (testComm->heteroComm->localRank == 1 ? 1 : 0)
+                            ? flagcxSuccess
+                            : flagcxSystemError));
   int minimum = 0;
   int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
   EXPECT_NE(result, flagcxSuccess);
   EXPECT_EQ(window, nullptr);
-  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
-  EXPECT_EQ(comm->heteroComm->symLsaArena, nullptr);
+  EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(testComm->heteroComm->symLsaArena, nullptr);
 
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
-  ASSERT_NE(window, nullptr);
-  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  if (minimum == maximum && minimum != flagcxSuccess &&
+      allRanksSucceeded(window == nullptr ? flagcxSuccess
+                                          : flagcxInvalidUsage)) {
+    result = flagcxCommWindowRegister(testComm, allocation, size, &window,
+                                      FLAGCX_WIN_COLL_SYMMETRIC);
+    const bool retrySucceeded = allRanksSucceeded(result);
+    EXPECT_TRUE(retrySucceeded);
+    if (retrySucceeded && window != nullptr) {
+      EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
+    }
+  }
+  if (allRanksSucceeded(window != nullptr ? flagcxSuccess : flagcxNotSupported))
+    EXPECT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  EXPECT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
 }
 
