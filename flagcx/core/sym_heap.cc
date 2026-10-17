@@ -1809,6 +1809,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   bool segmentCallbacksUsed = false;
   bool ordinaryIpcEligible = false;
   bool segmentedCleanupFailed = false;
+  bool networkMrAttempted = false;
   flagcxResult_t localPrepareStatus = flagcxSuccess;
   void *allocationBase = nullptr;
   flagcxResult_t leaseResult = flagcxSuccess;
@@ -2540,6 +2541,10 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
     INFO(FLAGCX_INIT,
          "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
          (int)d->hasFlatMapping, buff, size);
+    // needsNetworkMr is communicator-wide. If MR registration fails, every
+    // rank must enter the same rollback collectives, even an ordinary-memory
+    // rank with no local mapping or MR left to release.
+    networkMrAttempted = true;
     FLAGCXCHECKGOTO(flagcxSymWindowEnsureNetworkMr(comm, d), res, fail);
   }
 
@@ -2579,10 +2584,11 @@ fail:
     d = nullptr;
     w = nullptr;
   } else if (!prepareRollbackConverged && d != nullptr &&
-             (d->hasNetworkMrRef || d->hasPendingNetworkCleanup ||
-              d->flatMappingOwned || d->flatVaOwned || d->lsaOffsetOwned ||
-              d->multicastMappingOwned || d->multicastVaOwned ||
-              d->physHandle != nullptr || d->mcHandle != nullptr)) {
+             (networkMrAttempted || d->hasNetworkMrRef ||
+              d->hasPendingNetworkCleanup || d->flatMappingOwned ||
+              d->flatVaOwned || d->lsaOffsetOwned || d->multicastMappingOwned ||
+              d->multicastVaOwned || d->physHandle != nullptr ||
+              d->mcHandle != nullptr)) {
     flagcxResult_t cleanup =
         flagcxSymCleanupUnpublished(comm, d, flagcxSymCleanupCollective);
     if (cleanup != flagcxSuccess) {
