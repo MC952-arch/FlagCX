@@ -1320,18 +1320,22 @@ flagcxResult_t duhipAdaptorSymLsaGetCapacity(size_t *totalBytes,
   hipError_t error = hipMemGetInfo(&freeBytes, totalBytes);
   if (error != hipSuccess)
     return duhipVmmDeviceError("lsa-get-capacity", error);
-  *alignment = 512ULL * 1024 * 1024;
+  // The common LSA path raises this floor to the current window's VMM
+  // allocation granularity before reserving or mapping its VA.
+  *alignment = 1024;
   return flagcxSuccess;
 }
 flagcxResult_t duhipAdaptorSymLsaVaReserve(size_t size, size_t alignment,
                                            void **base) {
   if (base == NULL)
     return flagcxInvalidArgument;
-  uintptr_t address = 0;
-  flagcxResult_t result = DuhipSegmentOps::reserveAddress(
-      size, alignment, &address, "lsa-address-reserve");
-  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
-  return result;
+  *base = NULL;
+  hipError_t error = hipMemAddressReserve(base, size, alignment, NULL, 0);
+  if (error == hipSuccess)
+    return flagcxSuccess;
+  duhipVmmDeviceError("lsa-address-reserve", error, size, alignment);
+  return error == hipErrorOutOfMemory ? flagcxNotSupported
+                                      : flagcxUnhandledDeviceError;
 }
 flagcxResult_t duhipAdaptorSymLsaVaFree(void *base, size_t size) {
   return DuhipSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);

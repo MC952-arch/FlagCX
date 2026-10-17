@@ -341,20 +341,23 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
                               sizeof(capacity)));
   }
 
-  const size_t fourGiB = static_cast<size_t>(1) << 32;
   const size_t alignment = capacity.alignment > windowAlignment
                                ? capacity.alignment
                                : windowAlignment;
-  const size_t strideAlignment = alignment > fourGiB ? alignment : fourGiB;
   const size_t required =
       capacity.totalBytes > windowSpan ? capacity.totalBytes : windowSpan;
-  local = required > std::numeric_limits<size_t>::max() - (strideAlignment - 1)
+  local = required > std::numeric_limits<size_t>::max() - (alignment - 1)
               ? flagcxInvalidArgument
               : flagcxSuccess;
   const size_t rankStride =
       local == flagcxSuccess
-          ? ((required + strideAlignment - 1) / strideAlignment) *
-                strideAlignment
+          ? ((required + alignment - 1) / alignment) * alignment
+          : 0;
+  const size_t minimumRequired =
+      windowSpan > alignment ? windowSpan : alignment;
+  const size_t minimumStride =
+      local == flagcxSuccess
+          ? ((minimumRequired + alignment - 1) / alignment) * alignment
           : 0;
   if (local == flagcxSuccess &&
       (rankStride > std::numeric_limits<size_t>::max() /
@@ -381,27 +384,53 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
     return common;
   }
   comm->symLsaArena = arena;
-  local = deviceAdaptor->symLsaVaReserve(arena->totalSize, arena->alignment,
-                                         &arena->base);
-  if (local == flagcxSuccess && arena->base == nullptr)
-    local = flagcxInternalError;
-  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5985, &common));
-  if (common == flagcxSuccess)
-    return flagcxSuccess;
-  arena->invalid = true;
-  flagcxResult_t rollback =
-      arena->base != nullptr
-          ? deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize)
-          : flagcxSuccess;
-  if (rollback == flagcxSuccess)
-    arena->base = nullptr;
-  flagcxResult_t commonRollback = flagcxSuccess;
-  FLAGCXCHECK(flagcxSymLocalConverge(comm, rollback, 0x5986, &commonRollback));
-  if (commonRollback == flagcxSuccess) {
+  for (;;) {
+    local = deviceAdaptor->symLsaVaReserve(arena->totalSize, arena->alignment,
+                                           &arena->base);
+    if (local == flagcxSuccess && arena->base == nullptr)
+      local = flagcxInternalError;
+    // Only an address-space capacity failure may trigger a smaller retry.
+    // Converge fatal errors separately so a simultaneous allocation failure
+    // cannot hide a real error on another local rank.
+    flagcxResult_t fatal = local == flagcxNotSupported ? flagcxSuccess : local;
+    flagcxResult_t commonFatal = flagcxSuccess;
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, fatal, 0x598e, &commonFatal));
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5985, &common));
+    if (commonFatal == flagcxSuccess && common == flagcxSuccess)
+      return flagcxSuccess;
+
+    arena->invalid = true;
+    flagcxResult_t rollback =
+        arena->base != nullptr
+            ? deviceAdaptor->symLsaVaFree(arena->base, arena->totalSize)
+            : flagcxSuccess;
+    if (rollback == flagcxSuccess)
+      arena->base = nullptr;
+    flagcxResult_t commonRollback = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxSymLocalConverge(comm, rollback, 0x5986, &commonRollback));
+    if (commonRollback != flagcxSuccess)
+      return commonRollback;
+
+    if (commonFatal == flagcxSuccess && common == flagcxNotSupported &&
+        arena->rankStride > minimumStride) {
+      size_t nextStride = (arena->rankStride / 2 / alignment) * alignment;
+      if (nextStride < minimumStride)
+        nextStride = minimumStride;
+      if (comm->localRank == 0)
+        INFO(FLAGCX_INIT, "symmem LSA VA reserve retry: stride %zu -> %zu",
+             arena->rankStride, nextStride);
+      arena->rankStride = nextStride;
+      arena->totalSize = nextStride * static_cast<size_t>(comm->localRanks);
+      arena->freeRanges.begin()->second = nextStride;
+      arena->invalid = false;
+      continue;
+    }
+
     delete arena;
     comm->symLsaArena = nullptr;
+    return commonFatal != flagcxSuccess ? commonFatal : common;
   }
-  return commonRollback == flagcxSuccess ? common : commonRollback;
 }
 
 static flagcxResult_t flagcxSymLsaEnsureMulticast(flagcxHeteroComm_t comm) {
