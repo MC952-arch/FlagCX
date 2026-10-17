@@ -1423,7 +1423,7 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       effectiveCaps, properties.ptrSupport, dmaBufExportSupported,
       deviceAdaptor->getHandleForAddressRange != NULL &&
           net->regMrDmaBuf != NULL,
-      !multiSegmentMr && net->regMr != NULL, dmaBufEnabled);
+      net->regMr != NULL, dmaBufEnabled);
   INFO(FLAGCX_REG,
        "VMM MR route selection: provider=%s dmaBufEnabled=%d deviceCaps=0x%x "
        "providerCaps=0x%x effectiveCaps=0x%x ptrSupport=0x%x "
@@ -1472,9 +1472,9 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
       close(dmaBufFd);
 
     // A component may advertise DMA-BUF generally but reject this allocation.
-    // Only a registration range within one physical segment may use a
-    // validated VA fallback after an explicit NotSupported result.
-    if (!multiSegmentMr && result == flagcxNotSupported) {
+    // Try registering the complete VA range when both adaptors support that
+    // route, including when the range spans multiple physical segments.
+    if (result == flagcxNotSupported) {
       // A provider may return NotSupported after partially creating an MR.
       // Do not overwrite that ownership with the VA handle. Complete its
       // rollback first; if rollback fails, leave the handle visible to the

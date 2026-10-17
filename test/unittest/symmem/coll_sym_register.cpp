@@ -1593,8 +1593,8 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
   ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
 
-  // Keep the successful mixed-node case within one physical segment. A
-  // multi-segment VMM range needs a separate DMA-BUF capability check.
+  // Keep the required-success case within one physical segment. The separate
+  // multi-segment case checks whether this NET provider accepts the full VA.
   const size_t allocationSize =
       granularity < (1U << 20) ? granularity : static_cast<size_t>(1U << 20);
   const std::string segmentSetting = std::to_string(granularity);
@@ -1724,7 +1724,8 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
   EXPECT_TRUE(minimum == static_cast<int>(flagcxSuccess) ||
-              minimum == static_cast<int>(flagcxNotSupported));
+              minimum == static_cast<int>(flagcxNotSupported) ||
+              minimum == static_cast<int>(flagcxSystemError));
   if (minimum == static_cast<int>(flagcxSuccess)) {
     ASSERT_NE(window, nullptr);
     ASSERT_NE(window->defaultBase, nullptr);
@@ -1740,8 +1741,8 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
     EXPECT_EQ(hetero->pendingOneSideMeshCleanup, nullptr);
   }
 
-  // Exercise the collective NotSupported path on every CI device, including
-  // devices that can export a DMA-BUF for the full multi-segment range.
+  // Disabling DMA-BUF selects the complete VA range on providers that offer
+  // that route. Registration may still fail on a particular driver/NIC.
   {
     ScopedEnvVar noDmaBuf("FLAGCX_DMABUF_ENABLE", "0");
     window = nullptr;
@@ -1749,13 +1750,75 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
                                       FLAGCX_WIN_COLL_SYMMETRIC);
   }
   allRankResultRange(result, &minimum, &maximum);
-  EXPECT_EQ(minimum, static_cast<int>(flagcxNotSupported));
-  EXPECT_EQ(maximum, static_cast<int>(flagcxNotSupported));
-  EXPECT_EQ(window, nullptr);
-  EXPECT_EQ(hetero->symWindows, nullptr);
-  EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
-  EXPECT_EQ(hetero->pendingOneSideCleanup, nullptr);
-  EXPECT_EQ(hetero->pendingOneSideMeshCleanup, nullptr);
+  EXPECT_EQ(minimum, maximum);
+  EXPECT_TRUE(minimum == static_cast<int>(flagcxSuccess) ||
+              minimum == static_cast<int>(flagcxNotSupported) ||
+              minimum == static_cast<int>(flagcxSystemError));
+  if (minimum == static_cast<int>(flagcxSuccess)) {
+    ASSERT_NE(window, nullptr);
+    ASSERT_NE(window->defaultBase, nullptr);
+    const int mrIndex = window->defaultBase->mrIndex;
+    ASSERT_GE(mrIndex, 0);
+    ASSERT_LT(mrIndex, hetero->oneSideHandleCount);
+    ASSERT_NE(hetero->oneSideHandles[mrIndex], nullptr);
+    EXPECT_EQ(hetero->oneSideHandles[mrIndex]->registrationRoute,
+              FLAGCX_VMM_MR_ROUTE_VA);
+
+    int remotePeer = -1;
+    for (int peer = 0; peer < hetero->nRanks; peer++) {
+      if (hetero->rankToNode[peer] != hetero->node) {
+        remotePeer = peer;
+        break;
+      }
+    }
+    ASSERT_GE(remotePeer, 0);
+    const size_t transferSize = granularity < 128 ? granularity / 2 : 64;
+    ASSERT_GT(transferSize, 0u);
+    result = devHandle->deviceMemset(buffer, 0, allocationSize, flagcxMemDevice,
+                                     stream);
+    for (int segment = 0; segment < 3 && result == flagcxSuccess; segment++) {
+      std::vector<uint8_t> pattern(
+          transferSize, static_cast<uint8_t>(hetero->rank + segment + 31));
+      result = devHandle->deviceMemcpy(
+          static_cast<char *>(buffer) + segment * granularity, pattern.data(),
+          transferSize, flagcxMemcpyHostToDevice, stream);
+    }
+    if (result == flagcxSuccess)
+      result = devHandle->streamSynchronize(stream);
+    ASSERT_TRUE(allRanksSucceeded(result));
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for (int segment = 0; segment < 3; segment++) {
+      const size_t sourceOffset = segment * granularity;
+      const size_t destinationOffset = sourceOffset + granularity / 2;
+      uint64_t before = 0;
+      result = flagcxReadCounter(testComm, &before);
+      if (result == flagcxSuccess)
+        result = flagcxGet(testComm, remotePeer, sourceOffset,
+                           destinationOffset, transferSize, mrIndex, mrIndex);
+      if (result == flagcxSuccess)
+        result = flagcxWaitCounter(testComm, before + 1);
+      ASSERT_TRUE(allRanksSucceeded(result));
+
+      std::vector<uint8_t> readBack(transferSize, 0);
+      result = devHandle->deviceMemcpy(
+          readBack.data(), static_cast<char *>(buffer) + destinationOffset,
+          transferSize, flagcxMemcpyDeviceToHost, nullptr);
+      ASSERT_TRUE(allRanksSucceeded(result));
+      EXPECT_EQ(readBack, std::vector<uint8_t>(
+                              transferSize,
+                              static_cast<uint8_t>(remotePeer + segment + 31)));
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  } else {
+    EXPECT_EQ(window, nullptr);
+    EXPECT_EQ(hetero->symWindows, nullptr);
+    EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+    EXPECT_EQ(hetero->pendingOneSideCleanup, nullptr);
+    EXPECT_EQ(hetero->pendingOneSideMeshCleanup, nullptr);
+  }
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   result = vmmNode
@@ -2341,8 +2404,10 @@ TEST_F(SymMemTest, SegmentedMapFailureDoesNotPublishNetworkOnlyWindow) {
     ASSERT_TRUE(baselineWindow->defaultBase->hasNetworkMrRef);
     const int mrIndex = baselineWindow->defaultBase->mrIndex;
     ASSERT_GE(mrIndex, 0);
-    EXPECT_EQ(comm->heteroComm->oneSideHandles[mrIndex]->registrationRoute,
-              FLAGCX_VMM_MR_ROUTE_DMABUF);
+    const uint8_t route =
+        comm->heteroComm->oneSideHandles[mrIndex]->registrationRoute;
+    EXPECT_TRUE(route == FLAGCX_VMM_MR_ROUTE_DMABUF ||
+                route == FLAGCX_VMM_MR_ROUTE_VA);
     ASSERT_TRUE(
         allRanksSucceeded(flagcxCommWindowDeregister(comm, baselineWindow)));
   } else {
