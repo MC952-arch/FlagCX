@@ -504,12 +504,13 @@ static flagcxResult_t flagcxSymLsaEnsureMulticast(flagcxHeteroComm_t comm) {
     }
   }
   for (int peer = 1; peer < comm->localRanks; peer++) {
-    if (comm->localRank == 0)
+    if (comm->localRank == 0) {
       FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
                                 0x5993, &created, sizeof(created)));
-    else if (comm->localRank == peer)
+    } else if (comm->localRank == peer) {
       FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[0],
                                 0x5993, &created, sizeof(created)));
+    }
   }
   if (!created) {
     if (fd >= 0)
@@ -928,7 +929,7 @@ static flagcxResult_t flagcxSymCleanupMappings(flagcxHeteroComm_t comm,
   flagcxResult_t local = flagcxSuccess;
   flagcxResult_t common = flagcxSuccess;
 
-  if (d->mcLsaBound) {
+  if (d != nullptr && d->mcLsaBound) {
     flagcxSymLsaArena *arena = comm->symLsaArena;
     local = arena != nullptr && arena->mcHandle != nullptr &&
                     deviceAdaptor->symLsaMulticastUnbind != nullptr

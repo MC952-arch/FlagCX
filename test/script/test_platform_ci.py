@@ -1028,7 +1028,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("-DUSE_DU_ADAPTOR", compile_command)
         self.assertIn("-I/opt/dtk/cuda/cuda-12/include", compile_command)
-        self.assertIn("-lcudart -lcuda", link_command)
+        self.assertIn("-lamdhip64", link_command)
+        source = (
+            REPO_ROOT / "test/unittest/symmem/coll_sym_register.cpp"
+        ).read_text()
+        self.assertIn("#elif defined(USE_DU_ADAPTOR)\n#include <hip/hip_runtime.h>", source)
+        duhip = (
+            REPO_ROOT / "flagcx/adaptor/device/duhip_adaptor.cc"
+        ).read_text()
+        self.assertIn("duhipAdaptorSymPhysDescribe,", duhip)
+        self.assertIn("duhipAdaptorSymLsaMapBeginAt, NULL", duhip)
 
     def test_cuda_vmm_allocation_does_not_require_imex_fabric(self):
         source = (

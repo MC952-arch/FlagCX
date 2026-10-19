@@ -18,10 +18,11 @@
 #include <sys/resource.h>
 #endif
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_PPU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
+#elif defined(USE_DU_ADAPTOR)
+#include <hip/hip_runtime.h>
 #elif defined(USE_METAX_ADAPTOR)
 #include <mcr/mc_runtime.h>
 #endif
@@ -208,8 +209,10 @@ flagcxResult_t (*savedSymLsaMapBeginAt)(void *, int, int, void *,
                                         size_t, size_t, void **) = nullptr;
 flagcxResult_t (*savedSymSegmentUnmap)(void *) = nullptr;
 flagcxResult_t (*savedSymLsaVaReserve)(size_t, size_t, void **) = nullptr;
+int injectedSymLsaVaReserveCalls = 0;
 
 flagcxResult_t failSymLsaVaReserve(size_t, size_t, void **base) {
+  ++injectedSymLsaVaReserveCalls;
   if (base != nullptr)
     *base = nullptr;
   return flagcxUnhandledDeviceError;
@@ -1331,6 +1334,48 @@ TEST_F(SymMemTest, RankLocalSignalMrFailurePreservesErrorAndRetries) {
   EXPECT_EQ(flagcxMemFree(signalBuffer), flagcxSuccess);
 }
 
+TEST_F(SymMemTest, AsymmetricPendingCleanupWithoutLocalTokenConverges) {
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  if (hetero->nRanks < 2)
+    GTEST_SKIP() << "Requires at least two ranks";
+  ASSERT_EQ(hetero->pendingSymCleanup, nullptr);
+
+  // Only one rank owns a failed-registration token. All other ranks must
+  // still pass through every cleanup convergence stage with a null token.
+  flagcxWindow_t token = nullptr;
+  flagcxSymWindow_t pending = nullptr;
+  if (hetero->rank == 0) {
+    token = static_cast<flagcxWindow_t>(calloc(1, sizeof(*token)));
+    pending = static_cast<flagcxSymWindow_t>(calloc(1, sizeof(*pending)));
+  }
+  const bool allocated =
+      hetero->rank != 0 || (token != nullptr && pending != nullptr);
+  if (!allRanksSucceeded(allocated ? flagcxSuccess : flagcxSystemError)) {
+    free(pending);
+    free(token);
+    FAIL() << "Could not allocate the pending cleanup token";
+  }
+  flagcxResult_t retain = flagcxSuccess;
+  if (hetero->rank == 0) {
+    token->defaultBase = pending;
+    pending->owner = token;
+    pending->mrIndex = -1;
+    pending->ipcSlot = -1;
+    retain = flagcxSymRetainPendingCleanup(hetero, token);
+  }
+  if (!allRanksSucceeded(retain)) {
+    free(pending);
+    free(token);
+    FAIL() << "Could not retain the pending cleanup token";
+  }
+
+  EXPECT_EQ(flagcxSymRetryPendingCleanup(hetero, flagcxSymCleanupCollective),
+            flagcxSuccess);
+  EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+}
+
 TEST_F(SymMemTest, FlatMapRollbackFailureRetainsOwnershipForRetry) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
       envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
@@ -1863,31 +1908,52 @@ TEST_F(SymMemTest, LsaReserveFailureDoesNotPublishWindow) {
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->heteroComm, nullptr);
   ASSERT_GT(comm->heteroComm->localRanks, 1);
+  flagcxComm_t testComm = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+  ASSERT_NE(testComm, nullptr);
+  ASSERT_NE(testComm->heteroComm, nullptr);
+  ASSERT_EQ(testComm->heteroComm->symLsaArena, nullptr);
   savedSymLsaVaReserve = deviceAdaptor->symLsaVaReserve;
   ASSERT_NE(savedSymLsaVaReserve, nullptr);
 
   void *allocation = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, size)));
-  if (comm->heteroComm->localRank == 1)
+  injectedSymLsaVaReserveCalls = 0;
+  if (testComm->heteroComm->localRank == 1)
     deviceAdaptor->symLsaVaReserve = failSymLsaVaReserve;
   flagcxWindow_t window = nullptr;
   flagcxResult_t result = flagcxCommWindowRegister(
-      comm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+      testComm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
   deviceAdaptor->symLsaVaReserve = savedSymLsaVaReserve;
+  EXPECT_TRUE(
+      allRanksSucceeded(injectedSymLsaVaReserveCalls ==
+                                (testComm->heteroComm->localRank == 1 ? 1 : 0)
+                            ? flagcxSuccess
+                            : flagcxSystemError));
   int minimum = 0;
   int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
   EXPECT_NE(result, flagcxSuccess);
   EXPECT_EQ(window, nullptr);
-  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
-  EXPECT_EQ(comm->heteroComm->symLsaArena, nullptr);
+  EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(testComm->heteroComm->symLsaArena, nullptr);
 
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, allocation, size, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
-  ASSERT_NE(window, nullptr);
-  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  if (minimum == maximum && minimum != flagcxSuccess &&
+      allRanksSucceeded(window == nullptr ? flagcxSuccess
+                                          : flagcxInvalidUsage)) {
+    result = flagcxCommWindowRegister(testComm, allocation, size, &window,
+                                      FLAGCX_WIN_COLL_SYMMETRIC);
+    const bool retrySucceeded = allRanksSucceeded(result);
+    EXPECT_TRUE(retrySucceeded);
+    if (retrySucceeded && window != nullptr) {
+      EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
+    }
+  }
+  if (allRanksSucceeded(window != nullptr ? flagcxSuccess : flagcxNotSupported))
+    EXPECT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  EXPECT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
 }
 
@@ -2329,8 +2395,51 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
     access.flags = mcMemAccessFlagsProtReadWrite;
     return mcMemSetAccess(mapping.base, granularity, &access, 1) == mcSuccess;
   }();
-#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                \
-    defined(USE_PPU_ADAPTOR)
+#elif defined(USE_DU_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    hipMemGenericAllocationHandle_t handle = 0;
+    hipDeviceptr_t base = nullptr;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        hipMemUnmap(base, size);
+      if (base != nullptr)
+        hipMemAddressFree(base, size);
+      if (handle != 0)
+        hipMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int device = 0;
+    if (hipGetDevice(&device) != hipSuccess)
+      return false;
+    hipMemAllocationProp prop = {};
+    prop.type = hipMemAllocationTypePinned;
+    prop.location.type = hipMemLocationTypeDevice;
+    prop.location.id = device;
+    prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
+    if (hipMemGetAllocationGranularity(
+            &granularity, &prop, hipMemAllocationGranularityRecommended) !=
+            hipSuccess ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (hipMemCreate(&mapping.handle, granularity, &prop, 0) != hipSuccess ||
+        hipMemAddressReserve(&mapping.base, granularity, granularity, nullptr,
+                             0) != hipSuccess ||
+        hipMemMap(mapping.base, granularity, 0, mapping.handle, 0) !=
+            hipSuccess)
+      return false;
+    mapping.mapped = true;
+    hipMemAccessDesc access = {};
+    access.location.type = hipMemLocationTypeDevice;
+    access.location.id = device;
+    access.flags = hipMemAccessFlagsProtReadWrite;
+    return hipMemSetAccess(mapping.base, granularity, &access, 1) == hipSuccess;
+  }();
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
   size_t granularity = 0;
   struct ScopedMapping {
     CUmemGenericAllocationHandle handle = 0;
@@ -2432,19 +2541,17 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
   ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
 
-  int cudaDev = 0;
-  ASSERT_EQ(cudaGetDevice(&cudaDev), cudaSuccess);
-  CUdevice cuDevice = 0;
-  ASSERT_EQ(cuDeviceGet(&cuDevice, cudaDev), CUDA_SUCCESS);
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = cuDevice;
-  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  int hipDevice = 0;
+  ASSERT_EQ(hipGetDevice(&hipDevice), hipSuccess);
+  hipMemAllocationProp prop = {};
+  prop.type = hipMemAllocationTypePinned;
+  prop.location.type = hipMemLocationTypeDevice;
+  prop.location.id = hipDevice;
+  prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
   size_t granularity = 0;
-  ASSERT_EQ(cuMemGetAllocationGranularity(&granularity, &prop,
-                                          CU_MEM_ALLOC_GRANULARITY_RECOMMENDED),
-            CUDA_SUCCESS);
+  ASSERT_EQ(hipMemGetAllocationGranularity(
+                &granularity, &prop, hipMemAllocationGranularityRecommended),
+            hipSuccess);
   ASSERT_GT(granularity, 0u);
   ASSERT_LE(granularity, SIZE_MAX / 3);
   const size_t allocationSize = granularity * 3;
@@ -2477,7 +2584,7 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
             flagcxSuccess);
   ASSERT_NE(allocation, nullptr);
-  EXPECT_EQ(cudaMemset(allocation, 0x5a, allocationSize), cudaSuccess);
+  EXPECT_EQ(hipMemset(allocation, 0x5a, allocationSize), hipSuccess);
   EXPECT_EQ(deviceAdaptor->gdrMemFree(allocation, nullptr), flagcxSuccess);
 }
 #endif
