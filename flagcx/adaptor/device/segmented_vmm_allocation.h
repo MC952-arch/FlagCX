@@ -158,20 +158,40 @@ public:
       *found = true;
       if (allocation.pendingCleanup)
         return flagcxInvalidUsage;
+      const size_t begin = address - base;
+      const size_t end = begin + size;
+      size_t firstOffset = allocation.size;
+      size_t coveredTo = begin;
       try {
         for (size_t i = 0; i < allocation.segments.size(); i++) {
           const Segment &segment = allocation.segments[i];
+          if (segment.offset > allocation.size ||
+              segment.size > allocation.size - segment.offset)
+            return flagcxInvalidUsage;
+          const size_t segmentEnd = segment.offset + segment.size;
+          if (segment.offset >= end || segmentEnd <= begin)
+            continue;
+          if (segment.offset > coveredTo)
+            return flagcxInvalidUsage;
           if (!segment.mapped || !segment.handleOwned)
             return flagcxInvalidUsage;
+          if (bundle->segments.empty())
+            firstOffset = segment.offset;
+          if (segment.offset < firstOffset)
+            return flagcxInvalidUsage;
           bundle->segments.push_back(
-              flagcxSymSegmentMeta{segment.offset, segment.size});
+              flagcxSymSegmentMeta{segment.offset - firstOffset, segment.size});
           bundle->handleOwned.push_back(0);
           bundle->handles.push_back(segment.handle);
+          if (segmentEnd > coveredTo)
+            coveredTo = segmentEnd;
         }
       } catch (const std::bad_alloc &) {
         return flagcxSystemError;
       }
-      *userOffset = address - base;
+      if (bundle->segments.empty() || coveredTo < end)
+        return flagcxInvalidUsage;
+      *userOffset = begin - firstOffset;
       return flagcxSuccess;
     }
     return flagcxSuccess;

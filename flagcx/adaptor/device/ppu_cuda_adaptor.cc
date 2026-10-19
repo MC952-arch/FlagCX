@@ -883,6 +883,41 @@ flagcxResult_t ppucudaAdaptorSymFlatVaFreeSegments(void *flatBase) {
   return PpuSegmentMap::freeVa(flatBase);
 }
 
+flagcxResult_t ppucudaAdaptorSymLsaGetCapacity(size_t *totalBytes,
+                                               size_t *alignment) {
+  if (totalBytes == NULL || alignment == NULL)
+    return flagcxInvalidArgument;
+  size_t freeBytes = 0;
+  if (cudaMemGetInfo(&freeBytes, totalBytes) != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  *alignment = 512ULL * 1024 * 1024;
+  return flagcxSuccess;
+}
+
+flagcxResult_t ppucudaAdaptorSymLsaVaReserve(size_t size, size_t alignment,
+                                             void **base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uintptr_t address = 0;
+  flagcxResult_t result =
+      PpuSegmentOps::reserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  return result;
+}
+
+flagcxResult_t ppucudaAdaptorSymLsaVaFree(void *base, size_t size) {
+  return PpuSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+}
+
+flagcxResult_t ppucudaAdaptorSymLsaMapBeginAt(
+    void *windowBase, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
+  return PpuSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
+                                segments, totalSegments, stride, alignment,
+                                mappingBase);
+}
+
 flagcxResult_t ppucudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
                                         int selfIndex, void *selfPhysHandle,
                                         size_t allocSize, void **flatBase) {
@@ -1143,6 +1178,9 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymFlatMappingUnmapSegments,
       ppucudaAdaptorSymFlatVaFreeSegments, ppucudaAdaptorSymPhysSegmentCount,
       ppucudaAdaptorSymFlatMapSegmentsBegin, ppucudaAdaptorSymFlatMapSegmentOne,
+      ppucudaAdaptorSymLsaGetCapacity, ppucudaAdaptorSymLsaVaReserve,
+      ppucudaAdaptorSymLsaVaFree, ppucudaAdaptorSymLsaMapBeginAt, NULL, NULL,
+      NULL, NULL,
 };
 
 #endif // USE_PPU_ADAPTOR

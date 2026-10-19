@@ -11,6 +11,7 @@
 #include "alloc.h"
 #include "param.h"
 #include "segmented_vmm_allocation.h"
+#include <dlfcn.h>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -874,6 +875,44 @@ flagcxResult_t macaAdaptorSymFlatVaFreeSegments(void *flatBase) {
   return MacaSegmentMap::freeVa(flatBase);
 }
 
+flagcxResult_t macaAdaptorSymLsaGetCapacity(size_t *totalBytes,
+                                            size_t *alignment) {
+  if (totalBytes == NULL || alignment == NULL)
+    return flagcxInvalidArgument;
+  int device = 0;
+  mcDeviceProp_t properties = {};
+  if (mcGetDevice(&device) != mcSuccess ||
+      mcGetDeviceProperties(&properties, device) != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  *totalBytes = properties.totalGlobalMem;
+  *alignment = 512ULL * 1024 * 1024;
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymLsaVaReserve(size_t size, size_t alignment,
+                                          void **base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uintptr_t address = 0;
+  flagcxResult_t result =
+      MacaSegmentOps::reserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  return result;
+}
+
+flagcxResult_t macaAdaptorSymLsaVaFree(void *base, size_t size) {
+  return MacaSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+}
+
+flagcxResult_t macaAdaptorSymLsaMapBeginAt(
+    void *windowBase, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
+  return MacaSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
+                                 segments, totalSegments, stride, alignment,
+                                 mappingBase);
+}
+
 flagcxResult_t macaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
                                      int selfIndex, void *selfPhysHandle,
                                      size_t allocSize, void **flatBase) {
@@ -1188,6 +1227,94 @@ flagcxResult_t macaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorSymLsaMulticastGranularity(size_t objectSize,
+                                                     int nLocalDevices,
+                                                     size_t *granularity) {
+  if (objectSize == 0 || nLocalDevices <= 0 || granularity == NULL)
+    return flagcxInvalidArgument;
+  // Older MACA SDKs expose multicast objects but not address binding. Keep
+  // those builds on unicast LSA without requiring the newer declarations.
+  if (dlsym(RTLD_DEFAULT, "mcMulticastBindAddr") == NULL ||
+      dlsym(RTLD_DEFAULT, "mcMulticastUnbind") == NULL)
+    return flagcxNotSupported;
+  mcMulticastObjectProp prop = {};
+  prop.numDevices = (unsigned int)nLocalDevices;
+  prop.size = objectSize;
+  prop.handleTypes = mcMemHandleTypePosixFileDescriptor;
+  mcError_t result = mcMulticastGetGranularity(
+      granularity, &prop, MC_MULTICAST_GRANULARITY_RECOMMENDED);
+  return result == mcSuccess && *granularity != 0 ? flagcxSuccess
+                                                  : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t macaAdaptorSymLsaMulticastMap(void *mcHandle, size_t size,
+                                             size_t alignment, void **base,
+                                             bool *mappingOwned,
+                                             bool *vaOwned) {
+  if (mcHandle == NULL || size == 0 || base == NULL || mappingOwned == NULL ||
+      vaOwned == NULL)
+    return flagcxInvalidArgument;
+  *base = NULL;
+  *mappingOwned = false;
+  *vaOwned = false;
+  mcDeviceptr_t address = 0;
+  mcError_t result = mcMemAddressReserve(&address, size, alignment, 0, 0);
+  if (result != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  *base = reinterpret_cast<void *>(address);
+  *vaOwned = true;
+  result = mcMemMap(address, size, 0,
+                    *static_cast<mcMemGenericAllocationHandle *>(mcHandle), 0);
+  if (result != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  *mappingOwned = true;
+  int device = -1;
+  if (mcGetDevice(&device) != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  mcMemAccessDesc access = {};
+  access.location.type = mcMemLocationTypeDevice;
+  access.location.id = device;
+  access.flags = mcMemAccessFlagsProtReadWrite;
+  return mcMemSetAccess(address, size, &access, 1) == mcSuccess
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t macaAdaptorSymLsaMulticastBind(void *mcHandle, size_t offset,
+                                              const void *source, size_t size) {
+  if (mcHandle == NULL || source == NULL || size == 0)
+    return flagcxInvalidArgument;
+  typedef mcError_t (*BindAddr)(mcMemGenericAllocationHandle, size_t,
+                                mcDeviceptr_t, size_t, unsigned long long);
+  BindAddr bind =
+      reinterpret_cast<BindAddr>(dlsym(RTLD_DEFAULT, "mcMulticastBindAddr"));
+  if (bind == NULL)
+    return flagcxNotSupported;
+  return bind(*static_cast<mcMemGenericAllocationHandle *>(mcHandle), offset,
+              (mcDeviceptr_t)(uintptr_t)source, size, 0) == mcSuccess
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t macaAdaptorSymLsaMulticastUnbind(void *mcHandle, size_t offset,
+                                                size_t size) {
+  if (mcHandle == NULL || size == 0)
+    return flagcxInvalidArgument;
+  int device = -1;
+  if (mcGetDevice(&device) != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  typedef mcError_t (*Unbind)(mcMemGenericAllocationHandle, int, size_t,
+                              size_t);
+  Unbind unbind =
+      reinterpret_cast<Unbind>(dlsym(RTLD_DEFAULT, "mcMulticastUnbind"));
+  if (unbind == NULL)
+    return flagcxNotSupported;
+  return unbind(*static_cast<mcMemGenericAllocationHandle *>(mcHandle), device,
+                offset, size) == mcSuccess
+             ? flagcxSuccess
+             : flagcxUnhandledDeviceError;
+}
+
 flagcxResult_t macaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
   if (mcBase == NULL)
     return flagcxSuccess;
@@ -1341,7 +1468,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymPhysFreeSegments, macaAdaptorSymFlatMapSegments,
       macaAdaptorSymFlatMappingUnmapSegments, macaAdaptorSymFlatVaFreeSegments,
       macaAdaptorSymPhysSegmentCount, macaAdaptorSymFlatMapSegmentsBegin,
-      macaAdaptorSymFlatMapSegmentOne,
+      macaAdaptorSymFlatMapSegmentOne, macaAdaptorSymLsaGetCapacity,
+      macaAdaptorSymLsaVaReserve, macaAdaptorSymLsaVaFree,
+      macaAdaptorSymLsaMapBeginAt, macaAdaptorSymLsaMulticastGranularity,
+      macaAdaptorSymLsaMulticastMap, macaAdaptorSymLsaMulticastBind,
+      macaAdaptorSymLsaMulticastUnbind,
 };
 
 #endif // USE_METAX_ADAPTOR

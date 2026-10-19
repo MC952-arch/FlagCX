@@ -2224,6 +2224,25 @@ TEST(SymWindowLayout, RejectsOverflowAndBadSegmentIndex) {
             flagcxInvalidArgument);
 }
 
+TEST(SymWindowLayout, LsaPeerAddressUsesWindowAndRankOffsets) {
+  flagcxSymRankLayout layout = {12288, 4096, 2048, 0, 2};
+  void *ptr = nullptr;
+  void *base = reinterpret_cast<void *>(static_cast<uintptr_t>(0x10000000));
+  EXPECT_EQ(
+      flagcxSymLsaPeerPtr(base, 65536, 16384, 3, 2, &layout, 128, 256, &ptr),
+      flagcxSuccess);
+  EXPECT_EQ(
+      reinterpret_cast<uintptr_t>(ptr),
+      static_cast<uintptr_t>(0x10000000 + 2 * 65536 + 16384 + 4096 + 128));
+  EXPECT_EQ(flagcxSymLsaPeerPtr(base, 65536, 60000, 3, 2, &layout, 0, 1, &ptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(ptr, nullptr);
+  EXPECT_EQ(
+      flagcxSymLsaPeerPtr(base, 65536, 16384, 3, 2, &layout, 2048, 1, &ptr),
+      flagcxInvalidArgument);
+  EXPECT_EQ(ptr, nullptr);
+}
+
 TEST(SymWindowLookup, ResolveSelfPeerValidatesRangeBeforePointerArithmetic) {
   char allocation[64] = {};
   int rankToNode[] = {0};

@@ -156,7 +156,7 @@ class PpuCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("expected_adaptor=BAREX", unit_runner)
         self.assertIn(
-            "SymMemTest.VmmFlatFallbackPreservesMrRoute", unit_runner
+            "SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow", unit_runner
         )
         self.assertIn(
             "SymMemTest.DirectGdrVmmPreservesMrRoute", unit_runner

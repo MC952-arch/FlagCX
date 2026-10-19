@@ -960,7 +960,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.VmmFlatFallbackPreservesMrRoute",
+            "SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow",
             unit_runner,
         )
         self.assertIn(
