@@ -183,6 +183,11 @@ struct flagcxRmaProxyState {
   pthread_cond_t doneCond;
 
   flagcxWorkerPool::Worker *worker;
+
+  // Optional internal test notification. Called by the thread entering a
+  // communicator-wide drain before it waits for accepted RMA operations.
+  void (*flushAllEnterForTest)(void *);
+  void *flushAllEnterContextForTest;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
@@ -323,6 +328,10 @@ flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
 
 // Wait until all pending RMA ops for all peers are complete.
 flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm);
+
+// Before releasing an MR, retire accepted work even if an earlier RMA error
+// has poisoned the proxy. Operation waits still report that error.
+flagcxResult_t flagcxHeteroDrainAllRmaForCleanup(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,

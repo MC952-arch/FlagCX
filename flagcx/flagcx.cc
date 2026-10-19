@@ -2829,14 +2829,12 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   if (sym != NULL)
     sym->state = flagcxSymWindowCleanupRequired;
 
-  // The proxy may still hold a descriptor referring to the window's MR or
-  // local mapping. Retire accepted work before an LSA offset can be reused.
-  // A different node may have registered ordinary memory for this window;
-  // it must still enter the same communicator-wide status convergence.
+  // Any rank may have queued RMA work targeting this window, including an
+  // ordinary-allocation rank when another node owns an LSA mapping. Drain
+  // accepted work everywhere before releasing an MR or reusing an LSA offset.
   flagcxResult_t drain = flagcxSuccess;
-  if (sym != NULL && sym->published &&
-      sym->resourcePath == flagcxSymResourceLsa)
-    drain = flagcxHeteroFlushAllRma(hetero);
+  if (sym != NULL && sym->published)
+    drain = flagcxHeteroDrainAllRmaForCleanup(hetero);
   flagcxResult_t commonDrain = drain;
   if (cleanupMode == flagcxSymCleanupCollective)
     FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));

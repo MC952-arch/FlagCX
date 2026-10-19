@@ -50,7 +50,7 @@ static std::unordered_map<void *, DuhipFlatMapping> gDuhipFlatMappings;
 static thread_local size_t duhipFailAfterMap =
     std::numeric_limits<size_t>::max();
 static const size_t kDuhipLsaMaxVaSize = size_t(1) << 30;
-static const size_t kDuhipLsaRankTargetSize = size_t(1) << 28;
+static const size_t kDuhipLsaRankTargetSize = size_t(1) << 27;
 static flagcxResult_t duhipVmmDeviceError(const char *stage, hipError_t error,
                                           size_t size = 0, size_t alignment = 0,
                                           const void *address = NULL) {

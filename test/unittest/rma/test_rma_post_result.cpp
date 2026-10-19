@@ -573,6 +573,42 @@ TEST_F(RmaWorkerFixture, QuiesceDrainsAcceptedRequestBeforeStoppingWorker) {
          "watchdog timeout";
 }
 
+TEST_F(RmaWorkerFixture, CleanupDrainWaitsForInFlightAfterRmaError) {
+  EXPECT_EQ(
+      0, runRmaWorkerInChild(
+             [&] {
+               Start();
+               ASSERT_NE(nullptr, comm_.rmaProxy);
+               ASSERT_EQ(flagcxSuccess,
+                         flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+               ASSERT_TRUE(WaitUntil([&] { return probe_.polls.load() > 0; }));
+
+               // Simulate a terminal error while the accepted native request
+               // is still in flight. An operation wait must report the error,
+               // but cleanup must not release its MR before retirement.
+               __atomic_store_n(&comm_.rmaProxy->rmaError, 1, __ATOMIC_RELEASE);
+               EXPECT_EQ(flagcxRemoteError, flagcxHeteroFlushAllRma(&comm_));
+               auto draining = std::async(std::launch::async, [&] {
+                 return flagcxHeteroDrainAllRmaForCleanup(&comm_);
+               });
+               EXPECT_EQ(std::future_status::timeout,
+                         draining.wait_for(std::chrono::milliseconds(20)));
+               probe_.requestDone.store(1, std::memory_order_release);
+               if (draining.wait_for(std::chrono::seconds(2)) !=
+                   std::future_status::ready)
+                 _exit(2);
+               EXPECT_EQ(flagcxSuccess, draining.get());
+               EXPECT_EQ(0u, __atomic_load_n(&comm_.rmaProxy->inFlights[0],
+                                             __ATOMIC_ACQUIRE));
+               EXPECT_EQ(flagcxRemoteError,
+                         flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+             },
+             std::chrono::seconds(8)))
+      << "RMA cleanup child failed: 2 means drain timeout; -1 means "
+         "watchdog timeout";
+}
+
 TEST(RmaWorkerChild, WatchdogReapsTimedOutProcess) {
   EXPECT_EQ(-1, runRmaWorkerInChild(
                     [] {

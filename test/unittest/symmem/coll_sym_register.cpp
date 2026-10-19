@@ -2,15 +2,22 @@
 // Requires MPI + GPUs.
 
 #include "adaptor.h"
+#include "flagcx_hetero.h"
 #include "flagcx_net_adaptor.h"
 #include "global_comm.h"
 #include "onesided.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef __linux__
@@ -171,6 +178,124 @@ flagcxResult_t failRegMrDmaBuf(void *, void *, size_t, int, uint64_t, int, int,
 }
 
 flagcxResult_t failDeregMr(void *, void *) { return flagcxSystemError; }
+
+flagcxResult_t (*savedMixedIput)(void *, uint64_t, uint64_t, size_t, int, int,
+                                 void **, void **, void **) = nullptr;
+flagcxResult_t (*savedMixedDeregMr)(void *, void *) = nullptr;
+
+struct MixedIputGate {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool held = false;
+  bool entered = false;
+  bool drainEntered = false;
+  bool deregObserved = false;
+  bool deregWhilePending = false;
+  bool timedOut = false;
+  flagcxHeteroComm_t hetero = nullptr;
+  int peer = -1;
+  uint64_t targetSeq = 0;
+};
+
+MixedIputGate mixedIputGate;
+
+flagcxResult_t holdMixedIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                             size_t size, int srcRank, int dstRank,
+                             void **srcHandles, void **dstHandles,
+                             void **request) {
+  {
+    std::unique_lock<std::mutex> lock(mixedIputGate.mutex);
+    mixedIputGate.entered = true;
+    mixedIputGate.cv.notify_all();
+    mixedIputGate.cv.wait(lock, []() { return !mixedIputGate.held; });
+  }
+  return savedMixedIput(sendComm, srcOff, dstOff, size, srcRank, dstRank,
+                        srcHandles, dstHandles, request);
+}
+
+void signalMixedDrainEnter(void *context) {
+  MixedIputGate *gate = static_cast<MixedIputGate *>(context);
+  std::lock_guard<std::mutex> lock(gate->mutex);
+  gate->drainEntered = true;
+  gate->held = false;
+  gate->cv.notify_all();
+}
+
+flagcxResult_t trackMixedDeregMr(void *recvComm, void *handle) {
+  const bool pending =
+      mixedIputGate.targetSeq != 0 &&
+      __atomic_load_n(
+          &mixedIputGate.hetero->rmaProxy->doneSeqs[mixedIputGate.peer],
+          __ATOMIC_ACQUIRE) < mixedIputGate.targetSeq;
+  {
+    std::lock_guard<std::mutex> lock(mixedIputGate.mutex);
+    mixedIputGate.deregObserved = true;
+    mixedIputGate.deregWhilePending |= pending;
+    mixedIputGate.held = false;
+    mixedIputGate.cv.notify_all();
+  }
+  // A broken deregistration path reaches this callback before the pending
+  // PUT completes. Keep its MR alive while the test records that ordering.
+  if (pending) {
+    flagcxResult_t result = flagcxHeteroFlushRma(
+        mixedIputGate.hetero, mixedIputGate.peer, mixedIputGate.targetSeq);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  return savedMixedDeregMr(recvComm, handle);
+}
+
+class ScopedMixedIputDelay {
+public:
+  ScopedMixedIputDelay(flagcxNetAdaptor *net, flagcxRmaProxyState *proxy,
+                       flagcxHeteroComm_t hetero)
+      : net_(net), proxy_(proxy) {
+    {
+      std::lock_guard<std::mutex> lock(mixedIputGate.mutex);
+      mixedIputGate.held = true;
+      mixedIputGate.entered = false;
+      mixedIputGate.drainEntered = false;
+      mixedIputGate.deregObserved = false;
+      mixedIputGate.deregWhilePending = false;
+      mixedIputGate.timedOut = false;
+      mixedIputGate.hetero = hetero;
+      mixedIputGate.peer = -1;
+      mixedIputGate.targetSeq = 0;
+    }
+    savedMixedIput = net_->iput;
+    savedMixedDeregMr = net_->deregMr;
+    savedFlushEnter_ = proxy_->flushAllEnterForTest;
+    savedFlushContext_ = proxy_->flushAllEnterContextForTest;
+    net_->iput = holdMixedIput;
+    net_->deregMr = trackMixedDeregMr;
+  }
+
+  void armDrain(int peer) {
+    mixedIputGate.peer = peer;
+    mixedIputGate.targetSeq =
+        __atomic_load_n(&proxy_->opSeqs[peer], __ATOMIC_ACQUIRE);
+    proxy_->flushAllEnterContextForTest = &mixedIputGate;
+    proxy_->flushAllEnterForTest = signalMixedDrainEnter;
+  }
+
+  ~ScopedMixedIputDelay() {
+    {
+      std::lock_guard<std::mutex> lock(mixedIputGate.mutex);
+      mixedIputGate.held = false;
+      mixedIputGate.cv.notify_all();
+    }
+    proxy_->flushAllEnterForTest = savedFlushEnter_;
+    proxy_->flushAllEnterContextForTest = savedFlushContext_;
+    net_->iput = savedMixedIput;
+    net_->deregMr = savedMixedDeregMr;
+  }
+
+private:
+  flagcxNetAdaptor *net_;
+  flagcxRmaProxyState *proxy_;
+  void (*savedFlushEnter_)(void *);
+  void *savedFlushContext_;
+};
 
 flagcxResult_t (*savedFullMeshConnect)(int, void *, void **) = nullptr;
 flagcxResult_t (*savedFullMeshResetConnect)(void *) = nullptr;
@@ -1623,7 +1748,116 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   EXPECT_EQ(window->defaultBase->resourcePath == flagcxSymResourceLsa ||
                 window->defaultBase->resourcePath == flagcxSymResourceLegacyV1,
             vmmNode);
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+
+  int localLsa =
+      vmmNode && window->defaultBase->resourcePath == flagcxSymResourceLsa ? 1
+                                                                           : 0;
+  int hasLsa = 0;
+  MPI_Allreduce(&localLsa, &hasLsa, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (hasLsa != 0) {
+    // The ordinary rank must finish its accepted PUT before any rank can
+    // release this window's MR or reuse the LSA offset on the other node.
+    const bool sender = hetero->rank == 0;
+    std::unique_ptr<ScopedMixedIputDelay> delayedPut;
+    flagcxResult_t setupResult = flagcxSuccess;
+    if (sender) {
+      const int mrIndex = window->defaultBase->mrIndex;
+      if (vmmNode || hetero->netAdaptor == nullptr ||
+          hetero->netAdaptor->iput == nullptr ||
+          hetero->netAdaptor->deregMr == nullptr ||
+          hetero->rmaProxy == nullptr || mrIndex < 0 ||
+          mrIndex >= hetero->oneSideHandleCount ||
+          hetero->oneSideHandles == nullptr ||
+          hetero->oneSideHandles[mrIndex] == nullptr ||
+          hetero->oneSideHandles[mrIndex]->localMrHandle == nullptr ||
+          hetero->oneSideHandles[mrIndex]->windowRefs != 1 ||
+          hetero->oneSideHandles[mrIndex]->commOwned != 0)
+        setupResult = flagcxInternalError;
+    }
+    ASSERT_TRUE(allRanksSucceeded(setupResult));
+    if (sender) {
+      delayedPut.reset(new ScopedMixedIputDelay(hetero->netAdaptor,
+                                                hetero->rmaProxy, hetero));
+    }
+    int target = -1;
+    if (sender) {
+      for (int peer = 0; peer < hetero->nRanks; peer++) {
+        if (hetero->rankToNode[peer] != hetero->node) {
+          target = peer;
+          break;
+        }
+      }
+    }
+    flagcxResult_t putResult = flagcxSuccess;
+    if (sender) {
+      if (target < 0)
+        putResult = flagcxInvalidArgument;
+      else
+        putResult = flagcxPut(testComm, target, 0, 0,
+                              std::min(allocationSize, static_cast<size_t>(64)),
+                              window->defaultBase->mrIndex,
+                              window->defaultBase->mrIndex);
+    }
+    ASSERT_TRUE(allRanksSucceeded(putResult));
+
+    flagcxResult_t enteredResult = flagcxSuccess;
+    if (sender) {
+      std::unique_lock<std::mutex> lock(mixedIputGate.mutex);
+      if (!mixedIputGate.cv.wait_for(lock, std::chrono::seconds(5),
+                                     []() { return mixedIputGate.entered; }))
+        enteredResult = flagcxSystemError;
+    }
+    ASSERT_TRUE(allRanksSucceeded(enteredResult));
+
+    flagcxResult_t pendingResult = flagcxSuccess;
+    if (sender) {
+      delayedPut->armDrain(target);
+      const uint64_t doneSeq = __atomic_load_n(
+          &hetero->rmaProxy->doneSeqs[target], __ATOMIC_ACQUIRE);
+      if (mixedIputGate.targetSeq == 0 || doneSeq >= mixedIputGate.targetSeq)
+        pendingResult = flagcxSystemError;
+    }
+    ASSERT_TRUE(allRanksSucceeded(pendingResult));
+
+    std::thread watchdog;
+    if (sender) {
+      watchdog = std::thread([]() {
+        std::unique_lock<std::mutex> lock(mixedIputGate.mutex);
+        if (!mixedIputGate.cv.wait_for(lock, std::chrono::seconds(10), []() {
+              return mixedIputGate.drainEntered || mixedIputGate.deregObserved;
+            })) {
+          mixedIputGate.timedOut = true;
+          mixedIputGate.held = false;
+          mixedIputGate.cv.notify_all();
+        }
+      });
+    }
+    result = flagcxCommWindowDeregister(testComm, window);
+    if (watchdog.joinable())
+      watchdog.join();
+    bool earlyDeregister = false;
+    bool didDeregister = false;
+    bool drainEntered = false;
+    bool timedOut = false;
+    if (sender) {
+      std::lock_guard<std::mutex> lock(mixedIputGate.mutex);
+      earlyDeregister = mixedIputGate.deregWhilePending;
+      didDeregister = mixedIputGate.deregObserved;
+      drainEntered = mixedIputGate.drainEntered;
+      timedOut = mixedIputGate.timedOut;
+    }
+    delayedPut.reset();
+    ASSERT_TRUE(allRanksSucceeded(result));
+    if (sender) {
+      EXPECT_TRUE(didDeregister);
+      EXPECT_TRUE(drainEntered);
+      EXPECT_FALSE(timedOut);
+    }
+    EXPECT_FALSE(earlyDeregister);
+  } else {
+    ASSERT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  }
 
   auto *net = hetero->netAdaptor;
   ASSERT_NE(net, nullptr);

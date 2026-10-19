@@ -1852,6 +1852,8 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxSuccess;
+  if (proxy->flushAllEnterForTest != NULL)
+    proxy->flushAllEnterForTest(proxy->flushAllEnterContextForTest);
   for (int p = 0; p < proxy->nRanks; p++) {
     uint64_t target = __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
@@ -1866,6 +1868,28 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   // catch errors that occurred after doneSeqs reached the target.
   if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
     return flagcxRemoteError;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroDrainAllRmaForCleanup(flagcxHeteroComm_t comm) {
+  flagcxResult_t result = flagcxHeteroFlushAllRma(comm);
+  if (result != flagcxRemoteError)
+    return result;
+
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  // A terminal error rejects new submissions, but a producer that entered
+  // before the error may still be publishing its descriptor. Close that race
+  // before checking whether the worker has retired every accepted request.
+  for (int p = 0; p < proxy->nRanks; p++) {
+    pthread_mutex_lock(&proxy->peerProducerMutexes[p]);
+    pthread_mutex_unlock(&proxy->peerProducerMutexes[p]);
+  }
+  for (int p = 0; p < proxy->nRanks; p++) {
+    while (__atomic_load_n(&proxy->cis[p], __ATOMIC_ACQUIRE) !=
+               __atomic_load_n(&proxy->pis[p], __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&proxy->inFlights[p], __ATOMIC_ACQUIRE) != 0)
+      sched_yield();
+  }
   return flagcxSuccess;
 }
 
