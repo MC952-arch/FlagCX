@@ -84,6 +84,11 @@ CUDA_INCLUDES := \
 CCL_INCLUDES := \
 	-I$(CCL_HOME)/include
 
+ifneq ($(findstring -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_FLAG)),)
+SHMEM_HOME ?= /usr/local/nvshmem
+CCL_INCLUDES += -I$(SHMEM_HOME)/include
+endif
+
 # Clang flags for LLVM IR generation
 COMMON_CLANG_FLAGS := \
 	-std=$(BITCODE_CXX_STD) -x cuda \
@@ -110,7 +115,7 @@ STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
 # Default target
 all: llvm_ir
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) FORCE
 	@mkdir -p $(OBJDIR)
 	@echo "Generating unoptimized LLVM bitcode..."
 	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
@@ -187,4 +192,6 @@ clean:
 	rm -f $(INCLUDEDIR)/flagcx_device_wrapper.h \
 		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
-.PHONY: all llvm_ir check_public_symbols check_ir build clean
+FORCE:
+
+.PHONY: all llvm_ir check_public_symbols check_ir build clean FORCE

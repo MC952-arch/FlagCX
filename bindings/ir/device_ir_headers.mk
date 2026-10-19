@@ -1,6 +1,6 @@
 # Headers needed by a standalone Device API bitcode consumer, plus the six
 # public headers the wheel already exports. Keep the source tree out of the
-# consumer compile path so missing exports fail in CI.
+# consumer compile path so missing exports fail during consumer builds.
 .DEFAULT_GOAL := all
 
 IR_COMMON_HEADERS := \
