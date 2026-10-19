@@ -5,6 +5,8 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "param.h"
+#include "segmented_vmm_allocation.h"
+#include <limits>
 #include <mutex>
 #include <new>
 #include <unistd.h>
@@ -19,6 +21,83 @@ struct CudaVmmAllocation {
   bool handleOwned;
 };
 static std::unordered_map<void *, CudaVmmAllocation> gVmmHandleMap;
+
+#if CUDART_VERSION >= 12010
+struct CudaSegmentOps {
+  typedef CUmemGenericAllocationHandle Handle;
+  typedef CUmemAllocationProp Prop;
+
+  static flagcxResult_t deviceOrdinal(int *device) {
+    return cudaGetDevice(device) == cudaSuccess ? flagcxSuccess
+                                                : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t createHandle(size_t size, const Prop &prop,
+                                     Handle *handle) {
+    return cuMemCreate(handle, size, &prop, 0) == CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t reserveAddress(size_t size, size_t alignment,
+                                       uintptr_t *base) {
+    CUdeviceptr address = 0;
+    if (cuMemAddressReserve(&address, size, alignment, 0, 0) != CUDA_SUCCESS)
+      return flagcxUnhandledDeviceError;
+    *base = static_cast<uintptr_t>(address);
+    return flagcxSuccess;
+  }
+  static flagcxResult_t freeAddress(uintptr_t base, size_t size) {
+    return cuMemAddressFree(static_cast<CUdeviceptr>(base), size) ==
+                   CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t mapSegment(uintptr_t address, size_t size,
+                                   Handle handle) {
+    return cuMemMap(static_cast<CUdeviceptr>(address), size, 0, handle, 0) ==
+                   CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t unmapSegment(uintptr_t address, size_t size) {
+    return cuMemUnmap(static_cast<CUdeviceptr>(address), size) == CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t setAccess(uintptr_t address, size_t size) {
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess)
+      return flagcxUnhandledDeviceError;
+    CUmemAccessDesc access = {};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = device;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    return cuMemSetAccess(static_cast<CUdeviceptr>(address), size, &access,
+                          1) == CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t importHandle(int fd, Handle *handle) {
+    return cuMemImportFromShareableHandle(
+               handle, reinterpret_cast<void *>(static_cast<uintptr_t>(fd)),
+               CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) == CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t exportHandle(Handle handle, int *fd) {
+    return cuMemExportToShareableHandle(
+               fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0) ==
+                   CUDA_SUCCESS
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t releaseHandle(Handle handle) {
+    return cuMemRelease(handle) == CUDA_SUCCESS ? flagcxSuccess
+                                                : flagcxUnhandledDeviceError;
+  }
+};
+typedef flagcxSegmentedVmmAllocation<CudaSegmentOps> CudaSegmentAllocation;
+typedef flagcxSegmentedVmmMap<CudaSegmentOps> CudaSegmentMap;
+#endif
 
 constexpr uint32_t cudaVmmMrCapsForVersion(int cudartVersion) {
   return cudartVersion >= 12010
@@ -159,6 +238,7 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   CUresult cuRes;
 
   DEVCHECK(cudaGetDevice(&cudaDev));
+  FLAGCXCHECK(CudaSegmentAllocation::retryPending(cudaDev));
   DEVCHECK(cuDeviceGet(&currentDev, cudaDev));
 
   size_t handleSize = size;
@@ -186,6 +266,11 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   DEVCHECK(cuMemGetAllocationGranularity(&memGran, &memprop,
                                          CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
   ALIGN_SIZE(handleSize, memGran);
+  size_t segmentBytes = 0;
+  FLAGCXCHECK(flagcxVmmSegmentBytes(memGran, &segmentBytes));
+  if (segmentBytes != 0 && segmentBytes < handleSize)
+    return CudaSegmentAllocation::allocate(ptr, handleSize, memGran,
+                                           segmentBytes, memprop);
   INFO(FLAGCX_INIT,
        "[gdrMemAlloc] memGran=%zu handleSize=%zu gpuDirectRDMACapable=%d",
        memGran, handleSize, (int)memprop.allocFlags.gpuDirectRDMACapable);
@@ -257,6 +342,10 @@ flagcxResult_t cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
     return flagcxSuccess;
   }
 #if CUDART_VERSION >= 12010
+  bool segmented = false;
+  FLAGCXCHECK(CudaSegmentAllocation::freeAllocation(ptr, &segmented));
+  if (segmented)
+    return flagcxSuccess;
   std::lock_guard<std::mutex> lk(gVmmHandleMapMtx);
   auto it = gVmmHandleMap.find(ptr);
   if (it == gVmmHandleMap.end()) {
@@ -618,11 +707,29 @@ cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                        size_t size, unsigned long long flags) {
   if (handleOut == NULL || buffer == NULL || size == 0)
     return flagcxInvalidArgument;
+  const long hostPageSize = sysconf(_SC_PAGESIZE);
+  if (hostPageSize <= 0)
+    return flagcxSystemError;
+  const size_t pageSize = static_cast<size_t>(hostPageSize);
+  if (reinterpret_cast<uintptr_t>(buffer) % pageSize != 0 ||
+      size % pageSize != 0)
+    return flagcxInvalidArgument;
+
   CUdeviceptr dptr = (CUdeviceptr)buffer;
   CUresult err = cuMemGetHandleForAddressRange(
       handleOut, dptr, size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
-  if (err == CUDA_ERROR_NOT_SUPPORTED)
+  // A page-aligned range may still be ineligible for DMA-BUF export. The MR
+  // caller can then use VA only when that allocation has a safe VA route.
+  if (err == CUDA_ERROR_NOT_SUPPORTED ||
+      (err == CUDA_ERROR_INVALID_VALUE && flags == 0)) {
+    INFO(FLAGCX_REG,
+         "CUDA DMA-BUF export unavailable: ptr=%p size=%zu result=%d", buffer,
+         size, static_cast<int>(err));
     return flagcxNotSupported;
+  }
+  if (err != CUDA_SUCCESS)
+    WARN("CUDA DMA-BUF export failed: ptr=%p size=%zu result=%d", buffer, size,
+         static_cast<int>(err));
   return err == CUDA_SUCCESS ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
@@ -724,6 +831,155 @@ flagcxResult_t cudaAdaptorSymPhysFree(void *physHandle) {
     return flagcxUnhandledDeviceError;
   free(cuHandle);
   return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymPhysDescribe(void *ptr, size_t size,
+                                          void **segmentBundle,
+                                          const flagcxSymSegmentMeta **segments,
+                                          int *segmentCount, size_t *userOffset,
+                                          size_t *slotAlignment) {
+  if (ptr == NULL || size == 0 || segmentBundle == NULL || segments == NULL ||
+      segmentCount == NULL || userOffset == NULL || slotAlignment == NULL)
+    return flagcxInvalidArgument;
+  *segmentBundle = NULL;
+  *segments = NULL;
+  *segmentCount = 0;
+  *slotAlignment = 0;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  if (size > std::numeric_limits<uintptr_t>::max() - address)
+    return flagcxInvalidArgument;
+
+  CudaSegmentMap::Bundle *bundle = new (std::nothrow) CudaSegmentMap::Bundle();
+  if (bundle == NULL)
+    return flagcxSystemError;
+  *segmentBundle = bundle;
+  bool found = false;
+  flagcxResult_t result =
+      CudaSegmentAllocation::describe(ptr, size, bundle, userOffset, &found);
+  if (result != flagcxSuccess)
+    return result;
+  if (!found) {
+    std::lock_guard<std::mutex> lock(gVmmHandleMapMtx);
+    for (std::unordered_map<void *, CudaVmmAllocation>::const_iterator it =
+             gVmmHandleMap.begin();
+         it != gVmmHandleMap.end(); ++it) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+      const CudaVmmAllocation &allocation = it->second;
+      if (address < base || address - base > allocation.size ||
+          size > allocation.size - (address - base))
+        continue;
+      found = true;
+      if (!allocation.mappingOwned || !allocation.vaOwned ||
+          !allocation.handleOwned)
+        return flagcxInvalidUsage;
+      try {
+        bundle->segments.push_back(flagcxSymSegmentMeta{0, allocation.size});
+        bundle->handleOwned.push_back(0);
+        bundle->handles.push_back(allocation.handle);
+      } catch (const std::bad_alloc &) {
+        return flagcxSystemError;
+      }
+      *userOffset = address - base;
+      break;
+    }
+  }
+  if (!found) {
+    // An external VMM mapping has unknown physical offsets and cannot be
+    // described safely. Only a successful legacy IPC export proves that an
+    // untracked allocation may use the ordinary IPC path.
+    CUdeviceptr allocationBase = 0;
+    size_t allocationSize = 0;
+    if (cuMemGetAddressRange(&allocationBase, &allocationSize,
+                             (CUdeviceptr)ptr) == CUDA_SUCCESS &&
+        address >= allocationBase &&
+        address - allocationBase <= allocationSize &&
+        size <= allocationSize - (address - allocationBase)) {
+      cudaIpcMemHandle_t ipcHandle;
+      if (cudaIpcGetMemHandle(&ipcHandle, (void *)allocationBase) ==
+          cudaSuccess) {
+        delete bundle;
+        *segmentBundle = NULL;
+      } else {
+        cudaGetLastError();
+      }
+    }
+    // Keep an empty bundle for an unknown mapping to block IPC fallback.
+    return flagcxNotSupported;
+  }
+  // Ordinary allocations have already returned without requiring VMM support.
+  int cudaDev = 0;
+  CUdevice device = 0;
+  if (cudaGetDevice(&cudaDev) != cudaSuccess ||
+      cuDeviceGet(&device, cudaDev) != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = device;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  if (cuMemGetAllocationGranularity(slotAlignment, &prop,
+                                    CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+          CUDA_SUCCESS ||
+      *slotAlignment == 0)
+    return flagcxUnhandledDeviceError;
+  if (bundle->segments.empty() ||
+      bundle->segments.size() >
+          static_cast<size_t>(std::numeric_limits<int>::max()))
+    return flagcxInvalidUsage;
+  *segments = bundle->segments.data();
+  *segmentCount = static_cast<int>(bundle->segments.size());
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymPhysExportSegment(void *bundle, int index,
+                                               int *fd) {
+  return CudaSegmentMap::exportSegment(bundle, index, fd);
+}
+flagcxResult_t cudaAdaptorSymPhysFreeSegments(void *bundle) {
+  return CudaSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t cudaAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                              int *count) {
+  flagcxResult_t result = CudaSegmentAllocation::segmentCount(ptr, size, count);
+  if (result != flagcxNotSupported)
+    return result;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(gVmmHandleMapMtx);
+  for (std::unordered_map<void *, CudaVmmAllocation>::const_iterator it =
+           gVmmHandleMap.begin();
+       it != gVmmHandleMap.end(); ++it) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+    if (address < base || address - base > it->second.size ||
+        size > it->second.size - (address - base))
+      continue;
+    *count = 1;
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymFlatMapSegments(
+    const int *fds, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **flatBase) {
+  return CudaSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
+                             totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cudaAdaptorSymFlatMapSegmentsBegin(
+    int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
+    const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
+    size_t alignment, void **flatBase) {
+  return CudaSegmentMap::begin(nPeers, self, bundle, layouts, segments,
+                               totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cudaAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
+                                               int fd) {
+  return CudaSegmentMap::mapOne(flatBase, index, fd);
+}
+flagcxResult_t cudaAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
+  return CudaSegmentMap::unmap(flatBase);
+}
+flagcxResult_t cudaAdaptorSymFlatVaFreeSegments(void *flatBase) {
+  return CudaSegmentMap::freeVa(flatBase);
 }
 
 flagcxResult_t cudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
@@ -1248,6 +1504,15 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
       FLAGCX_GDR_DEVICE_CUDA, cudaAdaptorGetDeviceArchitecture,
       cudaAdaptorCanAccessPeer,
+#if CUDART_VERSION >= 12010
+      cudaAdaptorSymPhysDescribe, cudaAdaptorSymPhysExportSegment,
+      cudaAdaptorSymPhysFreeSegments, cudaAdaptorSymFlatMapSegments,
+      cudaAdaptorSymFlatMappingUnmapSegments, cudaAdaptorSymFlatVaFreeSegments,
+      cudaAdaptorSymPhysSegmentCount, cudaAdaptorSymFlatMapSegmentsBegin,
+      cudaAdaptorSymFlatMapSegmentOne,
+#else
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+#endif
 };
 
 #endif // USE_NVIDIA_ADAPTOR

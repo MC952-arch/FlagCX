@@ -794,7 +794,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary"', rma_case)
         self.assertIn("for route in va dmabuf", rma_case)
-        self.assertIn("FLAGCX_VMM_MR_MODE", rma_case)
+        self.assertIn("FLAGCX_DMABUF_ENABLE", rma_case)
         self.assertIn(
             'FLAGCX_CI_MPI_LABEL="rma Hygon VMM route $route"',
             rma_case,
@@ -881,6 +881,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
+        self.assertIn('FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1', symmem_runner)
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
@@ -898,7 +900,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
             unit_runner,
         )
-        self.assertIn('FLAGCX_VMM_MR_MODE=auto', unit_runner)
+        self.assertIn('FLAGCX_DMABUF_ENABLE=1', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
         self.assertIn(
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
@@ -998,6 +1000,36 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", source)
             self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", source)
 
+    def test_du_symmem_mpi_build_enables_segmented_tests(self):
+        result = subprocess.run(
+            [
+                "make",
+                "-B",
+                "-n",
+                "-C",
+                str(REPO_ROOT / "test/unittest/symmem"),
+                "USE_DU=1",
+                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
+                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        compile_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("g++ coll_sym_register.cpp")
+        )
+        link_command = next(
+            line
+            for line in result.stdout.splitlines()
+            if " -o " in line and "symmem_mpi_tests" in line
+        )
+        self.assertIn("-DUSE_DU_ADAPTOR", compile_command)
+        self.assertIn("-I/opt/dtk/cuda/cuda-12/include", compile_command)
+        self.assertIn("-lcudart -lcuda", link_command)
+
     def test_cuda_vmm_allocation_does_not_require_imex_fabric(self):
         source = (
             REPO_ROOT / "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -1042,11 +1074,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "static flagcxResult_t flagcxDevCommStateInit", publish_start
         )
         staged_publish = common[publish_start:publish_end]
-        self.assertGreaterEqual(
-            staged_publish.count("flagcxSymConvergeStatus"), 2
-        )
+        self.assertEqual(staged_publish.count("flagcxSymConvergeStatus"), 1)
         self.assertIn("flagcxSymWindowValidateDataRoutes", staged_publish)
-        self.assertIn("flagcxSymWindowPublish", staged_publish)
+        self.assertIn("flagcxSymWindowCommit", staged_publish)
+        self.assertLess(
+            staged_publish.index("flagcxSymConvergeStatus"),
+            staged_publish.index("flagcxSymWindowCommit"),
+        )
 
         # Keep the source check independent of clang-format's return-type
         # wrapping for this long function name.
@@ -1104,7 +1138,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         # The DCU HIP runtime aborts instead of returning an
         # unsupported status for NVIDIA-only attributes 110 and 124.  Its
-        # strict DMA-BUF/VA CI invocations probe the real operations instead.
+        # DMA-BUF on/off CI invocations probe the real operations instead.
         duhip = (
             REPO_ROOT / "flagcx/adaptor/device/duhip_adaptor.cc"
         ).read_text()
@@ -1143,18 +1177,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         unsupported_route = common.index("return FLAGCX_VMM_MR_ROUTE_NONE")
         self.assertLess(dma_route, va_route)
         self.assertLess(va_route, unsupported_route)
-        self.assertIn('flagcxGetEnv("FLAGCX_VMM_MR_MODE")', common)
-        self.assertIn("mode == flagcxVmmMrModeAuto", common)
+        self.assertIn('flagcxGetEnv("FLAGCX_DMABUF_ENABLE")', common)
+        self.assertIn("dmaBufEnabled", common)
         self.assertNotIn("getAllocationVmmMrCaps", common)
 
         route_tests = (
             REPO_ROOT / "test/unittest/symmem/test_sym_window_struct.cpp"
         ).read_text()
         for test_name in (
-            "StrictVaSkipsDmaBufProbeAndRegistration",
-            "StrictDmaBufNeverFallsBackToVa",
-            "StrictDmaBufUsesDmaBufRoute",
-            "InvalidStrictModeFailsBeforeRegistration",
+            "DisabledDmaBufSkipsProbeAndRegistration",
+            "DmaBufUnsupportedWithoutVaDoesNotFallback",
+            "EnabledDmaBufUsesDmaBufRoute",
             "DmaBufSubrangeExportsAllocationAndUsesPageOffset",
             "DeviceCapabilitiesCanRejectUnsafeVaRoute",
             "ProviderCapabilitiesSuppressUnvalidatedVmmRoutes",

@@ -10,6 +10,8 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "param.h"
+#include "segmented_vmm_allocation.h"
+#include <limits>
 #include <mutex>
 #include <new>
 #include <unistd.h>
@@ -22,6 +24,82 @@ struct MacaVmmAllocation {
 };
 static std::mutex gMacaVmmAllocationMtx;
 static std::unordered_map<void *, MacaVmmAllocation> gMacaVmmAllocations;
+
+struct MacaSegmentOps {
+  typedef mcMemGenericAllocationHandle Handle;
+  typedef mcMemAllocationProp Prop;
+  static flagcxResult_t deviceOrdinal(int *device) {
+    return mcGetDevice(device) == mcSuccess ? flagcxSuccess
+                                            : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t createHandle(size_t size, const Prop &prop,
+                                     Handle *handle) {
+    return mcMemCreate(handle, size, &prop, 0) == mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t reserveAddress(size_t size, size_t alignment,
+                                       uintptr_t *base) {
+    mcDeviceptr_t address = 0;
+    if (mcMemAddressReserve(&address, size, alignment, 0, 0) != mcSuccess)
+      return flagcxUnhandledDeviceError;
+    *base = reinterpret_cast<uintptr_t>(address);
+    return flagcxSuccess;
+  }
+  static flagcxResult_t freeAddress(uintptr_t base, size_t size) {
+    return mcMemAddressFree(reinterpret_cast<mcDeviceptr_t>(base), size) ==
+                   mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t mapSegment(uintptr_t address, size_t size,
+                                   Handle handle) {
+    return mcMemMap(reinterpret_cast<mcDeviceptr_t>(address), size, 0, handle,
+                    0) == mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t unmapSegment(uintptr_t address, size_t size) {
+    return mcMemUnmap(reinterpret_cast<mcDeviceptr_t>(address), size) ==
+                   mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t setAccess(uintptr_t address, size_t size) {
+    int device = 0;
+    MCdevice mcDevice;
+    if (mcGetDevice(&device) != mcSuccess ||
+        mcDeviceGet(&mcDevice, device) != mcSuccess)
+      return flagcxUnhandledDeviceError;
+    mcMemAccessDesc access = {};
+    access.location.type = mcMemLocationTypeDevice;
+    access.location.id = mcDevice;
+    access.flags = mcMemAccessFlagsProtReadWrite;
+    return mcMemSetAccess(reinterpret_cast<mcDeviceptr_t>(address), size,
+                          &access, 1) == mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t importHandle(int fd, Handle *handle) {
+    return mcMemImportFromShareableHandle(
+               handle, reinterpret_cast<void *>(static_cast<uintptr_t>(fd)),
+               mcMemHandleTypePosixFileDescriptor) == mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t exportHandle(Handle handle, int *fd) {
+    return mcMemExportToShareableHandle(
+               fd, handle, mcMemHandleTypePosixFileDescriptor, 0) == mcSuccess
+               ? flagcxSuccess
+               : flagcxUnhandledDeviceError;
+  }
+  static flagcxResult_t releaseHandle(Handle handle) {
+    return mcMemRelease(handle) == mcSuccess ? flagcxSuccess
+                                             : flagcxUnhandledDeviceError;
+  }
+};
+typedef flagcxSegmentedVmmAllocation<MacaSegmentOps> MacaSegmentAllocation;
+typedef flagcxSegmentedVmmMap<MacaSegmentOps> MacaSegmentMap;
 
 std::map<flagcxMemcpyType_t, mcMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, mcMemcpyHostToDevice},
@@ -148,6 +226,7 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
   int device = 0;
   MCdevice mcDevice;
   DEVCHECK(mcGetDevice(&device));
+  FLAGCXCHECK(MacaSegmentAllocation::retryPending(device));
   DEVCHECK(mcDeviceGet(&mcDevice, device));
 
   mcMemAllocationProp prop = {};
@@ -161,6 +240,12 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
                                          MC_MEM_ALLOC_GRANULARITY_MINIMUM));
   size_t allocSize = size;
   ALIGN_SIZE(allocSize, granularity);
+
+  size_t segmentBytes = 0;
+  FLAGCXCHECK(flagcxVmmSegmentBytes(granularity, &segmentBytes));
+  if (segmentBytes != 0 && segmentBytes < allocSize)
+    return MacaSegmentAllocation::allocate(ptr, allocSize, granularity,
+                                           segmentBytes, prop);
 
   mcMemGenericAllocationHandle handle;
   DEVCHECK(mcMemCreate(&handle, allocSize, &prop, 0));
@@ -214,6 +299,10 @@ flagcxResult_t macaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
+  bool segmented = false;
+  FLAGCXCHECK(MacaSegmentAllocation::freeAllocation(ptr, &segmented));
+  if (segmented)
+    return flagcxSuccess;
   std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
   auto it = gMacaVmmAllocations.find(ptr);
   if (it == gMacaVmmAllocations.end()) {
@@ -532,7 +621,7 @@ macaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
       mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags);
   // MetaX reports mcErrorInvalidDevicePointer when a valid VMM allocation
   // cannot be exported as DMA-BUF.  Treat that allocation-specific rejection
-  // as an unavailable route so auto mode can probe VA registration.  Invalid
+  // as an unavailable route so the common MR policy can probe VA. Invalid
   // caller arguments have already been rejected above, and the VMM MR path
   // validates the native address range before reaching this callback.
   if (result == mcErrorNotSupported || result == mcErrorInvalidDevicePointer)
@@ -631,6 +720,158 @@ flagcxResult_t macaAdaptorSymPhysFree(void *physHandle) {
     return flagcxUnhandledDeviceError;
   free(mcHandle);
   return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymPhysDescribe(void *ptr, size_t size,
+                                          void **segmentBundle,
+                                          const flagcxSymSegmentMeta **segments,
+                                          int *segmentCount, size_t *userOffset,
+                                          size_t *slotAlignment) {
+  if (ptr == NULL || size == 0 || segmentBundle == NULL || segments == NULL ||
+      segmentCount == NULL || userOffset == NULL || slotAlignment == NULL)
+    return flagcxInvalidArgument;
+  *segmentBundle = NULL;
+  *segments = NULL;
+  *segmentCount = 0;
+  *slotAlignment = 0;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  if (size > std::numeric_limits<uintptr_t>::max() - address)
+    return flagcxInvalidArgument;
+
+  MacaSegmentMap::Bundle *bundle = new (std::nothrow) MacaSegmentMap::Bundle();
+  if (bundle == NULL)
+    return flagcxSystemError;
+  *segmentBundle = bundle;
+  bool found = false;
+  flagcxResult_t result =
+      MacaSegmentAllocation::describe(ptr, size, bundle, userOffset, &found);
+  if (result != flagcxSuccess)
+    return result;
+  if (!found) {
+    std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+    for (std::unordered_map<void *, MacaVmmAllocation>::const_iterator it =
+             gMacaVmmAllocations.begin();
+         it != gMacaVmmAllocations.end(); ++it) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+      const MacaVmmAllocation &allocation = it->second;
+      if (address < base || address - base > allocation.size ||
+          size > allocation.size - (address - base))
+        continue;
+      found = true;
+      if (!allocation.mappingOwned || !allocation.vaOwned)
+        return flagcxInvalidUsage;
+      mcMemGenericAllocationHandle handle = 0;
+      if (mcMemRetainAllocationHandle(&handle, ptr) != mcSuccess)
+        return flagcxUnhandledDeviceError;
+      try {
+        bundle->segments.push_back(flagcxSymSegmentMeta{0, allocation.size});
+        bundle->handleOwned.push_back(1);
+        bundle->handles.push_back(handle);
+      } catch (const std::bad_alloc &) {
+        if (bundle->handles.empty())
+          mcMemRelease(handle);
+        return flagcxSystemError;
+      }
+      *userOffset = address - base;
+      break;
+    }
+  }
+  if (!found) {
+    // Only a successful legacy IPC export proves that an untracked pointer
+    // may use that path. External VMM offsets are unknown, so no retain or
+    // remapping is safe for any other untracked pointer.
+    mcDeviceptr_t allocationBase = 0;
+    size_t allocationSize = 0;
+    if (mcMemGetAddressRange(&allocationBase, &allocationSize,
+                             (mcDeviceptr_t)ptr) == mcSuccess &&
+        address >= (uintptr_t)allocationBase &&
+        address - (uintptr_t)allocationBase <= allocationSize &&
+        size <= allocationSize - (address - (uintptr_t)allocationBase)) {
+      mcIpcMemHandle_t ipcHandle;
+      if (mcIpcGetMemHandle(&ipcHandle, (void *)allocationBase) == mcSuccess) {
+        delete bundle;
+        *segmentBundle = NULL;
+      } else {
+        mcGetLastError();
+      }
+    }
+    // Keep an empty bundle for an unknown mapping to block IPC fallback.
+    return flagcxNotSupported;
+  }
+  // Ordinary allocations have already returned without requiring VMM support.
+  int device = 0;
+  MCdevice mcDevice;
+  if (mcGetDevice(&device) != mcSuccess ||
+      mcDeviceGet(&mcDevice, device) != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  mcMemAllocationProp prop = {};
+  prop.type = mcMemAllocationTypePinned;
+  prop.location.type = mcMemLocationTypeDevice;
+  prop.location.id = mcDevice;
+  prop.requestedHandleTypes = mcMemHandleTypePosixFileDescriptor;
+  if (mcMemGetAllocationGranularity(slotAlignment, &prop,
+                                    MC_MEM_ALLOC_GRANULARITY_MINIMUM) !=
+          mcSuccess ||
+      *slotAlignment == 0)
+    return flagcxUnhandledDeviceError;
+  if (bundle->segments.empty() ||
+      bundle->segments.size() >
+          static_cast<size_t>(std::numeric_limits<int>::max()))
+    return flagcxInvalidUsage;
+  *segments = bundle->segments.data();
+  *segmentCount = static_cast<int>(bundle->segments.size());
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymPhysExportSegment(void *bundle, int index,
+                                               int *fd) {
+  return MacaSegmentMap::exportSegment(bundle, index, fd);
+}
+flagcxResult_t macaAdaptorSymPhysFreeSegments(void *bundle) {
+  return MacaSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t macaAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                              int *count) {
+  flagcxResult_t result = MacaSegmentAllocation::segmentCount(ptr, size, count);
+  if (result != flagcxNotSupported)
+    return result;
+  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  std::lock_guard<std::mutex> lock(gMacaVmmAllocationMtx);
+  for (std::unordered_map<void *, MacaVmmAllocation>::const_iterator it =
+           gMacaVmmAllocations.begin();
+       it != gMacaVmmAllocations.end(); ++it) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+    if (address < base || address - base > it->second.size ||
+        size > it->second.size - (address - base))
+      continue;
+    *count = 1;
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymFlatMapSegments(
+    const int *fds, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **flatBase) {
+  return MacaSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
+                             totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t macaAdaptorSymFlatMapSegmentsBegin(
+    int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
+    const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
+    size_t alignment, void **flatBase) {
+  return MacaSegmentMap::begin(nPeers, self, bundle, layouts, segments,
+                               totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t macaAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
+                                               int fd) {
+  return MacaSegmentMap::mapOne(flatBase, index, fd);
+}
+flagcxResult_t macaAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
+  return MacaSegmentMap::unmap(flatBase);
+}
+flagcxResult_t macaAdaptorSymFlatVaFreeSegments(void *flatBase) {
+  return MacaSegmentMap::freeVa(flatBase);
 }
 
 flagcxResult_t macaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
@@ -1096,6 +1337,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       // unsupported instead of silently weakening the acquire contract.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
       FLAGCX_GDR_DEVICE_METAX, NULL, macaAdaptorCanAccessPeer,
+      macaAdaptorSymPhysDescribe, macaAdaptorSymPhysExportSegment,
+      macaAdaptorSymPhysFreeSegments, macaAdaptorSymFlatMapSegments,
+      macaAdaptorSymFlatMappingUnmapSegments, macaAdaptorSymFlatVaFreeSegments,
+      macaAdaptorSymPhysSegmentCount, macaAdaptorSymFlatMapSegmentsBegin,
+      macaAdaptorSymFlatMapSegmentOne,
 };
 
 #endif // USE_METAX_ADAPTOR

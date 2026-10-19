@@ -13,12 +13,69 @@
 #include <string>
 #include <vector>
 
+#ifdef __linux__
+#include <dirent.h>
+#include <sys/resource.h>
+#endif
+
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
+#include <cuda.h>
+#include <cuda_runtime.h>
+#elif defined(USE_METAX_ADAPTOR)
+#include <mcr/mc_runtime.h>
+#endif
+
 namespace {
+
+flagcxResult_t (*savedProviderMapOne)(void *, int, int) = nullptr;
+
+flagcxResult_t failAfterProviderMapOne(void *flatBase, int index, int fd) {
+  flagcxResult_t result = savedProviderMapOne(flatBase, index, fd);
+  return result == flagcxSuccess ? flagcxUnhandledDeviceError : result;
+}
 
 bool envEnabled(const char *name) {
   const char *value = std::getenv(name);
   return value != nullptr && std::strcmp(value, "0") != 0;
 }
+
+#ifdef __linux__
+size_t openFdCount() {
+  DIR *directory = opendir("/proc/self/fd");
+  if (directory == nullptr)
+    return 0;
+  size_t count = 0;
+  while (readdir(directory) != nullptr)
+    count++;
+  closedir(directory);
+  return count >= 2 ? count - 2 : 0;
+}
+
+class ScopedFdLimit {
+public:
+  bool lowerTo(rlim_t limit) {
+    if (getrlimit(RLIMIT_NOFILE, &original_) != 0)
+      return false;
+    if (limit >= original_.rlim_cur)
+      return false;
+    struct rlimit lowered = original_;
+    lowered.rlim_cur = limit;
+    if (setrlimit(RLIMIT_NOFILE, &lowered) != 0)
+      return false;
+    active_ = true;
+    return true;
+  }
+  ~ScopedFdLimit() {
+    if (active_)
+      setrlimit(RLIMIT_NOFILE, &original_);
+  }
+
+private:
+  struct rlimit original_ = {};
+  bool active_ = false;
+};
+#endif
 
 class ScopedEnvVar {
 public:
@@ -263,6 +320,30 @@ TEST_F(SymMemTest, RemotePeersWithoutNetworkDoNotPublishWindow) {
   EXPECT_EQ(comm->heteroComm->symWindowFdExchangeCount, fdExchangesBefore);
   EXPECT_EQ(comm->heteroComm->oneSideDataMetadataExchangeCount,
             mrExchangesBefore);
+  EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, RankLocalWindowRangeErrorConvergesBeforeSetup) {
+  if (comm == nullptr || comm->heteroComm == nullptr ||
+      comm->heteroComm->nRanks < 2)
+    GTEST_SKIP() << "Requires at least two ranks";
+  void *buffer = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&buffer, size)));
+  const uint64_t fdExchangesBefore = comm->heteroComm->symWindowFdExchangeCount;
+  void *requested = comm->heteroComm->rank == 1
+                        ? (void *)((uintptr_t)buffer + size - 1)
+                        : buffer;
+  flagcxWindow_t window = nullptr;
+  flagcxResult_t result = flagcxCommWindowRegister(
+      comm, requested, size, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxInvalidUsage));
+  EXPECT_EQ(maximum, static_cast<int>(flagcxInvalidUsage));
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(comm->heteroComm->symWindowFdExchangeCount, fdExchangesBefore);
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
@@ -852,14 +933,12 @@ TEST_F(SymMemTest, MrRollbackFailureRetainsWindowLeaseUntilRetry) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
-TEST_F(SymMemTest, StrictDmaBufUnsupportedDoesNotPublishWindow) {
+TEST_F(SymMemTest, DmaBufUnavailableWithoutVaDoesNotPublishWindow) {
   if (!envEnabled("FLAGCX_CI_EXPECT_VMM_DMABUF_UNSUPPORTED"))
     GTEST_SKIP() << "Runs only on a provider without DMA-BUF MR registration";
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
-  const char *mode = std::getenv("FLAGCX_VMM_MR_MODE");
-  ASSERT_NE(mode, nullptr);
-  ASSERT_STREQ(mode, "dmabuf");
+  ASSERT_TRUE(envEnabled("FLAGCX_DMABUF_ENABLE"));
 
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
@@ -867,6 +946,8 @@ TEST_F(SymMemTest, StrictDmaBufUnsupportedDoesNotPublishWindow) {
   ASSERT_NE(testComm->heteroComm, nullptr);
   ASSERT_NE(testComm->heteroComm->netAdaptor, nullptr);
   EXPECT_EQ(testComm->heteroComm->netAdaptor->regMrDmaBuf, nullptr);
+  ASSERT_EQ(testComm->heteroComm->netAdaptor->vmmMrCaps & FLAGCX_VMM_MR_CAP_VA,
+            0u);
 
   void *buffer = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&buffer, size)));
@@ -897,10 +978,8 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
 
-  ScopedEnvVar routeMode("FLAGCX_VMM_MR_MODE", "auto");
-  const char *modes[] = {"dmabuf", "va"};
-  const flagcxVmmMrRoute_t expectedRoutes[] = {FLAGCX_VMM_MR_ROUTE_DMABUF,
-                                               FLAGCX_VMM_MR_ROUTE_VA};
+  ScopedEnvVar routeMode("FLAGCX_DMABUF_ENABLE", "1");
+  const char *modes[] = {"1", "0"};
   bool routeSucceeded[2] = {false, false};
 
   for (int routeIndex = 0; routeIndex < 2; routeIndex++) {
@@ -941,8 +1020,12 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
       ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
       auto *handle = testComm->heteroComm->oneSideHandles[mrIndex];
       ASSERT_NE(handle, nullptr);
-      EXPECT_EQ(handle->registrationRoute,
-                static_cast<uint8_t>(expectedRoutes[routeIndex]));
+      if (routeIndex == 1)
+        EXPECT_EQ(handle->registrationRoute,
+                  static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_VA));
+      else
+        EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF ||
+                    handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA);
       ASSERT_TRUE(
           allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
     } else {
@@ -1109,9 +1192,9 @@ TEST_F(SymMemTest, SignalRegistrationUsesAllocationProvenance) {
       vmmMrRouteMatches(testComm->heteroComm->signalHandle->registrationRoute));
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalDeregister(testComm)));
 
-  // This allocation intentionally bypasses flagcxMemAlloc. VMM being enabled
-  // globally must not make an ordinary external device allocation take the
-  // DMA-BUF path.
+  // This allocation bypasses flagcxMemAlloc. VMM being enabled globally must
+  // not classify this ordinary device allocation as VMM. DMA-BUF eligibility
+  // is controlled separately by FLAGCX_DMABUF_ENABLE and the export result.
   void *externalBuffer = nullptr;
   flagcxResult_t result =
       devHandle->deviceMalloc(&externalBuffer, size, flagcxMemDevice, nullptr);
@@ -1125,8 +1208,10 @@ TEST_F(SymMemTest, SignalRegistrationUsesAllocationProvenance) {
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalRegister(
       testComm, externalBuffer, size, FLAGCX_PTR_CUDA)));
   ASSERT_NE(testComm->heteroComm->signalHandle, nullptr);
-  EXPECT_EQ(testComm->heteroComm->signalHandle->registrationRoute,
-            static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_NONE));
+  EXPECT_TRUE(testComm->heteroComm->signalHandle->registrationRoute ==
+                  FLAGCX_VMM_MR_ROUTE_VA ||
+              testComm->heteroComm->signalHandle->registrationRoute ==
+                  FLAGCX_VMM_MR_ROUTE_DMABUF);
   ASSERT_TRUE(allRanksSucceeded(flagcxOneSideSignalDeregister(testComm)));
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
@@ -1373,6 +1458,97 @@ TEST_F(SymMemTest, CrossNodeCleanupFailureConvergesBeforeRelease) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
+TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_MIXED_NODE_VMM"))
+    GTEST_SKIP() << "Requires a multi-node VMM + NET invocation";
+  ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
+
+  flagcxComm_t testComm = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+  ASSERT_NE(testComm, nullptr);
+  flagcxHeteroComm_t hetero = testComm->heteroComm;
+  ASSERT_NE(hetero, nullptr);
+  ASSERT_LT(hetero->localRanks, hetero->nRanks);
+  const bool vmmNode = hetero->localRankToRank[0] != 0;
+
+  void *probe = nullptr;
+  ASSERT_TRUE(
+      allRanksSucceeded(deviceAdaptor->gdrMemAlloc(&probe, 1, nullptr)));
+  void *probeBundle = nullptr;
+  const flagcxSymSegmentMeta *probeSegments = nullptr;
+  int probeCount = 0;
+  size_t probeOffset = 0;
+  size_t granularity = 0;
+  flagcxResult_t result =
+      deviceAdaptor->symPhysDescribe(probe, 1, &probeBundle, &probeSegments,
+                                     &probeCount, &probeOffset, &granularity);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
+
+  const size_t allocationSize = granularity * 3;
+  const std::string segmentSetting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES",
+                           vmmNode ? segmentSetting.c_str() : nullptr);
+  void *buffer = nullptr;
+  result = vmmNode ? flagcxMemAlloc(&buffer, allocationSize)
+                   : deviceAdaptor->deviceMalloc(&buffer, allocationSize,
+                                                 flagcxMemDevice, nullptr);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  segmentSize.set(nullptr);
+
+  auto originalIpcGet = deviceAdaptor->ipcMemHandleGet;
+  if (!vmmNode)
+    deviceAdaptor->ipcMemHandleGet = failIpcMemHandleGet;
+  flagcxWindow_t window = nullptr;
+  result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
+  if (!vmmNode)
+    deviceAdaptor->ipcMemHandleGet = originalIpcGet;
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  EXPECT_EQ(window->defaultBase->ipcSlot, -1);
+  EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
+  EXPECT_EQ(window->defaultBase->resourcePath == flagcxSymResourceSegments,
+            vmmNode);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+
+  auto *net = hetero->netAdaptor;
+  ASSERT_NE(net, nullptr);
+  auto originalRegMr = net->regMr;
+  auto originalRegMrDmaBuf = net->regMrDmaBuf;
+  if (hetero->rank == 0) {
+    net->regMr = failRegMr;
+    net->regMrDmaBuf = failRegMrDmaBuf;
+  }
+  window = nullptr;
+  result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
+  if (hetero->rank == 0) {
+    net->regMr = originalRegMr;
+    net->regMrDmaBuf = originalRegMrDmaBuf;
+  }
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxSystemError));
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(hetero->symWindows, nullptr);
+
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
+  result = vmmNode
+               ? flagcxMemFree(buffer)
+               : deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr);
+  EXPECT_EQ(result, flagcxSuccess);
+}
+
 TEST_F(SymMemTest, DuplicateWindowsShareMrUntilLastDeregister) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
     GTEST_SKIP() << "Runs in the required NET invocations";
@@ -1501,3 +1677,562 @@ TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   testComm = nullptr;
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
+
+TEST_F(SymMemTest, SegmentedVmmRegistrationUsesBoundedFds) {
+#ifndef __linux__
+  GTEST_SKIP() << "Requires Linux RLIMIT_NOFILE and /proc/self/fd";
+#else
+  if (!envEnabled("FLAGCX_CI_REQUIRE_LOW_FD_MULTI_SEGMENT"))
+    GTEST_SKIP() << "Requires the low-FD multi-segment VMM CI invocation";
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  ASSERT_GT(comm->heteroComm->localRanks, 1);
+  ASSERT_EQ(comm->heteroComm->localRanks, comm->heteroComm->nRanks);
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
+  ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
+  ASSERT_NE(deviceAdaptor->symFlatMapSegmentsBegin, nullptr);
+  ASSERT_NE(deviceAdaptor->symFlatMapSegmentOne, nullptr);
+
+  void *probe = nullptr;
+  ASSERT_TRUE(
+      allRanksSucceeded(deviceAdaptor->gdrMemAlloc(&probe, 1, nullptr)));
+  void *bundle = nullptr;
+  const flagcxSymSegmentMeta *segments = nullptr;
+  int count = 0;
+  size_t userOffset = 0;
+  size_t granularity = 0;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->symPhysDescribe(
+      probe, 1, &bundle, &segments, &count, &userOffset, &granularity)));
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
+  const bool affordable = granularity > 0 && granularity <= 4 * 1024 * 1024;
+  if (!allRanksSucceeded(affordable ? flagcxSuccess : flagcxNotSupported))
+    GTEST_SKIP() << "VMM granularity is too large for the 64-segment test";
+
+  const std::string setting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", setting.c_str());
+  void *allocation = nullptr;
+  const size_t allocationSize = granularity * 64;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, allocationSize)));
+  segmentSize.set(nullptr);
+
+  flagcxResult_t result = flagcxSuccess;
+  flagcxWindow_t window = nullptr;
+  {
+    ScopedFdLimit fdLimit;
+    const size_t baseline = openFdCount();
+    const bool lowered =
+        baseline > 0 && fdLimit.lowerTo(static_cast<rlim_t>(baseline + 32));
+    if (!allRanksSucceeded(lowered ? flagcxSuccess : flagcxSystemError)) {
+      EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+      GTEST_SKIP() << "Could not lower RLIMIT_NOFILE on every rank";
+    }
+    result = flagcxCommWindowRegister(comm, allocation, allocationSize, &window,
+                                      FLAGCX_WIN_COLL_SYMMETRIC);
+  }
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
+  EXPECT_EQ(window->defaultBase->rankLayouts[comm->heteroComm->localRank]
+                .segmentCount,
+            64);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+#endif
+}
+
+TEST_F(SymMemTest, SegmentedVmmWindowMapsDifferentPeerLayouts) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
+    GTEST_SKIP() << "Requires the multi-segment VMM CI invocation";
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  ASSERT_GT(comm->heteroComm->localRanks, 1);
+  ASSERT_EQ(comm->heteroComm->localRanks, comm->heteroComm->nRanks);
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
+  ASSERT_NE(deviceAdaptor->symFlatMapSegments, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysSegmentCount, nullptr);
+
+  void *probe = nullptr;
+  ASSERT_TRUE(
+      allRanksSucceeded(deviceAdaptor->gdrMemAlloc(&probe, 1, nullptr)));
+  void *probeBundle = nullptr;
+  const flagcxSymSegmentMeta *probeSegments = nullptr;
+  int probeCount = 0;
+  size_t probeOffset = 0;
+  size_t granularity = 0;
+  flagcxResult_t result =
+      deviceAdaptor->symPhysDescribe(probe, 1, &probeBundle, &probeSegments,
+                                     &probeCount, &probeOffset, &granularity);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_EQ(probeCount, 1);
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
+
+  const int localRank = comm->heteroComm->localRank;
+  const size_t allocationSize = granularity * 3;
+  const size_t segmentBytes =
+      localRank % 2 == 0 ? granularity * 2 : granularity;
+  const std::string setting = std::to_string(segmentBytes);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", setting.c_str());
+  void *allocation = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, allocationSize)));
+  segmentSize.set(nullptr);
+  const size_t userOffset =
+      localRank % 2 == 0 ? granularity / 2 : granularity / 4;
+  const size_t userSize = granularity * 2;
+  void *buffer = static_cast<char *>(allocation) + userOffset;
+  const int pattern = comm->heteroComm->rank % 251 + 1;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->deviceMemset(
+      buffer, pattern, userSize, flagcxMemDevice, nullptr)));
+
+  flagcxWindow_t window = nullptr;
+  result = flagcxCommWindowRegister(comm, buffer, userSize, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
+  ASSERT_NE(window->defaultBase->rankLayouts, nullptr);
+  EXPECT_EQ(window->defaultBase->rankLayouts[localRank].segmentCount,
+            localRank % 2 == 0 ? 2 : 3);
+  EXPECT_EQ(window->defaultBase->rankLayouts[localRank].userOffset, userOffset);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  const int peerLocalRank = (localRank + 1) % comm->heteroComm->localRanks;
+  const int peerRank = comm->heteroComm->localRankToRank[peerLocalRank];
+  void *peerPtr = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm,
+                                             window->defaultBase, peerRank,
+                                             granularity, 1, &peerPtr),
+            flagcxSuccess);
+  unsigned char value = 0;
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(
+                &value, peerPtr, 1, flagcxMemcpyDeviceToHost, nullptr, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(value, peerRank % 251 + 1);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+
+  const int handlesBefore = comm->heteroComm->oneSideHandleCount;
+  savedProviderMapOne = deviceAdaptor->symFlatMapSegmentOne;
+  if (localRank == 1)
+    deviceAdaptor->symFlatMapSegmentOne = failAfterProviderMapOne;
+  window = nullptr;
+  result = flagcxCommWindowRegister(comm, buffer, userSize, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
+  deviceAdaptor->symFlatMapSegmentOne = savedProviderMapOne;
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxUnhandledDeviceError));
+  EXPECT_EQ(maximum, static_cast<int>(flagcxUnhandledDeviceError));
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(comm->heteroComm->oneSideHandleCount, handlesBefore);
+
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, buffer, userSize, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, SegmentedMapFailureUsesNetworkMrFallback) {
+  if (!envEnabled("FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK"))
+    GTEST_SKIP() << "Requires multi-segment VMM and NET";
+  ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
+  ASSERT_FALSE(envEnabled("FLAGCX_IB_DISABLE"));
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  ASSERT_GT(comm->heteroComm->localRanks, 1);
+  if (deviceAdaptor->symPhysDescribe == nullptr ||
+      deviceAdaptor->symFlatMapSegmentOne == nullptr)
+    GTEST_SKIP() << "Adaptor has no segmented VMM callbacks";
+
+  void *probe = nullptr;
+  ASSERT_TRUE(
+      allRanksSucceeded(deviceAdaptor->gdrMemAlloc(&probe, 1, nullptr)));
+  void *probeBundle = nullptr;
+  const flagcxSymSegmentMeta *probeSegments = nullptr;
+  int probeCount = 0;
+  size_t probeOffset = 0;
+  size_t granularity = 0;
+  ASSERT_TRUE(allRanksSucceeded(
+      deviceAdaptor->symPhysDescribe(probe, 1, &probeBundle, &probeSegments,
+                                     &probeCount, &probeOffset, &granularity)));
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
+
+  const std::string setting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", setting.c_str());
+  void *allocation = nullptr;
+  const size_t allocationSize = granularity * 3;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, allocationSize)));
+  segmentSize.set(nullptr);
+  void *allocationBundle = nullptr;
+  const flagcxSymSegmentMeta *allocationSegments = nullptr;
+  int allocationCount = 0;
+  size_t allocationOffset = 0;
+  size_t allocationAlignment = 0;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->symPhysDescribe(
+      allocation, allocationSize, &allocationBundle, &allocationSegments,
+      &allocationCount, &allocationOffset, &allocationAlignment)));
+  ASSERT_GT(allocationCount, 1);
+  ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(allocationBundle),
+            flagcxSuccess);
+
+  // Register this exact allocation first. General DMA-BUF capability does
+  // not guarantee that its entire mapped range is exportable by this driver.
+  flagcxWindow_t baselineWindow = nullptr;
+  flagcxResult_t baseline =
+      flagcxCommWindowRegister(comm, allocation, allocationSize,
+                               &baselineWindow, FLAGCX_WIN_COLL_SYMMETRIC);
+  int baselineMinimum = 0;
+  int baselineMaximum = 0;
+  allRankResultRange(baseline, &baselineMinimum, &baselineMaximum);
+  ASSERT_EQ(baselineMinimum, baselineMaximum);
+  const bool hasNetworkRoute = baseline == flagcxSuccess;
+  if (hasNetworkRoute) {
+    ASSERT_NE(baselineWindow, nullptr);
+    ASSERT_NE(baselineWindow->defaultBase, nullptr);
+    ASSERT_TRUE(baselineWindow->defaultBase->hasNetworkMrRef);
+    const int mrIndex = baselineWindow->defaultBase->mrIndex;
+    ASSERT_GE(mrIndex, 0);
+    EXPECT_EQ(comm->heteroComm->oneSideHandles[mrIndex]->registrationRoute,
+              FLAGCX_VMM_MR_ROUTE_DMABUF);
+    ASSERT_TRUE(
+        allRanksSucceeded(flagcxCommWindowDeregister(comm, baselineWindow)));
+  } else {
+    EXPECT_EQ(baselineWindow, nullptr);
+    EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  }
+
+  savedProviderMapOne = deviceAdaptor->symFlatMapSegmentOne;
+  if (comm->heteroComm->localRank == 1)
+    deviceAdaptor->symFlatMapSegmentOne = failAfterProviderMapOne;
+  flagcxWindow_t window = nullptr;
+  flagcxResult_t result = flagcxCommWindowRegister(
+      comm, allocation, allocationSize, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+  deviceAdaptor->symFlatMapSegmentOne = savedProviderMapOne;
+
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
+  if (hasNetworkRoute) {
+    ASSERT_EQ(result, flagcxSuccess);
+    ASSERT_NE(window, nullptr);
+    ASSERT_NE(window->defaultBase, nullptr);
+    EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceSegments);
+    EXPECT_FALSE(window->defaultBase->hasFlatMapping);
+    EXPECT_EQ(window->defaultBase->flatBase, nullptr);
+    EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
+    EXPECT_EQ(window->defaultBase->ipcSlot, -1);
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  } else {
+    EXPECT_NE(result, flagcxSuccess);
+    EXPECT_EQ(window, nullptr);
+    EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  }
+  EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, OrdinaryAllocationUsesIpcWithVmmEnabled) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+    GTEST_SKIP() << "Requires the VMM-enabled MPI invocation";
+  ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  if (comm->heteroComm->localRanks < 2)
+    GTEST_SKIP() << "Requires at least two local ranks";
+  if (comm->heteroComm->localRanks != comm->heteroComm->nRanks)
+    GTEST_SKIP() << "Requires all ranks on one node";
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysAlloc, nullptr);
+
+  void *buffer = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(
+      deviceAdaptor->deviceMalloc(&buffer, size, flagcxMemDevice, nullptr)));
+  for (size_t offset : {size_t(0), size_t(256)}) {
+    void *requested = static_cast<char *>(buffer) + offset;
+    size_t requestedSize = size - offset;
+    void *bundle = nullptr;
+    const flagcxSymSegmentMeta *segments = nullptr;
+    int segmentCount = 0;
+    size_t userOffset = 0;
+    size_t alignment = 1;
+    EXPECT_EQ(deviceAdaptor->symPhysDescribe(requested, requestedSize, &bundle,
+                                             &segments, &segmentCount,
+                                             &userOffset, &alignment),
+              flagcxNotSupported);
+    EXPECT_EQ(bundle, nullptr);
+    EXPECT_EQ(segments, nullptr);
+    EXPECT_EQ(segmentCount, 0);
+    EXPECT_EQ(alignment, 0u);
+    if (bundle != nullptr)
+      EXPECT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+
+    flagcxWindow_t window = nullptr;
+    auto originalSymPhysAlloc = deviceAdaptor->symPhysAlloc;
+    deviceAdaptor->symPhysAlloc = failSymPhysAlloc;
+    flagcxResult_t result = flagcxCommWindowRegister(
+        comm, requested, requestedSize, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+    deviceAdaptor->symPhysAlloc = originalSymPhysAlloc;
+    ASSERT_TRUE(allRanksSucceeded(result));
+    ASSERT_NE(window, nullptr);
+    ASSERT_NE(window->defaultBase, nullptr);
+    EXPECT_NE(window->defaultBase->resourcePath, flagcxSymResourceSegments);
+    EXPECT_FALSE(window->defaultBase->hasFlatMapping);
+    EXPECT_GE(window->defaultBase->ipcSlot, 0);
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  }
+  EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+}
+
+TEST_F(SymMemTest, OrdinaryAllocationDoesNotClaimSegmentedVmm) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(deviceAdaptor->symPhysDescribe != nullptr
+                         ? flagcxSuccess
+                         : flagcxNotSupported,
+                     &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
+  if (minimum != static_cast<int>(flagcxSuccess))
+    GTEST_SKIP() << "Adaptor has no segmented VMM description callback";
+  ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
+  void *buffer = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(
+      deviceAdaptor->deviceMalloc(&buffer, size, flagcxMemDevice, nullptr)));
+  void *bundle = nullptr;
+  const flagcxSymSegmentMeta *segments = nullptr;
+  int segmentCount = 0;
+  size_t userOffset = 0;
+  size_t alignment = 0;
+  flagcxResult_t result = deviceAdaptor->symPhysDescribe(
+      buffer, size, &bundle, &segments, &segmentCount, &userOffset, &alignment);
+  EXPECT_EQ(result, flagcxNotSupported);
+  EXPECT_EQ(bundle, nullptr);
+  EXPECT_EQ(segments, nullptr);
+  EXPECT_EQ(segmentCount, 0);
+  EXPECT_EQ(alignment, 0u);
+  if (bundle != nullptr)
+    EXPECT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+  EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+}
+
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_METAX_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
+    GTEST_SKIP() << "Requires the provider VMM CI invocation";
+  ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
+#if defined(USE_METAX_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    mcMemGenericAllocationHandle handle = 0;
+    mcDeviceptr_t base = nullptr;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        mcMemUnmap(base, size);
+      if (base != nullptr)
+        mcMemAddressFree(base, size);
+      if (handle != 0)
+        mcMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int device = 0;
+    if (mcGetDevice(&device) != mcSuccess)
+      return false;
+    MCdevice mcDevice = 0;
+    if (mcDeviceGet(&mcDevice, device) != mcSuccess)
+      return false;
+    mcMemAllocationProp prop = {};
+    prop.type = mcMemAllocationTypePinned;
+    prop.location.type = mcMemLocationTypeDevice;
+    prop.location.id = mcDevice;
+    prop.requestedHandleTypes = mcMemHandleTypePosixFileDescriptor;
+    if (mcMemGetAllocationGranularity(&granularity, &prop,
+                                      MC_MEM_ALLOC_GRANULARITY_MINIMUM) !=
+            mcSuccess ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (mcMemCreate(&mapping.handle, granularity, &prop, 0) != mcSuccess ||
+        mcMemAddressReserve(&mapping.base, granularity, granularity, 0, 0) !=
+            mcSuccess ||
+        mcMemMap(mapping.base, granularity, 0, mapping.handle, 0) != mcSuccess)
+      return false;
+    mapping.mapped = true;
+    mcMemAccessDesc access = {};
+    access.location.type = mcMemLocationTypeDevice;
+    access.location.id = mcDevice;
+    access.flags = mcMemAccessFlagsProtReadWrite;
+    return mcMemSetAccess(mapping.base, granularity, &access, 1) == mcSuccess;
+  }();
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                \
+    defined(USE_PPU_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    CUmemGenericAllocationHandle handle = 0;
+    CUdeviceptr base = 0;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        cuMemUnmap(base, size);
+      if (base != 0)
+        cuMemAddressFree(base, size);
+      if (handle != 0)
+        cuMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int cudaDev = 0;
+    if (cudaGetDevice(&cudaDev) != cudaSuccess)
+      return false;
+    CUdevice cuDevice = 0;
+    if (cuDeviceGet(&cuDevice, cudaDev) != CUDA_SUCCESS)
+      return false;
+    CUmemAllocationProp prop = {};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = cuDevice;
+    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    if (cuMemGetAllocationGranularity(&granularity, &prop,
+                                      CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+            CUDA_SUCCESS ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (cuMemCreate(&mapping.handle, granularity, &prop, 0) != CUDA_SUCCESS ||
+        cuMemAddressReserve(&mapping.base, granularity, granularity, 0, 0) !=
+            CUDA_SUCCESS ||
+        cuMemMap(mapping.base, granularity, 0, mapping.handle, 0) !=
+            CUDA_SUCCESS)
+      return false;
+    mapping.mapped = true;
+    CUmemAccessDesc access = {};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = cuDevice;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    return cuMemSetAccess(mapping.base, granularity, &access, 1) ==
+           CUDA_SUCCESS;
+  }();
+#endif
+
+  EXPECT_TRUE(setupOk);
+  ASSERT_TRUE(
+      allRanksSucceeded(setupOk ? flagcxSuccess : flagcxUnhandledDeviceError));
+
+  void *bundle = nullptr;
+  const flagcxSymSegmentMeta *segments = nullptr;
+  int segmentCount = 0;
+  size_t userOffset = 0;
+  size_t alignment = 0;
+  flagcxResult_t description = deviceAdaptor->symPhysDescribe(
+      (void *)mapping.base, granularity, &bundle, &segments, &segmentCount,
+      &userOffset, &alignment);
+  EXPECT_EQ(description, flagcxNotSupported);
+  EXPECT_NE(bundle, nullptr);
+  EXPECT_EQ(segments, nullptr);
+  EXPECT_EQ(segmentCount, 0);
+  const bool hasBundle = bundle != nullptr;
+  flagcxResult_t cleanup = flagcxSuccess;
+  if (bundle != nullptr)
+    cleanup = deviceAdaptor->symPhysFreeSegments(bundle);
+  EXPECT_EQ(cleanup, flagcxSuccess);
+  ASSERT_TRUE(allRanksSucceeded(description == flagcxNotSupported &&
+                                        hasBundle && cleanup == flagcxSuccess
+                                    ? flagcxSuccess
+                                    : flagcxInvalidUsage));
+
+  // An untracked VMM mapping must not be registered through ordinary IPC.
+  flagcxWindow_t window = nullptr;
+  flagcxResult_t result =
+      flagcxCommWindowRegister(comm, (void *)mapping.base, granularity, &window,
+                               FLAGCX_WIN_COLL_SYMMETRIC);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, maximum);
+  EXPECT_NE(result, flagcxSuccess);
+  EXPECT_EQ(window, nullptr);
+  ASSERT_NE(comm->heteroComm, nullptr);
+  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  if (minimum == maximum && window != nullptr)
+    EXPECT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+}
+#endif
+
+#ifdef USE_DU_ADAPTOR
+TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
+    GTEST_SKIP() << "Requires the DU multi-segment VMM CI invocation";
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
+
+  int cudaDev = 0;
+  ASSERT_EQ(cudaGetDevice(&cudaDev), cudaSuccess);
+  CUdevice cuDevice = 0;
+  ASSERT_EQ(cuDeviceGet(&cuDevice, cudaDev), CUDA_SUCCESS);
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = cuDevice;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  size_t granularity = 0;
+  ASSERT_EQ(cuMemGetAllocationGranularity(&granularity, &prop,
+                                          CU_MEM_ALLOC_GRANULARITY_RECOMMENDED),
+            CUDA_SUCCESS);
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+  const size_t allocationSize = granularity * 3;
+  const std::string segmentSetting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", segmentSetting.c_str());
+  void *allocation = (void *)1;
+  segmentSize.set("-1");
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(allocation, nullptr);
+
+  if (granularity > 1) {
+    ASSERT_LT(allocationSize, SIZE_MAX);
+    const std::string invalidLargeSegment = std::to_string(allocationSize + 1);
+    segmentSize.set(invalidLargeSegment.c_str());
+    allocation = (void *)1;
+    EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
+              flagcxInvalidArgument);
+    EXPECT_EQ(allocation, nullptr);
+  }
+
+  segmentSize.set(segmentSetting.c_str());
+  ScopedEnvVar failAfterMap("FLAGCX_CI_DU_VMM_FAIL_AFTER_MAP", "1");
+  allocation = (void *)1;
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
+            flagcxUnhandledDeviceError);
+  EXPECT_EQ(allocation, nullptr);
+
+  failAfterMap.set(nullptr);
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&allocation, allocationSize, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(allocation, nullptr);
+  EXPECT_EQ(cudaMemset(allocation, 0x5a, allocationSize), cudaSuccess);
+  EXPECT_EQ(deviceAdaptor->gdrMemFree(allocation, nullptr), flagcxSuccess);
+}
+#endif
