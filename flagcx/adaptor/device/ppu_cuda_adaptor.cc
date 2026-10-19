@@ -250,9 +250,16 @@ flagcxResult_t ppucudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   ALIGN_SIZE(handleSize, memGran);
   size_t segmentBytes = 0;
   FLAGCXCHECK(flagcxVmmSegmentBytes(memGran, &segmentBytes));
-  if (segmentBytes != 0 && segmentBytes < handleSize)
+  if (segmentBytes != 0 && segmentBytes < handleSize) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled) {
+      *ptr = NULL;
+      return flagcxNotSupported;
+    }
     return PpuSegmentAllocation::allocate(ptr, handleSize, memGran,
                                           segmentBytes, memprop);
+  }
   /* Allocate the physical memory on the device */
   DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
   /* Reserve a virtual address range */
@@ -806,6 +813,12 @@ ppucudaAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
     }
     // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
+  }
+  if (bundle->segments.size() > 1) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled)
+      return flagcxNotSupported;
   }
   // Ordinary allocations have already returned without requiring VMM support.
   int device = 0;

@@ -215,7 +215,7 @@ flagcxResult_t failSymLsaVaReserve(size_t, size_t, void **base) {
   ++injectedSymLsaVaReserveCalls;
   if (base != nullptr)
     *base = nullptr;
-  return flagcxUnhandledDeviceError;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t failSymLsaMapBeginAt(void *, int, int, void *,
@@ -2109,7 +2109,7 @@ TEST_F(SymMemTest, LsaReserveFailureDoesNotPublishWindow) {
   int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
-  EXPECT_NE(result, flagcxSuccess);
+  EXPECT_EQ(result, flagcxNotSupported);
   EXPECT_EQ(window, nullptr);
   EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
   EXPECT_EQ(testComm->heteroComm->symLsaArena, nullptr);
@@ -2523,7 +2523,7 @@ TEST_F(SymMemTest, OrdinaryAllocationDoesNotClaimSegmentedVmm) {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
     defined(USE_METAX_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
-  if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
+  if (!envEnabled("FLAGCX_CI_REQUIRE_PROVIDER_VMM"))
     GTEST_SKIP() << "Requires the provider VMM CI invocation";
   ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
 #if defined(USE_METAX_ADAPTOR)
@@ -2711,6 +2711,71 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
 #endif
 
 #ifdef USE_DU_ADAPTOR
+TEST_F(SymMemTest, DuMultiSegmentDisabledPreservesSingleVmm) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
+      envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
+    GTEST_SKIP() << "Requires the local DU VMM CI invocation";
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysDescribe, nullptr);
+  ASSERT_NE(deviceAdaptor->symPhysFreeSegments, nullptr);
+
+  int hipDevice = 0;
+  ASSERT_EQ(hipGetDevice(&hipDevice), hipSuccess);
+  hipMemAllocationProp prop = {};
+  prop.type = hipMemAllocationTypePinned;
+  prop.location.type = hipMemLocationTypeDevice;
+  prop.location.id = hipDevice;
+  prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
+  size_t granularity = 0;
+  ASSERT_EQ(hipMemGetAllocationGranularity(
+                &granularity, &prop, hipMemAllocationGranularityRecommended),
+            hipSuccess);
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+
+  ScopedEnvVar multiSegment("FLAGCX_VMM_MULTI_SEGMENT_ENABLE", "0");
+  const std::string segmentSetting = std::to_string(granularity);
+  ScopedEnvVar segmentSize("FLAGCX_VMM_SEGMENT_BYTES", segmentSetting.c_str());
+  const size_t allocationSize = granularity * 3;
+  void *allocation = nullptr;
+  flagcxResult_t result = flagcxMemAlloc(&allocation, allocationSize);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  if (allocation != nullptr)
+    EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+  ASSERT_EQ(minimum, static_cast<int>(flagcxNotSupported));
+  ASSERT_EQ(maximum, static_cast<int>(flagcxNotSupported));
+  ASSERT_EQ(allocation, nullptr);
+
+  segmentSize.set(nullptr);
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&allocation, allocationSize)));
+  ASSERT_NE(allocation, nullptr);
+  void *bundle = nullptr;
+  const flagcxSymSegmentMeta *segments = nullptr;
+  int segmentCount = 0;
+  size_t userOffset = 0;
+  size_t alignment = 0;
+  ASSERT_TRUE(allRanksSucceeded(deviceAdaptor->symPhysDescribe(
+      allocation, allocationSize, &bundle, &segments, &segmentCount,
+      &userOffset, &alignment)));
+  EXPECT_EQ(segmentCount, 1);
+  EXPECT_EQ(userOffset, 0u);
+  EXPECT_EQ(deviceAdaptor->symPhysFreeSegments(bundle), flagcxSuccess);
+
+  flagcxWindow_t window = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, allocation, allocationSize, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  EXPECT_EQ(window->defaultBase->resourcePath, flagcxSymResourceLsa);
+  EXPECT_EQ(window->defaultBase->rankLayouts[comm->heteroComm->localRank]
+                .segmentCount,
+            1);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  EXPECT_EQ(flagcxMemFree(allocation), flagcxSuccess);
+}
+
 TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_MULTI_SEGMENT"))
     GTEST_SKIP() << "Requires the DU multi-segment VMM CI invocation";

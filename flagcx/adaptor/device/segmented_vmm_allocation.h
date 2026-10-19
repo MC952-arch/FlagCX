@@ -5,6 +5,27 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
+
+// Read this for each allocation/description: tests and applications may
+// change the setting after an allocation has already been created. DU defaults
+// to a single physical VMM allocation until multi-segment mapping is proven
+// on its supported drivers; other providers keep their current default.
+static inline flagcxResult_t flagcxVmmMultiSegmentEnabled(bool enabledByDefault,
+                                                          bool *enabled) {
+  if (enabled == NULL)
+    return flagcxInvalidArgument;
+  const char *setting = std::getenv("FLAGCX_VMM_MULTI_SEGMENT_ENABLE");
+  if (setting == NULL || setting[0] == '\0') {
+    *enabled = enabledByDefault;
+    return flagcxSuccess;
+  }
+  if (std::strcmp(setting, "0") == 0 || std::strcmp(setting, "1") == 0) {
+    *enabled = setting[0] == '1';
+    return flagcxSuccess;
+  }
+  return flagcxInvalidArgument;
+}
 
 // A disabled setting leaves the existing single-allocation path unchanged.
 static inline flagcxResult_t flagcxVmmSegmentBytes(size_t granularity,
@@ -230,6 +251,55 @@ public:
       return flagcxSuccess;
     }
     return flagcxNotSupported;
+  }
+
+  // Return the lengths of the pieces of a tracked range that lie in each
+  // physical segment. The caller may issue one provider operation per piece
+  // without holding the allocation registry lock during provider calls.
+  static flagcxResult_t segmentChunks(const void *ptr, size_t size,
+                                      std::vector<size_t> *chunks,
+                                      bool *found) {
+    if (ptr == NULL || size == 0 || chunks == NULL || found == NULL)
+      return flagcxInvalidArgument;
+    chunks->clear();
+    *found = false;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    std::lock_guard<std::mutex> lock(mutex());
+    for (typename std::unordered_map<void *, Allocation>::const_iterator it =
+             allocations().begin();
+         it != allocations().end(); ++it) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
+      const Allocation &allocation = it->second;
+      if (address < base || address - base >= allocation.size)
+        continue;
+      *found = true;
+      size_t cursor = address - base;
+      if (allocation.pendingCleanup || size > allocation.size - cursor)
+        return flagcxInvalidUsage;
+      size_t remaining = size;
+      try {
+        for (size_t i = 0; i < allocation.segments.size() && remaining != 0;
+             i++) {
+          const Segment &segment = allocation.segments[i];
+          if (segment.offset > allocation.size ||
+              segment.size > allocation.size - segment.offset)
+            return flagcxInvalidUsage;
+          const size_t end = segment.offset + segment.size;
+          if (end <= cursor)
+            continue;
+          if (segment.offset > cursor || !segment.mapped)
+            return flagcxInvalidUsage;
+          const size_t chunk = std::min(remaining, end - cursor);
+          chunks->push_back(chunk);
+          cursor += chunk;
+          remaining -= chunk;
+        }
+      } catch (const std::bad_alloc &) {
+        return flagcxSystemError;
+      }
+      return remaining == 0 ? flagcxSuccess : flagcxInvalidUsage;
+    }
+    return flagcxSuccess;
   }
 
 private:

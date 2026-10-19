@@ -244,9 +244,16 @@ flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
 
   size_t segmentBytes = 0;
   FLAGCXCHECK(flagcxVmmSegmentBytes(granularity, &segmentBytes));
-  if (segmentBytes != 0 && segmentBytes < allocSize)
+  if (segmentBytes != 0 && segmentBytes < allocSize) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled) {
+      *ptr = NULL;
+      return flagcxNotSupported;
+    }
     return MacaSegmentAllocation::allocate(ptr, allocSize, granularity,
                                            segmentBytes, prop);
+  }
 
   mcMemGenericAllocationHandle handle;
   DEVCHECK(mcMemCreate(&handle, allocSize, &prop, 0));
@@ -798,6 +805,12 @@ flagcxResult_t macaAdaptorSymPhysDescribe(void *ptr, size_t size,
     }
     // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
+  }
+  if (bundle->segments.size() > 1) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled)
+      return flagcxNotSupported;
   }
   // Ordinary allocations have already returned without requiring VMM support.
   int device = 0;

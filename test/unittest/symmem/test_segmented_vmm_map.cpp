@@ -135,4 +135,29 @@ TEST(SegmentedVmmAllocation, PartialMapReleasesEveryOwnedHandle) {
   EXPECT_EQ(flagcxSuccess, Allocation::freeAllocation(ptr, &found));
   EXPECT_TRUE(found);
 }
+
+TEST(SegmentedVmmAllocation, SplitsDeviceOperationsAtPhysicalBoundaries) {
+  typedef flagcxSegmentedVmmAllocation<FakeVmmOps> Allocation;
+  FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+  void *ptr = NULL;
+  ASSERT_EQ(flagcxSuccess, Allocation::allocate(&ptr, 16384, 4096, 8192, 0));
+  ASSERT_NE(static_cast<void *>(NULL), ptr);
+
+  std::vector<size_t> chunks;
+  bool found = false;
+  const void *crossing = static_cast<const char *>(ptr) + 6144;
+  EXPECT_EQ(flagcxSuccess,
+            Allocation::segmentChunks(crossing, 4096, &chunks, &found));
+  EXPECT_TRUE(found);
+  ASSERT_EQ(2u, chunks.size());
+  EXPECT_EQ(2048u, chunks[0]);
+  EXPECT_EQ(2048u, chunks[1]);
+
+  EXPECT_EQ(flagcxInvalidUsage,
+            Allocation::segmentChunks(crossing, 12288, &chunks, &found));
+  EXPECT_TRUE(found);
+  bool freed = false;
+  EXPECT_EQ(flagcxSuccess, Allocation::freeAllocation(ptr, &freed));
+  EXPECT_TRUE(freed);
+}
 } // namespace

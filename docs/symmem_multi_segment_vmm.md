@@ -8,6 +8,17 @@ FlagCX uses the existing single-allocation path when the setting is absent or
 the rounded allocation fits in one segment. CUDA requires a toolkit with
 `CUDART_VERSION >= 12010` for this path.
 
+`FLAGCX_VMM_MULTI_SEGMENT_ENABLE` controls whether a native VMM allocation
+may span multiple physical segments. It defaults to `0` on Hygon DU while
+multi-segment mapping is being validated on supported drivers, and to `1` on
+CUDA, MetaX, and PPU. Setting it to `0` preserves single-segment VMM and LSA
+registration. If `FLAGCX_VMM_SEGMENT_BYTES` explicitly requests multiple
+segments while it is disabled, allocation returns `flagcxNotSupported`; it
+does not silently create a different layout. Registering a previously created
+allocation whose requested range touches multiple physical segments also
+returns `flagcxNotSupported` collectively. Set the variable to `1` to opt in
+to multi-segment allocation and mapping on DU during driver validation.
+
 The common symmetric heap describes only the physical segments touched by the
 registered user range. It normalizes their offsets to the first touched
 segment, then exchanges segment sizes and offsets and transfers one shareable
@@ -57,9 +68,12 @@ succeeds, the window uses the unicast LSA mapping. DU and PPU do not provide
 communicator LSA multicast callbacks. MetaX uses the multicast address-binding
 symbols only when the installed SDK exports them.
 
-The local VMM MPI suite runs the LSA reuse, subrange, mapping rollback, and
-multicast tests on all four adaptors. Multicast tests skip on hardware without
-that capability. On CUDA or MetaX hardware expected to support multicast,
+The local VMM MPI suite runs the single-segment LSA reuse and mapping rollback
+tests on all four adaptors. Multi-segment mapping tests currently run in CI on
+CUDA, MetaX, and PPU; DU still tests single-segment VMM and rejects untracked
+VMM mappings, but its hardware multi-segment tests are temporarily disabled.
+Multicast tests skip on hardware without that capability. On CUDA or MetaX
+hardware expected to support multicast,
 set `FLAGCX_CI_REQUIRE_MULTICAST=1` when running `test/script/symmem_test.sh`
 to require successful binding and exercise offset reuse, bind failure fallback,
 and unbind retry.

@@ -49,11 +49,15 @@ static std::unordered_map<void *, DuhipFlatMapping> gDuhipFlatMappings;
 // mapping helpers own partial rollback, including imported handle lifetime.
 static thread_local size_t duhipFailAfterMap =
     std::numeric_limits<size_t>::max();
+static const size_t kDuhipLsaMaxVaSize = size_t(1) << 30;
+static const size_t kDuhipLsaRankTargetSize = size_t(1) << 28;
 static flagcxResult_t duhipVmmDeviceError(const char *stage, hipError_t error,
-                                          size_t size = 0,
-                                          size_t alignment = 0) {
-  WARN("DU VMM failed: stage=%s hipError=%d size=%zu alignment=%zu", stage,
-       static_cast<int>(error), size, alignment);
+                                          size_t size = 0, size_t alignment = 0,
+                                          const void *address = NULL) {
+  WARN("DU VMM failed: stage=%s hipError=%d (%s) address=%p size=%zu "
+       "alignment=%zu",
+       stage, static_cast<int>(error), hipGetErrorString(error), address, size,
+       alignment);
   return flagcxUnhandledDeviceError;
 }
 
@@ -118,8 +122,10 @@ struct DuhipSegmentOps {
     access.flags = hipMemAccessFlagsProtReadWrite;
     error =
         hipMemSetAccess(reinterpret_cast<void *>(address), size, &access, 1);
-    return error == hipSuccess ? flagcxSuccess
-                               : duhipVmmDeviceError("set-access", error, size);
+    return error == hipSuccess
+               ? flagcxSuccess
+               : duhipVmmDeviceError("set-access", error, size, 0,
+                                     reinterpret_cast<void *>(address));
   }
   static flagcxResult_t importHandle(int fd, Handle *handle) {
     hipError_t error = hipMemImportFromShareableHandle(
@@ -192,12 +198,33 @@ flagcxResult_t duhipAdaptorDeviceMemset(void *ptr, int value, size_t size,
                                         flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     memset(ptr, value, size);
-  } else {
-    if (stream == NULL) {
-      DEVCHECK(hipMemset(ptr, value, size));
-    } else {
-      DEVCHECK(hipMemsetAsync(ptr, value, size, stream->base));
-    }
+    return flagcxSuccess;
+  }
+  if (size == 0)
+    return flagcxSuccess;
+
+  std::vector<size_t> chunks;
+  bool tracked = false;
+  FLAGCXCHECK(
+      DuhipSegmentAllocation::segmentChunks(ptr, size, &chunks, &tracked));
+  auto setBytes = [&](void *address, size_t bytes) -> flagcxResult_t {
+    hipError_t error =
+        stream == NULL ? hipMemset(address, value, bytes)
+                       : hipMemsetAsync(address, value, bytes, stream->base);
+    if (error == hipSuccess)
+      return flagcxSuccess;
+    WARN("DU device memset failed: hipError=%d (%s) address=%p size=%zu "
+         "async=%d",
+         static_cast<int>(error), hipGetErrorString(error), address, bytes,
+         stream != NULL);
+    return flagcxUnhandledDeviceError;
+  };
+  if (!tracked)
+    return setBytes(ptr, size);
+  uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+  for (size_t i = 0; i < chunks.size(); i++) {
+    FLAGCXCHECK(setBytes(reinterpret_cast<void *>(address), chunks[i]));
+    address += chunks[i];
   }
   return flagcxSuccess;
 }
@@ -351,6 +378,19 @@ flagcxResult_t duhipAdaptorGdrMemAlloc(void **ptr, size_t size,
     return segmentResult;
   }
   if (segmentBytes != 0 && segmentBytes < allocSize) {
+    bool multiSegmentEnabled = false;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(false, &multiSegmentEnabled));
+    if (!multiSegmentEnabled)
+      return flagcxNotSupported;
+    // Keep every physical mapping at the configured segment size, including
+    // the final one. The public allocation still exposes the requested size.
+    const size_t segmentCount =
+        allocSize / segmentBytes + (allocSize % segmentBytes != 0);
+    if (segmentCount > std::numeric_limits<size_t>::max() / segmentBytes)
+      return flagcxInvalidArgument;
+    const size_t mappedSize = segmentCount * segmentBytes;
+    const size_t addressAlignment =
+        (segmentBytes & (segmentBytes - 1)) == 0 ? segmentBytes : granularity;
     // The test hook fails the second map after the first segment is live.
     // Scope it to this allocation so ordinary window maps cannot see it.
     const char *failSetting = std::getenv("FLAGCX_CI_DU_VMM_FAIL_AFTER_MAP");
@@ -358,11 +398,11 @@ flagcxResult_t duhipAdaptorGdrMemAlloc(void **ptr, size_t size,
         failSetting != NULL && failSetting[0] >= '0' && failSetting[0] <= '9') {
       char *end = NULL;
       unsigned long long parsed = std::strtoull(failSetting, &end, 10);
-      if (*end == '\0' && parsed < allocSize / segmentBytes + 1)
+      if (*end == '\0' && parsed < segmentCount)
         duhipFailAfterMap = static_cast<size_t>(parsed);
     }
     flagcxResult_t result = DuhipSegmentAllocation::allocate(
-        ptr, allocSize, granularity, segmentBytes, prop);
+        ptr, mappedSize, addressAlignment, segmentBytes, prop);
     duhipFailAfterMap = std::numeric_limits<size_t>::max();
     return result;
   }
@@ -1232,6 +1272,13 @@ duhipAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
     return flagcxNotSupported;
   }
 
+  if (bundle->segments.size() > 1) {
+    bool multiSegmentEnabled = false;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(false, &multiSegmentEnabled));
+    if (!multiSegmentEnabled)
+      return flagcxNotSupported;
+  }
+
   int device = 0;
   hipError_t error = hipGetDevice(&device);
   if (error != hipSuccess)
@@ -1320,18 +1367,27 @@ flagcxResult_t duhipAdaptorSymLsaGetCapacity(size_t *totalBytes,
   hipError_t error = hipMemGetInfo(&freeBytes, totalBytes);
   if (error != hipSuccess)
     return duhipVmmDeviceError("lsa-get-capacity", error);
-  *alignment = 512ULL * 1024 * 1024;
+  // Start with a small per-rank slot so multiple communicators can reserve
+  // independent arenas in the same process. A larger window raises the slot
+  // size in the common path; the reserve callback bounds the total arena.
+  if (*totalBytes > kDuhipLsaRankTargetSize)
+    *totalBytes = kDuhipLsaRankTargetSize;
+  *alignment = kDuhipLsaRankTargetSize;
   return flagcxSuccess;
 }
 flagcxResult_t duhipAdaptorSymLsaVaReserve(size_t size, size_t alignment,
                                            void **base) {
   if (base == NULL)
     return flagcxInvalidArgument;
-  uintptr_t address = 0;
-  flagcxResult_t result = DuhipSegmentOps::reserveAddress(
-      size, alignment, &address, "lsa-address-reserve");
-  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
-  return result;
+  *base = NULL;
+  if (size > kDuhipLsaMaxVaSize)
+    return flagcxNotSupported;
+  hipError_t error = hipMemAddressReserve(base, size, alignment, NULL, 0);
+  if (error == hipSuccess)
+    return flagcxSuccess;
+  duhipVmmDeviceError("lsa-address-reserve", error, size, alignment);
+  return error == hipErrorOutOfMemory ? flagcxNotSupported
+                                      : flagcxUnhandledDeviceError;
 }
 flagcxResult_t duhipAdaptorSymLsaVaFree(void *base, size_t size) {
   return DuhipSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);

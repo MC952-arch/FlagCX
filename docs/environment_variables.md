@@ -62,6 +62,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_KERNEL_FIFO_CAPACITY` | 128 | Kernel FIFO capacity |
 | `FLAGCX_REDUCE_FIFO_CAPACITY` | 128 | Reduce operation FIFO capacity |
 | `FLAGCX_MEM_ENABLE` | 0 | When set to 1, enables memory allocation via device adaptor |
+| `FLAGCX_VMM_MULTI_SEGMENT_ENABLE` | 0 on Hygon DU; 1 on CUDA, MetaX, and PPU | Permit a native VMM allocation and symmetric window to span multiple physical segments. When disabled, an explicit multi-segment allocation request returns `flagcxNotSupported`; single-segment VMM remains available. |
 | `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, prefer DMA-BUF for eligible device NET memory registration; otherwise use eligible VA routes. Multi-segment VMM can attempt one MR over its full VA range when the device and NET adaptor declare VMM VA support; the provider may still reject that range. |
 
 

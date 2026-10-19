@@ -268,9 +268,16 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   ALIGN_SIZE(handleSize, memGran);
   size_t segmentBytes = 0;
   FLAGCXCHECK(flagcxVmmSegmentBytes(memGran, &segmentBytes));
-  if (segmentBytes != 0 && segmentBytes < handleSize)
+  if (segmentBytes != 0 && segmentBytes < handleSize) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled) {
+      *ptr = NULL;
+      return flagcxNotSupported;
+    }
     return CudaSegmentAllocation::allocate(ptr, handleSize, memGran,
                                            segmentBytes, memprop);
+  }
   INFO(FLAGCX_INIT,
        "[gdrMemAlloc] memGran=%zu handleSize=%zu gpuDirectRDMACapable=%d",
        memGran, handleSize, (int)memprop.allocFlags.gpuDirectRDMACapable);
@@ -905,6 +912,12 @@ flagcxResult_t cudaAdaptorSymPhysDescribe(void *ptr, size_t size,
     }
     // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
+  }
+  if (bundle->segments.size() > 1) {
+    bool multiSegmentEnabled = true;
+    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+    if (!multiSegmentEnabled)
+      return flagcxNotSupported;
   }
   // Ordinary allocations have already returned without requiring VMM support.
   int cudaDev = 0;

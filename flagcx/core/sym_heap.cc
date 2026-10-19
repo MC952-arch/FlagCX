@@ -341,20 +341,17 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
                               sizeof(capacity)));
   }
 
-  const size_t fourGiB = static_cast<size_t>(1) << 32;
   const size_t alignment = capacity.alignment > windowAlignment
                                ? capacity.alignment
                                : windowAlignment;
-  const size_t strideAlignment = alignment > fourGiB ? alignment : fourGiB;
   const size_t required =
       capacity.totalBytes > windowSpan ? capacity.totalBytes : windowSpan;
-  local = required > std::numeric_limits<size_t>::max() - (strideAlignment - 1)
+  local = required > std::numeric_limits<size_t>::max() - (alignment - 1)
               ? flagcxInvalidArgument
               : flagcxSuccess;
   const size_t rankStride =
       local == flagcxSuccess
-          ? ((required + strideAlignment - 1) / strideAlignment) *
-                strideAlignment
+          ? ((required + alignment - 1) / alignment) * alignment
           : 0;
   if (local == flagcxSuccess &&
       (rankStride > std::numeric_limits<size_t>::max() /
@@ -385,9 +382,15 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
                                          &arena->base);
   if (local == flagcxSuccess && arena->base == nullptr)
     local = flagcxInternalError;
+  // Preserve the existing priority for non-capacity errors when different
+  // local ranks report different reserve failures.
+  flagcxResult_t fatal = local == flagcxNotSupported ? flagcxSuccess : local;
+  flagcxResult_t commonFatal = flagcxSuccess;
+  FLAGCXCHECK(flagcxSymLocalConverge(comm, fatal, 0x598e, &commonFatal));
   FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5985, &common));
-  if (common == flagcxSuccess)
+  if (commonFatal == flagcxSuccess && common == flagcxSuccess)
     return flagcxSuccess;
+
   arena->invalid = true;
   flagcxResult_t rollback =
       arena->base != nullptr
@@ -397,11 +400,12 @@ static flagcxResult_t flagcxSymLsaEnsureArena(flagcxHeteroComm_t comm,
     arena->base = nullptr;
   flagcxResult_t commonRollback = flagcxSuccess;
   FLAGCXCHECK(flagcxSymLocalConverge(comm, rollback, 0x5986, &commonRollback));
-  if (commonRollback == flagcxSuccess) {
-    delete arena;
-    comm->symLsaArena = nullptr;
-  }
-  return commonRollback == flagcxSuccess ? common : commonRollback;
+  if (commonRollback != flagcxSuccess)
+    return commonRollback;
+
+  delete arena;
+  comm->symLsaArena = nullptr;
+  return commonFatal != flagcxSuccess ? commonFatal : common;
 }
 
 static flagcxResult_t flagcxSymLsaEnsureMulticast(flagcxHeteroComm_t comm) {
