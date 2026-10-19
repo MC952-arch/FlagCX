@@ -1,50 +1,47 @@
 # Device API bitcode
 
-FlagCX can build Device API LLVM bitcode for NVIDIA CUDA and Hygon DU. A kernel
-consumer links `libflagcx_device.bc` and includes the exported headers from the
-same build. Choose a GPU architecture supported by the installed toolchain.
+FlagCX can build Device API LLVM bitcode for NVIDIA CUDA, Iluvatar CoreX, and
+Hygon DU. A kernel consumer links `libflagcx_device.bc` and includes the headers
+from the same build. Choose an architecture supported by the installed SDK.
 
-## Build bitcode directly
+## Build from the repository root
 
-Run one of these commands from the repository root:
+The `device_bitcode` target builds `libflagcx.so` with `COMPILE_KERNEL=1`, then
+builds bitcode with the same adaptor and CommTraits flags. Every platform and
+architecture uses the same `BUILDDIR` (by default, `build/`):
 
 ```sh
-# NVIDIA CUDA: choose the comm traits used by the host library.
-make -C bindings/ir/nvidia BITCODE_LIB_ARCH=sm_90 \
-  ADAPTOR_FLAG='-DUSE_NVIDIA_ADAPTOR -DFLAGCX_COMM_TRAITS_CCL' llvm_ir
+make USE_NVIDIA=1 DEVICE_BITCODE_ARCH=sm_90 device_bitcode
 
-# Hygon DU: DEVICE_HOME and CCL_HOME point to the installed DTK and RCCL.
-make -C bindings/ir/du DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
-  BITCODE_LIB_ARCH=gfx906 llvm_ir
+make USE_ILUVATAR=1 DEVICE_BITCODE_ARCH=ivcore11 device_bitcode
+
+make USE_DU=1 DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
+  DEVICE_BITCODE_ARCH=gfx906 device_bitcode
 ```
 
-The result is `build/lib/libflagcx_device.bc`, with consumer headers in
-`build/include/`. The DU build also keeps an architecture-specific copy at
-`build/lib/du/<architecture>/libflagcx_device.bc`. Direct bitcode builds do not
-build `libflagcx.so`.
-
-For CUDA, use `-DFLAGCX_COMM_TRAITS_DEFAULT` instead of
-`-DFLAGCX_COMM_TRAITS_CCL` when the host library selects the default Device API
-backend. The bitcode and host library must select the same comm traits.
+`build/` contains `lib/libflagcx.so`, `lib/libflagcx_device.bc`, and consumer
+headers in `include/`. Each `device_bitcode` invocation rebuilds the library
+and bitcode, so switching platform or architecture does not reuse objects
+compiled with earlier settings. The root build
+selects CUDA SHMEM, Default, or CCL according to its normal Makefile options
+and installed NCCL headers; the bitcode receives that exact selection.
 
 ## Include bitcode in a Python wheel
 
 Set `FLAGCX_BITCODE_ARCH` when installing from the repository root:
 
 ```sh
-# NVIDIA CUDA; use the comm traits selected by the host library.
 FLAGCX_ADAPTOR=nvidia FLAGCX_BITCODE_ARCH=sm_90 \
-  FLAGCX_BITCODE_ADAPTOR_FLAGS='-DUSE_NVIDIA_ADAPTOR -DFLAGCX_COMM_TRAITS_CCL' \
   pip install . -v --no-build-isolation
 
-# Hygon DU.
+FLAGCX_ADAPTOR=iluvatar FLAGCX_BITCODE_ARCH=ivcore11 \
+  pip install . -v --no-build-isolation
+
 FLAGCX_ADAPTOR=du DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
   FLAGCX_BITCODE_ARCH=gfx906 pip install . -v --no-build-isolation
 ```
 
-The wheel includes `flagcx/lib/libflagcx_device.bc` and the matching headers
-under `flagcx/include/`. The DU wheel build sets `COMPILE_KERNEL=1` when building
-`libflagcx.so`, which is required for Device API net contexts. It uses
-`build/du-bitcode/` so objects from a regular `COMPILE_KERNEL=0` build are not
-reused. An explicit `COMPILE_KERNEL=0` conflicts with DU bitcode and stops the
-wheel build.
+The wheel includes `flagcx/lib/libflagcx_device.bc`, `libflagcx.so`, and the
+matching headers under `flagcx/include/`. The BC build selects
+`COMPILE_KERNEL=1` for the host library, which is required for Device API net
+contexts. An explicit `COMPILE_KERNEL=0` conflicts with this build and fails.

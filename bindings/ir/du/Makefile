@@ -11,8 +11,7 @@ CCL_HOME ?= $(DEVICE_HOME)
 BITCODE_LIB_ARCH ?= native
 BITCODE_CXX_STD ?= gnu++17
 
-OBJDIR := $(BUILDDIR)/obj/llvm_ir/du/$(BITCODE_LIB_ARCH)
-ARCH_LIBDIR := $(BUILDDIR)/lib/du/$(BITCODE_LIB_ARCH)
+OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
 INCLUDEDIR := $(BUILDDIR)/include
 
@@ -25,7 +24,6 @@ STRIPPED_LL := $(OBJDIR)/libflagcx_device.stripped.ll
 STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
 OPTIMIZED_BC := $(OBJDIR)/libflagcx_device.bc.optimized
 LLVM_IR_FILE := $(OBJDIR)/libflagcx_device.ll
-ARCH_BC := $(ARCH_LIBDIR)/libflagcx_device.bc
 FINAL_BC := $(LIBDIR)/libflagcx_device.bc
 
 IR_PLATFORM_HEADERS := du_platform_traits.h du_comm_traits.h
@@ -65,7 +63,7 @@ all: llvm_ir
 
 ifneq ($(EMIT_LLVM_IR),0)
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) $(SYMBOLS_FILE)
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) $(SYMBOLS_FILE) FORCE
 	@mkdir -p $(OBJDIR)
 	$(HIP_CLANG) $(HIP_FLAGS) $(LLVM_SRC) -o $@
 
@@ -85,13 +83,9 @@ $(OPTIMIZED_BC): $(STRIPPED_BC)
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
 	$(LLVM_DIS) $< -o $@
 
-$(ARCH_BC): $(LLVM_IR_FILE)
-	@mkdir -p $(ARCH_LIBDIR)
-	$(LLVM_AS) $< -o $@
-
-$(FINAL_BC): $(ARCH_BC) FORCE
+$(FINAL_BC): $(LLVM_IR_FILE)
 	@mkdir -p $(LIBDIR)
-	cp -f $< $@
+	$(LLVM_AS) $< -o $@
 
 check_public_symbols: $(LLVM_IR_FILE)
 	@missing=0; \
@@ -103,15 +97,14 @@ check_public_symbols: $(LLVM_IR_FILE)
 	done < $(SYMBOLS_FILE); \
 	test $$missing -eq 0
 
-check_ir: $(ARCH_BC)
-	$(OPT) --passes=verify $(ARCH_BC) -disable-output
+check_ir: $(FINAL_BC)
+	$(OPT) --passes=verify $(FINAL_BC) -disable-output
 	@grep -Eq '^target triple = "amdgcn-amd-amdhsa' $(LLVM_IR_FILE) || { \
 		echo "Hygon Device IR does not target AMDGPU"; exit 1; \
 	}
 
 llvm_ir: $(FINAL_BC) headers check_public_symbols check_ir
-	@echo "Hygon Device API bitcode ready: $(ARCH_BC)"
-	@echo "Compatibility copy: $(FINAL_BC)"
+	@echo "Hygon Device API bitcode ready: $(FINAL_BC)"
 
 else
 
@@ -123,7 +116,7 @@ endif
 build: llvm_ir
 
 clean:
-	rm -rf $(OBJDIR) $(ARCH_LIBDIR)
+	rm -rf $(OBJDIR)
 	rm -f $(FINAL_BC) $(INCLUDEDIR)/flagcx_device_wrapper.h \
 		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
