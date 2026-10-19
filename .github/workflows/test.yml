@@ -22,7 +22,6 @@ jobs:
   load-hardware-container-configs:
     if: inputs.platforms != '[]'
     name: Load platform container configurations
-    if: github.event_name != 'pull_request' || github.event.pull_request.number != 658
     runs-on: ubuntu-latest
     outputs:
       cuda_ci_image: ${{ steps.cuda.outputs.ci_image }}

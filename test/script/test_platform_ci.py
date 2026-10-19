@@ -595,6 +595,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertNotIn("pull_request.number == 643", unit_workflow)
         self.assertNotIn("pull_request.number == 648", unit_workflow)
+        self.assertNotIn("pull_request.number == 658", unit_workflow)
+        self.assertNotIn("FLAGCX_CI_PR_NUMBER", unit_workflow)
 
         expected_suites = {
             "cuda": [
@@ -666,6 +668,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             trigger = workflow[: workflow.index("\njobs:")]
             self.assertIn("workflow_call:", trigger)
             self.assertNotIn("pull_request.number != 648", workflow)
+            self.assertNotIn("pull_request.number != 658", workflow)
 
     def test_reference_platform_coverage_is_explicit(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
