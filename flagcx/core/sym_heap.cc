@@ -1620,6 +1620,7 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
                localSegments[localCount - 1].size))
     local = flagcxInternalError;
 
+  const char *prepareStage = "describe";
   auto prepare = [&]() -> flagcxResult_t {
     flagcxResult_t fatal = local == flagcxNotSupported ? flagcxSuccess : local;
     flagcxResult_t common = flagcxSuccess;
@@ -1644,12 +1645,14 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
     *used = true;
     d->isVmmAllocation = true;
 
+    prepareStage = "exchange-layouts";
     local = flagcxSymExchangeLayouts(comm, d, localSegments, localCount,
                                      userOffset, alignment);
     FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5970, &common));
     if (common != flagcxSuccess)
       return common;
 
+    prepareStage = "lsa-capability";
     const bool lsaAvailable = deviceAdaptor->symLsaGetCapacity != nullptr &&
                               deviceAdaptor->symLsaVaReserve != nullptr &&
                               deviceAdaptor->symLsaVaFree != nullptr &&
@@ -1659,23 +1662,34 @@ static flagcxResult_t flagcxSymTrySegmentLayout(flagcxHeteroComm_t comm,
         &common));
     if (common != flagcxSuccess)
       return common;
+    prepareStage = "lsa-arena";
     local = flagcxSymLsaEnsureArena(comm, d->slotStride, d->slotAlignment);
     FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x598d, &common));
     if (common != flagcxSuccess)
       return common;
+    prepareStage = "lsa-multicast";
     local = flagcxSymLsaEnsureMulticast(comm);
     if (local != flagcxSuccess && local != flagcxNotSupported)
       return local;
+    prepareStage = "lsa-window";
     local = flagcxSymLsaAllocateWindow(comm, d);
     if (local != flagcxSuccess)
       return local;
+    prepareStage = "segment-map";
     local = flagcxSymMapSegmentsStreaming(comm, d, &mapFailure);
     if (local != flagcxSuccess)
       return local;
+    prepareStage = "multicast-bind";
     return flagcxSymLsaBindMulticast(comm, d);
   };
 
   flagcxResult_t prepared = prepare();
+  if (prepared != flagcxSuccess &&
+      !(prepared == flagcxNotSupported && !*used && bundle == nullptr))
+    WARN("symmem segment preparation failed: stage=%s rank=%d result=%d "
+         "mapFailure=%d",
+         prepareStage, comm->rank, static_cast<int>(prepared),
+         static_cast<int>(mapFailure));
   flagcxResult_t global = flagcxSuccess;
   FLAGCXCHECK(flagcxSymGlobalConverge(comm,
                                       prepared == flagcxNotSupported &&
@@ -1795,6 +1809,7 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   bool segmentCallbacksUsed = false;
   bool ordinaryIpcEligible = false;
   bool segmentedCleanupFailed = false;
+  bool networkMrAttempted = false;
   flagcxResult_t localPrepareStatus = flagcxSuccess;
   void *allocationBase = nullptr;
   flagcxResult_t leaseResult = flagcxSuccess;
@@ -2526,6 +2541,10 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
     INFO(FLAGCX_INIT,
          "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
          (int)d->hasFlatMapping, buff, size);
+    // needsNetworkMr is communicator-wide. If MR registration fails, every
+    // rank must enter the same rollback collectives, even an ordinary-memory
+    // rank with no local mapping or MR left to release.
+    networkMrAttempted = true;
     FLAGCXCHECKGOTO(flagcxSymWindowEnsureNetworkMr(comm, d), res, fail);
   }
 
@@ -2565,10 +2584,11 @@ fail:
     d = nullptr;
     w = nullptr;
   } else if (!prepareRollbackConverged && d != nullptr &&
-             (d->hasNetworkMrRef || d->hasPendingNetworkCleanup ||
-              d->flatMappingOwned || d->flatVaOwned || d->lsaOffsetOwned ||
-              d->multicastMappingOwned || d->multicastVaOwned ||
-              d->physHandle != nullptr || d->mcHandle != nullptr)) {
+             (networkMrAttempted || d->hasNetworkMrRef ||
+              d->hasPendingNetworkCleanup || d->flatMappingOwned ||
+              d->flatVaOwned || d->lsaOffsetOwned || d->multicastMappingOwned ||
+              d->multicastVaOwned || d->physHandle != nullptr ||
+              d->mcHandle != nullptr)) {
     flagcxResult_t cleanup =
         flagcxSymCleanupUnpublished(comm, d, flagcxSymCleanupCollective);
     if (cleanup != flagcxSuccess) {

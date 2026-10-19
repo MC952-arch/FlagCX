@@ -21,23 +21,24 @@ every successful window into a communicator-level LSA reservation. A failed
 reservation, offset allocation, or mapping fails registration collectively;
 it cannot publish a window at an unrelated per-window VA. Released windows
 return their offsets to the communicator allocator for reuse. Network
-registration of a tracked multi-segment VMM allocation exports the registered
-VA range as one DMA-BUF FD and registers it with `regMrDmaBuf`. If that route
-is unavailable,
-registration fails collectively without publishing a partial window. Plain VA
-`regMr` remains available for single-segment allocations only when both the
-device and NET adaptor declare a validated VMM VA route. Set
-`FLAGCX_DMABUF_ENABLE=1` to permit DMA-BUF MR registration. With the default
-value `0`, a multi-segment allocation that needs a network MR returns
-`flagcxNotSupported`; local symmetric mapping remains available.
+registration of a tracked multi-segment VMM allocation prefers exporting the
+registered VA range as one DMA-BUF FD and registering it with `regMrDmaBuf`.
+When DMA-BUF is disabled or explicitly unsupported for that range, FlagCX
+attempts one plain VA `regMr` over the complete registered range if both the
+device and NET adaptor declare VMM VA support. A provider may still reject
+that particular multi-segment VA. Registration then fails collectively without
+publishing a partial window. Set `FLAGCX_DMABUF_ENABLE=1` to permit DMA-BUF MR
+registration; the default value `0` skips DMA-BUF and uses an eligible VA
+route. Hygon SHCA does not advertise a usable VMM VA NET route.
 
 `FLAGCX_VMM_ENABLE` controls how the native adaptor allocates memory.
 `FLAGCX_DMABUF_ENABLE` controls whether NET registration attempts DMA-BUF.
 With the latter enabled, an ordinary device allocation such as `cudaMalloc`
 also attempts DMA-BUF when the device and NET expose the required operations.
 An allocation-specific export rejection falls back to ordinary VA `regMr`.
-Single-segment VMM may use the same fallback only when both adaptors declare
-VMM VA MR support. Other export or registration errors remain failures.
+VMM ranges, including those spanning multiple physical segments, may use the
+same fallback only when both adaptors declare VMM VA MR support. Other export
+or registration errors remain failures.
 
 An externally created VMM mapping whose physical offset is unknown returns
 `flagcxNotSupported` during symmetric-window registration. FlagCX does not

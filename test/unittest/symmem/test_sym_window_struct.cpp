@@ -28,6 +28,8 @@ int multicastFreeStep = 0;
 int flatUnmapStep = 0;
 int physFreeStep = 0;
 int vaRegCalls = 0;
+void *vaRegBuffer = nullptr;
+size_t vaRegSize = 0;
 int dmaBufRegCalls = 0;
 int deregMrCalls = 0;
 int dmaSupportCalls = 0;
@@ -288,8 +290,11 @@ flagcxResult_t mockPhysicalPageRange(const void *ptr, void **base,
   return flagcxSuccess;
 }
 
-flagcxResult_t mockVaRegMr(void *, void *, size_t, int, int, void **handle) {
+flagcxResult_t mockVaRegMr(void *, void *buffer, size_t size, int, int,
+                           void **handle) {
   vaRegCalls++;
+  vaRegBuffer = buffer;
+  vaRegSize = size;
   if (handle != nullptr)
     *handle = reinterpret_cast<void *>(0x1234);
   return flagcxSuccess;
@@ -1236,18 +1241,25 @@ TEST(SymWindowMrRoute, SegmentedVmmUsesWholeRangeDmaBuf) {
   routeMode.set("0");
   mrHandle = nullptr;
   route = FLAGCX_VMM_MR_ROUTE_NONE;
+  vaRegBuffer = nullptr;
+  vaRegSize = 0;
   EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
                                     buffer, bufferSize, FLAGCX_PTR_CUDA,
                                     /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
                                     &mrHandle, &route,
                                     /*mrRangeSegmentCount=*/2),
-            flagcxNotSupported);
-  EXPECT_EQ(vaRegCalls, 0);
+            flagcxSuccess);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(vaRegCalls, 1);
+  EXPECT_EQ(vaRegBuffer, buffer);
+  EXPECT_EQ(vaRegSize, bufferSize);
   EXPECT_EQ(dmaBufRegCalls, 2);
+  EXPECT_EQ(dmaSupportCalls, 2);
   deviceAdaptor = savedDevice;
 }
 
-TEST(SymWindowMrRoute, SegmentedVmmDoesNotFallBackToPlainVaMr) {
+TEST(SymWindowMrRoute, SegmentedVmmFallsBackToWholeVaRange) {
   ASSERT_NE(deviceAdaptor, nullptr);
   ScopedTwoPageRange allocation;
   ASSERT_TRUE(allocation.valid());
@@ -1280,32 +1292,164 @@ TEST(SymWindowMrRoute, SegmentedVmmDoesNotFallBackToPlainVaMr) {
                                     /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
                                     &mrHandle, &route,
                                     /*mrRangeSegmentCount=*/2),
-            flagcxNotSupported);
-  EXPECT_EQ(mrHandle, nullptr);
-  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
-  EXPECT_EQ(vaRegCalls, 0);
+            flagcxSuccess);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(vaRegCalls, 1);
   EXPECT_EQ(dmaBufRegCalls, 0);
 
   testDevice.getHandleForAddressRange = mockDmaBufExportSuccess;
   testNet.regMrDmaBuf = mockDmaBufRegMrUnsupported;
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
   EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
                                     buffer, bufferSize, FLAGCX_PTR_CUDA,
                                     /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
                                     &mrHandle, &route,
                                     /*mrRangeSegmentCount=*/2),
-            flagcxNotSupported);
-  EXPECT_EQ(vaRegCalls, 0);
+            flagcxSuccess);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(vaRegCalls, 2);
   EXPECT_EQ(dmaBufRegCalls, 1);
 
-  testNet.regMrDmaBuf = nullptr;
+  testNet.regMrDmaBuf = mockDmaBufRegMrFailure;
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
   EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
                                     buffer, bufferSize, FLAGCX_PTR_CUDA,
                                     /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
                                     &mrHandle, &route,
                                     /*mrRangeSegmentCount=*/2),
-            flagcxNotSupported);
-  EXPECT_EQ(vaRegCalls, 0);
+            flagcxSystemError);
+  EXPECT_EQ(mrHandle, nullptr);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
+  EXPECT_EQ(vaRegCalls, 2);
+  EXPECT_EQ(dmaBufRegCalls, 2);
+
+  testNet.regMrDmaBuf = nullptr;
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/true, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxSuccess);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(vaRegCalls, 3);
+  EXPECT_EQ(dmaBufRegCalls, 2);
+  deviceAdaptor = savedDevice;
+}
+
+TEST(SymWindowMrRoute, SegmentedVmmCleansPartialDmaBufMrBeforeVa) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ScopedTwoPageRange allocation;
+  ASSERT_TRUE(allocation.valid());
+  ScopedEnvVar dmaBufEnabled("FLAGCX_DMABUF_ENABLE", "1");
+  struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
+  struct flagcxHeteroComm comm = {};
+  void *buffer = allocation.crossingBuffer();
+  const size_t bufferSize = 64;
+
+  testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  testDevice.dmaSupport = mockDmaSupport;
+  testDevice.symPhysSegmentCount = mockCountPhysicalPages;
+  testDevice.getAddressRange = mockPhysicalPageRange;
+  testDevice.getHandleForAddressRange = mockDmaBufExportSuccess;
+  testNet.getProperties = mockNetProperties;
+  testNet.regMr = mockVaRegMr;
+  testNet.regMrDmaBuf = mockDmaBufRegMrPartialUnsupported;
+  testNet.deregMr = mockDeregMr;
+  comm.netAdaptor = &testNet;
+  deviceAdaptor = &testDevice;
+  vaRegCalls = dmaBufRegCalls = deregMrCalls = 0;
+  void *mrHandle = nullptr;
+  flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
+
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA, true,
+                                    FLAGCX_NET_MR_FLAG_NONE, &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxSuccess);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
   EXPECT_EQ(dmaBufRegCalls, 1);
+  EXPECT_EQ(deregMrCalls, 1);
+  EXPECT_EQ(vaRegCalls, 1);
+
+  testNet.deregMr = mockDeregMrFailure;
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA, true,
+                                    FLAGCX_NET_MR_FLAG_NONE, &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxRemoteError);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x5678));
+  EXPECT_EQ(dmaBufRegCalls, 2);
+  EXPECT_EQ(deregMrCalls, 2);
+  EXPECT_EQ(vaRegCalls, 1);
+  deviceAdaptor = savedDevice;
+}
+
+TEST(SymWindowMrRoute, SegmentedVmmVaErrorAndCapabilityGate) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  ScopedTwoPageRange allocation;
+  ASSERT_TRUE(allocation.valid());
+  ScopedEnvVar dmaBufEnabled("FLAGCX_DMABUF_ENABLE", "0");
+  struct flagcxDeviceAdaptor testDevice = *deviceAdaptor;
+  struct flagcxDeviceAdaptor *savedDevice = deviceAdaptor;
+  struct flagcxNetAdaptor testNet = makeVmmCapableTestNet();
+  struct flagcxHeteroComm comm = {};
+  void *buffer = allocation.crossingBuffer();
+  const size_t bufferSize = 64;
+
+  testDevice.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  testDevice.symPhysSegmentCount = mockCountPhysicalPages;
+  testDevice.dmaSupport = mockDmaSupportFailure;
+  testDevice.getHandleForAddressRange = mockDmaBufExportFailure;
+  testNet.getProperties = mockNetProperties;
+  testNet.regMr = mockVaRegMrFailure;
+  testNet.regMrDmaBuf = mockDmaBufRegMr;
+  comm.netAdaptor = &testNet;
+  deviceAdaptor = &testDevice;
+  vaRegCalls = dmaBufRegCalls = dmaSupportCalls = 0;
+  void *mrHandle = nullptr;
+  flagcxVmmMrRoute_t route = FLAGCX_VMM_MR_ROUTE_NONE;
+
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA, true,
+                                    FLAGCX_NET_MR_FLAG_NONE, &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxSystemError);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_NONE);
+  EXPECT_EQ(mrHandle, nullptr);
+  EXPECT_EQ(vaRegCalls, 1);
+  EXPECT_EQ(dmaBufRegCalls, 0);
+  EXPECT_EQ(dmaSupportCalls, 0);
+
+  testNet.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA, true,
+                                    FLAGCX_NET_MR_FLAG_NONE, &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxNotSupported);
+  EXPECT_EQ(vaRegCalls, 1);
+  testNet.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+  testDevice.vmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA, true,
+                                    FLAGCX_NET_MR_FLAG_NONE, &mrHandle, &route,
+                                    /*mrRangeSegmentCount=*/2),
+            flagcxNotSupported);
+  EXPECT_EQ(vaRegCalls, 1);
   deviceAdaptor = savedDevice;
 }
 
@@ -1402,6 +1546,20 @@ TEST(SymWindowMrRoute, PublicRegistrationDetectsSegmentedAllocation) {
   EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_DMABUF);
   EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x5678));
   EXPECT_EQ(vaRegCalls, 0);
+  EXPECT_EQ(dmaBufRegCalls, 1);
+  EXPECT_EQ(dmaSupportCalls, 1);
+
+  routeMode.set("0");
+  mrHandle = nullptr;
+  route = FLAGCX_VMM_MR_ROUTE_NONE;
+  EXPECT_EQ(flagcxOneSideRegisterMr(&comm, reinterpret_cast<void *>(0x1),
+                                    buffer, bufferSize, FLAGCX_PTR_CUDA,
+                                    /*isVmm=*/false, FLAGCX_NET_MR_FLAG_NONE,
+                                    &mrHandle, &route),
+            flagcxSuccess);
+  EXPECT_EQ(route, FLAGCX_VMM_MR_ROUTE_VA);
+  EXPECT_EQ(mrHandle, reinterpret_cast<void *>(0x1234));
+  EXPECT_EQ(vaRegCalls, 1);
   EXPECT_EQ(dmaBufRegCalls, 1);
   EXPECT_EQ(dmaSupportCalls, 1);
   deviceAdaptor = savedDevice;

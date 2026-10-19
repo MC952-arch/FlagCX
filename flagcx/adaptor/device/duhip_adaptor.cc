@@ -49,32 +49,45 @@ static std::unordered_map<void *, DuhipFlatMapping> gDuhipFlatMappings;
 // mapping helpers own partial rollback, including imported handle lifetime.
 static thread_local size_t duhipFailAfterMap =
     std::numeric_limits<size_t>::max();
+static flagcxResult_t duhipVmmDeviceError(const char *stage, hipError_t error,
+                                          size_t size = 0,
+                                          size_t alignment = 0) {
+  WARN("DU VMM failed: stage=%s hipError=%d size=%zu alignment=%zu", stage,
+       static_cast<int>(error), size, alignment);
+  return flagcxUnhandledDeviceError;
+}
+
 struct DuhipSegmentOps {
   typedef hipMemGenericAllocationHandle_t Handle;
   typedef hipMemAllocationProp Prop;
 
   static flagcxResult_t deviceOrdinal(int *device) {
-    return hipGetDevice(device) == hipSuccess ? flagcxSuccess
-                                              : flagcxUnhandledDeviceError;
+    hipError_t error = hipGetDevice(device);
+    return error == hipSuccess ? flagcxSuccess
+                               : duhipVmmDeviceError("get-device", error);
   }
   static flagcxResult_t createHandle(size_t size, const Prop &prop,
                                      Handle *handle) {
-    return hipMemCreate(handle, size, &prop, 0) == hipSuccess
+    hipError_t error = hipMemCreate(handle, size, &prop, 0);
+    return error == hipSuccess
                ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+               : duhipVmmDeviceError("create-handle", error, size);
   }
   static flagcxResult_t reserveAddress(size_t size, size_t alignment,
-                                       uintptr_t *base) {
+                                       uintptr_t *base,
+                                       const char *stage = "address-reserve") {
     void *address = NULL;
-    if (hipMemAddressReserve(&address, size, alignment, NULL, 0) != hipSuccess)
-      return flagcxUnhandledDeviceError;
+    hipError_t error = hipMemAddressReserve(&address, size, alignment, NULL, 0);
+    if (error != hipSuccess)
+      return duhipVmmDeviceError(stage, error, size, alignment);
     *base = reinterpret_cast<uintptr_t>(address);
     return flagcxSuccess;
   }
   static flagcxResult_t freeAddress(uintptr_t base, size_t size) {
-    return hipMemAddressFree(reinterpret_cast<void *>(base), size) == hipSuccess
+    hipError_t error = hipMemAddressFree(reinterpret_cast<void *>(base), size);
+    return error == hipSuccess
                ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+               : duhipVmmDeviceError("address-free", error, size);
   }
   static flagcxResult_t mapSegment(uintptr_t address, size_t size,
                                    Handle handle) {
@@ -82,45 +95,49 @@ struct DuhipSegmentOps {
       return flagcxUnhandledDeviceError;
     if (duhipFailAfterMap != std::numeric_limits<size_t>::max())
       --duhipFailAfterMap;
-    return hipMemMap(reinterpret_cast<void *>(address), size, 0, handle, 0) ==
-                   hipSuccess
+    hipError_t error =
+        hipMemMap(reinterpret_cast<void *>(address), size, 0, handle, 0);
+    return error == hipSuccess
                ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+               : duhipVmmDeviceError("map-segment", error, size);
   }
   static flagcxResult_t unmapSegment(uintptr_t address, size_t size) {
-    return hipMemUnmap(reinterpret_cast<void *>(address), size) == hipSuccess
+    hipError_t error = hipMemUnmap(reinterpret_cast<void *>(address), size);
+    return error == hipSuccess
                ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+               : duhipVmmDeviceError("unmap-segment", error, size);
   }
   static flagcxResult_t setAccess(uintptr_t address, size_t size) {
     int device = 0;
-    if (hipGetDevice(&device) != hipSuccess)
-      return flagcxUnhandledDeviceError;
+    hipError_t error = hipGetDevice(&device);
+    if (error != hipSuccess)
+      return duhipVmmDeviceError("set-access-get-device", error, size);
     hipMemAccessDesc access = {};
     access.location.type = hipMemLocationTypeDevice;
     access.location.id = device;
     access.flags = hipMemAccessFlagsProtReadWrite;
-    return hipMemSetAccess(reinterpret_cast<void *>(address), size, &access,
-                           1) == hipSuccess
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+    error =
+        hipMemSetAccess(reinterpret_cast<void *>(address), size, &access, 1);
+    return error == hipSuccess ? flagcxSuccess
+                               : duhipVmmDeviceError("set-access", error, size);
   }
   static flagcxResult_t importHandle(int fd, Handle *handle) {
-    return hipMemImportFromShareableHandle(
-               handle, reinterpret_cast<void *>(static_cast<uintptr_t>(fd)),
-               hipMemHandleTypePosixFileDescriptor) == hipSuccess
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+    hipError_t error = hipMemImportFromShareableHandle(
+        handle, reinterpret_cast<void *>(static_cast<uintptr_t>(fd)),
+        hipMemHandleTypePosixFileDescriptor);
+    return error == hipSuccess ? flagcxSuccess
+                               : duhipVmmDeviceError("import-handle", error);
   }
   static flagcxResult_t exportHandle(Handle handle, int *fd) {
-    return hipMemExportToShareableHandle(
-               fd, handle, hipMemHandleTypePosixFileDescriptor, 0) == hipSuccess
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
+    hipError_t error = hipMemExportToShareableHandle(
+        fd, handle, hipMemHandleTypePosixFileDescriptor, 0);
+    return error == hipSuccess ? flagcxSuccess
+                               : duhipVmmDeviceError("export-handle", error);
   }
   static flagcxResult_t releaseHandle(Handle handle) {
-    return hipMemRelease(handle) == hipSuccess ? flagcxSuccess
-                                               : flagcxUnhandledDeviceError;
+    hipError_t error = hipMemRelease(handle);
+    return error == hipSuccess ? flagcxSuccess
+                               : duhipVmmDeviceError("release-handle", error);
   }
 };
 typedef flagcxSegmentedVmmAllocation<DuhipSegmentOps> DuhipSegmentAllocation;
@@ -1159,8 +1176,11 @@ duhipAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
   bool found = false;
   flagcxResult_t result =
       DuhipSegmentAllocation::describe(ptr, size, bundle, userOffset, &found);
-  if (result != flagcxSuccess)
+  if (result != flagcxSuccess) {
+    WARN("DU VMM describe failed: stage=tracked-allocation result=%d size=%zu",
+         static_cast<int>(result), size);
     return result;
+  }
   if (!found) {
     std::lock_guard<std::mutex> lock(gDuhipVmmAllocationMtx);
     for (std::unordered_map<void *, DuhipVmmAllocation>::const_iterator it =
@@ -1213,18 +1233,22 @@ duhipAdaptorSymPhysDescribe(void *ptr, size_t size, void **segmentBundle,
   }
 
   int device = 0;
-  if (hipGetDevice(&device) != hipSuccess)
-    return flagcxUnhandledDeviceError;
+  hipError_t error = hipGetDevice(&device);
+  if (error != hipSuccess)
+    return duhipVmmDeviceError("describe-get-device", error, size);
   hipMemAllocationProp prop = {};
   prop.type = hipMemAllocationTypePinned;
   prop.location.type = hipMemLocationTypeDevice;
   prop.location.id = device;
   prop.requestedHandleTypes = hipMemHandleTypePosixFileDescriptor;
-  if (hipMemGetAllocationGranularity(slotAlignment, &prop,
-                                     hipMemAllocationGranularityRecommended) !=
-          hipSuccess ||
-      *slotAlignment == 0)
+  error = hipMemGetAllocationGranularity(
+      slotAlignment, &prop, hipMemAllocationGranularityRecommended);
+  if (error != hipSuccess)
+    return duhipVmmDeviceError("describe-granularity", error, size);
+  if (*slotAlignment == 0) {
+    WARN("DU VMM describe failed: stage=zero-granularity size=%zu", size);
     return flagcxUnhandledDeviceError;
+  }
   if (bundle->segments.empty() ||
       bundle->segments.size() >
           static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -1293,8 +1317,9 @@ flagcxResult_t duhipAdaptorSymLsaGetCapacity(size_t *totalBytes,
   if (totalBytes == NULL || alignment == NULL)
     return flagcxInvalidArgument;
   size_t freeBytes = 0;
-  if (hipMemGetInfo(&freeBytes, totalBytes) != hipSuccess)
-    return flagcxUnhandledDeviceError;
+  hipError_t error = hipMemGetInfo(&freeBytes, totalBytes);
+  if (error != hipSuccess)
+    return duhipVmmDeviceError("lsa-get-capacity", error);
   *alignment = 512ULL * 1024 * 1024;
   return flagcxSuccess;
 }
@@ -1303,8 +1328,8 @@ flagcxResult_t duhipAdaptorSymLsaVaReserve(size_t size, size_t alignment,
   if (base == NULL)
     return flagcxInvalidArgument;
   uintptr_t address = 0;
-  flagcxResult_t result =
-      DuhipSegmentOps::reserveAddress(size, alignment, &address);
+  flagcxResult_t result = DuhipSegmentOps::reserveAddress(
+      size, alignment, &address, "lsa-address-reserve");
   *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
   return result;
 }
