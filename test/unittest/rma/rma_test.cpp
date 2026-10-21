@@ -313,36 +313,111 @@ void RmaTest::TearDownTestSuite() {
   if (devHandle == nullptr)
     return;
 
+  const char *expectedRead =
+      std::getenv("FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ");
+  const bool traceCleanup =
+      expectedRead != nullptr && std::strcmp(expectedRead, "remote_error") == 0;
+  int cleanupRank = -1;
+  if (traceCleanup)
+    MPI_Comm_rank(MPI_COMM_WORLD, &cleanupRank);
+  auto trace = [&](const char *stage, const char *event,
+                   flagcxResult_t result) {
+    if (traceCleanup)
+      std::fprintf(stderr, "RMA teardown rank=%d stage=%s %s result=%d\n",
+                   cleanupRank, stage, event, static_cast<int>(result));
+  };
+
   if (dataWin) {
-    flagcxCommWindowDeregister(comm, dataWin);
-    dataWin = nullptr;
+    if (traceCleanup && dataWin->defaultBase != nullptr) {
+      const flagcxSymWindow_t window = dataWin->defaultBase;
+      std::fprintf(stderr,
+                   "RMA teardown rank=%d window resourcePath=%d mrIndex=%d "
+                   "mrRef=%d allocationLease=%d\n",
+                   cleanupRank, static_cast<int>(window->resourcePath),
+                   window->mrIndex, window->hasNetworkMrRef ? 1 : 0,
+                   window->hasAllocationLease ? 1 : 0);
+    }
+    trace("window-deregister", "begin", flagcxSuccess);
+    flagcxResult_t result = flagcxCommWindowDeregister(comm, dataWin);
+    trace("window-deregister", "end", result);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      dataWin = nullptr;
   }
 
+  bool signalRegistered = signalBuff && comm && comm->heteroComm;
   if (signalBuff && comm && comm->heteroComm) {
-    flagcxOneSideSignalDeregister(comm);
+    trace("signal-deregister", "begin", flagcxSuccess);
+    flagcxResult_t result = flagcxOneSideSignalDeregister(comm);
+    trace("signal-deregister", "end", result);
+    EXPECT_EQ(result, flagcxSuccess);
+    signalRegistered = result != flagcxSuccess;
   }
-  if (signalBuff) {
-    flagcxMemFree(signalBuff);
-    signalBuff = nullptr;
+  if (signalBuff && !signalRegistered) {
+    flagcxResult_t result = flagcxMemFree(signalBuff);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      signalBuff = nullptr;
   }
 
-  if (dataBuff) {
-    flagcxMemFree(dataBuff);
-    dataBuff = nullptr;
+  if (dataBuff && dataWin == nullptr) {
+    flagcxResult_t result = flagcxMemFree(dataBuff);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      dataBuff = nullptr;
   }
 
-  if (stream) {
-    devHandle->streamDestroy(stream);
-    stream = nullptr;
+  // Preserve the normal teardown order. If registration cleanup failed, keep
+  // the stream until communicator destruction has retired the remaining work.
+  if (dataWin == nullptr && !signalRegistered && stream) {
+    flagcxResult_t result = devHandle->streamDestroy(stream);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      stream = nullptr;
   }
 
   if (comm) {
-    flagcxCommDestroy(comm);
-    comm = nullptr;
+    trace("comm-destroy", "begin", flagcxSuccess);
+    flagcxResult_t result = flagcxCommDestroy(comm);
+    trace("comm-destroy", "end", result);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess) {
+      comm = nullptr;
+      dataWin = nullptr;
+    }
   }
 
-  flagcxDeviceHandleFree(devHandle);
-  devHandle = nullptr;
+  // A communicator may finish cleanup for a window whose earlier explicit
+  // deregistration failed. Only then is its original allocation safe to free.
+  if (comm == nullptr) {
+    if (dataBuff) {
+      flagcxResult_t result = flagcxMemFree(dataBuff);
+      EXPECT_EQ(result, flagcxSuccess);
+      if (result == flagcxSuccess)
+        dataBuff = nullptr;
+    }
+    if (signalBuff) {
+      flagcxResult_t result = flagcxMemFree(signalBuff);
+      EXPECT_EQ(result, flagcxSuccess);
+      if (result == flagcxSuccess)
+        signalBuff = nullptr;
+    }
+  }
+
+  if (comm == nullptr && stream) {
+    flagcxResult_t result = devHandle->streamDestroy(stream);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      stream = nullptr;
+  }
+
+  if (comm == nullptr && stream == nullptr && dataBuff == nullptr &&
+      signalBuff == nullptr) {
+    flagcxResult_t result = flagcxDeviceHandleFree(devHandle);
+    EXPECT_EQ(result, flagcxSuccess);
+    if (result == flagcxSuccess)
+      devHandle = nullptr;
+  }
 }
 
 void RmaTest::SetUp() {

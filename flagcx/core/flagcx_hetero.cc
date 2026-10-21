@@ -552,6 +552,9 @@ static flagcxResult_t flagcxRmaProxyPostOp(struct flagcxHeteroComm *comm,
       return comm->netAdaptor->iget(
           sendComm, desc->srcOff, desc->dstOff, desc->size, p /* srcRank */,
           comm->rank /* dstRank */, srcHandles, dstHandles, &desc->request);
+    case FLAGCX_RMA_IPC_GET:
+      WARN("flagcxRmaProxyPostOp: IPC GET must complete via its stream event");
+      return flagcxInternalError;
     case FLAGCX_RMA_PUT_VALUE: {
       struct flagcxOneSideHandleInfo *stagingH = comm->stagingHandle;
       if (stagingH == NULL || stagingH->baseVas == NULL) {
@@ -1849,6 +1852,8 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxSuccess;
+  if (proxy->flushAllEnterForTest != NULL)
+    proxy->flushAllEnterForTest(proxy->flushAllEnterContextForTest);
   for (int p = 0; p < proxy->nRanks; p++) {
     uint64_t target = __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
@@ -1864,6 +1869,16 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
     return flagcxRemoteError;
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroDrainAllRmaForCleanup(flagcxHeteroComm_t comm) {
+  flagcxResult_t result = flagcxHeteroFlushAllRma(comm);
+  if (result != flagcxRemoteError)
+    return result;
+  // A terminal RMA error already rejects new work. Use the proxy's existing
+  // quiesce protocol to close the producer race and retire accepted requests
+  // before their MRs or window mappings are released.
+  return flagcxHeteroRmaProxyQuiesce(comm);
 }
 
 flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,
