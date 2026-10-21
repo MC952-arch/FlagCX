@@ -2646,8 +2646,21 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     if (d->published && comm == nullptr)
       return flagcxInvalidArgument;
     d->state = flagcxSymWindowCleanupRequired;
-    FLAGCXCHECK(flagcxSymCleanupMappingsConverged(comm, d, mode));
-    FLAGCXCHECK(flagcxSymReleaseAllocationLease(d));
+    flagcxResult_t cleanup = flagcxSymCleanupMappingsConverged(comm, d, mode);
+    if (cleanup != flagcxSuccess) {
+      WARN("flagcxSymWindowDeregister: mapping cleanup failed rank=%d "
+           "resourcePath=%d result=%d",
+           comm != nullptr ? comm->rank : -1, (int)d->resourcePath,
+           (int)cleanup);
+      return cleanup;
+    }
+    flagcxResult_t lease = flagcxSymReleaseAllocationLease(d);
+    if (lease != flagcxSuccess) {
+      WARN("flagcxSymWindowDeregister: allocation lease release failed "
+           "rank=%d resourcePath=%d result=%d",
+           comm != nullptr ? comm->rank : -1, (int)d->resourcePath, (int)lease);
+      return lease;
+    }
 
     // Only detach after all fallible cleanup has completed. A failure above
     // leaves both the public handle and list ownership intact for retry.

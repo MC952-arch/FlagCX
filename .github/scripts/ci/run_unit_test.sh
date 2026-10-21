@@ -600,6 +600,7 @@ run_suite() {
           # closed before a consumer kernel is launched.
           local -a ppu_forced_read_env=(
             -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+            -x FLAGCX_DEBUG=TRACE
             # The unsupported flush is discovered asynchronously by the RMA
             # proxy, so WaitCounter exposes its terminal flag as RemoteError.
             -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=remote_error

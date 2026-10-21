@@ -1875,22 +1875,10 @@ flagcxResult_t flagcxHeteroDrainAllRmaForCleanup(flagcxHeteroComm_t comm) {
   flagcxResult_t result = flagcxHeteroFlushAllRma(comm);
   if (result != flagcxRemoteError)
     return result;
-
-  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
-  // A terminal error rejects new submissions, but a producer that entered
-  // before the error may still be publishing its descriptor. Close that race
-  // before checking whether the worker has retired every accepted request.
-  for (int p = 0; p < proxy->nRanks; p++) {
-    pthread_mutex_lock(&proxy->peerProducerMutexes[p]);
-    pthread_mutex_unlock(&proxy->peerProducerMutexes[p]);
-  }
-  for (int p = 0; p < proxy->nRanks; p++) {
-    while (__atomic_load_n(&proxy->cis[p], __ATOMIC_ACQUIRE) !=
-               __atomic_load_n(&proxy->pis[p], __ATOMIC_ACQUIRE) ||
-           __atomic_load_n(&proxy->inFlights[p], __ATOMIC_ACQUIRE) != 0)
-      sched_yield();
-  }
-  return flagcxSuccess;
+  // A terminal RMA error already rejects new work. Use the proxy's existing
+  // quiesce protocol to close the producer race and retire accepted requests
+  // before their MRs or window mappings are released.
+  return flagcxHeteroRmaProxyQuiesce(comm);
 }
 
 flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,

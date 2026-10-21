@@ -2838,8 +2838,13 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   flagcxResult_t commonDrain = drain;
   if (cleanupMode == flagcxSymCleanupCollective)
     FLAGCXCHECK(flagcxSymConvergeStatus(hetero, drain, &commonDrain));
-  if (commonDrain != flagcxSuccess)
+  if (commonDrain != flagcxSuccess) {
+    WARN("flagcxCommWindowDeregister: RMA drain failed rank=%d "
+         "resourcePath=%d local=%d common=%d",
+         comm->rank, sym != nullptr ? (int)sym->resourcePath : -1, (int)drain,
+         (int)commonDrain);
     return commonDrain;
+  }
 
   // A registration rollback may have retained an unpublished MR object rather
   // than a published mrIndex. Retry that exact object before releasing VMM
@@ -2871,6 +2876,11 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
       sym->hasNetworkMrRef = false;
       sym->mrIndex = -1;
       sym->mrBase = 0;
+    } else {
+      WARN("flagcxCommWindowDeregister: MR release failed rank=%d "
+           "mrIndex=%d resourcePath=%d result=%d",
+           comm->rank, mrIndex, sym != nullptr ? (int)sym->resourcePath : -1,
+           (int)mrResult);
     }
   }
   flagcxResult_t commonMrResult = flagcxSuccess;
@@ -2883,8 +2893,12 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
     return commonMrResult;
 
   flagcxResult_t result = flagcxSymWindowDeregister(hetero, win, cleanupMode);
-  if (result != flagcxSuccess)
+  if (result != flagcxSuccess) {
+    WARN("flagcxCommWindowDeregister: mapping or lease cleanup failed "
+         "rank=%d resourcePath=%d result=%d",
+         comm->rank, sym != nullptr ? (int)sym->resourcePath : -1, (int)result);
     return result;
+  }
 
   // Drop derived references only after fallible VMM cleanup succeeds. This
   // preserves a complete, retryable window when teardown reports an error.

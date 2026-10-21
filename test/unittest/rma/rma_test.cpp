@@ -313,8 +313,33 @@ void RmaTest::TearDownTestSuite() {
   if (devHandle == nullptr)
     return;
 
+  const char *expectedRead =
+      std::getenv("FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ");
+  const bool traceCleanup =
+      expectedRead != nullptr && std::strcmp(expectedRead, "remote_error") == 0;
+  int cleanupRank = -1;
+  if (traceCleanup)
+    MPI_Comm_rank(MPI_COMM_WORLD, &cleanupRank);
+  auto trace = [&](const char *stage, const char *event,
+                   flagcxResult_t result) {
+    if (traceCleanup)
+      std::fprintf(stderr, "RMA teardown rank=%d stage=%s %s result=%d\n",
+                   cleanupRank, stage, event, static_cast<int>(result));
+  };
+
   if (dataWin) {
+    if (traceCleanup && dataWin->defaultBase != nullptr) {
+      const flagcxSymWindow_t window = dataWin->defaultBase;
+      std::fprintf(stderr,
+                   "RMA teardown rank=%d window resourcePath=%d mrIndex=%d "
+                   "mrRef=%d allocationLease=%d\n",
+                   cleanupRank, static_cast<int>(window->resourcePath),
+                   window->mrIndex, window->hasNetworkMrRef ? 1 : 0,
+                   window->hasAllocationLease ? 1 : 0);
+    }
+    trace("window-deregister", "begin", flagcxSuccess);
     flagcxResult_t result = flagcxCommWindowDeregister(comm, dataWin);
+    trace("window-deregister", "end", result);
     EXPECT_EQ(result, flagcxSuccess);
     if (result == flagcxSuccess)
       dataWin = nullptr;
@@ -322,7 +347,9 @@ void RmaTest::TearDownTestSuite() {
 
   bool signalRegistered = signalBuff && comm && comm->heteroComm;
   if (signalBuff && comm && comm->heteroComm) {
+    trace("signal-deregister", "begin", flagcxSuccess);
     flagcxResult_t result = flagcxOneSideSignalDeregister(comm);
+    trace("signal-deregister", "end", result);
     EXPECT_EQ(result, flagcxSuccess);
     signalRegistered = result != flagcxSuccess;
   }
@@ -350,7 +377,9 @@ void RmaTest::TearDownTestSuite() {
   }
 
   if (comm) {
+    trace("comm-destroy", "begin", flagcxSuccess);
     flagcxResult_t result = flagcxCommDestroy(comm);
+    trace("comm-destroy", "end", result);
     EXPECT_EQ(result, flagcxSuccess);
     if (result == flagcxSuccess) {
       comm = nullptr;
