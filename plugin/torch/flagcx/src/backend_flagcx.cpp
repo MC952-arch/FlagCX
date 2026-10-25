@@ -6,6 +6,7 @@
 #include "backend_flagcx.hpp"
 #include "utils_flagcx.hpp"
 #include <algorithm>
+#include <c10/util/ScopeExit.h>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -658,7 +659,6 @@ void flagcxBackend::startCoalescing() {
     // pair communicators are intended to avoid.
     TORCH_CHECK(!pairCoalesce_.active,
                 "Nested coalescing is not supported for pair P2P operations");
-    pairCoalesce_.active = true;
     pairCoalesce_.pendingOps.clear();
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
     // Pin the submission stream for the whole batch. The operations below are
@@ -667,6 +667,7 @@ void flagcxBackend::startCoalescing() {
     aclStreams_[0] = c10_npu::getCurrentNPUStream().stream(true);
     coalescedStreamPinned_ = true;
 #endif
+    pairCoalesce_.active = true;
   } else {
     TORCH_CHECK(status_ == 1,
                 "Heterogeneous P2P communicator was not eagerly initialized");
@@ -678,7 +679,20 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   if (usePairComm_) {
     TORCH_CHECK(pairCoalesce_.active,
                 "endCoalescing called without matching startCoalescing");
+  }
+  // Keep the Ascend vendor stream pinned through the Work event recording.
+  // Reset pair state even when sorting, submission, or Work setup throws.
+  auto cleanup = c10::make_scope_exit([&]() noexcept {
+    if (usePairComm_) {
+      pairCoalesce_.pendingOps.clear();
+      pairCoalesce_.active = false;
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+      coalescedStreamPinned_ = false;
+#endif
+    }
+  });
 
+  if (usePairComm_) {
     // Sort by peer ascending: canonical (min,max) order avoids deadlock.
     std::stable_sort(
         pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
@@ -708,16 +722,14 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
           ++j;
         }
         auto pairComm = getOrCreatePairComm(peer);
-        C10D_FLAGCX_CHECK(flagcxGroupStart(pairComm), std::nullopt);
+        flagcxGroupGuard group(pairComm);
         for (size_t k = i; k < j; ++k) {
           pairCoalesce_.pendingOps[k].second();
         }
-        C10D_FLAGCX_CHECK(flagcxGroupEnd(pairComm), std::nullopt);
+        C10D_FLAGCX_CHECK(group.close(), std::nullopt);
         i = j;
       }
     }
-    pairCoalesce_.pendingOps.clear();
-    pairCoalesce_.active = false;
   } else {
     groupEnd();
   }
@@ -735,11 +747,6 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()));
   work->future_->markCompleted(c10::IValue(0));
-#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-  // Released only now: the Work above represents the batch, and its completion
-  // event has to be recorded on the same stream the batch was submitted on.
-  coalescedStreamPinned_ = false;
-#endif
   return work;
 }
 
