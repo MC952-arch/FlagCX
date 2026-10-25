@@ -112,7 +112,7 @@ class TorchBackendConfigTest(unittest.TestCase):
             tsm,
             (
                 ["/usr/local/kuiper/include", "/opt/torch_txda/torch_txda/include"],
-                ["/usr/local/kuiper/lib", "/opt/torch_txda/torch_txda/lib"],
+                ["/usr/local/kuiper/lib", "/opt/torch_txda/torch_txda"],
                 ["torch_txda", "hpgr"],
             ),
         )

@@ -471,16 +471,15 @@ public:
   }
 
   void record(const int deviceId) override {
-    TORCH_CHECK(
-        txEventRecord(event_, reinterpret_cast<txStream_t>(
-                                  GetCurrentStreamForDevice(deviceId))) ==
-            TX_SUCCESS,
-        "txEventRecord failed");
+    TORCH_CHECK(txEventRecord(event_, reinterpret_cast<txStream_t>(
+                                          GetCurrentStreamForDevice(
+                                              deviceId))) == TX_SUCCESS,
+                "txEventRecord failed");
   }
 
   void record(const flagcxStream_t &stream, const int /*deviceId*/) override {
-    TORCH_CHECK(txEventRecord(event_, *reinterpret_cast<txStream_t *>(stream)) ==
-                    TX_SUCCESS,
+    TORCH_CHECK(txEventRecord(event_, *reinterpret_cast<txStream_t *>(
+                                          stream)) == TX_SUCCESS,
                 "txEventRecord failed");
   }
 
