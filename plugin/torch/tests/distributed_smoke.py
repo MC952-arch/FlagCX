@@ -5,8 +5,10 @@ and backend. It intentionally uses the same collective workflow in both modes.
 """
 
 import argparse
+import gc
 import importlib
 import os
+import time
 
 import torch
 import torch.distributed as dist
@@ -22,6 +24,16 @@ VENDOR_PACKAGES = {
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--adaptor", choices=VENDOR_PACKAGES, required=True)
+    parser.add_argument(
+        "--p2p-retention",
+        action="store_true",
+        help="exercise P2P after dropping the caller's send tensor",
+    )
+    parser.add_argument(
+        "--tensor-retention",
+        action="store_true",
+        help="exercise collectives after dropping their input and Work",
+    )
     return parser.parse_args()
 
 
@@ -43,9 +55,83 @@ def assert_tensor_equal(actual, expected):
 
 
 def churn_allocator(device, numel):
-    """Try to reuse a just-released flattened collective buffer."""
+    """Try to reuse storage released by an asynchronous operation."""
     for value in range(32):
         torch.full((numel,), -value, dtype=torch.float32, device=device)
+
+
+def check_p2p_retention(rank, device, device_module):
+    peer = 1 - rank
+    numel = 8192
+
+    if rank == 0:
+        try:
+            dist.isend(torch.ones(1, device=device), dst=2)
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            raise AssertionError("An out-of-range P2P peer was accepted")
+    dist.barrier()
+    send_tensor = torch.full(
+        (numel,), rank + 11, dtype=torch.float32, device=device
+    )
+    recv_tensor = torch.empty_like(send_tensor)
+    ops = [
+        dist.P2POp(dist.isend, send_tensor, peer),
+        dist.P2POp(dist.irecv, recv_tensor, peer),
+    ]
+    works = dist.batch_isend_irecv(ops)
+    del ops, send_tensor
+    gc.collect()
+    churn_allocator(device, numel)
+    for work in works:
+        work.wait()
+    assert_tensor_equal(
+        recv_tensor, torch.full((numel,), peer + 11, dtype=torch.float32)
+    )
+
+    dist.barrier()
+    if rank == 0:
+        memory_allocated = getattr(device_module, "memory_allocated", None)
+        baseline = memory_allocated(device) if memory_allocated else None
+        send_tensor = torch.full(
+            (numel,), 29, dtype=torch.float32, device=device
+        )
+        work = dist.isend(send_tensor, dst=peer)
+        del work, send_tensor
+        gc.collect()
+        churn_allocator(device, numel)
+    else:
+        recv_tensor = torch.empty(numel, dtype=torch.float32, device=device)
+        work = dist.irecv(recv_tensor, src=peer)
+        work.wait()
+        assert_tensor_equal(
+            recv_tensor, torch.full((numel,), 29, dtype=torch.float32)
+        )
+    dist.barrier()
+    if rank == 0 and baseline is not None:
+        # No later P2P call should be needed to release a completed send.
+        deadline = time.monotonic() + 5
+        while memory_allocated(device) > baseline + numel:
+            if time.monotonic() >= deadline:
+                raise AssertionError("Completed P2P tensor remained allocated")
+            time.sleep(0.02)
+
+
+def check_collective_retention(rank, device, device_module, world_size):
+    numel = 8192
+    source = torch.full((numel,), rank + 31, device=device)
+    outputs = [torch.empty_like(source) for _ in range(world_size)]
+    work = dist.all_gather(outputs, source, async_op=True)
+    del source, work
+    gc.collect()
+    churn_allocator(device, numel)
+    # The Work is intentionally gone. A CPU/Gloo barrier cannot prove that
+    # the device stream has finished the collective.
+    device_module.synchronize()
+    dist.barrier()
+    for peer, output in enumerate(outputs):
+        assert_tensor_equal(output, torch.full((numel,), peer + 31))
 
 
 def main():
@@ -199,6 +285,10 @@ def main():
 
         barrier = dist.barrier(async_op=True)
         barrier.wait()
+        if args.p2p_retention:
+            check_p2p_retention(rank, device, device_module)
+        if args.tensor_retention:
+            check_collective_retention(rank, device, device_module, world_size)
         if rank == 0:
             print(
                 f"PASS: adaptor={args.adaptor} "
