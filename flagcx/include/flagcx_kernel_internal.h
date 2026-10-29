@@ -199,7 +199,10 @@ flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
 
 // Drain cached device allocations retained by retired DevComm/DevMem owners.
 flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
-void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
+flagcxResult_t flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
+void flagcxCommDeferFreeReserved(flagcxComm_t comm,
+                                 struct flagcxDeferredFree *entry, void *ptr,
+                                 int memType);
 
 // Drain deferred DevComm buffer queue (localBarrierFlags, epoch, signal, etc.).
 // Called at flagcxCommDestroy time when all peers are guaranteed done.
