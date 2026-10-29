@@ -109,16 +109,17 @@ OPT_PASSES := --passes=internalize,inline,globaldce \
 # Intermediate files
 STRIPPED_LL := $(OBJDIR)/libflagcx_device.stripped.ll
 STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
+IR_INPUT_BC := $(UNOPTIMIZED_BC)
 
 # ---- Build rules ----
 
 # Default target
 all: llvm_ir
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) FORCE
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "Generating unoptimized LLVM bitcode..."
-	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 # Strip @llvm.used/@llvm.compiler.used so internalize can remove internal symbols
 $(STRIPPED_LL): $(UNOPTIMIZED_BC)
@@ -130,7 +131,7 @@ $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 $(STRIPPED_BC): $(STRIPPED_LL)
 	$(LLVM_AS) $< -o $@
 
-$(OPTIMIZED_BC): $(STRIPPED_BC)
+$(OPTIMIZED_BC): $(STRIPPED_BC) $(SYMBOLS_FILE)
 	@echo "Optimizing LLVM bitcode..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
@@ -180,6 +181,8 @@ llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) headers check_public_symbols check_ir
 	@echo "  Final BC:          $(FINAL_BC)"
 	@echo "  Public Headers:    $(INCLUDEDIR)"
 
+include ../device_ir_dependencies.mk
+
 else
 llvm_ir:
 	@echo "LLVM IR generation disabled (EMIT_LLVM_IR=0)"
@@ -192,6 +195,4 @@ clean:
 	rm -f $(INCLUDEDIR)/flagcx_device_wrapper.h \
 		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
-FORCE:
-
-.PHONY: all llvm_ir check_public_symbols check_ir build clean FORCE
+.PHONY: all llvm_ir check_public_symbols check_ir build clean

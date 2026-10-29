@@ -20,11 +20,12 @@ make USE_DU=1 DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
 ```
 
 `build/` contains `lib/libflagcx.so`, `lib/libflagcx_device.bc`, and consumer
-headers in `include/`. Each `device_bitcode` invocation rebuilds the library
-and bitcode, so switching platform or architecture does not reuse objects
-compiled with earlier settings. The root build
-selects CUDA SHMEM, Default, or CCL according to its normal Makefile options
-and installed NCCL headers; the bitcode receives that exact selection.
+headers in `include/`. Repeated builds reuse unchanged objects and bitcode;
+changes to included project headers rebuild the bitcode. Each build directory
+uses one platform, architecture, and adaptor configuration. Use a fresh build
+directory when changing those settings. The root build selects CUDA SHMEM,
+Default, or CCL according to its normal Makefile options and installed NCCL
+headers; the bitcode receives that exact selection.
 
 ## Include bitcode in a Python wheel
 

@@ -426,12 +426,18 @@ else ifeq ($(USE_DU),1)
   DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
 endif
 
+ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
+  ifeq ($(strip $(DEVICE_BITCODE_DIR)),)
+    $(error Device bitcode is unsupported for $(DEVICE_PLATFORM))
+  endif
+  ifeq ($(strip $(DEVICE_BITCODE_ARCH)),)
+    $(error DEVICE_BITCODE_ARCH is required)
+  endif
+endif
+
 .PHONY: device_bitcode
-device_bitcode:
-	@test -n "$(DEVICE_BITCODE_DIR)" || { echo "Device bitcode is unsupported for $(DEVICE_PLATFORM)" >&2; exit 1; }
-	@test -n "$(DEVICE_BITCODE_ARCH)" || { echo "DEVICE_BITCODE_ARCH is required" >&2; exit 1; }
-	$(MAKE) -B -C $(CURDIR) BUILDDIR=$(abspath $(BUILDDIR)) COMPILE_KERNEL=1 DEVICE_BITCODE_ARCH=$(DEVICE_BITCODE_ARCH) $(DEVICE_BITCODE_ARCH_ARG) DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) all
-	$(MAKE) -B -C bindings/ir/$(DEVICE_BITCODE_DIR) BUILDDIR=$(abspath $(BUILDDIR)) $(DEVICE_BITCODE_ARCH_ARG) ADAPTOR_FLAG='$(ADAPTOR_FLAG)' DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) EMIT_LLVM_IR=1 $(DEVICE_BITCODE_EXTRA_ARG) llvm_ir
+device_bitcode: all
+	$(MAKE) -C bindings/ir/$(DEVICE_BITCODE_DIR) BUILDDIR=$(abspath $(BUILDDIR)) $(DEVICE_BITCODE_ARCH_ARG) ADAPTOR_FLAG='$(ADAPTOR_FLAG)' DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) EMIT_LLVM_IR=1 $(DEVICE_BITCODE_EXTRA_ARG) llvm_ir
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"

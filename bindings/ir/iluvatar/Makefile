@@ -64,13 +64,14 @@ COMMON_CLANG_FLAGS := \
 CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
 OPT_PASSES := --passes=internalize,inline,globaldce \
 	-internalize-public-api-file=$(SYMBOLS_FILE)
+IR_INPUT_BC := $(UNOPTIMIZED_BC)
 
 all: llvm_ir
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) FORCE
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "[FlagCX][Iluvatar] Generating unoptimized Device IR"
-	$(COREX_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(COREX_CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 	$(LLVM_DIS) $< -o $@.tmp
@@ -80,7 +81,7 @@ $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 $(STRIPPED_BC): $(STRIPPED_LL)
 	$(LLVM_AS) $< -o $@
 
-$(OPTIMIZED_BC): $(STRIPPED_BC)
+$(OPTIMIZED_BC): $(STRIPPED_BC) $(SYMBOLS_FILE)
 	$(OPT) $(OPT_PASSES) $< -o $@
 
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
@@ -125,6 +126,8 @@ check_ir: $(OPTIMIZED_BC) $(LLVM_IR_FILE)
 llvm_ir: $(FINAL_BC) headers check_public_symbols check_ir
 	@echo "[FlagCX][Iluvatar] Device IR ready: $(FINAL_BC)"
 
+include ../device_ir_dependencies.mk
+
 else
 
 llvm_ir:
@@ -139,6 +142,4 @@ clean:
 	rm -f $(FINAL_BC) $(INCLUDEDIR)/flagcx_device_wrapper.h \
 		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
-FORCE:
-
-.PHONY: all build llvm_ir check_public_symbols check_ir clean FORCE
+.PHONY: all build llvm_ir check_public_symbols check_ir clean

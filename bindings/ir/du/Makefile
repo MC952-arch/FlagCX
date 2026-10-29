@@ -58,14 +58,15 @@ HIP_FLAGS := -c -emit-llvm -O1 $(COMMON_HIP_FLAGS) \
 	$(FLAGCX_INCLUDES) $(HIP_SDK_INCLUDES)
 OPT_PASSES := --passes=internalize,inline,globaldce \
 	-internalize-public-api-file=$(SYMBOLS_FILE)
+IR_INPUT_BC := $(UNOPTIMIZED_BC)
 
 all: llvm_ir
 
 ifneq ($(EMIT_LLVM_IR),0)
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL) $(SYMBOLS_FILE) FORCE
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
-	$(HIP_CLANG) $(HIP_FLAGS) $(LLVM_SRC) -o $@
+	$(HIP_CLANG) $(HIP_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 # Drop compiler retention lists before internalization. Unlike the NVIDIA
 # route, AMDGPU module flags do not need the nvvm-reflect-ftz cleanup.
@@ -77,7 +78,7 @@ $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 $(STRIPPED_BC): $(STRIPPED_LL)
 	$(LLVM_AS) $< -o $@
 
-$(OPTIMIZED_BC): $(STRIPPED_BC)
+$(OPTIMIZED_BC): $(STRIPPED_BC) $(SYMBOLS_FILE)
 	$(OPT) $(OPT_PASSES) $< -o $@
 
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
@@ -120,6 +121,5 @@ clean:
 	rm -f $(FINAL_BC) $(INCLUDEDIR)/flagcx_device_wrapper.h \
 		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
-FORCE:
-
-.PHONY: all build llvm_ir check_public_symbols check_ir clean FORCE
+.PHONY: all build llvm_ir check_public_symbols check_ir clean
+include ../device_ir_dependencies.mk
