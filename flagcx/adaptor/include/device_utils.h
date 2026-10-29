@@ -22,6 +22,10 @@
 #endif
 #endif
 
+// KunlunXin LLVM bitcode boundary.  Exported Device IR pointers live in global
+// address space 1, and IR byte offsets must be 64-bit even though the xpu3
+// device pass treats size_t as 32-bit.
+
 // Tag for pointers that address device global memory and must keep the same
 // width in every compilation pass. On XPU (xpu3) a generic pointer is 4 bytes
 // on the device pass but 8 bytes on the host pass, while a __global_ptr__ is 8
@@ -45,7 +49,9 @@
 // pointers) in global address space 1. Keep this separate from
 // FLAGCX_DEVICE_GLOBAL_PTR: the latter is also used by by-value C++ layouts,
 // where changing the pointer type would alter the shared host/device ABI.
-#if defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#if (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    (defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__))
 #define FLAGCX_IR_GLOBAL_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_RETURN_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
@@ -55,6 +61,12 @@
 #define FLAGCX_IR_GLOBAL_RETURN_PTR FLAGCX_DEVICE_GLOBAL_PTR
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
   FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)
+#endif
+
+#if defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_IR_OFFSET_TYPE int64_t
+#else
+#define FLAGCX_IR_OFFSET_TYPE size_t
 #endif
 
 // How an IR entry point gets hold of its flagcxDevNet.
