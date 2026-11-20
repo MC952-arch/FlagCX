@@ -28,11 +28,15 @@
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
 flagcxDevCommGetIntraRank(const void FLAGCX_IR_GLOBAL_PTR *opaque) {
+  XSHMEM_DEVICE_INIT(static_cast<KlxCommPtr>(opaque)->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
   return KlxCommView{static_cast<KlxCommPtr>(opaque)}.intraRank();
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
 flagcxDevCommGetIntraSize(const void FLAGCX_IR_GLOBAL_PTR *opaque) {
+  XSHMEM_DEVICE_INIT(static_cast<KlxCommPtr>(opaque)->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
   return KlxCommView{static_cast<KlxCommPtr>(opaque)}.intraSize();
 }
 
@@ -47,6 +51,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxIntraBarrierArriveS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                           flagcxCoopKind_t coopKind, uint32_t index,
                           bool multimem, flagcxDeviceMemoryOrder_t order) {
+  XSHMEM_DEVICE_INIT(static_cast<KlxCommPtr>(opaque)->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
   (void)index;
   (void)multimem;
   (void)order;
@@ -58,6 +64,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxIntraBarrierWaitS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                         flagcxCoopKind_t coopKind, uint32_t index,
                         bool multimem, flagcxDeviceMemoryOrder_t order) {
+  XSHMEM_DEVICE_INIT(static_cast<KlxCommPtr>(opaque)->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
   (void)index;
   (void)multimem;
   (void)order;
@@ -69,6 +77,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                         flagcxCoopKind_t coopKind, uint32_t index,
                         bool multimem, flagcxDeviceMemoryOrder_t order) {
+  XSHMEM_DEVICE_INIT(static_cast<KlxCommPtr>(opaque)->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
   (void)index;
   (void)multimem;
   (void)order;
