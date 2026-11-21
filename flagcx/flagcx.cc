@@ -4462,8 +4462,23 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homoComm));
+  bool gdaAborted = false;
+#if defined(FLAGCX_USE_GDA)
+  flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
+                            ? comm->devNetCommHandle
+                            : comm->pendingDevCommCleanup;
+  if (gda != nullptr && gda->gdaHostOwner != nullptr) {
+    FLAGCXCHECK(flagcxDevNetGda.abortComm(gda));
+    gdaAborted = true;
+  }
+#endif
+  // Publish GPU cancellation first; a vendor abort must not prevent GDA waits
+  // from observing it. GDA does not require a vendor communicator to exist.
+  if (!gdaAborted || comm->homoComm != nullptr)
+    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commAbort(comm->homoComm));
   if (!useHomoComm(comm)) {
+    if (gdaAborted)
+      return flagcxSuccess;
     // TODO: to be implemented.
     return flagcxNotSupported;
   }
@@ -4547,6 +4562,24 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (asyncError == nullptr)
     return flagcxInvalidArgument;
+
+#if defined(FLAGCX_USE_GDA)
+  flagcxDevComm_t gda = comm->devNetCommHandle != nullptr
+                            ? comm->devNetCommHandle
+                            : comm->pendingDevCommCleanup;
+  if (gda != nullptr && gda->gdaHostOwner != nullptr) {
+    flagcxResult_t gdaError = flagcxDevNetGda.pollError(gda);
+    if (gdaError != flagcxSuccess) {
+      *asyncError = gdaError;
+      return flagcxSuccess;
+    }
+    // An exclusively GDA communicator can have no vendor/proxy state.
+    if (comm->homoComm == nullptr && comm->heteroComm == nullptr) {
+      *asyncError = flagcxSuccess;
+      return flagcxSuccess;
+    }
+  }
+#endif
 
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
     flagcxResult_t result = flagcxSuccess;

@@ -83,10 +83,14 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
                          const struct flagcxDevCommRequirements *reqs,
                          size_t reqsSize, flagcxDevComm_t *devComm);
 
+// A published GDA DevComm is destroyed collectively: callers stop submissions
+// and all ranks retire their QPs before any GDA MR is released. A failed
+// teardown retains the handle for cleanup-only retries.
 flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
 // Local view construction; cross-rank Window resources must already have
 // been registered by flagcxCommWindowRegister or an internal preparation step.
+// A GDA Window whose teardown has started cannot be bound again.
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem);
 // A non-null view must be destroyed with the communicator that created it.

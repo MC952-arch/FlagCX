@@ -1197,6 +1197,12 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t devMem) {
+#if defined(FLAGCX_USE_GDA)
+  if (win != nullptr && win->gdaRegistrationActive &&
+      win->gdaDeviceView == nullptr)
+    return flagcxInvalidUsage;
+#endif
+
   // ---- Per-comm MR layer: lookup buff in heteroComm->oneSideHandles ----
   devMem->mrIndex = -1;
   devMem->mrBase = 0;
@@ -1465,6 +1471,9 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                                                     void **devPtr) {
   if (!devComm || !devPtr)
     return flagcxInvalidArgument;
+  *devPtr = nullptr;
+  if (devComm->gdaDraining)
+    return flagcxInvalidUsage;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
 
@@ -1570,6 +1579,13 @@ static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
                                                    void **devPtr) {
   if (!devMem || !devPtr)
     return flagcxInvalidArgument;
+  *devPtr = nullptr;
+#if defined(FLAGCX_USE_GDA)
+  flagcxWindow_t window = static_cast<flagcxWindow_t>(devMem->winHandle);
+  if (window != nullptr && window->gdaRegistrationActive &&
+      window->gdaDeviceView == nullptr)
+    return flagcxInvalidUsage;
+#endif
 
   pthread_mutex_lock(&devMem->cachedPtrMutex);
 

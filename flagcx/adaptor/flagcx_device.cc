@@ -232,12 +232,22 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       (comm == nullptr || devComm->devCommId != comm->devCommCount ||
        comm->activeDevComms != devComm))
     return flagcxInvalidUsage;
-  if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
+  bool collectiveGdaDrain = false;
+#if defined(FLAGCX_USE_GDA)
+  collectiveGdaDrain =
+      devComm->gdaHostOwner != nullptr &&
+      ((comm != nullptr && comm->devNetCommHandle == devComm) ||
+       devComm->gdaDraining);
+#endif
+  // GDA converges synchronization failures inside prepareCommDestroy. A local
+  // early return here would leave peers waiting in its collective phase.
+  if (!collectiveGdaDrain && deviceAdaptor != nullptr &&
+      deviceAdaptor->deviceSynchronize != nullptr)
     FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
 
   // Stop the proxy from acquiring a new reference while the backend tears
-  // down fields reachable through DevComm. Restore publication on failure so
-  // the still-owned object remains retryable.
+  // down fields reachable through DevComm. Proxy can restore publication on
+  // failure; a draining GDA owner is retained for cleanup-only retries.
   const bool wasPublished = comm != nullptr && comm->heteroComm != nullptr &&
                             comm->heteroComm->devCommHandle == devComm;
   if (wasPublished)
@@ -247,15 +257,25 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       comm != nullptr && comm->devNetCommHandle == devComm;
   if (gdaPublished)
     comm->devNetCommHandle = nullptr;
+  if (devComm->gdaHostOwner != nullptr &&
+      (gdaPublished || devComm->gdaDraining)) {
+    flagcxResult_t result = devComm->gdaQuiesced
+                                ? flagcxSuccess
+                                : flagcxDevNetGda.prepareCommDestroy(devComm);
+    if (comm != nullptr)
+      comm->pendingDevCommCleanup = devComm;
+    if (result != flagcxSuccess)
+      return result;
+  }
 #endif
 
   if (!devComm->backendDestroyed) {
     flagcxResult_t result = devApiBackend->devCommDestroy(comm, devComm);
     if (result != flagcxSuccess) {
-      if (wasPublished)
+      if (wasPublished && !devComm->gdaDraining)
         comm->heteroComm->devCommHandle = devComm;
 #if defined(FLAGCX_USE_GDA)
-      if (gdaPublished)
+      if (gdaPublished && !devComm->gdaDraining)
         comm->devNetCommHandle = devComm;
 #endif
       return result;
@@ -283,6 +303,8 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     --comm->devCommCount;
   if (comm != nullptr && comm->activeDevComms == devComm)
     comm->activeDevComms = devComm->previousActive;
+  if (comm != nullptr && comm->pendingDevCommCleanup == devComm)
+    comm->pendingDevCommCleanup = nullptr;
   free(devComm);
   return flagcxSuccess;
 }
