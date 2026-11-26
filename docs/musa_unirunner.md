@@ -41,16 +41,14 @@ execution remain necessary to validate the installed SDK and driver.
 
 ## Device API CI
 
-MUSA unit-test CI is currently disabled while hardware validation focuses on
-`perf-test-experimental (musa)`. The configuration retains the two native Device
-API suites for later restoration. The commands and acceptance below describe
-manual execution of these retained suites.
+MUSA unit-test CI enables all ten configured suites, including `device_api`,
+`device_api_host`, and `device_api_unified_ir`.
 
 Both `device_api` and `device_api_unified_ir` build the library and tests with
 `USE_MUSA=1 COMPILE_KERNEL=1` in the existing shared Mthreads image. The
-`device_api_host` suite retains its host-only configuration for manual use but
-is currently disabled in CI. The native suites print the installed mcc version
-and fail on build errors instead of returning a successful capability skip.
+`device_api_host` suite uses its host-only configuration. The native suites
+print the installed mcc version and fail on build errors instead of returning
+a successful capability skip.
 
 The shared unit runner executes all six public programs: the regular Device
 API and legacy IR intra/inter programs, plus the unified IR intra/inter
@@ -86,7 +84,7 @@ logical node, matching the other platforms. Both native Device API suites must
 execute for that acceptance. Native SDK/compiler failures,
 missing required test results and unexpected skips fail their jobs.
 
-When run manually, the MUSA host suite requires both communicator isolation
+The MUSA host suite requires both communicator isolation
 cases to pass in its GoogleTest XML: Finalize must complete without draining independent work on a
 second communicator. Native MCCL Finalize retains the communicator; rank-local
 Destroy releases it only after completed finalization, preserving ownership
@@ -96,11 +94,11 @@ when cleanup needs a retry.
 
 MUSA hardware CI enables all ten configured unit suites, including both native
 Device API suites and the ordinary runner suite, as well as ordinary perf and
-Torch. The `perf-test-experimental (musa)` job is temporarily disabled while
-the AllGatherGemm stream-value completion stall is investigated. Its native
-kernel implementation and full four-rank workload remain available for manual
-validation and later CI restoration. Existing DMA-BUF and SymMem VMM exclusions
-remain in effect.
+Torch. The `perf-test-experimental (musa)` job is enabled to validate the full
+four-rank UniRunner workload. The previously observed AllGatherGemm stream-value
+completion stall remains under investigation; enabling the job does not establish
+that the workload passes. Existing DMA-BUF and SymMem VMM exclusions remain
+in effect.
 
 The performance jobs are named `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both use the single platform configuration
@@ -151,9 +149,9 @@ The SlicedAR sweep defaults to 64 KiB–64 MiB and can be adjusted through
 `FLAGCX_CI_MUSA_SLICED_AR_MAX_BYTES` when running the workload directly.
 Performance numbers establish a baseline; CI has no bandwidth threshold.
 
-Ordinary MUSA perf and Torch jobs must succeed. The experimental job's
-completion gate requires its disabled job to be skipped. Restore its
-required-success check together with the job after fixing the stall.
+Ordinary MUSA perf, experimental UniRunner, and Torch jobs must succeed when
+MUSA is selected. The experimental completion gate rejects missing, skipped,
+failed, or cancelled results.
 
 ## Local checks without the SDK
 

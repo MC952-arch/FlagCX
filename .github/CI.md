@@ -132,10 +132,10 @@ visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
 
 Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
 `.github/configs/mthreads.yml`. MUSA hardware CI runs all ten configured unit
-suites, `perf-test (musa)` and Torch on four GPUs with a logical 2+2 split where
-applicable. The UniRunner `perf-test-experimental (musa)` job is temporarily
-disabled while its stream-value completion stall is investigated. Existing
-DMA-BUF and SymMem VMM exclusions remain in the platform configuration.
+suites, `perf-test (musa)`, `perf-test-experimental (musa)` and Torch on four GPUs
+with a logical 2+2 split where applicable. The UniRunner workload runs while
+its stream-value completion stall is investigated. Existing DMA-BUF and SymMem
+VMM exclusions remain in the platform configuration.
 Other platforms retain their existing selection.
 Build its CI image with
 `docker build -f docker/mthreads-ci.Dockerfile .`.
@@ -217,8 +217,7 @@ The Mthreads performance jobs display as `perf-test (musa)` and
 `perf-test-experimental (musa)`. Both select the same `mthreads` configuration
 and runner; the experimental workload adds `COMPILE_KERNEL=1` and runs the
 four-rank UniRunner correctness suite on the pinned MUSA 5.2.0 image.
-Ordinary MUSA perf and Torch are enabled and required to succeed. The
-experimental UniRunner job is temporarily disabled, and its completion gate
-requires a skipped result. Re-enable it together with its required-success
-gate after fixing the stream-value completion stall.
+Ordinary MUSA perf, experimental UniRunner, and Torch are enabled and required
+to succeed. The experimental completion gate rejects missing, skipped, failed,
+or cancelled results.
 See [MUSA UniRunner kernels](../docs/musa_unirunner.md) for validation details.

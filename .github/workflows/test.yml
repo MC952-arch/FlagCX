@@ -568,8 +568,7 @@ jobs:
           retention-days: 7
 
   perf-test-experimental-mthreads:
-    # Deferred while the UniRunner stream-value completion stall is investigated.
-    if: ${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
     name: perf-test-experimental (musa)
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
@@ -790,6 +789,6 @@ jobs:
           if python3 -c 'import json, os, sys; sys.exit(0 if "mthreads" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
             [[ "$CONFIG_RESULT" == success ]] || { echo "Mthreads configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
             [[ "$MTHREADS_RESULT" == success ]] || { echo "MUSA performance job ended with: $MTHREADS_RESULT" >&2; exit 1; }
-            [[ "$MTHREADS_EXPERIMENTAL_RESULT" == skipped ]] || { echo "Disabled MUSA experimental performance job unexpectedly ended with: $MTHREADS_EXPERIMENTAL_RESULT" >&2; exit 1; }
-            echo "MUSA performance CI passed; experimental UniRunner remains disabled."
+            [[ "$MTHREADS_EXPERIMENTAL_RESULT" == success ]] || { echo "MUSA experimental performance job ended with: $MTHREADS_EXPERIMENTAL_RESULT" >&2; exit 1; }
+            echo "MUSA ordinary and experimental performance CI passed."
           fi

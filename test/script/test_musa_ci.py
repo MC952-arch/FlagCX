@@ -234,10 +234,7 @@ sys.exit(29)
                 key = "perf-test-experimental-mthreads" if workload == "perf-test-experimental" else f"{prefix}-mthreads"
                 job = jobs[key]
                 self.assertIn("'mthreads'", job["if"])
-                expected_condition = ("${{ false && contains(fromJSON(inputs.platforms), 'mthreads') }}"
-                                      if workload == "perf-test-experimental"
-                                      else "contains(fromJSON(inputs.platforms), 'mthreads')")
-                self.assertEqual(job["if"], expected_condition)
+                self.assertEqual(job["if"], "contains(fromJSON(inputs.platforms), 'mthreads')")
                 self.assertIn("mthreads_runs_on", job["runs-on"])
                 display = "perf-test-experimental" if workload == "perf-test-experimental" else prefix
                 self.assertEqual(job["name"], f"{display} (musa)")
@@ -327,16 +324,16 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
             capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), policy)
 
-    def test_completion_gates_require_musa_standard_success_and_experimental_skipped(self):
+    def test_completion_gates_require_musa_standard_and_experimental_success(self):
         for experimental in (False, True):
             filename = "test.yml" if experimental else "torch-api-test.yml"
             completion = "perf_complete" if experimental else "torch_api_complete"
             jobs = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"]
             gate = next(step["run"] for step in jobs[completion]["steps"]
                         if step.get("name", "").startswith("Validate selected Mthreads"))
-            for config in ("success", "failure"):
+            for config in ("success", "failure", "skipped", "cancelled"):
                 for regular in ("success", "failure", "skipped", "cancelled"):
-                    for extra in ("success", "failure", "skipped", "cancelled"):
+                    for extra in ("success", "failure", "skipped", "cancelled", ""):
                         env = {**os.environ, "PLATFORMS": '["mthreads"]',
                                "CONFIG_RESULT": config, "MTHREADS_RESULT": regular,
                                "MTHREADS_EXPERIMENTAL_RESULT": extra}
@@ -344,7 +341,7 @@ with open(os.environ["MUSA_DOCKER_CAPTURE"], "a") as out:
                             ["bash", "-eu", "-c", gate],
                             env=env, capture_output=True, text=True,
                         )
-                        expected = config == "success" and regular == "success" and (not experimental or extra == "skipped")
+                        expected = config == "success" and regular == "success" and (not experimental or extra == "success")
                         self.assertEqual(result.returncode == 0, expected, result.stderr)
         # A missing result must fail closed; unselected MUSA is irrelevant.
         env = {k: v for k, v in os.environ.items() if not k.startswith("MTHREADS_")}
